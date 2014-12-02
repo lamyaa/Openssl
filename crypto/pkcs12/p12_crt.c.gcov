@@ -1,0 +1,364 @@
+        -:    0:Source:p12_crt.c
+        -:    0:Graph:p12_crt.gcno
+        -:    0:Data:p12_crt.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* p12_crt.c */
+        -:    2:/* Written by Dr Stephen N Henson (steve@openssl.org) for the OpenSSL
+        -:    3: * project.
+        -:    4: */
+        -:    5:/* ====================================================================
+        -:    6: * Copyright (c) 1999-2002 The OpenSSL Project.  All rights reserved.
+        -:    7: *
+        -:    8: * Redistribution and use in source and binary forms, with or without
+        -:    9: * modification, are permitted provided that the following conditions
+        -:   10: * are met:
+        -:   11: *
+        -:   12: * 1. Redistributions of source code must retain the above copyright
+        -:   13: *    notice, this list of conditions and the following disclaimer. 
+        -:   14: *
+        -:   15: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   16: *    notice, this list of conditions and the following disclaimer in
+        -:   17: *    the documentation and/or other materials provided with the
+        -:   18: *    distribution.
+        -:   19: *
+        -:   20: * 3. All advertising materials mentioning features or use of this
+        -:   21: *    software must display the following acknowledgment:
+        -:   22: *    "This product includes software developed by the OpenSSL Project
+        -:   23: *    for use in the OpenSSL Toolkit. (http://www.OpenSSL.org/)"
+        -:   24: *
+        -:   25: * 4. The names "OpenSSL Toolkit" and "OpenSSL Project" must not be used to
+        -:   26: *    endorse or promote products derived from this software without
+        -:   27: *    prior written permission. For written permission, please contact
+        -:   28: *    licensing@OpenSSL.org.
+        -:   29: *
+        -:   30: * 5. Products derived from this software may not be called "OpenSSL"
+        -:   31: *    nor may "OpenSSL" appear in their names without prior written
+        -:   32: *    permission of the OpenSSL Project.
+        -:   33: *
+        -:   34: * 6. Redistributions of any form whatsoever must retain the following
+        -:   35: *    acknowledgment:
+        -:   36: *    "This product includes software developed by the OpenSSL Project
+        -:   37: *    for use in the OpenSSL Toolkit (http://www.OpenSSL.org/)"
+        -:   38: *
+        -:   39: * THIS SOFTWARE IS PROVIDED BY THE OpenSSL PROJECT ``AS IS'' AND ANY
+        -:   40: * EXPRESSED OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   41: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+        -:   42: * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE OpenSSL PROJECT OR
+        -:   43: * ITS CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+        -:   44: * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+        -:   45: * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+        -:   46: * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   47: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+        -:   48: * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+        -:   49: * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+        -:   50: * OF THE POSSIBILITY OF SUCH DAMAGE.
+        -:   51: * ====================================================================
+        -:   52: *
+        -:   53: * This product includes cryptographic software written by Eric Young
+        -:   54: * (eay@cryptsoft.com).  This product includes software written by Tim
+        -:   55: * Hudson (tjh@cryptsoft.com).
+        -:   56: *
+        -:   57: */
+        -:   58:
+        -:   59:#include <stdio.h>
+        -:   60:#include "cryptlib.h"
+        -:   61:#include <openssl/pkcs12.h>
+        -:   62:
+        -:   63:
+        -:   64:static int pkcs12_add_bag(STACK_OF(PKCS12_SAFEBAG) **pbags, PKCS12_SAFEBAG *bag);
+        -:   65:
+    #####:   66:static int copy_bag_attr(PKCS12_SAFEBAG *bag, EVP_PKEY *pkey, int nid)
+        -:   67:	{
+        -:   68:	int idx;
+        -:   69:	X509_ATTRIBUTE *attr;
+    #####:   70:	idx = EVP_PKEY_get_attr_by_NID(pkey, nid, -1);
+    #####:   71:	if (idx < 0)
+        -:   72:		return 1;
+    #####:   73:	attr = EVP_PKEY_get_attr(pkey, idx);
+    #####:   74:	if (!X509at_add1_attr(&bag->attrib, attr))
+        -:   75:		return 0;
+    #####:   76:	return 1;
+        -:   77:	}
+        -:   78:
+    #####:   79:PKCS12 *PKCS12_create(char *pass, char *name, EVP_PKEY *pkey, X509 *cert,
+        -:   80:	     STACK_OF(X509) *ca, int nid_key, int nid_cert, int iter, int mac_iter,
+        -:   81:	     int keytype)
+        -:   82:{
+        -:   83:	PKCS12 *p12 = NULL;
+    #####:   84:	STACK_OF(PKCS7) *safes = NULL;
+    #####:   85:	STACK_OF(PKCS12_SAFEBAG) *bags = NULL;
+        -:   86:	PKCS12_SAFEBAG *bag = NULL;
+        -:   87:	int i;
+        -:   88:	unsigned char keyid[EVP_MAX_MD_SIZE];
+    #####:   89:	unsigned int keyidlen = 0;
+        -:   90:
+        -:   91:	/* Set defaults */
+    #####:   92:	if (!nid_cert)
+        -:   93:		nid_cert = NID_pbe_WithSHA1And40BitRC2_CBC;
+    #####:   94:	if (!nid_key)
+        -:   95:		nid_key = NID_pbe_WithSHA1And3_Key_TripleDES_CBC;
+    #####:   96:	if (!iter)
+        -:   97:		iter = PKCS12_DEFAULT_ITER;
+    #####:   98:	if (!mac_iter)
+        -:   99:		mac_iter = 1;
+        -:  100:
+    #####:  101:	if(!pkey && !cert && !ca)
+        -:  102:		{
+    #####:  103:		PKCS12err(PKCS12_F_PKCS12_CREATE,PKCS12_R_INVALID_NULL_ARGUMENT);
+    #####:  104:		return NULL;
+        -:  105:		}
+        -:  106:
+    #####:  107:	if (pkey && cert)
+        -:  108:		{
+    #####:  109:		if(!X509_check_private_key(cert, pkey))
+        -:  110:			return NULL;
+    #####:  111:		X509_digest(cert, EVP_sha1(), keyid, &keyidlen);
+        -:  112:		}
+        -:  113:
+    #####:  114:	if (cert)
+        -:  115:		{
+    #####:  116:		bag = PKCS12_add_cert(&bags, cert);
+    #####:  117:		if(name && !PKCS12_add_friendlyname(bag, name, -1))
+        -:  118:			goto err;
+    #####:  119:		if(keyidlen && !PKCS12_add_localkeyid(bag, keyid, keyidlen))
+        -:  120:			goto err;
+        -:  121:		}
+        -:  122:
+        -:  123:	/* Add all other certificates */
+    #####:  124:	for(i = 0; i < sk_X509_num(ca); i++)
+        -:  125:		{
+    #####:  126:		if (!PKCS12_add_cert(&bags, sk_X509_value(ca, i)))
+        -:  127:			goto err;
+        -:  128:		}
+        -:  129:
+    #####:  130:	if (bags && !PKCS12_add_safe(&safes, bags, nid_cert, iter, pass))
+        -:  131:			goto err;
+        -:  132:
+    #####:  133:	sk_PKCS12_SAFEBAG_pop_free(bags, PKCS12_SAFEBAG_free);
+    #####:  134:	bags = NULL;
+        -:  135:
+    #####:  136:	if (pkey)
+        -:  137:		{
+    #####:  138:		bag = PKCS12_add_key(&bags, pkey, keytype, iter, nid_key, pass);
+        -:  139:
+    #####:  140:		if (!bag)
+        -:  141:			goto err;
+        -:  142:
+    #####:  143:		if (!copy_bag_attr(bag, pkey, NID_ms_csp_name))
+        -:  144:			goto err;
+    #####:  145:		if (!copy_bag_attr(bag, pkey, NID_LocalKeySet))
+        -:  146:			goto err;
+        -:  147:
+    #####:  148:		if(name && !PKCS12_add_friendlyname(bag, name, -1))
+        -:  149:			goto err;
+    #####:  150:		if(keyidlen && !PKCS12_add_localkeyid(bag, keyid, keyidlen))
+        -:  151:			goto err;
+        -:  152:		}
+        -:  153:
+    #####:  154:	if (bags && !PKCS12_add_safe(&safes, bags, -1, 0, NULL))
+        -:  155:			goto err;
+        -:  156:
+    #####:  157:	sk_PKCS12_SAFEBAG_pop_free(bags, PKCS12_SAFEBAG_free);
+    #####:  158:	bags = NULL;
+        -:  159:
+    #####:  160:	p12 = PKCS12_add_safes(safes, 0);
+        -:  161:
+    #####:  162:	if (!p12)
+        -:  163:		goto err;
+        -:  164:
+    #####:  165:	sk_PKCS7_pop_free(safes, PKCS7_free);
+        -:  166:
+    #####:  167:	safes = NULL;
+        -:  168:
+    #####:  169:	if ((mac_iter != -1) &&
+    #####:  170:		!PKCS12_set_mac(p12, pass, -1, NULL, 0, mac_iter, NULL))
+        -:  171:	    goto err;
+        -:  172:
+    #####:  173:	return p12;
+        -:  174:
+        -:  175:	err:
+        -:  176:
+    #####:  177:	if (p12)
+    #####:  178:		PKCS12_free(p12);
+    #####:  179:	if (safes)
+    #####:  180:		sk_PKCS7_pop_free(safes, PKCS7_free);
+    #####:  181:	if (bags)
+    #####:  182:		sk_PKCS12_SAFEBAG_pop_free(bags, PKCS12_SAFEBAG_free);
+        -:  183:	return NULL;
+        -:  184:
+        -:  185:}
+        -:  186:
+    #####:  187:PKCS12_SAFEBAG *PKCS12_add_cert(STACK_OF(PKCS12_SAFEBAG) **pbags, X509 *cert)
+        -:  188:	{
+        -:  189:	PKCS12_SAFEBAG *bag = NULL;
+        -:  190:	char *name;
+    #####:  191:	int namelen = -1;
+        -:  192:	unsigned char *keyid;
+    #####:  193:	int keyidlen = -1;
+        -:  194:
+        -:  195:	/* Add user certificate */
+    #####:  196:	if(!(bag = PKCS12_x5092certbag(cert)))
+        -:  197:		goto err;
+        -:  198:
+        -:  199:	/* Use friendlyName and localKeyID in certificate.
+        -:  200:	 * (if present)
+        -:  201:	 */
+        -:  202:
+    #####:  203:	name = (char *)X509_alias_get0(cert, &namelen);
+        -:  204:
+    #####:  205:	if(name && !PKCS12_add_friendlyname(bag, name, namelen))
+        -:  206:		goto err;
+        -:  207:
+    #####:  208:	keyid = X509_keyid_get0(cert, &keyidlen);
+        -:  209:
+    #####:  210:	if(keyid && !PKCS12_add_localkeyid(bag, keyid, keyidlen))
+        -:  211:		goto err;
+        -:  212:
+    #####:  213:	if (!pkcs12_add_bag(pbags, bag))
+        -:  214:		goto err;
+        -:  215:
+        -:  216:	return bag;
+        -:  217:
+        -:  218:	err:
+        -:  219:
+    #####:  220:	if (bag)
+    #####:  221:		PKCS12_SAFEBAG_free(bag);
+        -:  222:
+        -:  223:	return NULL;
+        -:  224:
+        -:  225:	}
+        -:  226:
+    #####:  227:PKCS12_SAFEBAG *PKCS12_add_key(STACK_OF(PKCS12_SAFEBAG) **pbags, EVP_PKEY *key,
+        -:  228:						int key_usage, int iter,
+        -:  229:						int nid_key, char *pass)
+        -:  230:	{
+        -:  231:
+        -:  232:	PKCS12_SAFEBAG *bag = NULL;
+        -:  233:	PKCS8_PRIV_KEY_INFO *p8 = NULL;
+        -:  234:
+        -:  235:	/* Make a PKCS#8 structure */
+    #####:  236:	if(!(p8 = EVP_PKEY2PKCS8(key)))
+        -:  237:		goto err;
+    #####:  238:	if(key_usage && !PKCS8_add_keyusage(p8, key_usage))
+        -:  239:		goto err;
+    #####:  240:	if (nid_key != -1)
+        -:  241:		{
+    #####:  242:		bag = PKCS12_MAKE_SHKEYBAG(nid_key, pass, -1, NULL, 0, iter, p8);
+    #####:  243:		PKCS8_PRIV_KEY_INFO_free(p8);
+        -:  244:		}
+        -:  245:	else
+    #####:  246:		bag = PKCS12_MAKE_KEYBAG(p8);
+        -:  247:
+    #####:  248:	if(!bag)
+        -:  249:		goto err;
+        -:  250:
+    #####:  251:	if (!pkcs12_add_bag(pbags, bag))
+        -:  252:		goto err;
+        -:  253:
+        -:  254:	return bag;
+        -:  255:
+        -:  256:	err:
+        -:  257:
+    #####:  258:	if (bag)
+    #####:  259:		PKCS12_SAFEBAG_free(bag);
+        -:  260:
+        -:  261:	return NULL;
+        -:  262:
+        -:  263:	}
+        -:  264:
+    #####:  265:int PKCS12_add_safe(STACK_OF(PKCS7) **psafes, STACK_OF(PKCS12_SAFEBAG) *bags,
+        -:  266:						int nid_safe, int iter, char *pass)
+        -:  267:	{
+        -:  268:	PKCS7 *p7 = NULL;
+        -:  269:	int free_safes = 0;
+        -:  270:
+    #####:  271:	if (!*psafes)
+        -:  272:		{
+    #####:  273:		*psafes = sk_PKCS7_new_null();
+    #####:  274:		if (!*psafes)
+        -:  275:			return 0;
+        -:  276:		free_safes = 1;
+        -:  277:		}
+        -:  278:	else
+        -:  279:		free_safes = 0;
+        -:  280:
+    #####:  281:	if (nid_safe == 0)
+        -:  282:		nid_safe = NID_pbe_WithSHA1And40BitRC2_CBC;
+        -:  283:
+    #####:  284:	if (nid_safe == -1)
+    #####:  285:		p7 = PKCS12_pack_p7data(bags);
+        -:  286:	else
+    #####:  287:		p7 = PKCS12_pack_p7encdata(nid_safe, pass, -1, NULL, 0,
+        -:  288:					  iter, bags);
+    #####:  289:	if (!p7)
+        -:  290:		goto err;
+        -:  291:
+    #####:  292:	if (!sk_PKCS7_push(*psafes, p7))
+        -:  293:		goto err;
+        -:  294:
+        -:  295:	return 1;
+        -:  296:
+        -:  297:	err:
+    #####:  298:	if (free_safes)
+        -:  299:		{
+    #####:  300:		sk_PKCS7_free(*psafes);
+    #####:  301:		*psafes = NULL;
+        -:  302:		}
+        -:  303:
+    #####:  304:	if (p7)
+    #####:  305:		PKCS7_free(p7);
+        -:  306:
+        -:  307:	return 0;
+        -:  308:
+        -:  309:	}
+        -:  310:
+    #####:  311:static int pkcs12_add_bag(STACK_OF(PKCS12_SAFEBAG) **pbags, PKCS12_SAFEBAG *bag)
+        -:  312:	{
+        -:  313:	int free_bags;
+    #####:  314:	if (!pbags)
+        -:  315:		return 1;
+    #####:  316:	if (!*pbags)
+        -:  317:		{
+    #####:  318:		*pbags = sk_PKCS12_SAFEBAG_new_null();
+    #####:  319:		if (!*pbags)
+        -:  320:			return 0;
+        -:  321:		free_bags = 1;
+        -:  322:		}
+        -:  323:	else 
+        -:  324:		free_bags = 0;
+        -:  325:
+    #####:  326:	if (!sk_PKCS12_SAFEBAG_push(*pbags, bag))
+        -:  327:		{
+    #####:  328:		if (free_bags)
+        -:  329:			{
+    #####:  330:			sk_PKCS12_SAFEBAG_free(*pbags);
+    #####:  331:			*pbags = NULL;
+        -:  332:			}
+        -:  333:		return 0;
+        -:  334:		}
+        -:  335:
+        -:  336:	return 1;
+        -:  337:
+        -:  338:	}
+        -:  339:		
+        -:  340:
+    #####:  341:PKCS12 *PKCS12_add_safes(STACK_OF(PKCS7) *safes, int nid_p7)
+        -:  342:	{
+        -:  343:	PKCS12 *p12;
+    #####:  344:	if (nid_p7 <= 0)
+        -:  345:		nid_p7 = NID_pkcs7_data;
+    #####:  346:	p12 = PKCS12_init(nid_p7);
+        -:  347:
+    #####:  348:	if (!p12)
+        -:  349:		return NULL;
+        -:  350:
+    #####:  351:	if(!PKCS12_pack_authsafes(p12, safes))
+        -:  352:		{
+    #####:  353:		PKCS12_free(p12);
+    #####:  354:		return NULL;
+        -:  355:		}
+        -:  356:
+        -:  357:	return p12;
+        -:  358:
+        -:  359:	}

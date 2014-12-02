@@ -1,0 +1,517 @@
+        -:    0:Source:bf_buff.c
+        -:    0:Graph:bf_buff.gcno
+        -:    0:Data:bf_buff.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* crypto/bio/bf_buff.c */
+        -:    2:/* Copyright (C) 1995-1998 Eric Young (eay@cryptsoft.com)
+        -:    3: * All rights reserved.
+        -:    4: *
+        -:    5: * This package is an SSL implementation written
+        -:    6: * by Eric Young (eay@cryptsoft.com).
+        -:    7: * The implementation was written so as to conform with Netscapes SSL.
+        -:    8: * 
+        -:    9: * This library is free for commercial and non-commercial use as long as
+        -:   10: * the following conditions are aheared to.  The following conditions
+        -:   11: * apply to all code found in this distribution, be it the RC4, RSA,
+        -:   12: * lhash, DES, etc., code; not just the SSL code.  The SSL documentation
+        -:   13: * included with this distribution is covered by the same copyright terms
+        -:   14: * except that the holder is Tim Hudson (tjh@cryptsoft.com).
+        -:   15: * 
+        -:   16: * Copyright remains Eric Young's, and as such any Copyright notices in
+        -:   17: * the code are not to be removed.
+        -:   18: * If this package is used in a product, Eric Young should be given attribution
+        -:   19: * as the author of the parts of the library used.
+        -:   20: * This can be in the form of a textual message at program startup or
+        -:   21: * in documentation (online or textual) provided with the package.
+        -:   22: * 
+        -:   23: * Redistribution and use in source and binary forms, with or without
+        -:   24: * modification, are permitted provided that the following conditions
+        -:   25: * are met:
+        -:   26: * 1. Redistributions of source code must retain the copyright
+        -:   27: *    notice, this list of conditions and the following disclaimer.
+        -:   28: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   29: *    notice, this list of conditions and the following disclaimer in the
+        -:   30: *    documentation and/or other materials provided with the distribution.
+        -:   31: * 3. All advertising materials mentioning features or use of this software
+        -:   32: *    must display the following acknowledgement:
+        -:   33: *    "This product includes cryptographic software written by
+        -:   34: *     Eric Young (eay@cryptsoft.com)"
+        -:   35: *    The word 'cryptographic' can be left out if the rouines from the library
+        -:   36: *    being used are not cryptographic related :-).
+        -:   37: * 4. If you include any Windows specific code (or a derivative thereof) from 
+        -:   38: *    the apps directory (application code) you must include an acknowledgement:
+        -:   39: *    "This product includes software written by Tim Hudson (tjh@cryptsoft.com)"
+        -:   40: * 
+        -:   41: * THIS SOFTWARE IS PROVIDED BY ERIC YOUNG ``AS IS'' AND
+        -:   42: * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   43: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+        -:   44: * ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+        -:   45: * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+        -:   46: * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+        -:   47: * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   48: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+        -:   49: * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+        -:   50: * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+        -:   51: * SUCH DAMAGE.
+        -:   52: * 
+        -:   53: * The licence and distribution terms for any publically available version or
+        -:   54: * derivative of this code cannot be changed.  i.e. this code cannot simply be
+        -:   55: * copied and put under another distribution licence
+        -:   56: * [including the GNU Public Licence.]
+        -:   57: */
+        -:   58:
+        -:   59:#include <stdio.h>
+        -:   60:#include <errno.h>
+        -:   61:#include "cryptlib.h"
+        -:   62:#include <openssl/bio.h>
+        -:   63:
+        -:   64:static int buffer_write(BIO *h, const char *buf,int num);
+        -:   65:static int buffer_read(BIO *h, char *buf, int size);
+        -:   66:static int buffer_puts(BIO *h, const char *str);
+        -:   67:static int buffer_gets(BIO *h, char *str, int size);
+        -:   68:static long buffer_ctrl(BIO *h, int cmd, long arg1, void *arg2);
+        -:   69:static int buffer_new(BIO *h);
+        -:   70:static int buffer_free(BIO *data);
+        -:   71:static long buffer_callback_ctrl(BIO *h, int cmd, bio_info_cb *fp);
+        -:   72:#define DEFAULT_BUFFER_SIZE	4096
+        -:   73:
+        -:   74:static BIO_METHOD methods_buffer=
+        -:   75:	{
+        -:   76:	BIO_TYPE_BUFFER,
+        -:   77:	"buffer",
+        -:   78:	buffer_write,
+        -:   79:	buffer_read,
+        -:   80:	buffer_puts,
+        -:   81:	buffer_gets,
+        -:   82:	buffer_ctrl,
+        -:   83:	buffer_new,
+        -:   84:	buffer_free,
+        -:   85:	buffer_callback_ctrl,
+        -:   86:	};
+        -:   87:
+    10000:   88:BIO_METHOD *BIO_f_buffer(void)
+        -:   89:	{
+    10000:   90:	return(&methods_buffer);
+        -:   91:	}
+        -:   92:
+    10000:   93:static int buffer_new(BIO *bi)
+        -:   94:	{
+        -:   95:	BIO_F_BUFFER_CTX *ctx;
+        -:   96:
+    10000:   97:	ctx=(BIO_F_BUFFER_CTX *)OPENSSL_malloc(sizeof(BIO_F_BUFFER_CTX));
+    10000:   98:	if (ctx == NULL) return(0);
+    10000:   99:	ctx->ibuf=(char *)OPENSSL_malloc(DEFAULT_BUFFER_SIZE);
+    10000:  100:	if (ctx->ibuf == NULL) { OPENSSL_free(ctx); return(0); }
+    10000:  101:	ctx->obuf=(char *)OPENSSL_malloc(DEFAULT_BUFFER_SIZE);
+    10000:  102:	if (ctx->obuf == NULL) { OPENSSL_free(ctx->ibuf); OPENSSL_free(ctx); return(0); }
+    10000:  103:	ctx->ibuf_size=DEFAULT_BUFFER_SIZE;
+    10000:  104:	ctx->obuf_size=DEFAULT_BUFFER_SIZE;
+    10000:  105:	ctx->ibuf_len=0;
+    10000:  106:	ctx->ibuf_off=0;
+    10000:  107:	ctx->obuf_len=0;
+    10000:  108:	ctx->obuf_off=0;
+        -:  109:
+    10000:  110:	bi->init=1;
+    10000:  111:	bi->ptr=(char *)ctx;
+    10000:  112:	bi->flags=0;
+    10000:  113:	return(1);
+        -:  114:	}
+        -:  115:
+    10000:  116:static int buffer_free(BIO *a)
+        -:  117:	{
+        -:  118:	BIO_F_BUFFER_CTX *b;
+        -:  119:
+    10000:  120:	if (a == NULL) return(0);
+    10000:  121:	b=(BIO_F_BUFFER_CTX *)a->ptr;
+    10000:  122:	if (b->ibuf != NULL) OPENSSL_free(b->ibuf);
+    10000:  123:	if (b->obuf != NULL) OPENSSL_free(b->obuf);
+    10000:  124:	OPENSSL_free(a->ptr);
+    10000:  125:	a->ptr=NULL;
+    10000:  126:	a->init=0;
+    10000:  127:	a->flags=0;
+    10000:  128:	return(1);
+        -:  129:	}
+        -:  130:	
+    #####:  131:static int buffer_read(BIO *b, char *out, int outl)
+        -:  132:	{
+        -:  133:	int i,num=0;
+        -:  134:	BIO_F_BUFFER_CTX *ctx;
+        -:  135:
+    #####:  136:	if (out == NULL) return(0);
+    #####:  137:	ctx=(BIO_F_BUFFER_CTX *)b->ptr;
+        -:  138:
+    #####:  139:	if ((ctx == NULL) || (b->next_bio == NULL)) return(0);
+        -:  140:	num=0;
+    #####:  141:	BIO_clear_retry_flags(b);
+        -:  142:
+        -:  143:start:
+    #####:  144:	i=ctx->ibuf_len;
+        -:  145:	/* If there is stuff left over, grab it */
+    #####:  146:	if (i != 0)
+        -:  147:		{
+    #####:  148:		if (i > outl) i=outl;
+    #####:  149:		memcpy(out,&(ctx->ibuf[ctx->ibuf_off]),i);
+    #####:  150:		ctx->ibuf_off+=i;
+    #####:  151:		ctx->ibuf_len-=i;
+    #####:  152:		num+=i;
+    #####:  153:		if (outl == i)  return(num);
+    #####:  154:		outl-=i;
+    #####:  155:		out+=i;
+        -:  156:		}
+        -:  157:
+        -:  158:	/* We may have done a partial read. try to do more.
+        -:  159:	 * We have nothing in the buffer.
+        -:  160:	 * If we get an error and have read some data, just return it
+        -:  161:	 * and let them retry to get the error again.
+        -:  162:	 * copy direct to parent address space */
+    #####:  163:	if (outl > ctx->ibuf_size)
+        -:  164:		{
+        -:  165:		for (;;)
+        -:  166:			{
+    #####:  167:			i=BIO_read(b->next_bio,out,outl);
+    #####:  168:			if (i <= 0)
+        -:  169:				{
+    #####:  170:				BIO_copy_next_retry(b);
+    #####:  171:				if (i < 0) return((num > 0)?num:i);
+    #####:  172:				if (i == 0) return(num);
+        -:  173:				}
+    #####:  174:			num+=i;
+    #####:  175:			if (outl == i) return(num);
+    #####:  176:			out+=i;
+    #####:  177:			outl-=i;
+    #####:  178:			}
+        -:  179:		}
+        -:  180:	/* else */
+        -:  181:
+        -:  182:	/* we are going to be doing some buffering */
+    #####:  183:	i=BIO_read(b->next_bio,ctx->ibuf,ctx->ibuf_size);
+    #####:  184:	if (i <= 0)
+        -:  185:		{
+    #####:  186:		BIO_copy_next_retry(b);
+    #####:  187:		if (i < 0) return((num > 0)?num:i);
+    #####:  188:		if (i == 0) return(num);
+        -:  189:		}
+    #####:  190:	ctx->ibuf_off=0;
+    #####:  191:	ctx->ibuf_len=i;
+        -:  192:
+        -:  193:	/* Lets re-read using ourselves :-) */
+    #####:  194:	goto start;
+        -:  195:	}
+        -:  196:
+    30000:  197:static int buffer_write(BIO *b, const char *in, int inl)
+        -:  198:	{
+        -:  199:	int i,num=0;
+        -:  200:	BIO_F_BUFFER_CTX *ctx;
+        -:  201:
+    30000:  202:	if ((in == NULL) || (inl <= 0)) return(0);
+    30000:  203:	ctx=(BIO_F_BUFFER_CTX *)b->ptr;
+    30000:  204:	if ((ctx == NULL) || (b->next_bio == NULL)) return(0);
+        -:  205:
+    30000:  206:	BIO_clear_retry_flags(b);
+        -:  207:start:
+    30000:  208:	i=ctx->obuf_size-(ctx->obuf_len+ctx->obuf_off);
+        -:  209:	/* add to buffer and return */
+    30000:  210:	if (i >= inl)
+        -:  211:		{
+    30000:  212:		memcpy(&(ctx->obuf[ctx->obuf_off+ctx->obuf_len]),in,inl);
+    30000:  213:		ctx->obuf_len+=inl;
+    30000:  214:		return(num+inl);
+        -:  215:		}
+        -:  216:	/* else */
+        -:  217:	/* stuff already in buffer, so add to it first, then flush */
+    #####:  218:	if (ctx->obuf_len != 0)
+        -:  219:		{
+    #####:  220:		if (i > 0) /* lets fill it up if we can */
+        -:  221:			{
+    #####:  222:			memcpy(&(ctx->obuf[ctx->obuf_off+ctx->obuf_len]),in,i);
+    #####:  223:			in+=i;
+    #####:  224:			inl-=i;
+    #####:  225:			num+=i;
+    #####:  226:			ctx->obuf_len+=i;
+        -:  227:			}
+        -:  228:		/* we now have a full buffer needing flushing */
+        -:  229:		for (;;)
+        -:  230:			{
+    #####:  231:			i=BIO_write(b->next_bio,&(ctx->obuf[ctx->obuf_off]),
+        -:  232:				ctx->obuf_len);
+    #####:  233:			if (i <= 0)
+        -:  234:				{
+    #####:  235:				BIO_copy_next_retry(b);
+        -:  236:
+    #####:  237:				if (i < 0) return((num > 0)?num:i);
+    #####:  238:				if (i == 0) return(num);
+        -:  239:				}
+    #####:  240:			ctx->obuf_off+=i;
+    #####:  241:			ctx->obuf_len-=i;
+    #####:  242:			if (ctx->obuf_len == 0) break;
+        -:  243:			}
+        -:  244:		}
+        -:  245:	/* we only get here if the buffer has been flushed and we
+        -:  246:	 * still have stuff to write */
+    #####:  247:	ctx->obuf_off=0;
+        -:  248:
+        -:  249:	/* we now have inl bytes to write */
+    #####:  250:	while (inl >= ctx->obuf_size)
+        -:  251:		{
+    #####:  252:		i=BIO_write(b->next_bio,in,inl);
+    #####:  253:		if (i <= 0)
+        -:  254:			{
+    #####:  255:			BIO_copy_next_retry(b);
+    #####:  256:			if (i < 0) return((num > 0)?num:i);
+    #####:  257:			if (i == 0) return(num);
+        -:  258:			}
+    #####:  259:		num+=i;
+    #####:  260:		in+=i;
+    #####:  261:		inl-=i;
+    #####:  262:		if (inl == 0) return(num);
+        -:  263:		}
+        -:  264:
+        -:  265:	/* copy the rest into the buffer since we have only a small 
+        -:  266:	 * amount left */
+        -:  267:	goto start;
+        -:  268:	}
+        -:  269:
+    50000:  270:static long buffer_ctrl(BIO *b, int cmd, long num, void *ptr)
+        -:  271:	{
+        -:  272:	BIO *dbio;
+        -:  273:	BIO_F_BUFFER_CTX *ctx;
+        -:  274:	long ret=1;
+        -:  275:	char *p1,*p2;
+        -:  276:	int r,i,*ip;
+        -:  277:	int ibs,obs;
+        -:  278:
+    50000:  279:	ctx=(BIO_F_BUFFER_CTX *)b->ptr;
+        -:  280:
+    50000:  281:	switch (cmd)
+        -:  282:		{
+        -:  283:	case BIO_CTRL_RESET:
+    10000:  284:		ctx->ibuf_off=0;
+    10000:  285:		ctx->ibuf_len=0;
+    10000:  286:		ctx->obuf_off=0;
+    10000:  287:		ctx->obuf_len=0;
+    10000:  288:		if (b->next_bio == NULL) return(0);
+    #####:  289:		ret=BIO_ctrl(b->next_bio,cmd,num,ptr);
+    #####:  290:		break;
+        -:  291:	case BIO_CTRL_INFO:
+    #####:  292:		ret=(long)ctx->obuf_len;
+    #####:  293:		break;
+        -:  294:	case BIO_C_GET_BUFF_NUM_LINES:
+        -:  295:		ret=0;
+    #####:  296:		p1=ctx->ibuf;
+    #####:  297:		for (i=0; i<ctx->ibuf_len; i++)
+        -:  298:			{
+    #####:  299:			if (p1[ctx->ibuf_off + i] == '\n') ret++;
+        -:  300:			}
+        -:  301:		break;
+        -:  302:	case BIO_CTRL_WPENDING:
+    #####:  303:		ret=(long)ctx->obuf_len;
+    #####:  304:		if (ret == 0)
+        -:  305:			{
+    #####:  306:			if (b->next_bio == NULL) return(0);
+    #####:  307:			ret=BIO_ctrl(b->next_bio,cmd,num,ptr);
+        -:  308:			}
+        -:  309:		break;
+        -:  310:	case BIO_CTRL_PENDING:
+    #####:  311:		ret=(long)ctx->ibuf_len;
+    #####:  312:		if (ret == 0)
+        -:  313:			{
+    #####:  314:			if (b->next_bio == NULL) return(0);
+    #####:  315:			ret=BIO_ctrl(b->next_bio,cmd,num,ptr);
+        -:  316:			}
+        -:  317:		break;
+        -:  318:	case BIO_C_SET_BUFF_READ_DATA:
+    #####:  319:		if (num > ctx->ibuf_size)
+        -:  320:			{
+    #####:  321:			p1=OPENSSL_malloc((int)num);
+    #####:  322:			if (p1 == NULL) goto malloc_error;
+    #####:  323:			if (ctx->ibuf != NULL) OPENSSL_free(ctx->ibuf);
+    #####:  324:			ctx->ibuf=p1;
+        -:  325:			}
+    #####:  326:		ctx->ibuf_off=0;
+    #####:  327:		ctx->ibuf_len=(int)num;
+    #####:  328:		memcpy(ctx->ibuf,ptr,(int)num);
+        -:  329:		ret=1;
+    #####:  330:		break;
+        -:  331:	case BIO_C_SET_BUFF_SIZE:
+    10000:  332:		if (ptr != NULL)
+        -:  333:			{
+        -:  334:			ip=(int *)ptr;
+    10000:  335:			if (*ip == 0)
+        -:  336:				{
+    10000:  337:				ibs=(int)num;
+    10000:  338:				obs=ctx->obuf_size;
+        -:  339:				}
+        -:  340:			else /* if (*ip == 1) */
+        -:  341:				{
+    #####:  342:				ibs=ctx->ibuf_size;
+    #####:  343:				obs=(int)num;
+        -:  344:				}
+        -:  345:			}
+        -:  346:		else
+        -:  347:			{
+    #####:  348:			ibs=(int)num;
+        -:  349:			obs=(int)num;
+        -:  350:			}
+    10000:  351:		p1=ctx->ibuf;
+    10000:  352:		p2=ctx->obuf;
+    10000:  353:		if ((ibs > DEFAULT_BUFFER_SIZE) && (ibs != ctx->ibuf_size))
+        -:  354:			{
+    #####:  355:			p1=(char *)OPENSSL_malloc((int)num);
+    #####:  356:			if (p1 == NULL) goto malloc_error;
+        -:  357:			}
+    10000:  358:		if ((obs > DEFAULT_BUFFER_SIZE) && (obs != ctx->obuf_size))
+        -:  359:			{
+    #####:  360:			p2=(char *)OPENSSL_malloc((int)num);
+    #####:  361:			if (p2 == NULL)
+        -:  362:				{
+    #####:  363:				if (p1 != ctx->ibuf) OPENSSL_free(p1);
+        -:  364:				goto malloc_error;
+        -:  365:				}
+        -:  366:			}
+    10000:  367:		if (ctx->ibuf != p1)
+        -:  368:			{
+    #####:  369:			OPENSSL_free(ctx->ibuf);
+    #####:  370:			ctx->ibuf=p1;
+    #####:  371:			ctx->ibuf_off=0;
+    #####:  372:			ctx->ibuf_len=0;
+    #####:  373:			ctx->ibuf_size=ibs;
+        -:  374:			}
+    10000:  375:		if (ctx->obuf != p2)
+        -:  376:			{
+    #####:  377:			OPENSSL_free(ctx->obuf);
+    #####:  378:			ctx->obuf=p2;
+    #####:  379:			ctx->obuf_off=0;
+    #####:  380:			ctx->obuf_len=0;
+    #####:  381:			ctx->obuf_size=obs;
+        -:  382:			}
+        -:  383:		break;
+        -:  384:	case BIO_C_DO_STATE_MACHINE:
+    #####:  385:		if (b->next_bio == NULL) return(0);
+    #####:  386:		BIO_clear_retry_flags(b);
+    #####:  387:		ret=BIO_ctrl(b->next_bio,cmd,num,ptr);
+    #####:  388:		BIO_copy_next_retry(b);
+    #####:  389:		break;
+        -:  390:
+        -:  391:	case BIO_CTRL_FLUSH:
+    10000:  392:		if (b->next_bio == NULL) return(0);
+    10000:  393:		if (ctx->obuf_len <= 0)
+        -:  394:			{
+    #####:  395:			ret=BIO_ctrl(b->next_bio,cmd,num,ptr);
+    #####:  396:			break;
+        -:  397:			}
+        -:  398:
+        -:  399:		for (;;)
+        -:  400:			{
+    20000:  401:			BIO_clear_retry_flags(b);
+    20000:  402:			if (ctx->obuf_len > 0)
+        -:  403:				{
+    10000:  404:				r=BIO_write(b->next_bio,
+    10000:  405:					&(ctx->obuf[ctx->obuf_off]),
+        -:  406:					ctx->obuf_len);
+        -:  407:#if 0
+        -:  408:fprintf(stderr,"FLUSH [%3d] %3d -> %3d\n",ctx->obuf_off,ctx->obuf_len,r);
+        -:  409:#endif
+    10000:  410:				BIO_copy_next_retry(b);
+    10000:  411:				if (r <= 0) return((long)r);
+    10000:  412:				ctx->obuf_off+=r;
+    10000:  413:				ctx->obuf_len-=r;
+        -:  414:				}
+        -:  415:			else
+        -:  416:				{
+    10000:  417:				ctx->obuf_len=0;
+    10000:  418:				ctx->obuf_off=0;
+        -:  419:				ret=1;
+        -:  420:				break;
+        -:  421:				}
+    10000:  422:			}
+    10000:  423:		ret=BIO_ctrl(b->next_bio,cmd,num,ptr);
+    10000:  424:		break;
+        -:  425:	case BIO_CTRL_DUP:
+        -:  426:		dbio=(BIO *)ptr;
+    #####:  427:		if (	!BIO_set_read_buffer_size(dbio,ctx->ibuf_size) ||
+    #####:  428:			!BIO_set_write_buffer_size(dbio,ctx->obuf_size))
+        -:  429:			ret=0;
+        -:  430:		break;
+        -:  431:	default:
+    20000:  432:		if (b->next_bio == NULL) return(0);
+    20000:  433:		ret=BIO_ctrl(b->next_bio,cmd,num,ptr);
+    20000:  434:		break;
+        -:  435:		}
+    40000:  436:	return(ret);
+        -:  437:malloc_error:
+    #####:  438:	BIOerr(BIO_F_BUFFER_CTRL,ERR_R_MALLOC_FAILURE);
+    #####:  439:	return(0);
+        -:  440:	}
+        -:  441:
+    #####:  442:static long buffer_callback_ctrl(BIO *b, int cmd, bio_info_cb *fp)
+        -:  443:	{
+        -:  444:	long ret=1;
+        -:  445:
+    #####:  446:	if (b->next_bio == NULL) return(0);
+        -:  447:	switch (cmd)
+        -:  448:		{
+        -:  449:	default:
+    #####:  450:		ret=BIO_callback_ctrl(b->next_bio,cmd,fp);
+        -:  451:		break;
+        -:  452:		}
+    #####:  453:	return(ret);
+        -:  454:	}
+        -:  455:
+    #####:  456:static int buffer_gets(BIO *b, char *buf, int size)
+        -:  457:	{
+        -:  458:	BIO_F_BUFFER_CTX *ctx;
+        -:  459:	int num=0,i,flag;
+        -:  460:	char *p;
+        -:  461:
+    #####:  462:	ctx=(BIO_F_BUFFER_CTX *)b->ptr;
+    #####:  463:	size--; /* reserve space for a '\0' */
+    #####:  464:	BIO_clear_retry_flags(b);
+        -:  465:
+        -:  466:	for (;;)
+        -:  467:		{
+    #####:  468:		if (ctx->ibuf_len > 0)
+        -:  469:			{
+    #####:  470:			p= &(ctx->ibuf[ctx->ibuf_off]);
+        -:  471:			flag=0;
+    #####:  472:			for (i=0; (i<ctx->ibuf_len) && (i<size); i++)
+        -:  473:				{
+    #####:  474:				*(buf++)=p[i];
+    #####:  475:				if (p[i] == '\n')
+        -:  476:					{
+        -:  477:					flag=1;
+    #####:  478:					i++;
+    #####:  479:					break;
+        -:  480:					}
+        -:  481:				}
+    #####:  482:			num+=i;
+    #####:  483:			size-=i;
+    #####:  484:			ctx->ibuf_len-=i;
+    #####:  485:			ctx->ibuf_off+=i;
+    #####:  486:			if (flag || size == 0)
+        -:  487:				{
+    #####:  488:				*buf='\0';
+    #####:  489:				return(num);
+        -:  490:				}
+        -:  491:			}
+        -:  492:		else	/* read another chunk */
+        -:  493:			{
+    #####:  494:			i=BIO_read(b->next_bio,ctx->ibuf,ctx->ibuf_size);
+    #####:  495:			if (i <= 0)
+        -:  496:				{
+    #####:  497:				BIO_copy_next_retry(b);
+    #####:  498:				*buf='\0';
+    #####:  499:				if (i < 0) return((num > 0)?num:i);
+    #####:  500:				if (i == 0) return(num);
+        -:  501:				}
+    #####:  502:			ctx->ibuf_len=i;
+    #####:  503:			ctx->ibuf_off=0;
+        -:  504:			}
+        -:  505:		}
+        -:  506:	}
+        -:  507:
+    #####:  508:static int buffer_puts(BIO *b, const char *str)
+        -:  509:	{
+    #####:  510:	return(buffer_write(b,str,strlen(str)));
+        -:  511:	}
+        -:  512:

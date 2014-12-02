@@ -1,0 +1,348 @@
+        -:    0:Source:gost2001.c
+        -:    0:Graph:gost2001.gcno
+        -:    0:Data:gost2001.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/**********************************************************************
+        -:    2: *                          gost2001.c                                *
+        -:    3: *             Copyright (c) 2005-2006 Cryptocom LTD                  *
+        -:    4: *         This file is distributed under the same license as OpenSSL *
+        -:    5: *                                                                    *
+        -:    6: *          Implementation of GOST R 34.10-2001      				  *
+        -:    7: *          Requires OpenSSL 0.9.9 for compilation                    *
+        -:    8: **********************************************************************/
+        -:    9:#include "gost_lcl.h"
+        -:   10:#include "gost_params.h"
+        -:   11:#include <string.h>
+        -:   12:#include <openssl/rand.h>
+        -:   13:#include <openssl/ecdsa.h>
+        -:   14:#include <openssl/err.h>
+        -:   15:#include "e_gost_err.h"
+        -:   16:#ifdef DEBUG_SIGN
+        -:   17:extern 
+        -:   18:void dump_signature(const char *message,const unsigned char *buffer,size_t len);
+        -:   19:void dump_dsa_sig(const char *message, DSA_SIG *sig);
+        -:   20:#else
+        -:   21:
+        -:   22:#define dump_signature(a,b,c)
+        -:   23:#define dump_dsa_sig(a,b)
+        -:   24:#endif
+        -:   25:
+        -:   26:/*
+        -:   27: * Fills EC_KEY structure hidden in the app_data field of DSA structure
+        -:   28: * with parameter information, extracted from parameter array in
+        -:   29: * params.c file.
+        -:   30: *
+        -:   31: * Also fils DSA->q field with copy of EC_GROUP order field to make
+        -:   32: * DSA_size function work
+        -:   33: */ 
+    #####:   34:int fill_GOST2001_params(EC_KEY *eckey, int nid)
+        -:   35:	{
+        -:   36:	R3410_2001_params *params = R3410_2001_paramset;
+        -:   37:	EC_GROUP *grp=NULL;
+    #####:   38:	BIGNUM *p=NULL,*q=NULL,*a=NULL,*b=NULL,*x=NULL,*y=NULL;
+        -:   39:	EC_POINT *P=NULL;
+    #####:   40:	BN_CTX *ctx=BN_CTX_new();
+        -:   41:	int ok=0;
+        -:   42:	
+    #####:   43:	BN_CTX_start(ctx);
+    #####:   44:	p=BN_CTX_get(ctx);
+    #####:   45:	a=BN_CTX_get(ctx);
+    #####:   46:	b=BN_CTX_get(ctx);
+    #####:   47:	x=BN_CTX_get(ctx);
+    #####:   48:	y=BN_CTX_get(ctx);
+    #####:   49:	q=BN_CTX_get(ctx);
+    #####:   50:	while (params->nid!=NID_undef && params->nid != nid) params++;
+    #####:   51:	if (params->nid == NID_undef)
+        -:   52:		{
+    #####:   53:		GOSTerr(GOST_F_FILL_GOST2001_PARAMS,GOST_R_UNSUPPORTED_PARAMETER_SET);
+    #####:   54:		goto err;
+        -:   55:		}	
+    #####:   56:	BN_hex2bn(&p,params->p);
+    #####:   57:	BN_hex2bn(&a,params->a);
+    #####:   58:	BN_hex2bn(&b,params->b);
+        -:   59:	
+    #####:   60:	grp = EC_GROUP_new_curve_GFp(p,a,b,ctx);
+        -:   61:
+    #####:   62:	P = EC_POINT_new(grp);
+        -:   63:
+    #####:   64:	BN_hex2bn(&x,params->x);
+    #####:   65:	BN_hex2bn(&y,params->y);
+    #####:   66:	EC_POINT_set_affine_coordinates_GFp(grp,P,x,y,ctx);
+    #####:   67:	BN_hex2bn(&q,params->q);
+        -:   68:#ifdef DEBUG_KEYS
+        -:   69:	fprintf(stderr,"Set params index %d oid %s\nq=",
+        -:   70:		(params-R3410_2001_paramset),OBJ_nid2sn(params->nid));
+        -:   71:	BN_print_fp(stderr,q);
+        -:   72:	fprintf(stderr,"\n");
+        -:   73:#endif	
+        -:   74:
+    #####:   75:	EC_GROUP_set_generator(grp,P,q,NULL);
+    #####:   76:	EC_GROUP_set_curve_name(grp,params->nid);
+        -:   77:
+    #####:   78:	EC_KEY_set_group(eckey,grp);
+        -:   79:	ok=1;
+        -:   80:	err:
+    #####:   81:	EC_POINT_free(P);
+    #####:   82:	EC_GROUP_free(grp);
+    #####:   83:	BN_CTX_end(ctx);
+    #####:   84:	BN_CTX_free(ctx);
+    #####:   85:	return ok;
+        -:   86:	}	
+        -:   87:
+        -:   88:
+        -:   89:/*
+        -:   90: * Computes gost2001 signature as DSA_SIG structure 
+        -:   91: *
+        -:   92: *
+        -:   93: */ 
+    #####:   94:DSA_SIG *gost2001_do_sign(const unsigned char *dgst,int dlen, EC_KEY *eckey)
+        -:   95:	{
+        -:   96:	DSA_SIG *newsig = NULL;
+    #####:   97:	BIGNUM *md = hashsum2bn(dgst);
+        -:   98:	BIGNUM *order = NULL;
+        -:   99:	const EC_GROUP *group;
+        -:  100:	const BIGNUM *priv_key;
+        -:  101:	BIGNUM *r=NULL,*s=NULL,*X=NULL,*tmp=NULL,*tmp2=NULL, *k=NULL,*e=NULL;
+        -:  102:	EC_POINT *C=NULL;
+    #####:  103:	BN_CTX *ctx = BN_CTX_new();	
+    #####:  104:	BN_CTX_start(ctx);
+    #####:  105:	OPENSSL_assert(dlen==32);
+    #####:  106:	newsig=DSA_SIG_new();
+    #####:  107:	if (!newsig) 
+        -:  108:		{
+    #####:  109:		GOSTerr(GOST_F_GOST2001_DO_SIGN,GOST_R_NO_MEMORY);
+    #####:  110:		goto err;
+        -:  111:		}	
+    #####:  112:	group = EC_KEY_get0_group(eckey);
+    #####:  113:	order=BN_CTX_get(ctx);
+    #####:  114:	EC_GROUP_get_order(group,order,ctx);
+    #####:  115:	priv_key = EC_KEY_get0_private_key(eckey);
+    #####:  116:	e = BN_CTX_get(ctx);
+    #####:  117:	BN_mod(e,md,order,ctx);
+        -:  118:#ifdef DEBUG_SIGN
+        -:  119:	fprintf(stderr,"digest as bignum=");
+        -:  120:	BN_print_fp(stderr,md);
+        -:  121:	fprintf(stderr,"\ndigest mod q=");
+        -:  122:	BN_print_fp(stderr,e);
+        -:  123:	fprintf(stderr,"\n");
+        -:  124:#endif		
+    #####:  125:	if (BN_is_zero(e))
+        -:  126:		{
+    #####:  127:		BN_one(e);
+        -:  128:		}   
+    #####:  129:	k =BN_CTX_get(ctx);
+    #####:  130:	C=EC_POINT_new(group);
+        -:  131:	do 
+        -:  132:		{
+        -:  133:		do 
+        -:  134:			{
+    #####:  135:			if (!BN_rand_range(k,order)) 
+        -:  136:				{
+    #####:  137:				GOSTerr(GOST_F_GOST2001_DO_SIGN,GOST_R_RANDOM_NUMBER_GENERATOR_FAILED);
+    #####:  138:				DSA_SIG_free(newsig);
+        -:  139:				newsig = NULL;
+    #####:  140:				goto err;
+        -:  141:				}	
+    #####:  142:			if (!EC_POINT_mul(group,C,k,NULL,NULL,ctx))
+        -:  143:				{
+    #####:  144:				GOSTerr(GOST_F_GOST2001_DO_SIGN,ERR_R_EC_LIB);
+    #####:  145:				DSA_SIG_free(newsig);
+        -:  146:				newsig = NULL;
+    #####:  147:				goto err;
+        -:  148:				}	
+    #####:  149:			if (!X) X=BN_CTX_get(ctx);
+    #####:  150:			if (!EC_POINT_get_affine_coordinates_GFp(group,C,X,NULL,ctx))
+        -:  151:				{
+    #####:  152:				GOSTerr(GOST_F_GOST2001_DO_SIGN,ERR_R_EC_LIB);
+    #####:  153:				DSA_SIG_free(newsig);
+        -:  154:				newsig = NULL;
+    #####:  155:				goto err;
+        -:  156:				}	
+    #####:  157:			if (!r) r=BN_CTX_get(ctx);
+    #####:  158:			BN_nnmod(r,X,order,ctx);
+        -:  159:			}
+    #####:  160:		while (BN_is_zero(r));
+        -:  161:		/* s =  (r*priv_key+k*e) mod order */
+    #####:  162:		if (!tmp) tmp = BN_CTX_get(ctx);
+    #####:  163:		BN_mod_mul(tmp,priv_key,r,order,ctx);
+    #####:  164:		if (!tmp2) tmp2 = BN_CTX_get(ctx);
+    #####:  165:		BN_mod_mul(tmp2,k,e,order,ctx);
+    #####:  166:		if (!s) s=BN_CTX_get(ctx);
+    #####:  167:		BN_mod_add(s,tmp,tmp2,order,ctx);
+        -:  168:		}
+    #####:  169:	while (BN_is_zero(s));	
+        -:  170:
+    #####:  171:	newsig->s=BN_dup(s);
+    #####:  172:	newsig->r=BN_dup(r);
+        -:  173:	err:			
+    #####:  174:	BN_CTX_end(ctx);
+    #####:  175:	BN_CTX_free(ctx);
+    #####:  176:	EC_POINT_free(C);
+    #####:  177:	BN_free(md);
+    #####:  178:	return newsig;
+        -:  179:	}
+        -:  180:/*
+        -:  181: * Verifies gost 2001 signature
+        -:  182: *
+        -:  183: */ 
+    #####:  184:int gost2001_do_verify(const unsigned char *dgst,int dgst_len,
+        -:  185:	DSA_SIG *sig, EC_KEY *ec)
+        -:  186:	{
+    #####:  187:	BN_CTX *ctx=BN_CTX_new();
+    #####:  188:	const EC_GROUP *group = EC_KEY_get0_group(ec);
+        -:  189:	BIGNUM *order;
+        -:  190:	BIGNUM *md = NULL,*e=NULL,*R=NULL,*v=NULL,*z1=NULL,*z2=NULL;
+        -:  191:	BIGNUM *X=NULL,*tmp=NULL;
+        -:  192:	EC_POINT *C = NULL;
+        -:  193:	const EC_POINT *pub_key=NULL;
+        -:  194:	int ok=0;
+        -:  195:
+    #####:  196:	BN_CTX_start(ctx);
+    #####:  197:	order = BN_CTX_get(ctx);
+    #####:  198:	e = BN_CTX_get(ctx);
+    #####:  199:	z1 = BN_CTX_get(ctx);
+    #####:  200:	z2 = BN_CTX_get(ctx);
+    #####:  201:	tmp = BN_CTX_get(ctx);
+    #####:  202:	X= BN_CTX_get(ctx);	
+    #####:  203:	R=BN_CTX_get(ctx);
+    #####:  204:	v=BN_CTX_get(ctx);
+        -:  205:	
+    #####:  206:	EC_GROUP_get_order(group,order,ctx);
+    #####:  207:	pub_key = EC_KEY_get0_public_key(ec);
+    #####:  208:	if (BN_is_zero(sig->s) || BN_is_zero(sig->r) ||
+    #####:  209:		(BN_cmp(sig->s,order)>=1) || (BN_cmp(sig->r,order)>=1)) 
+        -:  210:		{
+    #####:  211:		GOSTerr(GOST_F_GOST2001_DO_VERIFY,GOST_R_SIGNATURE_PARTS_GREATER_THAN_Q);
+    #####:  212:		goto err;
+        -:  213:
+        -:  214:		}
+    #####:  215:	md = hashsum2bn(dgst);
+        -:  216:
+    #####:  217:	BN_mod(e,md,order,ctx);
+        -:  218:#ifdef DEBUG_SIGN
+        -:  219:	fprintf(stderr,"digest as bignum: ");
+        -:  220:	BN_print_fp(stderr,md);
+        -:  221:	fprintf(stderr,"\ndigest mod q: ");
+        -:  222:	BN_print_fp(stderr,e);
+        -:  223:#endif	
+    #####:  224:	if (BN_is_zero(e)) BN_one(e);
+    #####:  225:	v=BN_mod_inverse(v,e,order,ctx);
+    #####:  226:	BN_mod_mul(z1,sig->s,v,order,ctx);
+    #####:  227:	BN_sub(tmp,order,sig->r);
+    #####:  228:	BN_mod_mul(z2,tmp,v,order,ctx);
+        -:  229:#ifdef DEBUG_SIGN
+        -:  230:	fprintf(stderr,"\nInverted digest value: ");
+        -:  231:	BN_print_fp(stderr,v);
+        -:  232:	fprintf(stderr,"\nz1: ");
+        -:  233:	BN_print_fp(stderr,z1);
+        -:  234:	fprintf(stderr,"\nz2: ");
+        -:  235:	BN_print_fp(stderr,z2);
+        -:  236:#endif	
+    #####:  237:	C = EC_POINT_new(group);
+    #####:  238:	if (!EC_POINT_mul(group,C,z1,pub_key,z2,ctx)) 
+        -:  239:		{	
+    #####:  240:		GOSTerr(GOST_F_GOST2001_DO_VERIFY,ERR_R_EC_LIB);
+    #####:  241:		goto err;
+        -:  242:		}	
+    #####:  243:	if (!EC_POINT_get_affine_coordinates_GFp(group,C,X,NULL,ctx)) 
+        -:  244:		{
+    #####:  245:		GOSTerr(GOST_F_GOST2001_DO_VERIFY,ERR_R_EC_LIB);
+    #####:  246:		goto err;
+        -:  247:		}
+    #####:  248:	BN_mod(R,X,order,ctx);
+        -:  249:#ifdef DEBUG_SIGN
+        -:  250:	fprintf(stderr,"\nX=");
+        -:  251:	BN_print_fp(stderr,X);
+        -:  252:	fprintf(stderr,"\nX mod q=");
+        -:  253:	BN_print_fp(stderr,R);
+        -:  254:	fprintf(stderr,"\n");
+        -:  255:#endif	
+    #####:  256:	if (BN_cmp(R,sig->r)!=0)
+        -:  257:		{
+    #####:  258:		GOSTerr(GOST_F_GOST2001_DO_VERIFY,GOST_R_SIGNATURE_MISMATCH);
+        -:  259:		}
+        -:  260:	else
+        -:  261:		{
+        -:  262:		ok = 1;
+        -:  263:		}
+        -:  264:	err:
+    #####:  265:	EC_POINT_free(C);
+    #####:  266:	BN_CTX_end(ctx);
+    #####:  267:	BN_CTX_free(ctx);
+    #####:  268:	BN_free(md);
+    #####:  269:	return ok;
+        -:  270:	}
+        -:  271:/*
+        -:  272: * Computes GOST R 34.10-2001 public key
+        -:  273: *
+        -:  274: *
+        -:  275: */ 
+    #####:  276:int gost2001_compute_public(EC_KEY *ec) 
+        -:  277:	{
+    #####:  278:	const EC_GROUP *group = EC_KEY_get0_group(ec);
+        -:  279:	EC_POINT *pub_key=NULL;
+        -:  280:	const BIGNUM *priv_key=NULL;
+        -:  281:	BN_CTX *ctx=NULL;
+        -:  282:	int ok=0;
+        -:  283:
+    #####:  284:	if (!group)
+        -:  285:		{
+    #####:  286:		GOSTerr(GOST_F_GOST2001_COMPUTE_PUBLIC,GOST_R_KEY_IS_NOT_INITIALIZED);
+    #####:  287:		return 0;
+        -:  288:		}	
+    #####:  289:	ctx=BN_CTX_new();
+    #####:  290:	BN_CTX_start(ctx);
+    #####:  291:	if (!(priv_key=EC_KEY_get0_private_key(ec))) 
+        -:  292:		{
+    #####:  293:		GOSTerr(GOST_F_GOST2001_COMPUTE_PUBLIC,ERR_R_EC_LIB);
+    #####:  294:		goto err;
+        -:  295:		}	
+        -:  296:
+    #####:  297:	pub_key = EC_POINT_new(group);
+    #####:  298:	if (!EC_POINT_mul(group,pub_key,priv_key,NULL,NULL,ctx)) 
+        -:  299:		{
+    #####:  300:		GOSTerr(GOST_F_GOST2001_COMPUTE_PUBLIC,ERR_R_EC_LIB);
+    #####:  301:		goto err;
+        -:  302:		}	
+    #####:  303:	if (!EC_KEY_set_public_key(ec,pub_key))
+        -:  304:		{
+    #####:  305:		GOSTerr(GOST_F_GOST2001_COMPUTE_PUBLIC,ERR_R_EC_LIB);
+    #####:  306:		goto err;
+        -:  307:		}	
+        -:  308:	ok = 256;
+        -:  309:	err:
+    #####:  310:	BN_CTX_end(ctx);
+    #####:  311:	EC_POINT_free(pub_key);
+    #####:  312:	BN_CTX_free(ctx);
+    #####:  313:	return ok;
+        -:  314:	}
+        -:  315:/*
+        -:  316: * 
+        -:  317: * Generates GOST R 34.10-2001 keypair
+        -:  318: *
+        -:  319: *
+        -:  320: */ 
+    #####:  321:int gost2001_keygen(EC_KEY *ec)
+        -:  322:	{
+    #####:  323:	BIGNUM *order = BN_new(),*d=BN_new();
+    #####:  324:	const EC_GROUP *group = EC_KEY_get0_group(ec);
+    #####:  325:	EC_GROUP_get_order(group,order,NULL);
+        -:  326:	
+        -:  327:	do 
+        -:  328:		{
+    #####:  329:		if (!BN_rand_range(d,order)) 
+        -:  330:			{
+    #####:  331:			GOSTerr(GOST_F_GOST2001_KEYGEN,GOST_R_RANDOM_NUMBER_GENERATOR_FAILED);
+    #####:  332:			BN_free(d);
+    #####:  333:			BN_free(order);
+    #####:  334:			return 0;
+        -:  335:			}	
+        -:  336:		}
+    #####:  337:	while (BN_is_zero(d));
+    #####:  338:	EC_KEY_set_private_key(ec,d);
+    #####:  339:	BN_free(d);
+    #####:  340:	BN_free(order);
+    #####:  341:	return gost2001_compute_public(ec);
+        -:  342:	}
+        -:  343:

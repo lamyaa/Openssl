@@ -1,0 +1,340 @@
+        -:    0:Source:genrsa.c
+        -:    0:Graph:genrsa.gcno
+        -:    0:Data:genrsa.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* apps/genrsa.c */
+        -:    2:/* Copyright (C) 1995-1998 Eric Young (eay@cryptsoft.com)
+        -:    3: * All rights reserved.
+        -:    4: *
+        -:    5: * This package is an SSL implementation written
+        -:    6: * by Eric Young (eay@cryptsoft.com).
+        -:    7: * The implementation was written so as to conform with Netscapes SSL.
+        -:    8: * 
+        -:    9: * This library is free for commercial and non-commercial use as long as
+        -:   10: * the following conditions are aheared to.  The following conditions
+        -:   11: * apply to all code found in this distribution, be it the RC4, RSA,
+        -:   12: * lhash, DES, etc., code; not just the SSL code.  The SSL documentation
+        -:   13: * included with this distribution is covered by the same copyright terms
+        -:   14: * except that the holder is Tim Hudson (tjh@cryptsoft.com).
+        -:   15: * 
+        -:   16: * Copyright remains Eric Young's, and as such any Copyright notices in
+        -:   17: * the code are not to be removed.
+        -:   18: * If this package is used in a product, Eric Young should be given attribution
+        -:   19: * as the author of the parts of the library used.
+        -:   20: * This can be in the form of a textual message at program startup or
+        -:   21: * in documentation (online or textual) provided with the package.
+        -:   22: * 
+        -:   23: * Redistribution and use in source and binary forms, with or without
+        -:   24: * modification, are permitted provided that the following conditions
+        -:   25: * are met:
+        -:   26: * 1. Redistributions of source code must retain the copyright
+        -:   27: *    notice, this list of conditions and the following disclaimer.
+        -:   28: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   29: *    notice, this list of conditions and the following disclaimer in the
+        -:   30: *    documentation and/or other materials provided with the distribution.
+        -:   31: * 3. All advertising materials mentioning features or use of this software
+        -:   32: *    must display the following acknowledgement:
+        -:   33: *    "This product includes cryptographic software written by
+        -:   34: *     Eric Young (eay@cryptsoft.com)"
+        -:   35: *    The word 'cryptographic' can be left out if the rouines from the library
+        -:   36: *    being used are not cryptographic related :-).
+        -:   37: * 4. If you include any Windows specific code (or a derivative thereof) from 
+        -:   38: *    the apps directory (application code) you must include an acknowledgement:
+        -:   39: *    "This product includes software written by Tim Hudson (tjh@cryptsoft.com)"
+        -:   40: * 
+        -:   41: * THIS SOFTWARE IS PROVIDED BY ERIC YOUNG ``AS IS'' AND
+        -:   42: * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   43: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+        -:   44: * ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+        -:   45: * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+        -:   46: * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+        -:   47: * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   48: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+        -:   49: * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+        -:   50: * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+        -:   51: * SUCH DAMAGE.
+        -:   52: * 
+        -:   53: * The licence and distribution terms for any publically available version or
+        -:   54: * derivative of this code cannot be changed.  i.e. this code cannot simply be
+        -:   55: * copied and put under another distribution licence
+        -:   56: * [including the GNU Public Licence.]
+        -:   57: */
+        -:   58:
+        -:   59:#include <openssl/opensslconf.h>
+        -:   60:/* Until the key-gen callbacks are modified to use newer prototypes, we allow
+        -:   61: * deprecated functions for openssl-internal code */
+        -:   62:#ifdef OPENSSL_NO_DEPRECATED
+        -:   63:#undef OPENSSL_NO_DEPRECATED
+        -:   64:#endif
+        -:   65:
+        -:   66:#ifndef OPENSSL_NO_RSA
+        -:   67:#include <stdio.h>
+        -:   68:#include <string.h>
+        -:   69:#include <sys/types.h>
+        -:   70:#include <sys/stat.h>
+        -:   71:#include "apps.h"
+        -:   72:#include <openssl/bio.h>
+        -:   73:#include <openssl/err.h>
+        -:   74:#include <openssl/bn.h>
+        -:   75:#include <openssl/rsa.h>
+        -:   76:#include <openssl/evp.h>
+        -:   77:#include <openssl/x509.h>
+        -:   78:#include <openssl/pem.h>
+        -:   79:#include <openssl/rand.h>
+        -:   80:
+        -:   81:#define DEFBITS	1024
+        -:   82:#undef PROG
+        -:   83:#define PROG genrsa_main
+        -:   84:
+        -:   85:static int MS_CALLBACK genrsa_cb(int p, int n, BN_GENCB *cb);
+        -:   86:
+        -:   87:int MAIN(int, char **);
+        -:   88:
+    #####:   89:int MAIN(int argc, char **argv)
+        -:   90:	{
+        -:   91:	BN_GENCB cb;
+        -:   92:#ifndef OPENSSL_NO_ENGINE
+        -:   93:	ENGINE *e = NULL;
+        -:   94:#endif
+        -:   95:	int ret=1;
+    #####:   96:	int i,num=DEFBITS;
+        -:   97:	long l;
+        -:   98:	const EVP_CIPHER *enc=NULL;
+        -:   99:	unsigned long f4=RSA_F4;
+        -:  100:	char *outfile=NULL;
+    #####:  101:	char *passargout = NULL, *passout = NULL;
+        -:  102:#ifndef OPENSSL_NO_ENGINE
+        -:  103:	char *engine=NULL;
+        -:  104:#endif
+        -:  105:	char *inrand=NULL;
+        -:  106:	BIO *out=NULL;
+    #####:  107:	BIGNUM *bn = BN_new();
+        -:  108:	RSA *rsa = NULL;
+        -:  109:
+    #####:  110:	if(!bn) goto err;
+        -:  111:
+    #####:  112:	apps_startup();
+    #####:  113:	BN_GENCB_set(&cb, genrsa_cb, bio_err);
+        -:  114:
+    #####:  115:	if (bio_err == NULL)
+    #####:  116:		if ((bio_err=BIO_new(BIO_s_file())) != NULL)
+    #####:  117:			BIO_set_fp(bio_err,stderr,BIO_NOCLOSE|BIO_FP_TEXT);
+        -:  118:
+    #####:  119:	if (!load_config(bio_err, NULL))
+        -:  120:		goto err;
+    #####:  121:	if ((out=BIO_new(BIO_s_file())) == NULL)
+        -:  122:		{
+    #####:  123:		BIO_printf(bio_err,"unable to create BIO for output\n");
+    #####:  124:		goto err;
+        -:  125:		}
+        -:  126:
+    #####:  127:	argv++;
+    #####:  128:	argc--;
+        -:  129:	for (;;)
+        -:  130:		{
+    #####:  131:		if (argc <= 0) break;
+    #####:  132:		if (strcmp(*argv,"-out") == 0)
+        -:  133:			{
+    #####:  134:			if (--argc < 1) goto bad;
+    #####:  135:			outfile= *(++argv);
+        -:  136:			}
+    #####:  137:		else if (strcmp(*argv,"-3") == 0)
+        -:  138:			f4=3;
+    #####:  139:		else if (strcmp(*argv,"-F4") == 0 || strcmp(*argv,"-f4") == 0)
+        -:  140:			f4=RSA_F4;
+        -:  141:#ifndef OPENSSL_NO_ENGINE
+    #####:  142:		else if (strcmp(*argv,"-engine") == 0)
+        -:  143:			{
+    #####:  144:			if (--argc < 1) goto bad;
+    #####:  145:			engine= *(++argv);
+        -:  146:			}
+        -:  147:#endif
+    #####:  148:		else if (strcmp(*argv,"-rand") == 0)
+        -:  149:			{
+    #####:  150:			if (--argc < 1) goto bad;
+    #####:  151:			inrand= *(++argv);
+        -:  152:			}
+        -:  153:#ifndef OPENSSL_NO_DES
+    #####:  154:		else if (strcmp(*argv,"-des") == 0)
+    #####:  155:			enc=EVP_des_cbc();
+    #####:  156:		else if (strcmp(*argv,"-des3") == 0)
+    #####:  157:			enc=EVP_des_ede3_cbc();
+        -:  158:#endif
+        -:  159:#ifndef OPENSSL_NO_IDEA
+    #####:  160:		else if (strcmp(*argv,"-idea") == 0)
+    #####:  161:			enc=EVP_idea_cbc();
+        -:  162:#endif
+        -:  163:#ifndef OPENSSL_NO_SEED
+    #####:  164:		else if (strcmp(*argv,"-seed") == 0)
+    #####:  165:			enc=EVP_seed_cbc();
+        -:  166:#endif
+        -:  167:#ifndef OPENSSL_NO_AES
+    #####:  168:		else if (strcmp(*argv,"-aes128") == 0)
+    #####:  169:			enc=EVP_aes_128_cbc();
+    #####:  170:		else if (strcmp(*argv,"-aes192") == 0)
+    #####:  171:			enc=EVP_aes_192_cbc();
+    #####:  172:		else if (strcmp(*argv,"-aes256") == 0)
+    #####:  173:			enc=EVP_aes_256_cbc();
+        -:  174:#endif
+        -:  175:#ifndef OPENSSL_NO_CAMELLIA
+    #####:  176:		else if (strcmp(*argv,"-camellia128") == 0)
+    #####:  177:			enc=EVP_camellia_128_cbc();
+    #####:  178:		else if (strcmp(*argv,"-camellia192") == 0)
+    #####:  179:			enc=EVP_camellia_192_cbc();
+    #####:  180:		else if (strcmp(*argv,"-camellia256") == 0)
+    #####:  181:			enc=EVP_camellia_256_cbc();
+        -:  182:#endif
+    #####:  183:		else if (strcmp(*argv,"-passout") == 0)
+        -:  184:			{
+    #####:  185:			if (--argc < 1) goto bad;
+    #####:  186:			passargout= *(++argv);
+        -:  187:			}
+        -:  188:		else
+        -:  189:			break;
+    #####:  190:		argv++;
+    #####:  191:		argc--;
+    #####:  192:		}
+    #####:  193:	if ((argc >= 1) && ((sscanf(*argv,"%d",&num) == 0) || (num < 0)))
+        -:  194:		{
+        -:  195:bad:
+    #####:  196:		BIO_printf(bio_err,"usage: genrsa [args] [numbits]\n");
+    #####:  197:		BIO_printf(bio_err," -des            encrypt the generated key with DES in cbc mode\n");
+    #####:  198:		BIO_printf(bio_err," -des3           encrypt the generated key with DES in ede cbc mode (168 bit key)\n");
+        -:  199:#ifndef OPENSSL_NO_IDEA
+    #####:  200:		BIO_printf(bio_err," -idea           encrypt the generated key with IDEA in cbc mode\n");
+        -:  201:#endif
+        -:  202:#ifndef OPENSSL_NO_SEED
+    #####:  203:		BIO_printf(bio_err," -seed\n");
+    #####:  204:		BIO_printf(bio_err,"                 encrypt PEM output with cbc seed\n");
+        -:  205:#endif
+        -:  206:#ifndef OPENSSL_NO_AES
+    #####:  207:		BIO_printf(bio_err," -aes128, -aes192, -aes256\n");
+    #####:  208:		BIO_printf(bio_err,"                 encrypt PEM output with cbc aes\n");
+        -:  209:#endif
+        -:  210:#ifndef OPENSSL_NO_CAMELLIA
+    #####:  211:		BIO_printf(bio_err," -camellia128, -camellia192, -camellia256\n");
+    #####:  212:		BIO_printf(bio_err,"                 encrypt PEM output with cbc camellia\n");
+        -:  213:#endif
+    #####:  214:		BIO_printf(bio_err," -out file       output the key to 'file\n");
+    #####:  215:		BIO_printf(bio_err," -passout arg    output file pass phrase source\n");
+    #####:  216:		BIO_printf(bio_err," -f4             use F4 (0x10001) for the E value\n");
+    #####:  217:		BIO_printf(bio_err," -3              use 3 for the E value\n");
+        -:  218:#ifndef OPENSSL_NO_ENGINE
+    #####:  219:		BIO_printf(bio_err," -engine e       use engine e, possibly a hardware device.\n");
+        -:  220:#endif
+    #####:  221:		BIO_printf(bio_err," -rand file%cfile%c...\n", LIST_SEPARATOR_CHAR, LIST_SEPARATOR_CHAR);
+    #####:  222:		BIO_printf(bio_err,"                 load the file (or the files in the directory) into\n");
+    #####:  223:		BIO_printf(bio_err,"                 the random number generator\n");
+    #####:  224:		goto err;
+        -:  225:		}
+        -:  226:		
+    #####:  227:	ERR_load_crypto_strings();
+        -:  228:
+    #####:  229:	if(!app_passwd(bio_err, NULL, passargout, NULL, &passout)) {
+    #####:  230:		BIO_printf(bio_err, "Error getting password\n");
+    #####:  231:		goto err;
+        -:  232:	}
+        -:  233:
+        -:  234:#ifndef OPENSSL_NO_ENGINE
+    #####:  235:        e = setup_engine(bio_err, engine, 0);
+        -:  236:#endif
+        -:  237:
+    #####:  238:	if (outfile == NULL)
+        -:  239:		{
+    #####:  240:		BIO_set_fp(out,stdout,BIO_NOCLOSE);
+        -:  241:#ifdef OPENSSL_SYS_VMS
+        -:  242:		{
+        -:  243:		BIO *tmpbio = BIO_new(BIO_f_linebuffer());
+        -:  244:		out = BIO_push(tmpbio, out);
+        -:  245:		}
+        -:  246:#endif
+        -:  247:		}
+        -:  248:	else
+        -:  249:		{
+    #####:  250:		if (BIO_write_filename(out,outfile) <= 0)
+        -:  251:			{
+    #####:  252:			perror(outfile);
+    #####:  253:			goto err;
+        -:  254:			}
+        -:  255:		}
+        -:  256:
+    #####:  257:	if (!app_RAND_load_file(NULL, bio_err, 1) && inrand == NULL
+    #####:  258:		&& !RAND_status())
+        -:  259:		{
+    #####:  260:		BIO_printf(bio_err,"warning, not much extra random data, consider using the -rand option\n");
+        -:  261:		}
+    #####:  262:	if (inrand != NULL)
+    #####:  263:		BIO_printf(bio_err,"%ld semi-random bytes loaded\n",
+        -:  264:			app_RAND_load_files(inrand));
+        -:  265:
+    #####:  266:	BIO_printf(bio_err,"Generating RSA private key, %d bit long modulus\n",
+        -:  267:		num);
+        -:  268:#ifdef OPENSSL_NO_ENGINE
+        -:  269:	rsa = RSA_new();
+        -:  270:#else
+    #####:  271:	rsa = RSA_new_method(e);
+        -:  272:#endif
+    #####:  273:	if (!rsa)
+        -:  274:		goto err;
+        -:  275:
+    #####:  276:	if(!BN_set_word(bn, f4) || !RSA_generate_key_ex(rsa, num, bn, &cb))
+        -:  277:		goto err;
+        -:  278:		
+    #####:  279:	app_RAND_write_file(NULL, bio_err);
+        -:  280:
+        -:  281:	/* We need to do the following for when the base number size is <
+        -:  282:	 * long, esp windows 3.1 :-(. */
+        -:  283:	l=0L;
+    #####:  284:	for (i=0; i<rsa->e->top; i++)
+        -:  285:		{
+        -:  286:#ifndef SIXTY_FOUR_BIT
+        -:  287:		l<<=BN_BITS4;
+        -:  288:		l<<=BN_BITS4;
+        -:  289:#endif
+    #####:  290:		l+=rsa->e->d[i];
+        -:  291:		}
+    #####:  292:	BIO_printf(bio_err,"e is %ld (0x%lX)\n",l,l);
+        -:  293:	{
+        -:  294:	PW_CB_DATA cb_data;
+    #####:  295:	cb_data.password = passout;
+    #####:  296:	cb_data.prompt_info = outfile;
+    #####:  297:	if (!PEM_write_bio_RSAPrivateKey(out,rsa,enc,NULL,0,
+        -:  298:		(pem_password_cb *)password_callback,&cb_data))
+        -:  299:		goto err;
+        -:  300:	}
+        -:  301:
+        -:  302:	ret=0;
+        -:  303:err:
+    #####:  304:	if (bn) BN_free(bn);
+    #####:  305:	if (rsa) RSA_free(rsa);
+    #####:  306:	if (out) BIO_free_all(out);
+    #####:  307:	if(passout) OPENSSL_free(passout);
+    #####:  308:	if (ret != 0)
+    #####:  309:		ERR_print_errors(bio_err);
+        -:  310:	apps_shutdown();
+    #####:  311:	OPENSSL_EXIT(ret);
+        -:  312:	}
+        -:  313:
+    #####:  314:static int MS_CALLBACK genrsa_cb(int p, int n, BN_GENCB *cb)
+        -:  315:	{
+    #####:  316:	char c='*';
+        -:  317:
+    #####:  318:	if (p == 0) c='.';
+    #####:  319:	if (p == 1) c='+';
+    #####:  320:	if (p == 2) c='*';
+    #####:  321:	if (p == 3) c='\n';
+    #####:  322:	BIO_write(cb->arg,&c,1);
+    #####:  323:	(void)BIO_flush(cb->arg);
+        -:  324:#ifdef LINT
+        -:  325:	p=n;
+        -:  326:#endif
+    #####:  327:	return 1;
+        -:  328:	}
+        -:  329:#else /* !OPENSSL_NO_RSA */
+        -:  330:
+        -:  331:# if PEDANTIC
+        -:  332:static void *dummy=&dummy;
+        -:  333:# endif
+        -:  334:
+        -:  335:#endif

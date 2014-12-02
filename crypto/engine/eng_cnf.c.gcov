@@ -1,0 +1,264 @@
+        -:    0:Source:eng_cnf.c
+        -:    0:Graph:eng_cnf.gcno
+        -:    0:Data:eng_cnf.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* eng_cnf.c */
+        -:    2:/* Written by Stephen Henson (steve@openssl.org) for the OpenSSL
+        -:    3: * project 2001.
+        -:    4: */
+        -:    5:/* ====================================================================
+        -:    6: * Copyright (c) 2001 The OpenSSL Project.  All rights reserved.
+        -:    7: *
+        -:    8: * Redistribution and use in source and binary forms, with or without
+        -:    9: * modification, are permitted provided that the following conditions
+        -:   10: * are met:
+        -:   11: *
+        -:   12: * 1. Redistributions of source code must retain the above copyright
+        -:   13: *    notice, this list of conditions and the following disclaimer. 
+        -:   14: *
+        -:   15: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   16: *    notice, this list of conditions and the following disclaimer in
+        -:   17: *    the documentation and/or other materials provided with the
+        -:   18: *    distribution.
+        -:   19: *
+        -:   20: * 3. All advertising materials mentioning features or use of this
+        -:   21: *    software must display the following acknowledgment:
+        -:   22: *    "This product includes software developed by the OpenSSL Project
+        -:   23: *    for use in the OpenSSL Toolkit. (http://www.OpenSSL.org/)"
+        -:   24: *
+        -:   25: * 4. The names "OpenSSL Toolkit" and "OpenSSL Project" must not be used to
+        -:   26: *    endorse or promote products derived from this software without
+        -:   27: *    prior written permission. For written permission, please contact
+        -:   28: *    licensing@OpenSSL.org.
+        -:   29: *
+        -:   30: * 5. Products derived from this software may not be called "OpenSSL"
+        -:   31: *    nor may "OpenSSL" appear in their names without prior written
+        -:   32: *    permission of the OpenSSL Project.
+        -:   33: *
+        -:   34: * 6. Redistributions of any form whatsoever must retain the following
+        -:   35: *    acknowledgment:
+        -:   36: *    "This product includes software developed by the OpenSSL Project
+        -:   37: *    for use in the OpenSSL Toolkit (http://www.OpenSSL.org/)"
+        -:   38: *
+        -:   39: * THIS SOFTWARE IS PROVIDED BY THE OpenSSL PROJECT ``AS IS'' AND ANY
+        -:   40: * EXPRESSED OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   41: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+        -:   42: * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE OpenSSL PROJECT OR
+        -:   43: * ITS CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+        -:   44: * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+        -:   45: * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+        -:   46: * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   47: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+        -:   48: * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+        -:   49: * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+        -:   50: * OF THE POSSIBILITY OF SUCH DAMAGE.
+        -:   51: * ====================================================================
+        -:   52: *
+        -:   53: * This product includes cryptographic software written by Eric Young
+        -:   54: * (eay@cryptsoft.com).  This product includes software written by Tim
+        -:   55: * Hudson (tjh@cryptsoft.com).
+        -:   56: *
+        -:   57: */
+        -:   58:
+        -:   59:#include "eng_int.h"
+        -:   60:#include <openssl/conf.h>
+        -:   61:
+        -:   62:/* #define ENGINE_CONF_DEBUG */
+        -:   63:
+        -:   64:/* ENGINE config module */
+        -:   65:
+        -:   66:static char *skip_dot(char *name)
+        -:   67:	{
+        -:   68:	char *p;
+    #####:   69:	p = strchr(name, '.');
+    #####:   70:	if (p)
+    #####:   71:		return p + 1;
+        -:   72:	return name;
+        -:   73:	}
+        -:   74:
+        -:   75:static STACK_OF(ENGINE) *initialized_engines = NULL;
+        -:   76:
+    #####:   77:static int int_engine_init(ENGINE *e)
+        -:   78:	{
+    #####:   79:	if (!ENGINE_init(e))
+        -:   80:		return 0;
+    #####:   81:	if (!initialized_engines)
+    #####:   82:		initialized_engines = sk_ENGINE_new_null();
+    #####:   83:	if (!initialized_engines || !sk_ENGINE_push(initialized_engines, e))
+        -:   84:		{
+    #####:   85:		ENGINE_finish(e);
+    #####:   86:		return 0;
+        -:   87:		}
+        -:   88:	return 1;
+        -:   89:	}
+        -:   90:	
+        -:   91:
+    #####:   92:static int int_engine_configure(char *name, char *value, const CONF *cnf)
+        -:   93:	{
+        -:   94:	int i;
+        -:   95:	int ret = 0;
+    #####:   96:	long do_init = -1;
+        -:   97:	STACK_OF(CONF_VALUE) *ecmds;
+        -:   98:	CONF_VALUE *ecmd = NULL;
+        -:   99:	char *ctrlname, *ctrlvalue;
+        -:  100:	ENGINE *e = NULL;
+        -:  101:	int soft = 0;
+        -:  102:
+        -:  103:	name = skip_dot(name);
+        -:  104:#ifdef ENGINE_CONF_DEBUG
+        -:  105:	fprintf(stderr, "Configuring engine %s\n", name);
+        -:  106:#endif
+        -:  107:	/* Value is a section containing ENGINE commands */
+    #####:  108:	ecmds = NCONF_get_section(cnf, value);
+        -:  109:
+    #####:  110:	if (!ecmds)
+        -:  111:		{
+    #####:  112:		ENGINEerr(ENGINE_F_INT_ENGINE_CONFIGURE, ENGINE_R_ENGINE_SECTION_ERROR);
+    #####:  113:		return 0;
+        -:  114:		}
+        -:  115:
+    #####:  116:	for (i = 0; i < sk_CONF_VALUE_num(ecmds); i++)
+        -:  117:		{
+    #####:  118:		ecmd = sk_CONF_VALUE_value(ecmds, i);
+    #####:  119:		ctrlname = skip_dot(ecmd->name);
+    #####:  120:		ctrlvalue = ecmd->value;
+        -:  121:#ifdef ENGINE_CONF_DEBUG
+        -:  122:	fprintf(stderr, "ENGINE conf: doing ctrl(%s,%s)\n", ctrlname, ctrlvalue);
+        -:  123:#endif
+        -:  124:
+        -:  125:		/* First handle some special pseudo ctrls */
+        -:  126:
+        -:  127:		/* Override engine name to use */
+    #####:  128:		if (!strcmp(ctrlname, "engine_id"))
+        -:  129:			name = ctrlvalue;
+    #####:  130:		else if (!strcmp(ctrlname, "soft_load"))
+        -:  131:			soft = 1;
+        -:  132:		/* Load a dynamic ENGINE */
+    #####:  133:		else if (!strcmp(ctrlname, "dynamic_path"))
+        -:  134:			{
+    #####:  135:			e = ENGINE_by_id("dynamic");
+    #####:  136:			if (!e)
+        -:  137:				goto err;
+    #####:  138:			if (!ENGINE_ctrl_cmd_string(e, "SO_PATH", ctrlvalue, 0))
+        -:  139:				goto err;
+    #####:  140:			if (!ENGINE_ctrl_cmd_string(e, "LIST_ADD", "2", 0))
+        -:  141:				goto err;
+    #####:  142:			if (!ENGINE_ctrl_cmd_string(e, "LOAD", NULL, 0))
+        -:  143:				goto err;
+        -:  144:			}
+        -:  145:		/* ... add other pseudos here ... */
+        -:  146:		else
+        -:  147:			{
+        -:  148:			/* At this point we need an ENGINE structural reference
+        -:  149:			 * if we don't already have one.
+        -:  150:			 */
+    #####:  151:			if (!e)
+        -:  152:				{
+    #####:  153:				e = ENGINE_by_id(name);
+    #####:  154:				if (!e && soft)
+        -:  155:					{
+    #####:  156:					ERR_clear_error();
+    #####:  157:					return 1;
+        -:  158:					}
+    #####:  159:				if (!e)
+        -:  160:					goto err;
+        -:  161:				}
+        -:  162:			/* Allow "EMPTY" to mean no value: this allows a valid
+        -:  163:			 * "value" to be passed to ctrls of type NO_INPUT
+        -:  164:		 	 */
+    #####:  165:			if (!strcmp(ctrlvalue, "EMPTY"))
+        -:  166:				ctrlvalue = NULL;
+    #####:  167:			if (!strcmp(ctrlname, "init"))
+        -:  168:				{
+    #####:  169:				if (!NCONF_get_number_e(cnf, value, "init", &do_init))
+        -:  170:					goto err;
+    #####:  171:				if (do_init == 1)
+        -:  172:					{
+    #####:  173:					if (!int_engine_init(e))
+        -:  174:						goto err;
+        -:  175:					}
+    #####:  176:				else if (do_init != 0)
+        -:  177:					{
+    #####:  178:					ENGINEerr(ENGINE_F_INT_ENGINE_CONFIGURE, ENGINE_R_INVALID_INIT_VALUE);
+    #####:  179:					goto err;
+        -:  180:					}
+        -:  181:				}
+    #####:  182:			else if (!strcmp(ctrlname, "default_algorithms"))
+        -:  183:				{
+    #####:  184:				if (!ENGINE_set_default_string(e, ctrlvalue))
+        -:  185:					goto err;
+        -:  186:				}
+    #####:  187:			else if (!ENGINE_ctrl_cmd_string(e,
+        -:  188:					ctrlname, ctrlvalue, 0))
+        -:  189:				goto err;
+        -:  190:			}
+        -:  191:
+        -:  192:
+        -:  193:
+        -:  194:		}
+    #####:  195:	if (e && (do_init == -1) && !int_engine_init(e))
+        -:  196:		{
+        -:  197:		ecmd = NULL;
+        -:  198:		goto err;
+        -:  199:		}
+        -:  200:	ret = 1;
+        -:  201:	err:
+    #####:  202:	if (ret != 1)
+        -:  203:		{
+    #####:  204:		ENGINEerr(ENGINE_F_INT_ENGINE_CONFIGURE, ENGINE_R_ENGINE_CONFIGURATION_ERROR);
+    #####:  205:		if (ecmd)
+    #####:  206:			ERR_add_error_data(6, "section=", ecmd->section, 
+        -:  207:						", name=", ecmd->name,
+        -:  208:						", value=", ecmd->value);
+        -:  209:		}
+    #####:  210:	if (e)
+    #####:  211:		ENGINE_free(e);
+    #####:  212:	return ret;
+        -:  213:	}
+        -:  214:
+        -:  215:
+    #####:  216:static int int_engine_module_init(CONF_IMODULE *md, const CONF *cnf)
+        -:  217:	{
+        -:  218:	STACK_OF(CONF_VALUE) *elist;
+        -:  219:	CONF_VALUE *cval;
+        -:  220:	int i;
+        -:  221:#ifdef ENGINE_CONF_DEBUG
+        -:  222:	fprintf(stderr, "Called engine module: name %s, value %s\n",
+        -:  223:			CONF_imodule_get_name(md), CONF_imodule_get_value(md));
+        -:  224:#endif
+        -:  225:	/* Value is a section containing ENGINEs to configure */
+    #####:  226:	elist = NCONF_get_section(cnf, CONF_imodule_get_value(md));
+        -:  227:
+    #####:  228:	if (!elist)
+        -:  229:		{
+    #####:  230:		ENGINEerr(ENGINE_F_INT_ENGINE_MODULE_INIT, ENGINE_R_ENGINES_SECTION_ERROR);
+    #####:  231:		return 0;
+        -:  232:		}
+        -:  233:
+    #####:  234:	for (i = 0; i < sk_CONF_VALUE_num(elist); i++)
+        -:  235:		{
+    #####:  236:		cval = sk_CONF_VALUE_value(elist, i);
+    #####:  237:		if (!int_engine_configure(cval->name, cval->value, cnf))
+        -:  238:			return 0;
+        -:  239:		}
+        -:  240:
+        -:  241:	return 1;
+        -:  242:	}
+        -:  243:
+    #####:  244:static void int_engine_module_finish(CONF_IMODULE *md)
+        -:  245:	{
+        -:  246:	ENGINE *e;
+    #####:  247:	while ((e = sk_ENGINE_pop(initialized_engines)))
+    #####:  248:		ENGINE_finish(e);
+    #####:  249:	sk_ENGINE_free(initialized_engines);
+    #####:  250:	initialized_engines = NULL;
+    #####:  251:	}
+        -:  252:	
+        -:  253:
+    10000:  254:void ENGINE_add_conf_module(void)
+        -:  255:	{
+    10000:  256:	CONF_module_add("engines",
+        -:  257:			int_engine_module_init,
+        -:  258:			int_engine_module_finish);
+    10000:  259:	}

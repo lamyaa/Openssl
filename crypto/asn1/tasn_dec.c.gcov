@@ -1,0 +1,1352 @@
+        -:    0:Source:tasn_dec.c
+        -:    0:Graph:tasn_dec.gcno
+        -:    0:Data:tasn_dec.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* tasn_dec.c */
+        -:    2:/* Written by Dr Stephen N Henson (steve@openssl.org) for the OpenSSL
+        -:    3: * project 2000.
+        -:    4: */
+        -:    5:/* ====================================================================
+        -:    6: * Copyright (c) 2000-2005 The OpenSSL Project.  All rights reserved.
+        -:    7: *
+        -:    8: * Redistribution and use in source and binary forms, with or without
+        -:    9: * modification, are permitted provided that the following conditions
+        -:   10: * are met:
+        -:   11: *
+        -:   12: * 1. Redistributions of source code must retain the above copyright
+        -:   13: *    notice, this list of conditions and the following disclaimer. 
+        -:   14: *
+        -:   15: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   16: *    notice, this list of conditions and the following disclaimer in
+        -:   17: *    the documentation and/or other materials provided with the
+        -:   18: *    distribution.
+        -:   19: *
+        -:   20: * 3. All advertising materials mentioning features or use of this
+        -:   21: *    software must display the following acknowledgment:
+        -:   22: *    "This product includes software developed by the OpenSSL Project
+        -:   23: *    for use in the OpenSSL Toolkit. (http://www.OpenSSL.org/)"
+        -:   24: *
+        -:   25: * 4. The names "OpenSSL Toolkit" and "OpenSSL Project" must not be used to
+        -:   26: *    endorse or promote products derived from this software without
+        -:   27: *    prior written permission. For written permission, please contact
+        -:   28: *    licensing@OpenSSL.org.
+        -:   29: *
+        -:   30: * 5. Products derived from this software may not be called "OpenSSL"
+        -:   31: *    nor may "OpenSSL" appear in their names without prior written
+        -:   32: *    permission of the OpenSSL Project.
+        -:   33: *
+        -:   34: * 6. Redistributions of any form whatsoever must retain the following
+        -:   35: *    acknowledgment:
+        -:   36: *    "This product includes software developed by the OpenSSL Project
+        -:   37: *    for use in the OpenSSL Toolkit (http://www.OpenSSL.org/)"
+        -:   38: *
+        -:   39: * THIS SOFTWARE IS PROVIDED BY THE OpenSSL PROJECT ``AS IS'' AND ANY
+        -:   40: * EXPRESSED OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   41: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+        -:   42: * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE OpenSSL PROJECT OR
+        -:   43: * ITS CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+        -:   44: * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+        -:   45: * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+        -:   46: * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   47: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+        -:   48: * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+        -:   49: * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+        -:   50: * OF THE POSSIBILITY OF SUCH DAMAGE.
+        -:   51: * ====================================================================
+        -:   52: *
+        -:   53: * This product includes cryptographic software written by Eric Young
+        -:   54: * (eay@cryptsoft.com).  This product includes software written by Tim
+        -:   55: * Hudson (tjh@cryptsoft.com).
+        -:   56: *
+        -:   57: */
+        -:   58:
+        -:   59:
+        -:   60:#include <stddef.h>
+        -:   61:#include <string.h>
+        -:   62:#include <openssl/asn1.h>
+        -:   63:#include <openssl/asn1t.h>
+        -:   64:#include <openssl/objects.h>
+        -:   65:#include <openssl/buffer.h>
+        -:   66:#include <openssl/err.h>
+        -:   67:
+        -:   68:static int asn1_check_eoc(const unsigned char **in, long len);
+        -:   69:static int asn1_find_end(const unsigned char **in, long len, char inf);
+        -:   70:
+        -:   71:static int asn1_collect(BUF_MEM *buf, const unsigned char **in, long len,
+        -:   72:			char inf, int tag, int aclass, int depth);
+        -:   73:
+        -:   74:static int collect_data(BUF_MEM *buf, const unsigned char **p, long plen);
+        -:   75:
+        -:   76:static int asn1_check_tlen(long *olen, int *otag, unsigned char *oclass,
+        -:   77:				char *inf, char *cst,
+        -:   78:				const unsigned char **in, long len,
+        -:   79:				int exptag, int expclass, char opt,
+        -:   80:				ASN1_TLC *ctx);
+        -:   81:
+        -:   82:static int asn1_template_ex_d2i(ASN1_VALUE **pval,
+        -:   83:				const unsigned char **in, long len,
+        -:   84:				const ASN1_TEMPLATE *tt, char opt,
+        -:   85:				ASN1_TLC *ctx);
+        -:   86:static int asn1_template_noexp_d2i(ASN1_VALUE **val,
+        -:   87:				const unsigned char **in, long len,
+        -:   88:				const ASN1_TEMPLATE *tt, char opt,
+        -:   89:				ASN1_TLC *ctx);
+        -:   90:static int asn1_d2i_ex_primitive(ASN1_VALUE **pval,
+        -:   91:				const unsigned char **in, long len,
+        -:   92:				const ASN1_ITEM *it,
+        -:   93:				int tag, int aclass, char opt, ASN1_TLC *ctx);
+        -:   94:
+        -:   95:/* Table to convert tags to bit values, used for MSTRING type */
+        -:   96:static const unsigned long tag2bit[32] = {
+        -:   97:0,	0,	0,	B_ASN1_BIT_STRING,	/* tags  0 -  3 */
+        -:   98:B_ASN1_OCTET_STRING,	0,	0,		B_ASN1_UNKNOWN,/* tags  4- 7 */
+        -:   99:B_ASN1_UNKNOWN,	B_ASN1_UNKNOWN,	B_ASN1_UNKNOWN,	B_ASN1_UNKNOWN,/* tags  8-11 */
+        -:  100:B_ASN1_UTF8STRING,B_ASN1_UNKNOWN,B_ASN1_UNKNOWN,B_ASN1_UNKNOWN,/* tags 12-15 */
+        -:  101:B_ASN1_SEQUENCE,0,B_ASN1_NUMERICSTRING,B_ASN1_PRINTABLESTRING, /* tags 16-19 */
+        -:  102:B_ASN1_T61STRING,B_ASN1_VIDEOTEXSTRING,B_ASN1_IA5STRING,       /* tags 20-22 */
+        -:  103:B_ASN1_UTCTIME, B_ASN1_GENERALIZEDTIME,			       /* tags 23-24 */	
+        -:  104:B_ASN1_GRAPHICSTRING,B_ASN1_ISO64STRING,B_ASN1_GENERALSTRING,  /* tags 25-27 */
+        -:  105:B_ASN1_UNIVERSALSTRING,B_ASN1_UNKNOWN,B_ASN1_BMPSTRING,B_ASN1_UNKNOWN, /* tags 28-31 */
+        -:  106:	};
+        -:  107:
+   290008:  108:unsigned long ASN1_tag2bit(int tag)
+        -:  109:	{
+   639966:  110:	if ((tag < 0) || (tag > 30)) return 0;
+   639966:  111:	return tag2bit[tag];
+        -:  112:	}
+        -:  113:
+        -:  114:/* Macro to initialize and invalidate the cache */
+        -:  115:
+        -:  116:#define asn1_tlc_clear(c)	if (c) (c)->valid = 0
+        -:  117:/* Version to avoid compiler warning about 'c' always non-NULL */
+        -:  118:#define asn1_tlc_clear_nc(c)	(c)->valid = 0
+        -:  119:
+        -:  120:/* Decode an ASN1 item, this currently behaves just 
+        -:  121: * like a standard 'd2i' function. 'in' points to 
+        -:  122: * a buffer to read the data from, in future we will
+        -:  123: * have more advanced versions that can input data
+        -:  124: * a piece at a time and this will simply be a special
+        -:  125: * case.
+        -:  126: */
+        -:  127:
+   129124:  128:ASN1_VALUE *ASN1_item_d2i(ASN1_VALUE **pval,
+        -:  129:		const unsigned char **in, long len, const ASN1_ITEM *it)
+        -:  130:	{
+        -:  131:	ASN1_TLC c;
+   129124:  132:	ASN1_VALUE *ptmpval = NULL;
+   129124:  133:	if (!pval)
+        -:  134:		pval = &ptmpval;
+   129124:  135:	asn1_tlc_clear_nc(&c);
+   129124:  136:	if (ASN1_item_ex_d2i(pval, in, len, it, -1, 0, 0, &c) > 0) 
+    95087:  137:		return *pval;
+        -:  138:	return NULL;
+        -:  139:	}
+        -:  140:
+    #####:  141:int ASN1_template_d2i(ASN1_VALUE **pval,
+        -:  142:		const unsigned char **in, long len, const ASN1_TEMPLATE *tt)
+        -:  143:	{
+        -:  144:	ASN1_TLC c;
+    #####:  145:	asn1_tlc_clear_nc(&c);
+    #####:  146:	return asn1_template_ex_d2i(pval, in, len, tt, 0, &c);
+        -:  147:	}
+        -:  148:
+        -:  149:
+        -:  150:/* Decode an item, taking care of IMPLICIT tagging, if any.
+        -:  151: * If 'opt' set and tag mismatch return -1 to handle OPTIONAL
+        -:  152: */
+        -:  153:
+  3166437:  154:int ASN1_item_ex_d2i(ASN1_VALUE **pval, const unsigned char **in, long len,
+        -:  155:			const ASN1_ITEM *it,
+        -:  156:			int tag, int aclass, char opt, ASN1_TLC *ctx)
+        -:  157:	{
+        -:  158:	const ASN1_TEMPLATE *tt, *errtt = NULL;
+        -:  159:	const ASN1_COMPAT_FUNCS *cf;
+        -:  160:	const ASN1_EXTERN_FUNCS *ef;
+  3166437:  161:	const ASN1_AUX *aux = it->funcs;
+        -:  162:	ASN1_aux_cb *asn1_cb;
+  3166437:  163:	const unsigned char *p = NULL, *q;
+        -:  164:	unsigned char *wp=NULL;	/* BIG FAT WARNING!  BREAKS CONST WHERE USED */
+        -:  165:	unsigned char imphack = 0, oclass;
+        -:  166:	char seq_eoc, seq_nolen, cst, isopt;
+        -:  167:	long tmplen;
+        -:  168:	int i;
+        -:  169:	int otag;
+        -:  170:	int ret = 0;
+        -:  171:	ASN1_VALUE **pchptr, *ptmpval;
+  3166437:  172:	if (!pval)
+        -:  173:		return 0;
+  3166437:  174:	if (aux && aux->asn1_cb)
+   102378:  175:		asn1_cb = aux->asn1_cb;
+        -:  176:	else asn1_cb = 0;
+        -:  177:
+  3166437:  178:	switch(it->itype)
+        -:  179:		{
+        -:  180:		case ASN1_ITYPE_PRIMITIVE:
+  1881059:  181:		if (it->templates)
+        -:  182:			{
+        -:  183:			/* tagging or OPTIONAL is currently illegal on an item
+        -:  184:			 * template because the flags can't get passed down.
+        -:  185:			 * In practice this isn't a problem: we include the
+        -:  186:			 * relevant flags from the item template in the
+        -:  187:			 * template itself.
+        -:  188:			 */
+   374581:  189:			if ((tag != -1) || opt)
+        -:  190:				{
+    #####:  191:				ASN1err(ASN1_F_ASN1_ITEM_EX_D2I,
+        -:  192:				ASN1_R_ILLEGAL_OPTIONS_ON_ITEM_TEMPLATE);
+    #####:  193:				goto err;
+        -:  194:				}
+   374581:  195:			return asn1_template_ex_d2i(pval, in, len,
+        -:  196:					it->templates, opt, ctx);
+        -:  197:		}
+  1506478:  198:		return asn1_d2i_ex_primitive(pval, in, len, it,
+        -:  199:						tag, aclass, opt, ctx);
+        -:  200:		break;
+        -:  201:
+        -:  202:		case ASN1_ITYPE_MSTRING:
+   349958:  203:		p = *in;
+        -:  204:		/* Just read in tag and class */
+   349958:  205:		ret = asn1_check_tlen(NULL, &otag, &oclass, NULL, NULL,
+        -:  206:						&p, len, -1, 0, 1, ctx);
+   349958:  207:		if (!ret)
+        -:  208:			{
+    #####:  209:			ASN1err(ASN1_F_ASN1_ITEM_EX_D2I,
+        -:  210:					ERR_R_NESTED_ASN1_ERROR);
+    #####:  211:			goto err;
+        -:  212:			}
+        -:  213:
+        -:  214:		/* Must be UNIVERSAL class */
+   349958:  215:		if (oclass != V_ASN1_UNIVERSAL)
+        -:  216:			{
+        -:  217:			/* If OPTIONAL, assume this is OK */
+    #####:  218:			if (opt) return -1;
+    #####:  219:			ASN1err(ASN1_F_ASN1_ITEM_EX_D2I,
+        -:  220:					ASN1_R_MSTRING_NOT_UNIVERSAL);
+    #####:  221:			goto err;
+        -:  222:			}
+        -:  223:		/* Check tag matches bit map */
+   699916:  224:		if (!(ASN1_tag2bit(otag) & it->utype))
+        -:  225:			{
+        -:  226:			/* If OPTIONAL, assume this is OK */
+    #####:  227:			if (opt)
+        -:  228:				return -1;
+    #####:  229:			ASN1err(ASN1_F_ASN1_ITEM_EX_D2I,
+        -:  230:					ASN1_R_MSTRING_WRONG_TAG);
+    #####:  231:			goto err;
+        -:  232:			}
+   349958:  233:		return asn1_d2i_ex_primitive(pval, in, len,
+        -:  234:						it, otag, 0, 0, ctx);
+        -:  235:
+        -:  236:		case ASN1_ITYPE_EXTERN:
+        -:  237:		/* Use new style d2i */
+        -:  238:		ef = it->funcs;
+    61338:  239:		return ef->asn1_ex_d2i(pval, in, len,
+        -:  240:						it, tag, aclass, opt, ctx);
+        -:  241:
+        -:  242:		case ASN1_ITYPE_COMPAT:
+        -:  243:		/* we must resort to old style evil hackery */
+        -:  244:		cf = it->funcs;
+        -:  245:
+        -:  246:		/* If OPTIONAL see if it is there */
+    #####:  247:		if (opt)
+        -:  248:			{
+        -:  249:			int exptag;
+    #####:  250:			p = *in;
+    #####:  251:			if (tag == -1)
+    #####:  252:				exptag = it->utype;
+        -:  253:			else exptag = tag;
+        -:  254:			/* Don't care about anything other than presence
+        -:  255:			 * of expected tag */
+        -:  256:
+    #####:  257:			ret = asn1_check_tlen(NULL, NULL, NULL, NULL, NULL,
+        -:  258:					&p, len, exptag, aclass, 1, ctx);
+    #####:  259:			if (!ret)
+        -:  260:				{
+    #####:  261:				ASN1err(ASN1_F_ASN1_ITEM_EX_D2I,
+        -:  262:					ERR_R_NESTED_ASN1_ERROR);
+    #####:  263:				goto err;
+        -:  264:				}
+    #####:  265:			if (ret == -1)
+        -:  266:				return -1;
+        -:  267:			}
+        -:  268:
+        -:  269:		/* This is the old style evil hack IMPLICIT handling:
+        -:  270:		 * since the underlying code is expecting a tag and
+        -:  271:		 * class other than the one present we change the
+        -:  272:		 * buffer temporarily then change it back afterwards.
+        -:  273:		 * This doesn't and never did work for tags > 30.
+        -:  274:		 *
+        -:  275:		 * Yes this is *horrible* but it is only needed for
+        -:  276:		 * old style d2i which will hopefully not be around
+        -:  277:		 * for much longer.
+        -:  278:		 * FIXME: should copy the buffer then modify it so
+        -:  279:		 * the input buffer can be const: we should *always*
+        -:  280:		 * copy because the old style d2i might modify the
+        -:  281:		 * buffer.
+        -:  282:		 */
+        -:  283:
+    #####:  284:		if (tag != -1)
+        -:  285:			{
+    #####:  286:			wp = *(unsigned char **)in;
+    #####:  287:			imphack = *wp;
+    #####:  288:			if (p == NULL)
+        -:  289:				{
+    #####:  290:				ASN1err(ASN1_F_ASN1_ITEM_EX_D2I,
+        -:  291:					ERR_R_NESTED_ASN1_ERROR);
+    #####:  292:				goto err;
+        -:  293:				}
+    #####:  294:			*wp = (unsigned char)((*p & V_ASN1_CONSTRUCTED)
+    #####:  295:								| it->utype);
+        -:  296:			}
+        -:  297:
+    #####:  298:		ptmpval = cf->asn1_d2i(pval, in, len);
+        -:  299:
+    #####:  300:		if (tag != -1)
+    #####:  301:			*wp = imphack;
+        -:  302:
+    #####:  303:		if (ptmpval)
+        -:  304:			return 1;
+        -:  305:
+    #####:  306:		ASN1err(ASN1_F_ASN1_ITEM_EX_D2I, ERR_R_NESTED_ASN1_ERROR);
+    #####:  307:		goto err;
+        -:  308:
+        -:  309:
+        -:  310:		case ASN1_ITYPE_CHOICE:
+    45815:  311:		if (asn1_cb && !asn1_cb(ASN1_OP_D2I_PRE, pval, it, NULL))
+        -:  312:				goto auxerr;
+        -:  313:
+        -:  314:		/* Allocate structure */
+    45815:  315:		if (!*pval && !ASN1_item_ex_new(pval, it))
+        -:  316:			{
+    #####:  317:			ASN1err(ASN1_F_ASN1_ITEM_EX_D2I,
+        -:  318:						ERR_R_NESTED_ASN1_ERROR);
+    #####:  319:			goto err;
+        -:  320:			}
+        -:  321:		/* CHOICE type, try each possibility in turn */
+    45815:  322:		p = *in;
+   306638:  323:		for (i = 0, tt=it->templates; i < it->tcount; i++, tt++)
+        -:  324:			{
+   153319:  325:			pchptr = asn1_get_field_ptr(pval, tt);
+        -:  326:			/* We mark field as OPTIONAL so its absence
+        -:  327:			 * can be recognised.
+        -:  328:			 */
+   153319:  329:			ret = asn1_template_ex_d2i(pchptr, &p, len, tt, 1, ctx);
+        -:  330:			/* If field not present, try the next one */
+   153319:  331:			if (ret == -1)
+   107504:  332:				continue;
+        -:  333:			/* If positive return, read OK, break loop */
+    45815:  334:			if (ret > 0)
+        -:  335:				break;
+        -:  336:			/* Otherwise must be an ASN1 parsing error */
+        -:  337:			errtt = tt;
+        3:  338:			ASN1err(ASN1_F_ASN1_ITEM_EX_D2I,
+        -:  339:						ERR_R_NESTED_ASN1_ERROR);
+        3:  340:			goto err;
+        -:  341:			}
+        -:  342:
+        -:  343:		/* Did we fall off the end without reading anything? */
+    45812:  344:		if (i == it->tcount)
+        -:  345:			{
+        -:  346:			/* If OPTIONAL, this is OK */
+    #####:  347:			if (opt)
+        -:  348:				{
+        -:  349:				/* Free and zero it */
+    #####:  350:				ASN1_item_ex_free(pval, it);
+    #####:  351:				return -1;
+        -:  352:				}
+    #####:  353:			ASN1err(ASN1_F_ASN1_ITEM_EX_D2I,
+        -:  354:					ASN1_R_NO_MATCHING_CHOICE_TYPE);
+    #####:  355:			goto err;
+        -:  356:			}
+        -:  357:
+    45812:  358:		asn1_set_choice_selector(pval, i, it);
+    45812:  359:		*in = p;
+    45812:  360:		if (asn1_cb && !asn1_cb(ASN1_OP_D2I_POST, pval, it, NULL))
+        -:  361:				goto auxerr;
+        -:  362:		return 1;
+        -:  363:
+        -:  364:		case ASN1_ITYPE_NDEF_SEQUENCE:
+        -:  365:		case ASN1_ITYPE_SEQUENCE:
+   828267:  366:		p = *in;
+   828267:  367:		tmplen = len;
+        -:  368:
+        -:  369:		/* If no IMPLICIT tagging set to SEQUENCE, UNIVERSAL */
+   828267:  370:		if (tag == -1)
+        -:  371:			{
+        -:  372:			tag = V_ASN1_SEQUENCE;
+        -:  373:			aclass = V_ASN1_UNIVERSAL;
+        -:  374:			}
+        -:  375:		/* Get SEQUENCE length and update len, p */
+   828267:  376:		ret = asn1_check_tlen(&len, NULL, NULL, &seq_eoc, &cst,
+        -:  377:					&p, len, tag, aclass, opt, ctx);
+   828267:  378:		if (!ret)
+        -:  379:			{
+     8595:  380:			ASN1err(ASN1_F_ASN1_ITEM_EX_D2I,
+        -:  381:					ERR_R_NESTED_ASN1_ERROR);
+     8595:  382:			goto err;
+        -:  383:			}
+   819672:  384:		else if (ret == -1)
+        -:  385:			return -1;
+   773894:  386:		if (aux && (aux->flags & ASN1_AFLG_BROKEN))
+        -:  387:			{
+    #####:  388:			len = tmplen - (p - *in);
+    #####:  389:			seq_nolen = 1;
+        -:  390:			}
+        -:  391:		/* If indefinite we don't do a length check */
+   773894:  392:		else seq_nolen = seq_eoc;
+   773894:  393:		if (!cst)
+        -:  394:			{
+    #####:  395:			ASN1err(ASN1_F_ASN1_ITEM_EX_D2I,
+        -:  396:				ASN1_R_SEQUENCE_NOT_CONSTRUCTED);
+    #####:  397:			goto err;
+        -:  398:			}
+        -:  399:
+   773894:  400:		if (!*pval && !ASN1_item_ex_new(pval, it))
+        -:  401:			{
+    #####:  402:			ASN1err(ASN1_F_ASN1_ITEM_EX_D2I,
+        -:  403:				ERR_R_NESTED_ASN1_ERROR);
+    #####:  404:			goto err;
+        -:  405:			}
+        -:  406:
+   773894:  407:		if (asn1_cb && !asn1_cb(ASN1_OP_D2I_PRE, pval, it, NULL))
+        -:  408:				goto auxerr;
+        -:  409:
+        -:  410:		/* Get each field entry */
+  2799884:  411:		for (i = 0, tt = it->templates; i < it->tcount; i++, tt++)
+        -:  412:			{
+        -:  413:			const ASN1_TEMPLATE *seqtt;
+        -:  414:			ASN1_VALUE **pseqval;
+  2045659:  415:			seqtt = asn1_do_adb(pval, tt, 1);
+  2045659:  416:			if (!seqtt)
+        -:  417:				goto err;
+  2045659:  418:			pseqval = asn1_get_field_ptr(pval, seqtt);
+        -:  419:			/* Have we ran out of data? */
+  2045659:  420:			if (!len)
+        -:  421:				break;
+  2025995:  422:			q = p;
+  2025995:  423:			if (asn1_check_eoc(&p, len))
+        -:  424:				{
+    #####:  425:				if (!seq_eoc)
+        -:  426:					{
+    #####:  427:					ASN1err(ASN1_F_ASN1_ITEM_EX_D2I,
+        -:  428:							ASN1_R_UNEXPECTED_EOC);
+    #####:  429:					goto err;
+        -:  430:					}
+    #####:  431:				len -= p - q;
+    #####:  432:				seq_eoc = 0;
+        -:  433:				q = p;
+    #####:  434:				break;
+        -:  435:				}
+        -:  436:			/* This determines the OPTIONAL flag value. The field
+        -:  437:			 * cannot be omitted if it is the last of a SEQUENCE
+        -:  438:			 * and there is still data to be read. This isn't
+        -:  439:			 * strictly necessary but it increases efficiency in
+        -:  440:			 * some cases.
+        -:  441:			 */
+  2025995:  442:			if (i == (it->tcount - 1))
+        -:  443:				isopt = 0;
+  1271770:  444:			else isopt = (char)(seqtt->flags & ASN1_TFLG_OPTIONAL);
+        -:  445:			/* attempt to read in field, allowing each to be
+        -:  446:			 * OPTIONAL */
+        -:  447:
+  2025995:  448:			ret = asn1_template_ex_d2i(pseqval, &p, len,
+        -:  449:							seqtt, isopt, ctx);
+  2025995:  450:			if (!ret)
+        -:  451:				{
+        -:  452:				errtt = seqtt;
+        -:  453:				goto err;
+        -:  454:				}
+  2025990:  455:			else if (ret == -1)
+        -:  456:				{
+        -:  457:				/* OPTIONAL component absent.
+        -:  458:				 * Free and zero the field.
+        -:  459:				 */
+   208827:  460:				ASN1_template_free(pseqval, seqtt);
+   208827:  461:				continue;
+        -:  462:				}
+        -:  463:			/* Update length */
+  1817163:  464:			len -= p - q;
+        -:  465:			}
+        -:  466:
+        -:  467:		/* Check for EOC if expecting one */
+   773889:  468:		if (seq_eoc && !asn1_check_eoc(&p, len))
+        -:  469:			{
+    #####:  470:			ASN1err(ASN1_F_ASN1_ITEM_EX_D2I, ASN1_R_MISSING_EOC);
+    #####:  471:			goto err;
+        -:  472:			}
+        -:  473:		/* Check all data read */
+   773889:  474:		if (!seq_nolen && len)
+        -:  475:			{
+    #####:  476:			ASN1err(ASN1_F_ASN1_ITEM_EX_D2I,
+        -:  477:					ASN1_R_SEQUENCE_LENGTH_MISMATCH);
+    #####:  478:			goto err;
+        -:  479:			}
+        -:  480:
+        -:  481:		/* If we get here we've got no more data in the SEQUENCE,
+        -:  482:		 * however we may not have read all fields so check all
+        -:  483:		 * remaining are OPTIONAL and clear any that are.
+        -:  484:		 */
+   853989:  485:		for (; i < it->tcount; tt++, i++)
+        -:  486:			{
+        -:  487:			const ASN1_TEMPLATE *seqtt;
+    40050:  488:			seqtt = asn1_do_adb(pval, tt, 1);
+    40050:  489:			if (!seqtt)
+        -:  490:				goto err;
+    40050:  491:			if (seqtt->flags & ASN1_TFLG_OPTIONAL)
+        -:  492:				{
+        -:  493:				ASN1_VALUE **pseqval;
+    40050:  494:				pseqval = asn1_get_field_ptr(pval, seqtt);
+    40050:  495:				ASN1_template_free(pseqval, seqtt);
+        -:  496:				}
+        -:  497:			else
+        -:  498:				{
+        -:  499:				errtt = seqtt;
+    #####:  500:				ASN1err(ASN1_F_ASN1_ITEM_EX_D2I,
+        -:  501:							ASN1_R_FIELD_MISSING);
+    #####:  502:				goto err;
+        -:  503:				}
+        -:  504:			}
+        -:  505:		/* Save encoding */
+   773889:  506:		if (!asn1_enc_save(pval, *in, p - *in, it))
+        -:  507:			goto auxerr;
+   773889:  508:		*in = p;
+   773889:  509:		if (asn1_cb && !asn1_cb(ASN1_OP_D2I_POST, pval, it, NULL))
+        -:  510:				goto auxerr;
+        -:  511:		return 1;
+        -:  512:
+        -:  513:		default:
+        -:  514:		return 0;
+        -:  515:		}
+        -:  516:	auxerr:
+    #####:  517:	ASN1err(ASN1_F_ASN1_ITEM_EX_D2I, ASN1_R_AUX_ERROR);
+        -:  518:	err:
+     8603:  519:	ASN1_item_ex_free(pval, it);
+     8603:  520:	if (errtt)
+        8:  521:		ERR_add_error_data(4, "Field=", errtt->field_name,
+        -:  522:					", Type=", it->sname);
+        -:  523:	else
+     8595:  524:		ERR_add_error_data(2, "Type=", it->sname);
+        -:  525:	return 0;
+        -:  526:	}
+        -:  527:
+        -:  528:/* Templates are handled with two separate functions.
+        -:  529: * One handles any EXPLICIT tag and the other handles the rest.
+        -:  530: */
+        -:  531:
+  2553895:  532:static int asn1_template_ex_d2i(ASN1_VALUE **val,
+        -:  533:				const unsigned char **in, long inlen,
+        -:  534:				const ASN1_TEMPLATE *tt, char opt,
+        -:  535:							ASN1_TLC *ctx)
+        -:  536:	{
+        -:  537:	int flags, aclass;
+        -:  538:	int ret;
+        -:  539:	long len;
+        -:  540:	const unsigned char *p, *q;
+        -:  541:	char exp_eoc;
+  2553895:  542:	if (!val)
+        -:  543:		return 0;
+  2553895:  544:	flags = tt->flags;
+  2553895:  545:	aclass = flags & ASN1_TFLG_TAG_CLASS;
+        -:  546:
+  2553895:  547:	p = *in;
+        -:  548:
+        -:  549:	/* Check if EXPLICIT tag expected */
+  2553895:  550:	if (flags & ASN1_TFLG_EXPTAG)
+        -:  551:		{
+        -:  552:		char cst;
+        -:  553:		/* Need to work out amount of data available to the inner
+        -:  554:		 * content and where it starts: so read in EXPLICIT header to
+        -:  555:		 * get the info.
+        -:  556:		 */
+   147198:  557:		ret = asn1_check_tlen(&len, NULL, NULL, &exp_eoc, &cst,
+    73599:  558:					&p, inlen, tt->tag, aclass, opt, ctx);
+    73599:  559:		q = p;
+    73599:  560:		if (!ret)
+        -:  561:			{
+    #####:  562:			ASN1err(ASN1_F_ASN1_TEMPLATE_EX_D2I,
+        -:  563:					ERR_R_NESTED_ASN1_ERROR);
+    #####:  564:			return 0;
+        -:  565:			}
+    73599:  566:		else if (ret == -1)
+        -:  567:			return -1;
+    47012:  568:		if (!cst)
+        -:  569:			{
+    #####:  570:			ASN1err(ASN1_F_ASN1_TEMPLATE_EX_D2I,
+        -:  571:					ASN1_R_EXPLICIT_TAG_NOT_CONSTRUCTED);
+    #####:  572:			return 0;
+        -:  573:			}
+        -:  574:		/* We've found the field so it can't be OPTIONAL now */
+    47012:  575:		ret = asn1_template_noexp_d2i(val, &p, len, tt, 0, ctx);
+    47012:  576:		if (!ret)
+        -:  577:			{
+    #####:  578:			ASN1err(ASN1_F_ASN1_TEMPLATE_EX_D2I,
+        -:  579:					ERR_R_NESTED_ASN1_ERROR);
+    #####:  580:			return 0;
+        -:  581:			}
+        -:  582:		/* We read the field in OK so update length */
+    47012:  583:		len -= p - q;
+    47012:  584:		if (exp_eoc)
+        -:  585:			{
+        -:  586:			/* If NDEF we must have an EOC here */
+    #####:  587:			if (!asn1_check_eoc(&p, len))
+        -:  588:				{
+    #####:  589:				ASN1err(ASN1_F_ASN1_TEMPLATE_EX_D2I,
+        -:  590:						ASN1_R_MISSING_EOC);
+    #####:  591:				goto err;
+        -:  592:				}
+        -:  593:			}
+        -:  594:		else
+        -:  595:			{
+        -:  596:			/* Otherwise we must hit the EXPLICIT tag end or its
+        -:  597:			 * an error */
+    47012:  598:			if (len)
+        -:  599:				{
+    #####:  600:				ASN1err(ASN1_F_ASN1_TEMPLATE_EX_D2I,
+        -:  601:					ASN1_R_EXPLICIT_LENGTH_MISMATCH);
+    #####:  602:				goto err;
+        -:  603:				}
+        -:  604:			}
+        -:  605:		}
+        -:  606:		else 
+  2480296:  607:			return asn1_template_noexp_d2i(val, in, inlen,
+        -:  608:								tt, opt, ctx);
+        -:  609:
+    47012:  610:	*in = p;
+    47012:  611:	return 1;
+        -:  612:
+        -:  613:	err:
+    #####:  614:	ASN1_template_free(val, tt);
+    #####:  615:	return 0;
+        -:  616:	}
+        -:  617:
+  2527308:  618:static int asn1_template_noexp_d2i(ASN1_VALUE **val,
+        -:  619:				const unsigned char **in, long len,
+        -:  620:				const ASN1_TEMPLATE *tt, char opt,
+        -:  621:				ASN1_TLC *ctx)
+        -:  622:	{
+        -:  623:	int flags, aclass;
+        -:  624:	int ret;
+        -:  625:	const unsigned char *p, *q;
+  2527308:  626:	if (!val)
+        -:  627:		return 0;
+  2527308:  628:	flags = tt->flags;
+  2527308:  629:	aclass = flags & ASN1_TFLG_TAG_CLASS;
+        -:  630:
+  2527308:  631:	p = *in;
+        -:  632:	q = p;
+        -:  633:
+  2527308:  634:	if (flags & ASN1_TFLG_SK_MASK)
+        -:  635:		{
+        -:  636:		/* SET OF, SEQUENCE OF */
+        -:  637:		int sktag, skaclass;
+        -:  638:		char sk_eoc;
+        -:  639:		/* First work out expected inner tag value */
+   411328:  640:		if (flags & ASN1_TFLG_IMPTAG)
+        -:  641:			{
+     7769:  642:			sktag = tt->tag;
+        -:  643:			skaclass = aclass;
+        -:  644:			}
+        -:  645:		else
+        -:  646:			{
+        -:  647:			skaclass = V_ASN1_UNIVERSAL;
+   403559:  648:			if (flags & ASN1_TFLG_SET_OF)
+        -:  649:				sktag = V_ASN1_SET;
+        -:  650:			else
+        -:  651:				sktag = V_ASN1_SEQUENCE;
+        -:  652:			}
+        -:  653:		/* Get the tag */
+   411328:  654:		ret = asn1_check_tlen(&len, NULL, NULL, &sk_eoc, NULL,
+        -:  655:					&p, len, sktag, skaclass, opt, ctx);
+   411328:  656:		if (!ret)
+        -:  657:			{
+    10424:  658:			ASN1err(ASN1_F_ASN1_TEMPLATE_NOEXP_D2I,
+        -:  659:						ERR_R_NESTED_ASN1_ERROR);
+    10424:  660:			return 0;
+        -:  661:			}
+   400904:  662:		else if (ret == -1)
+        -:  663:			return -1;
+   400904:  664:		if (!*val)
+   400904:  665:			*val = (ASN1_VALUE *)sk_new_null();
+        -:  666:		else
+        -:  667:			{
+        -:  668:			/* We've got a valid STACK: free up any items present */
+        -:  669:			STACK_OF(ASN1_VALUE) *sktmp
+        -:  670:			    = (STACK_OF(ASN1_VALUE) *)*val;
+        -:  671:			ASN1_VALUE *vtmp;
+    #####:  672:			while(sk_ASN1_VALUE_num(sktmp) > 0)
+        -:  673:				{
+    #####:  674:				vtmp = sk_ASN1_VALUE_pop(sktmp);
+    #####:  675:				ASN1_item_ex_free(&vtmp,
+    #####:  676:						ASN1_ITEM_ptr(tt->item));
+        -:  677:				}
+        -:  678:			}
+        -:  679:				
+   400904:  680:		if (!*val)
+        -:  681:			{
+    #####:  682:			ASN1err(ASN1_F_ASN1_TEMPLATE_NOEXP_D2I,
+        -:  683:						ERR_R_MALLOC_FAILURE);
+    #####:  684:			goto err;
+        -:  685:			}
+        -:  686:
+        -:  687:		/* Read as many items as we can */
+  1260889:  688:		while(len > 0)
+        -:  689:			{
+        -:  690:			ASN1_VALUE *skfield;
+   859995:  691:			q = p;
+        -:  692:			/* See if EOC found */
+   859995:  693:			if (asn1_check_eoc(&p, len))
+        -:  694:				{
+    #####:  695:				if (!sk_eoc)
+        -:  696:					{
+    #####:  697:					ASN1err(ASN1_F_ASN1_TEMPLATE_NOEXP_D2I,
+        -:  698:							ASN1_R_UNEXPECTED_EOC);
+    #####:  699:					goto err;
+        -:  700:					}
+    #####:  701:				len -= p - q;
+    #####:  702:				sk_eoc = 0;
+    #####:  703:				break;
+        -:  704:				}
+   859995:  705:			skfield = NULL;
+   859995:  706:			if (!ASN1_item_ex_d2i(&skfield, &p, len,
+   859995:  707:						ASN1_ITEM_ptr(tt->item),
+        -:  708:						-1, 0, 0, ctx))
+        -:  709:				{
+       10:  710:				ASN1err(ASN1_F_ASN1_TEMPLATE_NOEXP_D2I,
+        -:  711:					ERR_R_NESTED_ASN1_ERROR);
+       10:  712:				goto err;
+        -:  713:				}
+   859985:  714:			len -= p - q;
+   859985:  715:			if (!sk_ASN1_VALUE_push((STACK_OF(ASN1_VALUE) *)*val,
+        -:  716:						skfield))
+        -:  717:				{
+    #####:  718:				ASN1err(ASN1_F_ASN1_TEMPLATE_NOEXP_D2I,
+        -:  719:						ERR_R_MALLOC_FAILURE);
+    #####:  720:				goto err;
+        -:  721:				}
+        -:  722:			}
+   400894:  723:		if (sk_eoc)
+        -:  724:			{
+    #####:  725:			ASN1err(ASN1_F_ASN1_TEMPLATE_NOEXP_D2I, ASN1_R_MISSING_EOC);
+    #####:  726:			goto err;
+        -:  727:			}
+        -:  728:		}
+  2115980:  729:	else if (flags & ASN1_TFLG_IMPTAG)
+        -:  730:		{
+        -:  731:		/* IMPLICIT tagging */
+   631863:  732:		ret = ASN1_item_ex_d2i(val, &p, len,
+   421242:  733:			ASN1_ITEM_ptr(tt->item), tt->tag, aclass, opt, ctx);
+   210621:  734:		if (!ret)
+        -:  735:			{
+        7:  736:			ASN1err(ASN1_F_ASN1_TEMPLATE_NOEXP_D2I,
+        -:  737:						ERR_R_NESTED_ASN1_ERROR);
+        7:  738:			goto err;
+        -:  739:			}
+   210614:  740:		else if (ret == -1)
+        -:  741:			return -1;
+        -:  742:		}
+        -:  743:	else
+        -:  744:		{
+        -:  745:		/* Nothing special */
+  1905359:  746:		ret = ASN1_item_ex_d2i(val, &p, len, ASN1_ITEM_ptr(tt->item),
+        -:  747:							-1, 0, opt, ctx);
+  1905359:  748:		if (!ret)
+        -:  749:			{
+        1:  750:			ASN1err(ASN1_F_ASN1_TEMPLATE_NOEXP_D2I,
+        -:  751:					ERR_R_NESTED_ASN1_ERROR);
+        1:  752:			goto err;
+        -:  753:			}
+  1905358:  754:		else if (ret == -1)
+        -:  755:			return -1;
+        -:  756:		}
+        -:  757:
+  2227122:  758:	*in = p;
+  2227122:  759:	return 1;
+        -:  760:
+        -:  761:	err:
+       18:  762:	ASN1_template_free(val, tt);
+       18:  763:	return 0;
+        -:  764:	}
+        -:  765:
+  1856436:  766:static int asn1_d2i_ex_primitive(ASN1_VALUE **pval,
+        -:  767:				const unsigned char **in, long inlen, 
+        -:  768:				const ASN1_ITEM *it,
+        -:  769:				int tag, int aclass, char opt, ASN1_TLC *ctx)
+        -:  770:	{
+        -:  771:	int ret = 0, utype;
+        -:  772:	long plen;
+  1856436:  773:	char cst, inf, free_cont = 0;
+        -:  774:	const unsigned char *p;
+        -:  775:	BUF_MEM buf;
+        -:  776:	const unsigned char *cont = NULL;
+        -:  777:	long len; 
+  1856436:  778:	if (!pval)
+        -:  779:		{
+    #####:  780:		ASN1err(ASN1_F_ASN1_D2I_EX_PRIMITIVE, ASN1_R_ILLEGAL_NULL);
+    #####:  781:		return 0; /* Should never happen */
+        -:  782:		}
+        -:  783:
+  1856436:  784:	if (it->itype == ASN1_ITYPE_MSTRING)
+        -:  785:		{
+   349958:  786:		utype = tag;
+        -:  787:		tag = -1;
+        -:  788:		}
+        -:  789:	else
+  1506478:  790:		utype = it->utype;
+        -:  791:
+  1856436:  792:	if (utype == V_ASN1_ANY)
+        -:  793:		{
+        -:  794:		/* If type is ANY need to figure out type from tag */
+        -:  795:		unsigned char oclass;
+    91911:  796:		if (tag >= 0)
+        -:  797:			{
+    #####:  798:			ASN1err(ASN1_F_ASN1_D2I_EX_PRIMITIVE,
+        -:  799:					ASN1_R_ILLEGAL_TAGGED_ANY);
+    #####:  800:			return 0;
+        -:  801:			}
+    91911:  802:		if (opt)
+        -:  803:			{
+    #####:  804:			ASN1err(ASN1_F_ASN1_D2I_EX_PRIMITIVE,
+        -:  805:					ASN1_R_ILLEGAL_OPTIONAL_ANY);
+    #####:  806:			return 0;
+        -:  807:			}
+    91911:  808:		p = *in;
+    91911:  809:		ret = asn1_check_tlen(NULL, &utype, &oclass, NULL, NULL,
+        -:  810:					&p, inlen, -1, 0, 0, ctx);
+    91911:  811:		if (!ret)
+        -:  812:			{
+    #####:  813:			ASN1err(ASN1_F_ASN1_D2I_EX_PRIMITIVE,
+        -:  814:					ERR_R_NESTED_ASN1_ERROR);
+    #####:  815:			return 0;
+        -:  816:			}
+    91911:  817:		if (oclass != V_ASN1_UNIVERSAL)
+    #####:  818:			utype = V_ASN1_OTHER;
+        -:  819:		}
+  1856436:  820:	if (tag == -1)
+        -:  821:		{
+  1691640:  822:		tag = utype;
+        -:  823:		aclass = V_ASN1_UNIVERSAL;
+        -:  824:		}
+  1856436:  825:	p = *in;
+        -:  826:	/* Check header */
+  1856436:  827:	ret = asn1_check_tlen(&plen, NULL, NULL, &inf, &cst,
+        -:  828:				&p, inlen, tag, aclass, opt, ctx);
+  1856436:  829:	if (!ret)
+        -:  830:		{
+    15014:  831:		ASN1err(ASN1_F_ASN1_D2I_EX_PRIMITIVE, ERR_R_NESTED_ASN1_ERROR);
+    15014:  832:		return 0;
+        -:  833:		}
+  1841422:  834:	else if (ret == -1)
+        -:  835:		return -1;
+        -:  836:        ret = 0;
+        -:  837:	/* SEQUENCE, SET and "OTHER" are left in encoded form */
+  1597456:  838:	if ((utype == V_ASN1_SEQUENCE)
+  1597456:  839:		|| (utype == V_ASN1_SET) || (utype == V_ASN1_OTHER))
+        -:  840:		{
+        -:  841:		/* Clear context cache for type OTHER because the auto clear
+        -:  842:		 * when we have a exact match wont work
+        -:  843:		 */
+    #####:  844:		if (utype == V_ASN1_OTHER)
+        -:  845:			{
+    #####:  846:			asn1_tlc_clear(ctx);
+        -:  847:			}
+        -:  848:		/* SEQUENCE and SET must be constructed */
+    #####:  849:		else if (!cst)
+        -:  850:			{
+    #####:  851:			ASN1err(ASN1_F_ASN1_D2I_EX_PRIMITIVE,
+        -:  852:				ASN1_R_TYPE_NOT_CONSTRUCTED);
+    #####:  853:			return 0;
+        -:  854:			}
+        -:  855:
+    #####:  856:		cont = *in;
+        -:  857:		/* If indefinite length constructed find the real end */
+    #####:  858:		if (inf)
+        -:  859:			{
+    #####:  860:			if (!asn1_find_end(&p, plen, inf))
+        -:  861:				 goto err;
+    #####:  862:			len = p - cont;
+        -:  863:			}
+        -:  864:		else
+        -:  865:			{
+    #####:  866:			len = p - cont + plen;
+    #####:  867:			p += plen;
+    #####:  868:			buf.data = NULL;
+        -:  869:			}
+        -:  870:		}
+  1597456:  871:	else if (cst)
+        -:  872:		{
+        4:  873:		buf.length = 0;
+        4:  874:		buf.max = 0;
+        4:  875:		buf.data = NULL;
+        -:  876:		/* Should really check the internal tags are correct but
+        -:  877:		 * some things may get this wrong. The relevant specs
+        -:  878:		 * say that constructed string types should be OCTET STRINGs
+        -:  879:		 * internally irrespective of the type. So instead just check
+        -:  880:		 * for UNIVERSAL class and ignore the tag.
+        -:  881:		 */
+        4:  882:		if (!asn1_collect(&buf, &p, plen, inf, -1, V_ASN1_UNIVERSAL, 0))
+        -:  883:			{
+        3:  884:			free_cont = 1;
+        3:  885:			goto err;
+        -:  886:			}
+        1:  887:		len = buf.length;
+        -:  888:		/* Append a final null to string */
+        1:  889:		if (!BUF_MEM_grow_clean(&buf, len + 1))
+        -:  890:			{
+    #####:  891:			ASN1err(ASN1_F_ASN1_D2I_EX_PRIMITIVE,
+        -:  892:						ERR_R_MALLOC_FAILURE);
+    #####:  893:			return 0;
+        -:  894:			}
+        1:  895:		buf.data[len] = 0;
+        1:  896:		cont = (const unsigned char *)buf.data;
+        1:  897:		free_cont = 1;
+        -:  898:		}
+        -:  899:	else
+        -:  900:		{
+  1597452:  901:		cont = p;
+  1597452:  902:		len = plen;
+  1597452:  903:		p += plen;
+        -:  904:		}
+        -:  905:
+        -:  906:	/* We now have content length and type: translate into a structure */
+  1597453:  907:	if (!asn1_ex_c2i(pval, cont, len, utype, &free_cont, it))
+        -:  908:		goto err;
+        -:  909:
+  1597452:  910:	*in = p;
+        -:  911:	ret = 1;
+        -:  912:	err:
+  1597456:  913:	if (free_cont && buf.data) OPENSSL_free(buf.data);
+  1597456:  914:	return ret;
+        -:  915:	}
+        -:  916:
+        -:  917:/* Translate ASN1 content octets into a structure */
+        -:  918:
+  1597453:  919:int asn1_ex_c2i(ASN1_VALUE **pval, const unsigned char *cont, int len,
+        -:  920:			int utype, char *free_cont, const ASN1_ITEM *it)
+        -:  921:	{
+        -:  922:	ASN1_VALUE **opval = NULL;
+        -:  923:	ASN1_STRING *stmp;
+        -:  924:	ASN1_TYPE *typ = NULL;
+        -:  925:	int ret = 0;
+        -:  926:	const ASN1_PRIMITIVE_FUNCS *pf;
+        -:  927:	ASN1_INTEGER **tint;
+  1597453:  928:	pf = it->funcs;
+        -:  929:
+  1597453:  930:	if (pf && pf->prim_c2i)
+    23884:  931:		return pf->prim_c2i(pval, cont, len, utype, free_cont, it);
+        -:  932:	/* If ANY type clear type and set pointer to internal value */
+  1573569:  933:	if (it->utype == V_ASN1_ANY)
+        -:  934:		{
+    91911:  935:		if (!*pval)
+        -:  936:			{
+    91867:  937:			typ = ASN1_TYPE_new();
+    91867:  938:			if (typ == NULL)
+        -:  939:				goto err;
+    91867:  940:			*pval = (ASN1_VALUE *)typ;
+        -:  941:			}
+        -:  942:		else
+        -:  943:			typ = (ASN1_TYPE *)*pval;
+        -:  944:
+    91911:  945:		if (utype != typ->type)
+    91911:  946:			ASN1_TYPE_set(typ, utype, NULL);
+        -:  947:		opval = pval;
+    91911:  948:		pval = &typ->value.asn1_value;
+        -:  949:		}
+  1573569:  950:	switch(utype)
+        -:  951:		{
+        -:  952:		case V_ASN1_OBJECT:
+   616159:  953:		if (!c2i_ASN1_OBJECT((ASN1_OBJECT **)pval, &cont, len))
+        -:  954:			goto err;
+        -:  955:		break;
+        -:  956:
+        -:  957:		case V_ASN1_NULL:
+    91867:  958:		if (len)
+        -:  959:			{
+    #####:  960:			ASN1err(ASN1_F_ASN1_EX_C2I,
+        -:  961:						ASN1_R_NULL_IS_WRONG_LENGTH);
+    #####:  962:			goto err;
+        -:  963:			}
+    91867:  964:		*pval = (ASN1_VALUE *)1;
+    91867:  965:		break;
+        -:  966:
+        -:  967:		case V_ASN1_BOOLEAN:
+   107731:  968:		if (len != 1)
+        -:  969:			{
+    #####:  970:			ASN1err(ASN1_F_ASN1_EX_C2I,
+        -:  971:						ASN1_R_BOOLEAN_IS_WRONG_LENGTH);
+    #####:  972:			goto err;
+        -:  973:			}
+        -:  974:		else
+        -:  975:			{
+        -:  976:			ASN1_BOOLEAN *tbool;
+        -:  977:			tbool = (ASN1_BOOLEAN *)pval;
+   107731:  978:			*tbool = *cont;
+        -:  979:			}
+   107731:  980:		break;
+        -:  981:
+        -:  982:		case V_ASN1_BIT_STRING:
+    62490:  983:		if (!c2i_ASN1_BIT_STRING((ASN1_BIT_STRING **)pval, &cont, len))
+        -:  984:			goto err;
+        -:  985:		break;
+        -:  986:
+        -:  987:		case V_ASN1_INTEGER:
+        -:  988:		case V_ASN1_NEG_INTEGER:
+        -:  989:		case V_ASN1_ENUMERATED:
+        -:  990:		case V_ASN1_NEG_ENUMERATED:
+        -:  991:		tint = (ASN1_INTEGER **)pval;
+    50386:  992:		if (!c2i_ASN1_INTEGER(tint, &cont, len))
+        -:  993:			goto err;
+        -:  994:		/* Fixup type to match the expected form */
+    50386:  995:		(*tint)->type = utype | ((*tint)->type & V_ASN1_NEG);
+    50386:  996:		break;
+        -:  997:
+        -:  998:		case V_ASN1_OCTET_STRING:
+        -:  999:		case V_ASN1_NUMERICSTRING:
+        -: 1000:		case V_ASN1_PRINTABLESTRING:
+        -: 1001:		case V_ASN1_T61STRING:
+        -: 1002:		case V_ASN1_VIDEOTEXSTRING:
+        -: 1003:		case V_ASN1_IA5STRING:
+        -: 1004:		case V_ASN1_UTCTIME:
+        -: 1005:		case V_ASN1_GENERALIZEDTIME:
+        -: 1006:		case V_ASN1_GRAPHICSTRING:
+        -: 1007:		case V_ASN1_VISIBLESTRING:
+        -: 1008:		case V_ASN1_GENERALSTRING:
+        -: 1009:		case V_ASN1_UNIVERSALSTRING:
+        -: 1010:		case V_ASN1_BMPSTRING:
+        -: 1011:		case V_ASN1_UTF8STRING:
+        -: 1012:		case V_ASN1_OTHER:
+        -: 1013:		case V_ASN1_SET:
+        -: 1014:		case V_ASN1_SEQUENCE:
+        -: 1015:		default:
+   644936: 1016:		if (utype == V_ASN1_BMPSTRING && (len & 1))
+        -: 1017:			{
+    #####: 1018:			ASN1err(ASN1_F_ASN1_EX_C2I,
+        -: 1019:					ASN1_R_BMPSTRING_IS_WRONG_LENGTH);
+    #####: 1020:			goto err;
+        -: 1021:			}
+   644936: 1022:		if (utype == V_ASN1_UNIVERSALSTRING && (len & 3))
+        -: 1023:			{
+    #####: 1024:			ASN1err(ASN1_F_ASN1_EX_C2I,
+        -: 1025:					ASN1_R_UNIVERSALSTRING_IS_WRONG_LENGTH);
+    #####: 1026:			goto err;
+        -: 1027:			}
+        -: 1028:		/* All based on ASN1_STRING and handled the same */
+   644936: 1029:		if (!*pval)
+        -: 1030:			{
+    63928: 1031:			stmp = ASN1_STRING_type_new(utype);
+    63928: 1032:			if (!stmp)
+        -: 1033:				{
+    #####: 1034:				ASN1err(ASN1_F_ASN1_EX_C2I,
+        -: 1035:							ERR_R_MALLOC_FAILURE);
+    #####: 1036:				goto err;
+        -: 1037:				}
+    63928: 1038:			*pval = (ASN1_VALUE *)stmp;
+        -: 1039:			}
+        -: 1040:		else
+        -: 1041:			{
+        -: 1042:			stmp = (ASN1_STRING *)*pval;
+   581008: 1043:			stmp->type = utype;
+        -: 1044:			}
+        -: 1045:		/* If we've already allocated a buffer use it */
+   644936: 1046:		if (*free_cont)
+        -: 1047:			{
+    #####: 1048:			if (stmp->data)
+    #####: 1049:				OPENSSL_free(stmp->data);
+    #####: 1050:			stmp->data = (unsigned char *)cont; /* UGLY CAST! RL */
+    #####: 1051:			stmp->length = len;
+    #####: 1052:			*free_cont = 0;
+        -: 1053:			}
+        -: 1054:		else
+        -: 1055:			{
+   644936: 1056:			if (!ASN1_STRING_set(stmp, cont, len))
+        -: 1057:				{
+    #####: 1058:				ASN1err(ASN1_F_ASN1_EX_C2I,
+        -: 1059:							ERR_R_MALLOC_FAILURE);
+    #####: 1060:				ASN1_STRING_free(stmp);	
+    #####: 1061:				*pval = NULL;
+    #####: 1062:				goto err;
+        -: 1063:				}
+        -: 1064:			}
+        -: 1065:		break;
+        -: 1066:		}
+        -: 1067:	/* If ASN1_ANY and NULL type fix up value */
+  1573568: 1068:	if (typ && (utype == V_ASN1_NULL))
+    91867: 1069:		 typ->value.ptr = NULL;
+        -: 1070:
+        -: 1071:	ret = 1;
+        -: 1072:	err:
+  1573569: 1073:	if (!ret)
+        -: 1074:		{
+        1: 1075:		ASN1_TYPE_free(typ);
+        1: 1076:		if (opval)
+    #####: 1077:			*opval = NULL;
+        -: 1078:		}
+  1573569: 1079:	return ret;
+        -: 1080:	}
+        -: 1081:
+        -: 1082:
+        -: 1083:/* This function finds the end of an ASN1 structure when passed its maximum
+        -: 1084: * length, whether it is indefinite length and a pointer to the content.
+        -: 1085: * This is more efficient than calling asn1_collect because it does not
+        -: 1086: * recurse on each indefinite length header.
+        -: 1087: */
+        -: 1088:
+    #####: 1089:static int asn1_find_end(const unsigned char **in, long len, char inf)
+        -: 1090:	{
+        -: 1091:	int expected_eoc;
+        -: 1092:	long plen;
+    #####: 1093:	const unsigned char *p = *in, *q;
+        -: 1094:	/* If not indefinite length constructed just add length */
+    #####: 1095:	if (inf == 0)
+        -: 1096:		{
+    #####: 1097:		*in += len;
+    #####: 1098:		return 1;
+        -: 1099:		}
+        -: 1100:	expected_eoc = 1;
+        -: 1101:	/* Indefinite length constructed form. Find the end when enough EOCs
+        -: 1102:	 * are found. If more indefinite length constructed headers
+        -: 1103:	 * are encountered increment the expected eoc count otherwise just
+        -: 1104:	 * skip to the end of the data.
+        -: 1105:	 */
+    #####: 1106:	while (len > 0)
+        -: 1107:		{
+    #####: 1108:		if(asn1_check_eoc(&p, len))
+        -: 1109:			{
+    #####: 1110:			expected_eoc--;
+    #####: 1111:			if (expected_eoc == 0)
+        -: 1112:				break;
+    #####: 1113:			len -= 2;
+    #####: 1114:			continue;
+        -: 1115:			}
+    #####: 1116:		q = p;
+        -: 1117:		/* Just read in a header: only care about the length */
+    #####: 1118:		if(!asn1_check_tlen(&plen, NULL, NULL, &inf, NULL, &p, len,
+        -: 1119:				-1, 0, 0, NULL))
+        -: 1120:			{
+    #####: 1121:			ASN1err(ASN1_F_ASN1_FIND_END, ERR_R_NESTED_ASN1_ERROR);
+    #####: 1122:			return 0;
+        -: 1123:			}
+    #####: 1124:		if (inf)
+    #####: 1125:			expected_eoc++;
+        -: 1126:		else
+    #####: 1127:			p += plen;
+    #####: 1128:		len -= p - q;
+        -: 1129:		}
+    #####: 1130:	if (expected_eoc)
+        -: 1131:		{
+    #####: 1132:		ASN1err(ASN1_F_ASN1_FIND_END, ASN1_R_MISSING_EOC);
+    #####: 1133:		return 0;
+        -: 1134:		}
+    #####: 1135:	*in = p;
+    #####: 1136:	return 1;
+        -: 1137:	}
+        -: 1138:/* This function collects the asn1 data from a constructred string
+        -: 1139: * type into a buffer. The values of 'in' and 'len' should refer
+        -: 1140: * to the contents of the constructed type and 'inf' should be set
+        -: 1141: * if it is indefinite length.
+        -: 1142: */
+        -: 1143:
+        -: 1144:#ifndef ASN1_MAX_STRING_NEST
+        -: 1145:/* This determines how many levels of recursion are permitted in ASN1
+        -: 1146: * string types. If it is not limited stack overflows can occur. If set
+        -: 1147: * to zero no recursion is allowed at all. Although zero should be adequate
+        -: 1148: * examples exist that require a value of 1. So 5 should be more than enough.
+        -: 1149: */
+        -: 1150:#define ASN1_MAX_STRING_NEST 5
+        -: 1151:#endif
+        -: 1152:
+        -: 1153:
+        4: 1154:static int asn1_collect(BUF_MEM *buf, const unsigned char **in, long len,
+        -: 1155:			char inf, int tag, int aclass, int depth)
+        -: 1156:	{
+        -: 1157:	const unsigned char *p, *q;
+        -: 1158:	long plen;
+        -: 1159:	char cst, ininf;
+        4: 1160:	p = *in;
+        4: 1161:	inf &= 1;
+        -: 1162:	/* If no buffer and not indefinite length constructed just pass over
+        -: 1163:	 * the encoded data */
+        4: 1164:	if (!buf && !inf)
+        -: 1165:		{
+    #####: 1166:		*in += len;
+    #####: 1167:		return 1;
+        -: 1168:		}
+        4: 1169:	while(len > 0)
+        -: 1170:		{
+        3: 1171:		q = p;
+        -: 1172:		/* Check for EOC */
+        3: 1173:		if (asn1_check_eoc(&p, len))
+        -: 1174:			{
+        -: 1175:			/* EOC is illegal outside indefinite length
+        -: 1176:			 * constructed form */
+    #####: 1177:			if (!inf)
+        -: 1178:				{
+    #####: 1179:				ASN1err(ASN1_F_ASN1_COLLECT,
+        -: 1180:					ASN1_R_UNEXPECTED_EOC);
+    #####: 1181:				return 0;
+        -: 1182:				}
+        -: 1183:			inf = 0;
+        -: 1184:			break;
+        -: 1185:			}
+        -: 1186:
+        3: 1187:		if (!asn1_check_tlen(&plen, NULL, NULL, &ininf, &cst, &p,
+        -: 1188:					len, tag, aclass, 0, NULL))
+        -: 1189:			{
+        3: 1190:			ASN1err(ASN1_F_ASN1_COLLECT, ERR_R_NESTED_ASN1_ERROR);
+        3: 1191:			return 0;
+        -: 1192:			}
+        -: 1193:
+        -: 1194:		/* If indefinite length constructed update max length */
+    #####: 1195:		if (cst)
+        -: 1196:			{
+    #####: 1197:			if (depth >= ASN1_MAX_STRING_NEST)
+        -: 1198:				{
+    #####: 1199:				ASN1err(ASN1_F_ASN1_COLLECT,
+        -: 1200:					ASN1_R_NESTED_ASN1_STRING);
+    #####: 1201:				return 0;
+        -: 1202:				}
+    #####: 1203:			if (!asn1_collect(buf, &p, plen, ininf, tag, aclass,
+        -: 1204:						depth + 1))
+        -: 1205:				return 0;
+        -: 1206:			}
+    #####: 1207:		else if (plen && !collect_data(buf, &p, plen))
+        -: 1208:			return 0;
+    #####: 1209:		len -= p - q;
+        -: 1210:		}
+        1: 1211:	if (inf)
+        -: 1212:		{
+    #####: 1213:		ASN1err(ASN1_F_ASN1_COLLECT, ASN1_R_MISSING_EOC);
+    #####: 1214:		return 0;
+        -: 1215:		}
+        1: 1216:	*in = p;
+        1: 1217:	return 1;
+        -: 1218:	}
+        -: 1219:
+    #####: 1220:static int collect_data(BUF_MEM *buf, const unsigned char **p, long plen)
+        -: 1221:	{
+        -: 1222:	int len;
+    #####: 1223:	if (buf)
+        -: 1224:		{
+    #####: 1225:		len = buf->length;
+    #####: 1226:		if (!BUF_MEM_grow_clean(buf, len + plen))
+        -: 1227:			{
+    #####: 1228:			ASN1err(ASN1_F_COLLECT_DATA, ERR_R_MALLOC_FAILURE);
+    #####: 1229:			return 0;
+        -: 1230:			}
+    #####: 1231:		memcpy(buf->data + len, *p, plen);
+        -: 1232:		}
+    #####: 1233:	*p += plen;
+    #####: 1234:	return 1;
+        -: 1235:	}
+        -: 1236:
+        -: 1237:/* Check for ASN1 EOC and swallow it if found */
+        -: 1238:
+        -: 1239:static int asn1_check_eoc(const unsigned char **in, long len)
+        -: 1240:	{
+        -: 1241:	const unsigned char *p;
+  2885993: 1242:	if (len < 2) return 0;
+    #####: 1243:	p = *in;
+  2885989: 1244:	if (!p[0] && !p[1])
+        -: 1245:		{
+    #####: 1246:		*in += 2;
+        -: 1247:		return 1;
+        -: 1248:		}
+        -: 1249:	return 0;
+        -: 1250:	}
+        -: 1251:
+        -: 1252:/* Check an ASN1 tag and length: a bit like ASN1_get_object
+        -: 1253: * but it sets the length for indefinite length constructed
+        -: 1254: * form, we don't know the exact length but we can set an
+        -: 1255: * upper bound to the amount of data available minus the
+        -: 1256: * header length just read.
+        -: 1257: */
+        -: 1258:
+  3611502: 1259:static int asn1_check_tlen(long *olen, int *otag, unsigned char *oclass,
+        -: 1260:				char *inf, char *cst,
+        -: 1261:				const unsigned char **in, long len,
+        -: 1262:				int exptag, int expclass, char opt,
+        -: 1263:				ASN1_TLC *ctx)
+        -: 1264:	{
+        -: 1265:	int i;
+        -: 1266:	int ptag, pclass;
+        -: 1267:	long plen;
+        -: 1268:	const unsigned char *p, *q;
+  3611502: 1269:	p = *in;
+        -: 1270:	q = p;
+        -: 1271:
+  3611502: 1272:	if (ctx && ctx->valid)
+        -: 1273:		{
+   758200: 1274:		i = ctx->ret;
+   758200: 1275:		plen = ctx->plen;
+   758200: 1276:		pclass = ctx->pclass;
+   758200: 1277:		ptag = ctx->ptag;
+   758200: 1278:		p += ctx->hdrlen;
+        -: 1279:		}
+        -: 1280:	else
+        -: 1281:		{
+  2853302: 1282:		i = ASN1_get_object(&p, &plen, &ptag, &pclass, len);
+  2853302: 1283:		if (ctx)
+        -: 1284:			{
+  2853299: 1285:			ctx->ret = i;
+  2853299: 1286:			ctx->plen = plen;
+  2853299: 1287:			ctx->pclass = pclass;
+  2853299: 1288:			ctx->ptag = ptag;
+  2853299: 1289:			ctx->hdrlen = p - q;
+  2853299: 1290:			ctx->valid = 1;
+        -: 1291:			/* If definite length, and no error, length +
+        -: 1292:			 * header can't exceed total amount of data available. 
+        -: 1293:			 */
+  2853299: 1294:			if (!(i & 0x81) && ((plen + ctx->hdrlen) > len))
+        -: 1295:				{
+    #####: 1296:				ASN1err(ASN1_F_ASN1_CHECK_TLEN,
+        -: 1297:							ASN1_R_TOO_LONG);
+    #####: 1298:				asn1_tlc_clear(ctx);
+        -: 1299:				return 0;
+        -: 1300:				}
+        -: 1301:			}
+        -: 1302:		}
+        -: 1303:
+  3611502: 1304:	if (i & 0x80)
+        -: 1305:		{
+    31367: 1306:		ASN1err(ASN1_F_ASN1_CHECK_TLEN, ASN1_R_BAD_OBJECT_HEADER);
+    31367: 1307:		asn1_tlc_clear(ctx);
+        -: 1308:		return 0;
+        -: 1309:		}
+  3580135: 1310:	if (exptag >= 0)
+        -: 1311:		{
+  3138266: 1312:		if ((exptag != ptag) || (expclass != pclass))
+        -: 1313:			{
+        -: 1314:			/* If type is OPTIONAL, not an error:
+        -: 1315:			 * indicate missing type.
+        -: 1316:			 */
+   319000: 1317:			if (opt) return -1;
+     2669: 1318:			asn1_tlc_clear(ctx);
+     2669: 1319:			ASN1err(ASN1_F_ASN1_CHECK_TLEN, ASN1_R_WRONG_TAG);
+     2669: 1320:			return 0;
+        -: 1321:			}
+        -: 1322:		/* We have a tag and class match:
+        -: 1323:		 * assume we are going to do something with it */
+  2819266: 1324:		asn1_tlc_clear(ctx);
+        -: 1325:		}
+        -: 1326:
+  3261135: 1327:	if (i & 1)
+    #####: 1328:		plen = len - (p - q);
+        -: 1329:
+  3261135: 1330:	if (inf)
+  2819266: 1331:		*inf = i & 1;
+        -: 1332:
+  3261135: 1333:	if (cst)
+  2418362: 1334:		*cst = i & V_ASN1_CONSTRUCTED;
+        -: 1335:
+  3261135: 1336:	if (olen)
+  2819266: 1337:		*olen = plen;
+        -: 1338:
+  3261135: 1339:	if (oclass)
+   441869: 1340:		*oclass = pclass;
+        -: 1341:
+  3261135: 1342:	if (otag)
+   441869: 1343:		*otag = ptag;
+        -: 1344:
+  3261135: 1345:	*in = p;
+  3261135: 1346:	return 1;
+        -: 1347:	}

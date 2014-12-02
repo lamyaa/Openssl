@@ -1,0 +1,271 @@
+        -:    0:Source:ocsp_lib.c
+        -:    0:Graph:ocsp_lib.gcno
+        -:    0:Data:ocsp_lib.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* ocsp_lib.c */
+        -:    2:/* Written by Tom Titchener <Tom_Titchener@groove.net> for the OpenSSL
+        -:    3: * project. */
+        -:    4:
+        -:    5:/* History:
+        -:    6:   This file was transfered to Richard Levitte from CertCo by Kathy
+        -:    7:   Weinhold in mid-spring 2000 to be included in OpenSSL or released
+        -:    8:   as a patch kit. */
+        -:    9:
+        -:   10:/* ====================================================================
+        -:   11: * Copyright (c) 1998-2000 The OpenSSL Project.  All rights reserved.
+        -:   12: *
+        -:   13: * Redistribution and use in source and binary forms, with or without
+        -:   14: * modification, are permitted provided that the following conditions
+        -:   15: * are met:
+        -:   16: *
+        -:   17: * 1. Redistributions of source code must retain the above copyright
+        -:   18: *    notice, this list of conditions and the following disclaimer. 
+        -:   19: *
+        -:   20: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   21: *    notice, this list of conditions and the following disclaimer in
+        -:   22: *    the documentation and/or other materials provided with the
+        -:   23: *    distribution.
+        -:   24: *
+        -:   25: * 3. All advertising materials mentioning features or use of this
+        -:   26: *    software must display the following acknowledgment:
+        -:   27: *    "This product includes software developed by the OpenSSL Project
+        -:   28: *    for use in the OpenSSL Toolkit. (http://www.openssl.org/)"
+        -:   29: *
+        -:   30: * 4. The names "OpenSSL Toolkit" and "OpenSSL Project" must not be used to
+        -:   31: *    endorse or promote products derived from this software without
+        -:   32: *    prior written permission. For written permission, please contact
+        -:   33: *    openssl-core@openssl.org.
+        -:   34: *
+        -:   35: * 5. Products derived from this software may not be called "OpenSSL"
+        -:   36: *    nor may "OpenSSL" appear in their names without prior written
+        -:   37: *    permission of the OpenSSL Project.
+        -:   38: *
+        -:   39: * 6. Redistributions of any form whatsoever must retain the following
+        -:   40: *    acknowledgment:
+        -:   41: *    "This product includes software developed by the OpenSSL Project
+        -:   42: *    for use in the OpenSSL Toolkit (http://www.openssl.org/)"
+        -:   43: *
+        -:   44: * THIS SOFTWARE IS PROVIDED BY THE OpenSSL PROJECT ``AS IS'' AND ANY
+        -:   45: * EXPRESSED OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   46: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+        -:   47: * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE OpenSSL PROJECT OR
+        -:   48: * ITS CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+        -:   49: * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+        -:   50: * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+        -:   51: * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   52: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+        -:   53: * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+        -:   54: * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+        -:   55: * OF THE POSSIBILITY OF SUCH DAMAGE.
+        -:   56: * ====================================================================
+        -:   57: *
+        -:   58: * This product includes cryptographic software written by Eric Young
+        -:   59: * (eay@cryptsoft.com).  This product includes software written by Tim
+        -:   60: * Hudson (tjh@cryptsoft.com).
+        -:   61: *
+        -:   62: */
+        -:   63:
+        -:   64:#include <stdio.h>
+        -:   65:#include <cryptlib.h>
+        -:   66:#include <openssl/objects.h>
+        -:   67:#include <openssl/rand.h>
+        -:   68:#include <openssl/x509.h>
+        -:   69:#include <openssl/pem.h>
+        -:   70:#include <openssl/x509v3.h>
+        -:   71:#include <openssl/ocsp.h>
+        -:   72:#include <openssl/asn1t.h>
+        -:   73:
+        -:   74:/* Convert a certificate and its issuer to an OCSP_CERTID */
+        -:   75:
+    #####:   76:OCSP_CERTID *OCSP_cert_to_id(const EVP_MD *dgst, X509 *subject, X509 *issuer)
+        -:   77:{
+        -:   78:	X509_NAME *iname;
+        -:   79:	ASN1_INTEGER *serial;
+        -:   80:	ASN1_BIT_STRING *ikey;
+        -:   81:#ifndef OPENSSL_NO_SHA1
+    #####:   82:	if(!dgst) dgst = EVP_sha1();
+        -:   83:#endif
+    #####:   84:	if (subject)
+        -:   85:		{
+    #####:   86:		iname = X509_get_issuer_name(subject);
+    #####:   87:		serial = X509_get_serialNumber(subject);
+        -:   88:		}
+        -:   89:	else
+        -:   90:		{
+    #####:   91:		iname = X509_get_subject_name(issuer);
+        -:   92:		serial = NULL;
+        -:   93:		}
+    #####:   94:	ikey = X509_get0_pubkey_bitstr(issuer);
+    #####:   95:	return OCSP_cert_id_new(dgst, iname, ikey, serial);
+        -:   96:}
+        -:   97:
+        -:   98:
+    #####:   99:OCSP_CERTID *OCSP_cert_id_new(const EVP_MD *dgst, 
+        -:  100:			      X509_NAME *issuerName, 
+        -:  101:			      ASN1_BIT_STRING* issuerKey, 
+        -:  102:			      ASN1_INTEGER *serialNumber)
+        -:  103:        {
+        -:  104:	int nid;
+        -:  105:        unsigned int i;
+        -:  106:	X509_ALGOR *alg;
+        -:  107:	OCSP_CERTID *cid = NULL;
+        -:  108:	unsigned char md[EVP_MAX_MD_SIZE];
+        -:  109:
+    #####:  110:	if (!(cid = OCSP_CERTID_new())) goto err;
+        -:  111:
+    #####:  112:	alg = cid->hashAlgorithm;
+    #####:  113:	if (alg->algorithm != NULL) ASN1_OBJECT_free(alg->algorithm);
+    #####:  114:	if ((nid = EVP_MD_type(dgst)) == NID_undef)
+        -:  115:	        {
+    #####:  116:		OCSPerr(OCSP_F_OCSP_CERT_ID_NEW,OCSP_R_UNKNOWN_NID);
+    #####:  117:		goto err;
+        -:  118:		}
+    #####:  119:	if (!(alg->algorithm=OBJ_nid2obj(nid))) goto err;
+    #####:  120:	if ((alg->parameter=ASN1_TYPE_new()) == NULL) goto err;
+    #####:  121:	alg->parameter->type=V_ASN1_NULL;
+        -:  122:
+    #####:  123:	if (!X509_NAME_digest(issuerName, dgst, md, &i)) goto digerr;
+    #####:  124:	if (!(ASN1_OCTET_STRING_set(cid->issuerNameHash, md, i))) goto err;
+        -:  125:
+        -:  126:	/* Calculate the issuerKey hash, excluding tag and length */
+    #####:  127:	if (!EVP_Digest(issuerKey->data, issuerKey->length, md, &i, dgst, NULL))
+        -:  128:		goto err;
+        -:  129:
+    #####:  130:	if (!(ASN1_OCTET_STRING_set(cid->issuerKeyHash, md, i))) goto err;
+        -:  131:
+    #####:  132:	if (serialNumber)
+        -:  133:		{
+    #####:  134:		ASN1_INTEGER_free(cid->serialNumber);
+    #####:  135:		if (!(cid->serialNumber = ASN1_INTEGER_dup(serialNumber))) goto err;
+        -:  136:		}
+    #####:  137:	return cid;
+        -:  138:digerr:
+    #####:  139:	OCSPerr(OCSP_F_OCSP_CERT_ID_NEW,OCSP_R_DIGEST_ERR);
+        -:  140:err:
+    #####:  141:	if (cid) OCSP_CERTID_free(cid);
+        -:  142:	return NULL;
+        -:  143:	}
+        -:  144:
+    #####:  145:int OCSP_id_issuer_cmp(OCSP_CERTID *a, OCSP_CERTID *b)
+        -:  146:	{
+        -:  147:	int ret;
+    #####:  148:	ret = OBJ_cmp(a->hashAlgorithm->algorithm, b->hashAlgorithm->algorithm);
+    #####:  149:	if (ret) return ret;
+    #####:  150:	ret = ASN1_OCTET_STRING_cmp(a->issuerNameHash, b->issuerNameHash);
+    #####:  151:	if (ret) return ret;
+    #####:  152:	return ASN1_OCTET_STRING_cmp(a->issuerKeyHash, b->issuerKeyHash);
+        -:  153:	}
+        -:  154:
+    #####:  155:int OCSP_id_cmp(OCSP_CERTID *a, OCSP_CERTID *b)
+        -:  156:	{
+        -:  157:	int ret;
+    #####:  158:	ret = OCSP_id_issuer_cmp(a, b);
+    #####:  159:	if (ret) return ret;
+    #####:  160:	return ASN1_INTEGER_cmp(a->serialNumber, b->serialNumber);
+        -:  161:	}
+        -:  162:
+        -:  163:
+        -:  164:/* Parse a URL and split it up into host, port and path components and whether
+        -:  165: * it is SSL.
+        -:  166: */
+        -:  167:
+    #####:  168:int OCSP_parse_url(char *url, char **phost, char **pport, char **ppath, int *pssl)
+        -:  169:	{
+        -:  170:	char *p, *buf;
+        -:  171:
+        -:  172:	char *host, *port;
+        -:  173:
+    #####:  174:	*phost = NULL;
+    #####:  175:	*pport = NULL;
+    #####:  176:	*ppath = NULL;
+        -:  177:
+        -:  178:	/* dup the buffer since we are going to mess with it */
+    #####:  179:	buf = BUF_strdup(url);
+    #####:  180:	if (!buf) goto mem_err;
+        -:  181:
+        -:  182:	/* Check for initial colon */
+    #####:  183:	p = strchr(buf, ':');
+        -:  184:
+    #####:  185:	if (!p) goto parse_err;
+        -:  186:
+    #####:  187:	*(p++) = '\0';
+        -:  188:
+    #####:  189:	if (!strcmp(buf, "http"))
+        -:  190:		{
+    #####:  191:		*pssl = 0;
+        -:  192:		port = "80";
+        -:  193:		}
+    #####:  194:	else if (!strcmp(buf, "https"))
+        -:  195:		{
+    #####:  196:		*pssl = 1;
+        -:  197:		port = "443";
+        -:  198:		}
+        -:  199:	else
+        -:  200:		goto parse_err;
+        -:  201:
+        -:  202:	/* Check for double slash */
+    #####:  203:	if ((p[0] != '/') || (p[1] != '/'))
+        -:  204:		goto parse_err;
+        -:  205:
+    #####:  206:	p += 2;
+        -:  207:
+        -:  208:	host = p;
+        -:  209:
+        -:  210:	/* Check for trailing part of path */
+        -:  211:
+    #####:  212:	p = strchr(p, '/');
+        -:  213:
+    #####:  214:	if (!p) 
+    #####:  215:		*ppath = BUF_strdup("/");
+        -:  216:	else
+        -:  217:		{
+    #####:  218:		*ppath = BUF_strdup(p);
+        -:  219:		/* Set start of path to 0 so hostname is valid */
+    #####:  220:		*p = '\0';
+        -:  221:		}
+        -:  222:
+    #####:  223:	if (!*ppath) goto mem_err;
+        -:  224:
+        -:  225:	/* Look for optional ':' for port number */
+    #####:  226:	if ((p = strchr(host, ':')))
+        -:  227:		{
+    #####:  228:		*p = 0;
+    #####:  229:		port = p + 1;
+        -:  230:		}
+        -:  231:	else
+        -:  232:		{
+        -:  233:		/* Not found: set default port */
+    #####:  234:		if (*pssl) port = "443";
+        -:  235:		else port = "80";
+        -:  236:		}
+        -:  237:
+    #####:  238:	*pport = BUF_strdup(port);
+    #####:  239:	if (!*pport) goto mem_err;
+        -:  240:
+    #####:  241:	*phost = BUF_strdup(host);
+        -:  242:
+    #####:  243:	if (!*phost) goto mem_err;
+        -:  244:
+    #####:  245:	OPENSSL_free(buf);
+        -:  246:
+    #####:  247:	return 1;
+        -:  248:
+        -:  249:	mem_err:
+    #####:  250:	OCSPerr(OCSP_F_OCSP_PARSE_URL, ERR_R_MALLOC_FAILURE);
+    #####:  251:	goto err;
+        -:  252:
+        -:  253:	parse_err:
+    #####:  254:	OCSPerr(OCSP_F_OCSP_PARSE_URL, OCSP_R_ERROR_PARSING_URL);
+        -:  255:
+        -:  256:
+        -:  257:	err:
+    #####:  258:	if (buf) OPENSSL_free(buf);
+    #####:  259:	if (*ppath) OPENSSL_free(*ppath);
+    #####:  260:	if (*pport) OPENSSL_free(*pport);
+    #####:  261:	if (*phost) OPENSSL_free(*phost);
+        -:  262:	return 0;
+        -:  263:
+        -:  264:	}
+        -:  265:
+    #####:  266:IMPLEMENT_ASN1_DUP_FUNCTION(OCSP_CERTID)

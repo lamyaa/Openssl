@@ -1,0 +1,337 @@
+        -:    0:Source:eng_lib.c
+        -:    0:Graph:eng_lib.gcno
+        -:    0:Data:eng_lib.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* crypto/engine/eng_lib.c */
+        -:    2:/* Written by Geoff Thorpe (geoff@geoffthorpe.net) for the OpenSSL
+        -:    3: * project 2000.
+        -:    4: */
+        -:    5:/* ====================================================================
+        -:    6: * Copyright (c) 1999-2001 The OpenSSL Project.  All rights reserved.
+        -:    7: *
+        -:    8: * Redistribution and use in source and binary forms, with or without
+        -:    9: * modification, are permitted provided that the following conditions
+        -:   10: * are met:
+        -:   11: *
+        -:   12: * 1. Redistributions of source code must retain the above copyright
+        -:   13: *    notice, this list of conditions and the following disclaimer. 
+        -:   14: *
+        -:   15: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   16: *    notice, this list of conditions and the following disclaimer in
+        -:   17: *    the documentation and/or other materials provided with the
+        -:   18: *    distribution.
+        -:   19: *
+        -:   20: * 3. All advertising materials mentioning features or use of this
+        -:   21: *    software must display the following acknowledgment:
+        -:   22: *    "This product includes software developed by the OpenSSL Project
+        -:   23: *    for use in the OpenSSL Toolkit. (http://www.OpenSSL.org/)"
+        -:   24: *
+        -:   25: * 4. The names "OpenSSL Toolkit" and "OpenSSL Project" must not be used to
+        -:   26: *    endorse or promote products derived from this software without
+        -:   27: *    prior written permission. For written permission, please contact
+        -:   28: *    licensing@OpenSSL.org.
+        -:   29: *
+        -:   30: * 5. Products derived from this software may not be called "OpenSSL"
+        -:   31: *    nor may "OpenSSL" appear in their names without prior written
+        -:   32: *    permission of the OpenSSL Project.
+        -:   33: *
+        -:   34: * 6. Redistributions of any form whatsoever must retain the following
+        -:   35: *    acknowledgment:
+        -:   36: *    "This product includes software developed by the OpenSSL Project
+        -:   37: *    for use in the OpenSSL Toolkit (http://www.OpenSSL.org/)"
+        -:   38: *
+        -:   39: * THIS SOFTWARE IS PROVIDED BY THE OpenSSL PROJECT ``AS IS'' AND ANY
+        -:   40: * EXPRESSED OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   41: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+        -:   42: * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE OpenSSL PROJECT OR
+        -:   43: * ITS CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+        -:   44: * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+        -:   45: * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+        -:   46: * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   47: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+        -:   48: * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+        -:   49: * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+        -:   50: * OF THE POSSIBILITY OF SUCH DAMAGE.
+        -:   51: * ====================================================================
+        -:   52: *
+        -:   53: * This product includes cryptographic software written by Eric Young
+        -:   54: * (eay@cryptsoft.com).  This product includes software written by Tim
+        -:   55: * Hudson (tjh@cryptsoft.com).
+        -:   56: *
+        -:   57: */
+        -:   58:
+        -:   59:#include "eng_int.h"
+        -:   60:#include <openssl/rand.h>
+        -:   61:
+        -:   62:/* The "new"/"free" stuff first */
+        -:   63:
+   120000:   64:ENGINE *ENGINE_new(void)
+        -:   65:	{
+        -:   66:	ENGINE *ret;
+        -:   67:
+   120000:   68:	ret = (ENGINE *)OPENSSL_malloc(sizeof(ENGINE));
+   120000:   69:	if(ret == NULL)
+        -:   70:		{
+    #####:   71:		ENGINEerr(ENGINE_F_ENGINE_NEW, ERR_R_MALLOC_FAILURE);
+    #####:   72:		return NULL;
+        -:   73:		}
+        -:   74:	memset(ret, 0, sizeof(ENGINE));
+   120000:   75:	ret->struct_ref = 1;
+        -:   76:	engine_ref_debug(ret, 0, 1)
+   120000:   77:	CRYPTO_new_ex_data(CRYPTO_EX_INDEX_ENGINE, ret, &ret->ex_data);
+   120000:   78:	return ret;
+        -:   79:	}
+        -:   80:
+        -:   81:/* Placed here (close proximity to ENGINE_new) so that modifications to the
+        -:   82: * elements of the ENGINE structure are more likely to be caught and changed
+        -:   83: * here. */
+    #####:   84:void engine_set_all_null(ENGINE *e)
+        -:   85:	{
+    #####:   86:	e->id = NULL;
+    #####:   87:	e->name = NULL;
+    #####:   88:	e->rsa_meth = NULL;
+    #####:   89:	e->dsa_meth = NULL;
+    #####:   90:	e->dh_meth = NULL;
+    #####:   91:	e->rand_meth = NULL;
+    #####:   92:	e->store_meth = NULL;
+    #####:   93:	e->ciphers = NULL;
+    #####:   94:	e->digests = NULL;
+    #####:   95:	e->destroy = NULL;
+    #####:   96:	e->init = NULL;
+    #####:   97:	e->finish = NULL;
+    #####:   98:	e->ctrl = NULL;
+    #####:   99:	e->load_privkey = NULL;
+    #####:  100:	e->load_pubkey = NULL;
+    #####:  101:	e->cmd_defns = NULL;
+    #####:  102:	e->flags = 0;
+    #####:  103:	}
+        -:  104:
+   401942:  105:int engine_free_util(ENGINE *e, int locked)
+        -:  106:	{
+        -:  107:	int i;
+        -:  108:
+   401942:  109:	if(e == NULL)
+        -:  110:		{
+    #####:  111:		ENGINEerr(ENGINE_F_ENGINE_FREE_UTIL,
+        -:  112:			ERR_R_PASSED_NULL_PARAMETER);
+    #####:  113:		return 0;
+        -:  114:		}
+   401942:  115:	if(locked)
+   240000:  116:		i = CRYPTO_add(&e->struct_ref,-1,CRYPTO_LOCK_ENGINE);
+        -:  117:	else
+   161942:  118:		i = --e->struct_ref;
+        -:  119:	engine_ref_debug(e, 0, -1)
+   401942:  120:	if (i > 0) return 1;
+        -:  121:#ifdef REF_CHECK
+        -:  122:	if (i < 0)
+        -:  123:		{
+        -:  124:		fprintf(stderr,"ENGINE_free, bad structural reference count\n");
+        -:  125:		abort();
+        -:  126:		}
+        -:  127:#endif
+        -:  128:	/* Free up any dynamically allocated public key methods */
+   120000:  129:	engine_pkey_meths_free(e);
+   120000:  130:	engine_pkey_asn1_meths_free(e);
+        -:  131:	/* Give the ENGINE a chance to do any structural cleanup corresponding
+        -:  132:	 * to allocation it did in its constructor (eg. unload error strings) */
+   120000:  133:	if(e->destroy)
+   100000:  134:		e->destroy(e);
+   120000:  135:	CRYPTO_free_ex_data(CRYPTO_EX_INDEX_ENGINE, e, &e->ex_data);
+   120000:  136:	OPENSSL_free(e);
+   120000:  137:	return 1;
+        -:  138:	}
+        -:  139:
+   240000:  140:int ENGINE_free(ENGINE *e)
+        -:  141:	{
+   240000:  142:	return engine_free_util(e, 1);
+        -:  143:	}
+        -:  144:
+        -:  145:/* Cleanup stuff */
+        -:  146:
+        -:  147:/* ENGINE_cleanup() is coded such that anything that does work that will need
+        -:  148: * cleanup can register a "cleanup" callback here. That way we don't get linker
+        -:  149: * bloat by referring to all *possible* cleanups, but any linker bloat into code
+        -:  150: * "X" will cause X's cleanup function to end up here. */
+        -:  151:static STACK_OF(ENGINE_CLEANUP_ITEM) *cleanup_stack = NULL;
+    90000:  152:static int int_cleanup_check(int create)
+        -:  153:	{
+    90000:  154:	if(cleanup_stack) return 1;
+    10000:  155:	if(!create) return 0;
+    10000:  156:	cleanup_stack = sk_ENGINE_CLEANUP_ITEM_new_null();
+    10000:  157:	return (cleanup_stack ? 1 : 0);
+        -:  158:	}
+        -:  159:static ENGINE_CLEANUP_ITEM *int_cleanup_item(ENGINE_CLEANUP_CB *cb)
+        -:  160:	{
+    80000:  161:	ENGINE_CLEANUP_ITEM *item = OPENSSL_malloc(sizeof(
+        -:  162:					ENGINE_CLEANUP_ITEM));
+    80000:  163:	if(!item) return NULL;
+    80000:  164:	item->cb = cb;
+        -:  165:	return item;
+        -:  166:	}
+    70000:  167:void engine_cleanup_add_first(ENGINE_CLEANUP_CB *cb)
+        -:  168:	{
+        -:  169:	ENGINE_CLEANUP_ITEM *item;
+   140000:  170:	if(!int_cleanup_check(1)) return;
+        -:  171:	item = int_cleanup_item(cb);
+    70000:  172:	if(item)
+    70000:  173:		sk_ENGINE_CLEANUP_ITEM_insert(cleanup_stack, item, 0);
+        -:  174:	}
+    10000:  175:void engine_cleanup_add_last(ENGINE_CLEANUP_CB *cb)
+        -:  176:	{
+        -:  177:	ENGINE_CLEANUP_ITEM *item;
+    20000:  178:	if(!int_cleanup_check(1)) return;
+        -:  179:	item = int_cleanup_item(cb);
+    10000:  180:	if(item)
+    10000:  181:		sk_ENGINE_CLEANUP_ITEM_push(cleanup_stack, item);
+        -:  182:	}
+        -:  183:/* The API function that performs all cleanup */
+    80000:  184:static void engine_cleanup_cb_free(ENGINE_CLEANUP_ITEM *item)
+        -:  185:	{
+    80000:  186:	(*(item->cb))();
+    80000:  187:	OPENSSL_free(item);
+    80000:  188:	}
+    10000:  189:void ENGINE_cleanup(void)
+        -:  190:	{
+    10000:  191:	if(int_cleanup_check(0))
+        -:  192:		{
+    10000:  193:		sk_ENGINE_CLEANUP_ITEM_pop_free(cleanup_stack,
+        -:  194:			engine_cleanup_cb_free);
+    10000:  195:		cleanup_stack = NULL;
+        -:  196:		}
+        -:  197:	/* FIXME: This should be handled (somehow) through RAND, eg. by it
+        -:  198:	 * registering a cleanup callback. */
+    10000:  199:	RAND_set_rand_method(NULL);
+    10000:  200:	}
+        -:  201:
+        -:  202:/* Now the "ex_data" support */
+        -:  203:
+    #####:  204:int ENGINE_get_ex_new_index(long argl, void *argp, CRYPTO_EX_new *new_func,
+        -:  205:		CRYPTO_EX_dup *dup_func, CRYPTO_EX_free *free_func)
+        -:  206:	{
+    #####:  207:	return CRYPTO_get_ex_new_index(CRYPTO_EX_INDEX_ENGINE, argl, argp,
+        -:  208:			new_func, dup_func, free_func);
+        -:  209:	}
+        -:  210:
+    #####:  211:int ENGINE_set_ex_data(ENGINE *e, int idx, void *arg)
+        -:  212:	{
+    #####:  213:	return(CRYPTO_set_ex_data(&e->ex_data, idx, arg));
+        -:  214:	}
+        -:  215:
+    #####:  216:void *ENGINE_get_ex_data(const ENGINE *e, int idx)
+        -:  217:	{
+    #####:  218:	return(CRYPTO_get_ex_data(&e->ex_data, idx));
+        -:  219:	}
+        -:  220:
+        -:  221:/* Functions to get/set an ENGINE's elements - mainly to avoid exposing the
+        -:  222: * ENGINE structure itself. */
+        -:  223:
+   120000:  224:int ENGINE_set_id(ENGINE *e, const char *id)
+        -:  225:	{
+   120000:  226:	if(id == NULL)
+        -:  227:		{
+    #####:  228:		ENGINEerr(ENGINE_F_ENGINE_SET_ID,
+        -:  229:			ERR_R_PASSED_NULL_PARAMETER);
+    #####:  230:		return 0;
+        -:  231:		}
+   120000:  232:	e->id = id;
+   120000:  233:	return 1;
+        -:  234:	}
+        -:  235:
+   120000:  236:int ENGINE_set_name(ENGINE *e, const char *name)
+        -:  237:	{
+   120000:  238:	if(name == NULL)
+        -:  239:		{
+    #####:  240:		ENGINEerr(ENGINE_F_ENGINE_SET_NAME,
+        -:  241:			ERR_R_PASSED_NULL_PARAMETER);
+    #####:  242:		return 0;
+        -:  243:		}
+   120000:  244:	e->name = name;
+   120000:  245:	return 1;
+        -:  246:	}
+        -:  247:
+   100000:  248:int ENGINE_set_destroy_function(ENGINE *e, ENGINE_GEN_INT_FUNC_PTR destroy_f)
+        -:  249:	{
+   100000:  250:	e->destroy = destroy_f;
+   100000:  251:	return 1;
+        -:  252:	}
+        -:  253:
+   120000:  254:int ENGINE_set_init_function(ENGINE *e, ENGINE_GEN_INT_FUNC_PTR init_f)
+        -:  255:	{
+   120000:  256:	e->init = init_f;
+   120000:  257:	return 1;
+        -:  258:	}
+        -:  259:
+   110000:  260:int ENGINE_set_finish_function(ENGINE *e, ENGINE_GEN_INT_FUNC_PTR finish_f)
+        -:  261:	{
+   110000:  262:	e->finish = finish_f;
+   110000:  263:	return 1;
+        -:  264:	}
+        -:  265:
+   110000:  266:int ENGINE_set_ctrl_function(ENGINE *e, ENGINE_CTRL_FUNC_PTR ctrl_f)
+        -:  267:	{
+   110000:  268:	e->ctrl = ctrl_f;
+   110000:  269:	return 1;
+        -:  270:	}
+        -:  271:
+    10000:  272:int ENGINE_set_flags(ENGINE *e, int flags)
+        -:  273:	{
+    10000:  274:	e->flags = flags;
+    10000:  275:	return 1;
+        -:  276:	}
+        -:  277:
+   100000:  278:int ENGINE_set_cmd_defns(ENGINE *e, const ENGINE_CMD_DEFN *defns)
+        -:  279:	{
+   100000:  280:	e->cmd_defns = defns;
+   100000:  281:	return 1;
+        -:  282:	}
+        -:  283:
+    #####:  284:const char *ENGINE_get_id(const ENGINE *e)
+        -:  285:	{
+    #####:  286:	return e->id;
+        -:  287:	}
+        -:  288:
+    #####:  289:const char *ENGINE_get_name(const ENGINE *e)
+        -:  290:	{
+    #####:  291:	return e->name;
+        -:  292:	}
+        -:  293:
+    #####:  294:ENGINE_GEN_INT_FUNC_PTR ENGINE_get_destroy_function(const ENGINE *e)
+        -:  295:	{
+    #####:  296:	return e->destroy;
+        -:  297:	}
+        -:  298:
+    #####:  299:ENGINE_GEN_INT_FUNC_PTR ENGINE_get_init_function(const ENGINE *e)
+        -:  300:	{
+    #####:  301:	return e->init;
+        -:  302:	}
+        -:  303:
+    #####:  304:ENGINE_GEN_INT_FUNC_PTR ENGINE_get_finish_function(const ENGINE *e)
+        -:  305:	{
+    #####:  306:	return e->finish;
+        -:  307:	}
+        -:  308:
+    #####:  309:ENGINE_CTRL_FUNC_PTR ENGINE_get_ctrl_function(const ENGINE *e)
+        -:  310:	{
+    #####:  311:	return e->ctrl;
+        -:  312:	}
+        -:  313:
+    #####:  314:int ENGINE_get_flags(const ENGINE *e)
+        -:  315:	{
+    #####:  316:	return e->flags;
+        -:  317:	}
+        -:  318:
+    #####:  319:const ENGINE_CMD_DEFN *ENGINE_get_cmd_defns(const ENGINE *e)
+        -:  320:	{
+    #####:  321:	return e->cmd_defns;
+        -:  322:	}
+        -:  323:
+        -:  324:/* eng_lib.o is pretty much linked into anything that touches ENGINE already, so
+        -:  325: * put the "static_state" hack here. */
+        -:  326:
+        -:  327:static int internal_static_hack = 0;
+        -:  328:
+    #####:  329:void *ENGINE_get_static_state(void)
+        -:  330:	{
+    #####:  331:	return &internal_static_hack;
+        -:  332:	}

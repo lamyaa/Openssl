@@ -1,0 +1,362 @@
+        -:    0:Source:srp_lib.c
+        -:    0:Graph:srp_lib.gcno
+        -:    0:Data:srp_lib.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* crypto/srp/srp_lib.c */
+        -:    2:/* Written by Christophe Renou (christophe.renou@edelweb.fr) with 
+        -:    3: * the precious help of Peter Sylvester (peter.sylvester@edelweb.fr) 
+        -:    4: * for the EdelKey project and contributed to the OpenSSL project 2004.
+        -:    5: */
+        -:    6:/* ====================================================================
+        -:    7: * Copyright (c) 2004 The OpenSSL Project.  All rights reserved.
+        -:    8: *
+        -:    9: * Redistribution and use in source and binary forms, with or without
+        -:   10: * modification, are permitted provided that the following conditions
+        -:   11: * are met:
+        -:   12: *
+        -:   13: * 1. Redistributions of source code must retain the above copyright
+        -:   14: *    notice, this list of conditions and the following disclaimer. 
+        -:   15: *
+        -:   16: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   17: *    notice, this list of conditions and the following disclaimer in
+        -:   18: *    the documentation and/or other materials provided with the
+        -:   19: *    distribution.
+        -:   20: *
+        -:   21: * 3. All advertising materials mentioning features or use of this
+        -:   22: *    software must display the following acknowledgment:
+        -:   23: *    "This product includes software developed by the OpenSSL Project
+        -:   24: *    for use in the OpenSSL Toolkit. (http://www.OpenSSL.org/)"
+        -:   25: *
+        -:   26: * 4. The names "OpenSSL Toolkit" and "OpenSSL Project" must not be used to
+        -:   27: *    endorse or promote products derived from this software without
+        -:   28: *    prior written permission. For written permission, please contact
+        -:   29: *    licensing@OpenSSL.org.
+        -:   30: *
+        -:   31: * 5. Products derived from this software may not be called "OpenSSL"
+        -:   32: *    nor may "OpenSSL" appear in their names without prior written
+        -:   33: *    permission of the OpenSSL Project.
+        -:   34: *
+        -:   35: * 6. Redistributions of any form whatsoever must retain the following
+        -:   36: *    acknowledgment:
+        -:   37: *    "This product includes software developed by the OpenSSL Project
+        -:   38: *    for use in the OpenSSL Toolkit (http://www.OpenSSL.org/)"
+        -:   39: *
+        -:   40: * THIS SOFTWARE IS PROVIDED BY THE OpenSSL PROJECT ``AS IS'' AND ANY
+        -:   41: * EXPRESSED OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   42: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+        -:   43: * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE OpenSSL PROJECT OR
+        -:   44: * ITS CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+        -:   45: * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+        -:   46: * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+        -:   47: * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   48: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+        -:   49: * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+        -:   50: * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+        -:   51: * OF THE POSSIBILITY OF SUCH DAMAGE.
+        -:   52: * ====================================================================
+        -:   53: *
+        -:   54: * This product includes cryptographic software written by Eric Young
+        -:   55: * (eay@cryptsoft.com).  This product includes software written by Tim
+        -:   56: * Hudson (tjh@cryptsoft.com).
+        -:   57: *
+        -:   58: */
+        -:   59:#ifndef OPENSSL_NO_SRP
+        -:   60:#include "cryptlib.h"
+        -:   61:#include "srp_lcl.h"
+        -:   62:#include <openssl/srp.h>
+        -:   63:#include <openssl/evp.h>
+        -:   64:
+        -:   65:#if (BN_BYTES == 8)
+        -:   66:#define bn_pack4(a1,a2,a3,a4) 0x##a1##a2##a3##a4##ul
+        -:   67:#endif
+        -:   68:#if (BN_BYTES == 4)
+        -:   69:#define bn_pack4(a1,a2,a3,a4)  0x##a3##a4##ul, 0x##a1##a2##ul
+        -:   70:#endif
+        -:   71:#if (BN_BYTES == 2)
+        -:   72:#define bn_pack4(a1,a2,a3,a4) 0x##a4##u,0x##a3##u,0x##a2##u,0x##a1##u
+        -:   73:#endif
+        -:   74:
+        -:   75:
+        -:   76:#include "srp_grps.h"
+        -:   77:
+    #####:   78:static BIGNUM *srp_Calc_k(BIGNUM *N, BIGNUM *g)
+        -:   79:	{
+        -:   80:	/* k = SHA1(N | PAD(g)) -- tls-srp draft 8 */
+        -:   81:
+        -:   82:	unsigned char digest[SHA_DIGEST_LENGTH];
+        -:   83:	unsigned char *tmp;
+        -:   84:	EVP_MD_CTX ctxt;
+        -:   85:	int longg ;
+    #####:   86:	int longN = BN_num_bytes(N);
+        -:   87:
+    #####:   88:	if ((tmp = OPENSSL_malloc(longN)) == NULL)
+        -:   89:		return NULL;
+    #####:   90:	BN_bn2bin(N,tmp) ;
+        -:   91:
+    #####:   92:	EVP_MD_CTX_init(&ctxt);
+    #####:   93:	EVP_DigestInit_ex(&ctxt, EVP_sha1(), NULL);
+    #####:   94:	EVP_DigestUpdate(&ctxt, tmp, longN);
+        -:   95:
+        -:   96:	memset(tmp, 0, longN);
+    #####:   97:	longg = BN_bn2bin(g,tmp) ;
+        -:   98:        /* use the zeros behind to pad on left */
+    #####:   99:	EVP_DigestUpdate(&ctxt, tmp + longg, longN-longg);
+    #####:  100:	EVP_DigestUpdate(&ctxt, tmp, longg);
+    #####:  101:	OPENSSL_free(tmp);
+        -:  102:
+    #####:  103:	EVP_DigestFinal_ex(&ctxt, digest, NULL);
+    #####:  104:	EVP_MD_CTX_cleanup(&ctxt);
+    #####:  105:	return BN_bin2bn(digest, sizeof(digest), NULL);	
+        -:  106:	}
+        -:  107:
+    #####:  108:BIGNUM *SRP_Calc_u(BIGNUM *A, BIGNUM *B, BIGNUM *N)
+        -:  109:	{
+        -:  110:	/* k = SHA1(PAD(A) || PAD(B) ) -- tls-srp draft 8 */
+        -:  111:
+        -:  112:	BIGNUM *u;	
+        -:  113:	unsigned char cu[SHA_DIGEST_LENGTH];
+        -:  114:	unsigned char *cAB;
+        -:  115:	EVP_MD_CTX ctxt;
+        -:  116:	int longN;  
+    #####:  117:	if ((A == NULL) ||(B == NULL) || (N == NULL))
+        -:  118:		return NULL;
+        -:  119:
+    #####:  120:	longN= BN_num_bytes(N);
+        -:  121:
+    #####:  122:	if ((cAB = OPENSSL_malloc(2*longN)) == NULL) 
+        -:  123:		return NULL;
+        -:  124:
+    #####:  125:	memset(cAB, 0, longN);
+        -:  126:
+    #####:  127:	EVP_MD_CTX_init(&ctxt);
+    #####:  128:	EVP_DigestInit_ex(&ctxt, EVP_sha1(), NULL);
+    #####:  129:	EVP_DigestUpdate(&ctxt, cAB + BN_bn2bin(A,cAB+longN), longN);
+    #####:  130:	EVP_DigestUpdate(&ctxt, cAB + BN_bn2bin(B,cAB+longN), longN);
+    #####:  131:	OPENSSL_free(cAB);
+    #####:  132:	EVP_DigestFinal_ex(&ctxt, cu, NULL);
+    #####:  133:	EVP_MD_CTX_cleanup(&ctxt);
+        -:  134:
+    #####:  135:	if (!(u = BN_bin2bn(cu, sizeof(cu), NULL)))
+        -:  136:		return NULL;
+    #####:  137:	if (!BN_is_zero(u))
+        -:  138:		return u;
+    #####:  139:	BN_free(u);
+    #####:  140:	return NULL;
+        -:  141:}
+        -:  142:
+    #####:  143:BIGNUM *SRP_Calc_server_key(BIGNUM *A, BIGNUM *v, BIGNUM *u, BIGNUM *b, BIGNUM *N)
+        -:  144:	{
+        -:  145:	BIGNUM *tmp = NULL, *S = NULL;
+        -:  146:	BN_CTX *bn_ctx; 
+        -:  147:	
+    #####:  148:	if (u == NULL || A == NULL || v == NULL || b == NULL || N == NULL)
+        -:  149:		return NULL; 
+        -:  150:
+    #####:  151:	if ((bn_ctx = BN_CTX_new()) == NULL ||
+    #####:  152:		(tmp = BN_new()) == NULL ||
+        -:  153:		(S = BN_new()) == NULL )
+        -:  154:		goto err;
+        -:  155:
+        -:  156:	/* S = (A*v**u) ** b */ 
+        -:  157:
+    #####:  158:	if (!BN_mod_exp(tmp,v,u,N,bn_ctx))
+        -:  159:		goto err;
+    #####:  160:	if (!BN_mod_mul(tmp,A,tmp,N,bn_ctx))
+        -:  161:		goto err;
+    #####:  162:	if (!BN_mod_exp(S,tmp,b,N,bn_ctx))
+        -:  163:		goto err;
+        -:  164:err:
+    #####:  165:	BN_CTX_free(bn_ctx);
+    #####:  166:	BN_clear_free(tmp);
+    #####:  167:	return S;
+        -:  168:	}
+        -:  169:
+    #####:  170:BIGNUM *SRP_Calc_B(BIGNUM *b, BIGNUM *N, BIGNUM *g, BIGNUM *v)
+        -:  171:	{
+        -:  172:	BIGNUM  *kv = NULL, *gb = NULL;
+        -:  173:	BIGNUM *B = NULL, *k = NULL;
+        -:  174:	BN_CTX *bn_ctx;
+        -:  175:
+    #####:  176:	if (b == NULL || N == NULL || g == NULL || v == NULL ||
+        -:  177:		(bn_ctx = BN_CTX_new()) == NULL)
+        -:  178:		return NULL; 
+        -:  179:
+    #####:  180:	if ( (kv = BN_new()) == NULL ||
+    #####:  181:		(gb = BN_new()) == NULL ||
+        -:  182:		(B = BN_new())== NULL)
+        -:  183:		goto err;
+        -:  184:
+        -:  185:	/* B = g**b + k*v */
+        -:  186:
+    #####:  187:	if (!BN_mod_exp(gb,g,b,N,bn_ctx) ||
+    #####:  188:	   !(k = srp_Calc_k(N,g)) ||
+    #####:  189:	   !BN_mod_mul(kv,v,k,N,bn_ctx) || 
+    #####:  190:	   !BN_mod_add(B,gb,kv,N,bn_ctx))
+        -:  191:		{
+    #####:  192:		BN_free(B);
+        -:  193:		B = NULL;
+        -:  194:		}
+        -:  195:err:
+    #####:  196:	BN_CTX_free(bn_ctx);
+    #####:  197:	BN_clear_free(kv);
+    #####:  198:	BN_clear_free(gb);
+    #####:  199:	BN_free(k); 
+    #####:  200:	return B;
+        -:  201:	}
+        -:  202:
+    #####:  203:BIGNUM *SRP_Calc_x(BIGNUM *s, const char *user, const char *pass)
+        -:  204:	{
+        -:  205:	unsigned char dig[SHA_DIGEST_LENGTH];
+        -:  206:	EVP_MD_CTX ctxt;
+        -:  207:	unsigned char *cs;
+        -:  208:
+    #####:  209:	if ((s == NULL) ||
+    #####:  210:		(user == NULL) ||
+        -:  211:		(pass == NULL))
+        -:  212:		return NULL;
+        -:  213:
+    #####:  214:	if ((cs = OPENSSL_malloc(BN_num_bytes(s))) == NULL)
+        -:  215:		return NULL;
+        -:  216:
+    #####:  217:	EVP_MD_CTX_init(&ctxt);
+    #####:  218:	EVP_DigestInit_ex(&ctxt, EVP_sha1(), NULL);
+    #####:  219:	EVP_DigestUpdate(&ctxt, user, strlen(user));
+    #####:  220:	EVP_DigestUpdate(&ctxt, ":", 1);
+    #####:  221:	EVP_DigestUpdate(&ctxt, pass, strlen(pass));
+    #####:  222:	EVP_DigestFinal_ex(&ctxt, dig, NULL);
+        -:  223:
+    #####:  224:	EVP_DigestInit_ex(&ctxt, EVP_sha1(), NULL);
+    #####:  225:	BN_bn2bin(s,cs);
+    #####:  226:	EVP_DigestUpdate(&ctxt, cs, BN_num_bytes(s));
+    #####:  227:	OPENSSL_free(cs);
+    #####:  228:	EVP_DigestUpdate(&ctxt, dig, sizeof(dig));
+    #####:  229:	EVP_DigestFinal_ex(&ctxt, dig, NULL);
+    #####:  230:	EVP_MD_CTX_cleanup(&ctxt);
+        -:  231:
+    #####:  232:	return BN_bin2bn(dig, sizeof(dig), NULL);
+        -:  233:	}
+        -:  234:
+    #####:  235:BIGNUM *SRP_Calc_A(BIGNUM *a, BIGNUM *N, BIGNUM *g)
+        -:  236:	{
+        -:  237:	BN_CTX *bn_ctx; 
+        -:  238:	BIGNUM * A = NULL;
+        -:  239:
+    #####:  240:	if (a == NULL || N == NULL || g == NULL ||
+        -:  241:		(bn_ctx = BN_CTX_new()) == NULL) 
+        -:  242:		return NULL;
+        -:  243:
+    #####:  244:	if ((A = BN_new()) != NULL &&
+    #####:  245:	   !BN_mod_exp(A,g,a,N,bn_ctx))
+        -:  246:		{
+    #####:  247:		BN_free(A);
+        -:  248:		A = NULL;
+        -:  249:		}
+    #####:  250:	BN_CTX_free(bn_ctx);
+    #####:  251:	return A;
+        -:  252:	}
+        -:  253:
+        -:  254:
+    #####:  255:BIGNUM *SRP_Calc_client_key(BIGNUM *N, BIGNUM *B, BIGNUM *g, BIGNUM *x, BIGNUM *a, BIGNUM *u)
+        -:  256:	{
+        -:  257:	BIGNUM *tmp = NULL, *tmp2 = NULL, *tmp3 = NULL , *k = NULL, *K = NULL;
+        -:  258:	BN_CTX *bn_ctx;
+        -:  259:
+    #####:  260:	if (u == NULL || B == NULL || N == NULL || g == NULL || x == NULL || a == NULL ||
+        -:  261:		(bn_ctx = BN_CTX_new()) == NULL)
+        -:  262:		return NULL; 
+        -:  263:
+    #####:  264:	if ((tmp = BN_new()) == NULL ||
+    #####:  265:		(tmp2 = BN_new())== NULL ||
+    #####:  266:		(tmp3 = BN_new())== NULL ||
+        -:  267:		(K = BN_new()) == NULL)
+        -:  268:		goto err;
+        -:  269:	
+    #####:  270:	if (!BN_mod_exp(tmp,g,x,N,bn_ctx))
+        -:  271:		goto err;
+    #####:  272:	if (!(k = srp_Calc_k(N,g)))
+        -:  273:		goto err;
+    #####:  274:	if (!BN_mod_mul(tmp2,tmp,k,N,bn_ctx))
+        -:  275:		goto err;
+    #####:  276:	if (!BN_mod_sub(tmp,B,tmp2,N,bn_ctx))
+        -:  277:		goto err;
+        -:  278:
+    #####:  279:	if (!BN_mod_mul(tmp3,u,x,N,bn_ctx))
+        -:  280:		goto err;
+    #####:  281:	if (!BN_mod_add(tmp2,a,tmp3,N,bn_ctx))
+        -:  282:		goto err;
+    #####:  283:	if (!BN_mod_exp(K,tmp,tmp2,N,bn_ctx))
+        -:  284:		goto err;
+        -:  285:
+        -:  286:err :
+    #####:  287:	BN_CTX_free(bn_ctx);
+    #####:  288:	BN_clear_free(tmp);
+    #####:  289:	BN_clear_free(tmp2);
+    #####:  290:	BN_clear_free(tmp3);
+    #####:  291:	BN_free(k);
+    #####:  292:	return K;	
+        -:  293:	}
+        -:  294:
+    #####:  295:int SRP_Verify_B_mod_N(BIGNUM *B, BIGNUM *N)
+        -:  296:	{
+        -:  297:	BIGNUM *r;
+        -:  298:	BN_CTX *bn_ctx; 
+        -:  299:	int ret = 0;
+        -:  300:
+    #####:  301:	if (B == NULL || N == NULL ||
+        -:  302:		(bn_ctx = BN_CTX_new()) == NULL)
+        -:  303:		return 0;
+        -:  304:
+    #####:  305:	if ((r = BN_new()) == NULL)
+        -:  306:		goto err;
+        -:  307:	/* Checks if B % N == 0 */
+    #####:  308:	if (!BN_nnmod(r,B,N,bn_ctx))
+        -:  309:		goto err;
+    #####:  310:	ret = !BN_is_zero(r);
+        -:  311:err:
+    #####:  312:	BN_CTX_free(bn_ctx);
+    #####:  313:	BN_free(r);
+    #####:  314:	return ret;
+        -:  315:	}
+        -:  316:
+    #####:  317:int SRP_Verify_A_mod_N(BIGNUM *A, BIGNUM *N)
+        -:  318:	{
+        -:  319:	/* Checks if A % N == 0 */
+    #####:  320:	return SRP_Verify_B_mod_N(A,N) ;
+        -:  321:	}
+        -:  322:
+        -:  323:
+        -:  324:/* Check if G and N are kwown parameters. 
+        -:  325:   The values have been generated from the ietf-tls-srp draft version 8
+        -:  326:*/
+    #####:  327:char *SRP_check_known_gN_param(BIGNUM *g, BIGNUM *N)
+        -:  328:	{
+        -:  329:	size_t i;
+    #####:  330:	if ((g == NULL) || (N == NULL))
+        -:  331:		return 0;
+        -:  332:
+        -:  333:	srp_bn_print(g);
+        -:  334:	srp_bn_print(N);
+        -:  335:
+    #####:  336:	for(i = 0; i < KNOWN_GN_NUMBER; i++)
+        -:  337:		{
+    #####:  338:		if (BN_cmp(knowngN[i].g, g) == 0 && BN_cmp(knowngN[i].N, N) == 0) 
+    #####:  339:			return knowngN[i].id;
+        -:  340:		}
+        -:  341:	return NULL;
+        -:  342:	}
+        -:  343:
+    #####:  344:SRP_gN *SRP_get_default_gN(const char *id)
+        -:  345:	{
+        -:  346:	size_t i;
+        -:  347:
+    #####:  348:	if (id == NULL) 
+        -:  349:		return knowngN;
+    #####:  350:	for(i = 0; i < KNOWN_GN_NUMBER; i++)
+        -:  351:		{
+    #####:  352:		if (strcmp(knowngN[i].id, id)==0)
+    #####:  353:			return knowngN + i;
+        -:  354:		}
+        -:  355:	return NULL;
+        -:  356:	}
+        -:  357:#endif

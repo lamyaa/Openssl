@@ -1,0 +1,247 @@
+        -:    0:Source:pem_pk8.c
+        -:    0:Graph:pem_pk8.gcno
+        -:    0:Data:pem_pk8.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* crypto/pem/pem_pkey.c */
+        -:    2:/* Copyright (C) 1995-1998 Eric Young (eay@cryptsoft.com)
+        -:    3: * All rights reserved.
+        -:    4: *
+        -:    5: * This package is an SSL implementation written
+        -:    6: * by Eric Young (eay@cryptsoft.com).
+        -:    7: * The implementation was written so as to conform with Netscapes SSL.
+        -:    8: * 
+        -:    9: * This library is free for commercial and non-commercial use as long as
+        -:   10: * the following conditions are aheared to.  The following conditions
+        -:   11: * apply to all code found in this distribution, be it the RC4, RSA,
+        -:   12: * lhash, DES, etc., code; not just the SSL code.  The SSL documentation
+        -:   13: * included with this distribution is covered by the same copyright terms
+        -:   14: * except that the holder is Tim Hudson (tjh@cryptsoft.com).
+        -:   15: * 
+        -:   16: * Copyright remains Eric Young's, and as such any Copyright notices in
+        -:   17: * the code are not to be removed.
+        -:   18: * If this package is used in a product, Eric Young should be given attribution
+        -:   19: * as the author of the parts of the library used.
+        -:   20: * This can be in the form of a textual message at program startup or
+        -:   21: * in documentation (online or textual) provided with the package.
+        -:   22: * 
+        -:   23: * Redistribution and use in source and binary forms, with or without
+        -:   24: * modification, are permitted provided that the following conditions
+        -:   25: * are met:
+        -:   26: * 1. Redistributions of source code must retain the copyright
+        -:   27: *    notice, this list of conditions and the following disclaimer.
+        -:   28: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   29: *    notice, this list of conditions and the following disclaimer in the
+        -:   30: *    documentation and/or other materials provided with the distribution.
+        -:   31: * 3. All advertising materials mentioning features or use of this software
+        -:   32: *    must display the following acknowledgement:
+        -:   33: *    "This product includes cryptographic software written by
+        -:   34: *     Eric Young (eay@cryptsoft.com)"
+        -:   35: *    The word 'cryptographic' can be left out if the rouines from the library
+        -:   36: *    being used are not cryptographic related :-).
+        -:   37: * 4. If you include any Windows specific code (or a derivative thereof) from 
+        -:   38: *    the apps directory (application code) you must include an acknowledgement:
+        -:   39: *    "This product includes software written by Tim Hudson (tjh@cryptsoft.com)"
+        -:   40: * 
+        -:   41: * THIS SOFTWARE IS PROVIDED BY ERIC YOUNG ``AS IS'' AND
+        -:   42: * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   43: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+        -:   44: * ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+        -:   45: * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+        -:   46: * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+        -:   47: * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   48: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+        -:   49: * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+        -:   50: * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+        -:   51: * SUCH DAMAGE.
+        -:   52: * 
+        -:   53: * The licence and distribution terms for any publically available version or
+        -:   54: * derivative of this code cannot be changed.  i.e. this code cannot simply be
+        -:   55: * copied and put under another distribution licence
+        -:   56: * [including the GNU Public Licence.]
+        -:   57: */
+        -:   58:
+        -:   59:#include <stdio.h>
+        -:   60:#include "cryptlib.h"
+        -:   61:#include <openssl/buffer.h>
+        -:   62:#include <openssl/objects.h>
+        -:   63:#include <openssl/evp.h>
+        -:   64:#include <openssl/rand.h>
+        -:   65:#include <openssl/x509.h>
+        -:   66:#include <openssl/pkcs12.h>
+        -:   67:#include <openssl/pem.h>
+        -:   68:
+        -:   69:static int do_pk8pkey(BIO *bp, EVP_PKEY *x, int isder,
+        -:   70:				int nid, const EVP_CIPHER *enc,
+        -:   71:				char *kstr, int klen,
+        -:   72:				pem_password_cb *cb, void *u);
+        -:   73:static int do_pk8pkey_fp(FILE *bp, EVP_PKEY *x, int isder,
+        -:   74:				int nid, const EVP_CIPHER *enc,
+        -:   75:				char *kstr, int klen,
+        -:   76:				pem_password_cb *cb, void *u);
+        -:   77:
+        -:   78:/* These functions write a private key in PKCS#8 format: it is a "drop in"
+        -:   79: * replacement for PEM_write_bio_PrivateKey() and friends. As usual if 'enc'
+        -:   80: * is NULL then it uses the unencrypted private key form. The 'nid' versions
+        -:   81: * uses PKCS#5 v1.5 PBE algorithms whereas the others use PKCS#5 v2.0.
+        -:   82: */
+        -:   83:
+    #####:   84:int PEM_write_bio_PKCS8PrivateKey_nid(BIO *bp, EVP_PKEY *x, int nid,
+        -:   85:				  char *kstr, int klen,
+        -:   86:				  pem_password_cb *cb, void *u)
+        -:   87:{
+    #####:   88:	return do_pk8pkey(bp, x, 0, nid, NULL, kstr, klen, cb, u);
+        -:   89:}
+        -:   90:
+    #####:   91:int PEM_write_bio_PKCS8PrivateKey(BIO *bp, EVP_PKEY *x, const EVP_CIPHER *enc,
+        -:   92:				  char *kstr, int klen,
+        -:   93:				  pem_password_cb *cb, void *u)
+        -:   94:{
+    #####:   95:	return do_pk8pkey(bp, x, 0, -1, enc, kstr, klen, cb, u);
+        -:   96:}
+        -:   97:
+    #####:   98:int i2d_PKCS8PrivateKey_bio(BIO *bp, EVP_PKEY *x, const EVP_CIPHER *enc,
+        -:   99:				  char *kstr, int klen,
+        -:  100:				  pem_password_cb *cb, void *u)
+        -:  101:{
+    #####:  102:	return do_pk8pkey(bp, x, 1, -1, enc, kstr, klen, cb, u);
+        -:  103:}
+        -:  104:
+    #####:  105:int i2d_PKCS8PrivateKey_nid_bio(BIO *bp, EVP_PKEY *x, int nid,
+        -:  106:				  char *kstr, int klen,
+        -:  107:				  pem_password_cb *cb, void *u)
+        -:  108:{
+    #####:  109:	return do_pk8pkey(bp, x, 1, nid, NULL, kstr, klen, cb, u);
+        -:  110:}
+        -:  111:
+    #####:  112:static int do_pk8pkey(BIO *bp, EVP_PKEY *x, int isder, int nid, const EVP_CIPHER *enc,
+        -:  113:				  char *kstr, int klen,
+        -:  114:				  pem_password_cb *cb, void *u)
+        -:  115:{
+        -:  116:	X509_SIG *p8;
+        -:  117:	PKCS8_PRIV_KEY_INFO *p8inf;
+        -:  118:	char buf[PEM_BUFSIZE];
+        -:  119:	int ret;
+    #####:  120:	if(!(p8inf = EVP_PKEY2PKCS8(x))) {
+    #####:  121:		PEMerr(PEM_F_DO_PK8PKEY,
+        -:  122:					PEM_R_ERROR_CONVERTING_PRIVATE_KEY);
+    #####:  123:		return 0;
+        -:  124:	}
+    #####:  125:	if(enc || (nid != -1)) {
+    #####:  126:		if(!kstr) {
+    #####:  127:			if(!cb) klen = PEM_def_callback(buf, PEM_BUFSIZE, 1, u);
+    #####:  128:			else klen = cb(buf, PEM_BUFSIZE, 1, u);
+    #####:  129:			if(klen <= 0) {
+    #####:  130:				PEMerr(PEM_F_DO_PK8PKEY,PEM_R_READ_KEY);
+    #####:  131:				PKCS8_PRIV_KEY_INFO_free(p8inf);
+    #####:  132:				return 0;
+        -:  133:			}
+        -:  134:				
+        -:  135:			kstr = buf;
+        -:  136:		}
+    #####:  137:		p8 = PKCS8_encrypt(nid, enc, kstr, klen, NULL, 0, 0, p8inf);
+    #####:  138:		if(kstr == buf) OPENSSL_cleanse(buf, klen);
+    #####:  139:		PKCS8_PRIV_KEY_INFO_free(p8inf);
+    #####:  140:		if(isder) ret = i2d_PKCS8_bio(bp, p8);
+    #####:  141:		else ret = PEM_write_bio_PKCS8(bp, p8);
+    #####:  142:		X509_SIG_free(p8);
+    #####:  143:		return ret;
+        -:  144:	} else {
+    #####:  145:		if(isder) ret = i2d_PKCS8_PRIV_KEY_INFO_bio(bp, p8inf);
+    #####:  146:		else ret = PEM_write_bio_PKCS8_PRIV_KEY_INFO(bp, p8inf);
+    #####:  147:		PKCS8_PRIV_KEY_INFO_free(p8inf);
+    #####:  148:		return ret;
+        -:  149:	}
+        -:  150:}
+        -:  151:
+    #####:  152:EVP_PKEY *d2i_PKCS8PrivateKey_bio(BIO *bp, EVP_PKEY **x, pem_password_cb *cb, void *u)
+        -:  153:{
+        -:  154:	PKCS8_PRIV_KEY_INFO *p8inf = NULL;
+        -:  155:	X509_SIG *p8 = NULL;
+        -:  156:	int klen;
+        -:  157:	EVP_PKEY *ret;
+        -:  158:	char psbuf[PEM_BUFSIZE];
+    #####:  159:	p8 = d2i_PKCS8_bio(bp, NULL);
+    #####:  160:	if(!p8) return NULL;
+    #####:  161:	if (cb) klen=cb(psbuf,PEM_BUFSIZE,0,u);
+    #####:  162:	else klen=PEM_def_callback(psbuf,PEM_BUFSIZE,0,u);
+    #####:  163:	if (klen <= 0) {
+    #####:  164:		PEMerr(PEM_F_D2I_PKCS8PRIVATEKEY_BIO, PEM_R_BAD_PASSWORD_READ);
+    #####:  165:		X509_SIG_free(p8);
+    #####:  166:		return NULL;	
+        -:  167:	}
+    #####:  168:	p8inf = PKCS8_decrypt(p8, psbuf, klen);
+    #####:  169:	X509_SIG_free(p8);
+    #####:  170:	if(!p8inf) return NULL;
+    #####:  171:	ret = EVP_PKCS82PKEY(p8inf);
+    #####:  172:	PKCS8_PRIV_KEY_INFO_free(p8inf);
+    #####:  173:	if(!ret) return NULL;
+    #####:  174:	if(x) {
+    #####:  175:		if(*x) EVP_PKEY_free(*x);
+    #####:  176:		*x = ret;
+        -:  177:	}
+    #####:  178:	return ret;
+        -:  179:}
+        -:  180:
+        -:  181:#ifndef OPENSSL_NO_FP_API
+        -:  182:
+    #####:  183:int i2d_PKCS8PrivateKey_fp(FILE *fp, EVP_PKEY *x, const EVP_CIPHER *enc,
+        -:  184:				  char *kstr, int klen,
+        -:  185:				  pem_password_cb *cb, void *u)
+        -:  186:{
+    #####:  187:	return do_pk8pkey_fp(fp, x, 1, -1, enc, kstr, klen, cb, u);
+        -:  188:}
+        -:  189:
+    #####:  190:int i2d_PKCS8PrivateKey_nid_fp(FILE *fp, EVP_PKEY *x, int nid,
+        -:  191:				  char *kstr, int klen,
+        -:  192:				  pem_password_cb *cb, void *u)
+        -:  193:{
+    #####:  194:	return do_pk8pkey_fp(fp, x, 1, nid, NULL, kstr, klen, cb, u);
+        -:  195:}
+        -:  196:
+    #####:  197:int PEM_write_PKCS8PrivateKey_nid(FILE *fp, EVP_PKEY *x, int nid,
+        -:  198:				  char *kstr, int klen,
+        -:  199:				  pem_password_cb *cb, void *u)
+        -:  200:{
+    #####:  201:	return do_pk8pkey_fp(fp, x, 0, nid, NULL, kstr, klen, cb, u);
+        -:  202:}
+        -:  203:
+    #####:  204:int PEM_write_PKCS8PrivateKey(FILE *fp, EVP_PKEY *x, const EVP_CIPHER *enc,
+        -:  205:			      char *kstr, int klen, pem_password_cb *cb, void *u)
+        -:  206:{
+    #####:  207:	return do_pk8pkey_fp(fp, x, 0, -1, enc, kstr, klen, cb, u);
+        -:  208:}
+        -:  209:
+    #####:  210:static int do_pk8pkey_fp(FILE *fp, EVP_PKEY *x, int isder, int nid, const EVP_CIPHER *enc,
+        -:  211:				  char *kstr, int klen,
+        -:  212:				  pem_password_cb *cb, void *u)
+        -:  213:{
+        -:  214:	BIO *bp;
+        -:  215:	int ret;
+    #####:  216:	if(!(bp = BIO_new_fp(fp, BIO_NOCLOSE))) {
+    #####:  217:		PEMerr(PEM_F_DO_PK8PKEY_FP,ERR_R_BUF_LIB);
+    #####:  218:                return(0);
+        -:  219:	}
+    #####:  220:	ret = do_pk8pkey(bp, x, isder, nid, enc, kstr, klen, cb, u);
+    #####:  221:	BIO_free(bp);
+    #####:  222:	return ret;
+        -:  223:}
+        -:  224:
+    #####:  225:EVP_PKEY *d2i_PKCS8PrivateKey_fp(FILE *fp, EVP_PKEY **x, pem_password_cb *cb, void *u)
+        -:  226:{
+        -:  227:	BIO *bp;
+        -:  228:	EVP_PKEY *ret;
+    #####:  229:	if(!(bp = BIO_new_fp(fp, BIO_NOCLOSE))) {
+    #####:  230:		PEMerr(PEM_F_D2I_PKCS8PRIVATEKEY_FP,ERR_R_BUF_LIB);
+    #####:  231:                return NULL;
+        -:  232:	}
+    #####:  233:	ret = d2i_PKCS8PrivateKey_bio(bp, x, cb, u);
+    #####:  234:	BIO_free(bp);
+    #####:  235:	return ret;
+        -:  236:}
+        -:  237:
+        -:  238:#endif
+        -:  239:
+    #####:  240:IMPLEMENT_PEM_rw(PKCS8, X509_SIG, PEM_STRING_PKCS8, X509_SIG)
+    #####:  241:IMPLEMENT_PEM_rw(PKCS8_PRIV_KEY_INFO, PKCS8_PRIV_KEY_INFO, PEM_STRING_PKCS8INF,
+        -:  242:							 PKCS8_PRIV_KEY_INFO)

@@ -1,0 +1,398 @@
+        -:    0:Source:bn_sqrt.c
+        -:    0:Graph:bn_sqrt.gcno
+        -:    0:Data:bn_sqrt.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* crypto/bn/bn_sqrt.c */
+        -:    2:/* Written by Lenka Fibikova <fibikova@exp-math.uni-essen.de>
+        -:    3: * and Bodo Moeller for the OpenSSL project. */
+        -:    4:/* ====================================================================
+        -:    5: * Copyright (c) 1998-2000 The OpenSSL Project.  All rights reserved.
+        -:    6: *
+        -:    7: * Redistribution and use in source and binary forms, with or without
+        -:    8: * modification, are permitted provided that the following conditions
+        -:    9: * are met:
+        -:   10: *
+        -:   11: * 1. Redistributions of source code must retain the above copyright
+        -:   12: *    notice, this list of conditions and the following disclaimer. 
+        -:   13: *
+        -:   14: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   15: *    notice, this list of conditions and the following disclaimer in
+        -:   16: *    the documentation and/or other materials provided with the
+        -:   17: *    distribution.
+        -:   18: *
+        -:   19: * 3. All advertising materials mentioning features or use of this
+        -:   20: *    software must display the following acknowledgment:
+        -:   21: *    "This product includes software developed by the OpenSSL Project
+        -:   22: *    for use in the OpenSSL Toolkit. (http://www.openssl.org/)"
+        -:   23: *
+        -:   24: * 4. The names "OpenSSL Toolkit" and "OpenSSL Project" must not be used to
+        -:   25: *    endorse or promote products derived from this software without
+        -:   26: *    prior written permission. For written permission, please contact
+        -:   27: *    openssl-core@openssl.org.
+        -:   28: *
+        -:   29: * 5. Products derived from this software may not be called "OpenSSL"
+        -:   30: *    nor may "OpenSSL" appear in their names without prior written
+        -:   31: *    permission of the OpenSSL Project.
+        -:   32: *
+        -:   33: * 6. Redistributions of any form whatsoever must retain the following
+        -:   34: *    acknowledgment:
+        -:   35: *    "This product includes software developed by the OpenSSL Project
+        -:   36: *    for use in the OpenSSL Toolkit (http://www.openssl.org/)"
+        -:   37: *
+        -:   38: * THIS SOFTWARE IS PROVIDED BY THE OpenSSL PROJECT ``AS IS'' AND ANY
+        -:   39: * EXPRESSED OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   40: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+        -:   41: * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE OpenSSL PROJECT OR
+        -:   42: * ITS CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+        -:   43: * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+        -:   44: * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+        -:   45: * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   46: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+        -:   47: * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+        -:   48: * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+        -:   49: * OF THE POSSIBILITY OF SUCH DAMAGE.
+        -:   50: * ====================================================================
+        -:   51: *
+        -:   52: * This product includes cryptographic software written by Eric Young
+        -:   53: * (eay@cryptsoft.com).  This product includes software written by Tim
+        -:   54: * Hudson (tjh@cryptsoft.com).
+        -:   55: *
+        -:   56: */
+        -:   57:
+        -:   58:#include "cryptlib.h"
+        -:   59:#include "bn_lcl.h"
+        -:   60:
+        -:   61:
+    #####:   62:BIGNUM *BN_mod_sqrt(BIGNUM *in, const BIGNUM *a, const BIGNUM *p, BN_CTX *ctx) 
+        -:   63:/* Returns 'ret' such that
+        -:   64: *      ret^2 == a (mod p),
+        -:   65: * using the Tonelli/Shanks algorithm (cf. Henri Cohen, "A Course
+        -:   66: * in Algebraic Computational Number Theory", algorithm 1.5.1).
+        -:   67: * 'p' must be prime!
+        -:   68: */
+        -:   69:	{
+        -:   70:	BIGNUM *ret = in;
+        -:   71:	int err = 1;
+        -:   72:	int r;
+        -:   73:	BIGNUM *A, *b, *q, *t, *x, *y;
+        -:   74:	int e, i, j;
+        -:   75:	
+    #####:   76:	if (!BN_is_odd(p) || BN_abs_is_word(p, 1))
+        -:   77:		{
+    #####:   78:		if (BN_abs_is_word(p, 2))
+        -:   79:			{
+    #####:   80:			if (ret == NULL)
+    #####:   81:				ret = BN_new();
+    #####:   82:			if (ret == NULL)
+        -:   83:				goto end;
+    #####:   84:			if (!BN_set_word(ret, BN_is_bit_set(a, 0)))
+        -:   85:				{
+    #####:   86:				if (ret != in)
+    #####:   87:					BN_free(ret);
+        -:   88:				return NULL;
+        -:   89:				}
+        -:   90:			bn_check_top(ret);
+        -:   91:			return ret;
+        -:   92:			}
+        -:   93:
+    #####:   94:		BNerr(BN_F_BN_MOD_SQRT, BN_R_P_IS_NOT_PRIME);
+    #####:   95:		return(NULL);
+        -:   96:		}
+        -:   97:
+    #####:   98:	if (BN_is_zero(a) || BN_is_one(a))
+        -:   99:		{
+    #####:  100:		if (ret == NULL)
+    #####:  101:			ret = BN_new();
+    #####:  102:		if (ret == NULL)
+        -:  103:			goto end;
+    #####:  104:		if (!BN_set_word(ret, BN_is_one(a)))
+        -:  105:			{
+    #####:  106:			if (ret != in)
+    #####:  107:				BN_free(ret);
+        -:  108:			return NULL;
+        -:  109:			}
+        -:  110:		bn_check_top(ret);
+        -:  111:		return ret;
+        -:  112:		}
+        -:  113:
+    #####:  114:	BN_CTX_start(ctx);
+    #####:  115:	A = BN_CTX_get(ctx);
+    #####:  116:	b = BN_CTX_get(ctx);
+    #####:  117:	q = BN_CTX_get(ctx);
+    #####:  118:	t = BN_CTX_get(ctx);
+    #####:  119:	x = BN_CTX_get(ctx);
+    #####:  120:	y = BN_CTX_get(ctx);
+    #####:  121:	if (y == NULL) goto end;
+        -:  122:	
+    #####:  123:	if (ret == NULL)
+    #####:  124:		ret = BN_new();
+    #####:  125:	if (ret == NULL) goto end;
+        -:  126:
+        -:  127:	/* A = a mod p */
+    #####:  128:	if (!BN_nnmod(A, a, p, ctx)) goto end;
+        -:  129:
+        -:  130:	/* now write  |p| - 1  as  2^e*q  where  q  is odd */
+        -:  131:	e = 1;
+    #####:  132:	while (!BN_is_bit_set(p, e))
+    #####:  133:		e++;
+        -:  134:	/* we'll set  q  later (if needed) */
+        -:  135:
+    #####:  136:	if (e == 1)
+        -:  137:		{
+        -:  138:		/* The easy case:  (|p|-1)/2  is odd, so 2 has an inverse
+        -:  139:		 * modulo  (|p|-1)/2,  and square roots can be computed
+        -:  140:		 * directly by modular exponentiation.
+        -:  141:		 * We have
+        -:  142:		 *     2 * (|p|+1)/4 == 1   (mod (|p|-1)/2),
+        -:  143:		 * so we can use exponent  (|p|+1)/4,  i.e.  (|p|-3)/4 + 1.
+        -:  144:		 */
+    #####:  145:		if (!BN_rshift(q, p, 2)) goto end;
+    #####:  146:		q->neg = 0;
+    #####:  147:		if (!BN_add_word(q, 1)) goto end;
+    #####:  148:		if (!BN_mod_exp(ret, A, q, p, ctx)) goto end;
+        -:  149:		err = 0;
+        -:  150:		goto vrfy;
+        -:  151:		}
+        -:  152:	
+    #####:  153:	if (e == 2)
+        -:  154:		{
+        -:  155:		/* |p| == 5  (mod 8)
+        -:  156:		 *
+        -:  157:		 * In this case  2  is always a non-square since
+        -:  158:		 * Legendre(2,p) = (-1)^((p^2-1)/8)  for any odd prime.
+        -:  159:		 * So if  a  really is a square, then  2*a  is a non-square.
+        -:  160:		 * Thus for
+        -:  161:		 *      b := (2*a)^((|p|-5)/8),
+        -:  162:		 *      i := (2*a)*b^2
+        -:  163:		 * we have
+        -:  164:		 *     i^2 = (2*a)^((1 + (|p|-5)/4)*2)
+        -:  165:		 *         = (2*a)^((p-1)/2)
+        -:  166:		 *         = -1;
+        -:  167:		 * so if we set
+        -:  168:		 *      x := a*b*(i-1),
+        -:  169:		 * then
+        -:  170:		 *     x^2 = a^2 * b^2 * (i^2 - 2*i + 1)
+        -:  171:		 *         = a^2 * b^2 * (-2*i)
+        -:  172:		 *         = a*(-i)*(2*a*b^2)
+        -:  173:		 *         = a*(-i)*i
+        -:  174:		 *         = a.
+        -:  175:		 *
+        -:  176:		 * (This is due to A.O.L. Atkin, 
+        -:  177:		 * <URL: http://listserv.nodak.edu/scripts/wa.exe?A2=ind9211&L=nmbrthry&O=T&P=562>,
+        -:  178:		 * November 1992.)
+        -:  179:		 */
+        -:  180:
+        -:  181:		/* t := 2*a */
+    #####:  182:		if (!BN_mod_lshift1_quick(t, A, p)) goto end;
+        -:  183:
+        -:  184:		/* b := (2*a)^((|p|-5)/8) */
+    #####:  185:		if (!BN_rshift(q, p, 3)) goto end;
+    #####:  186:		q->neg = 0;
+    #####:  187:		if (!BN_mod_exp(b, t, q, p, ctx)) goto end;
+        -:  188:
+        -:  189:		/* y := b^2 */
+    #####:  190:		if (!BN_mod_sqr(y, b, p, ctx)) goto end;
+        -:  191:
+        -:  192:		/* t := (2*a)*b^2 - 1*/
+    #####:  193:		if (!BN_mod_mul(t, t, y, p, ctx)) goto end;
+    #####:  194:		if (!BN_sub_word(t, 1)) goto end;
+        -:  195:
+        -:  196:		/* x = a*b*t */
+    #####:  197:		if (!BN_mod_mul(x, A, b, p, ctx)) goto end;
+    #####:  198:		if (!BN_mod_mul(x, x, t, p, ctx)) goto end;
+        -:  199:
+    #####:  200:		if (!BN_copy(ret, x)) goto end;
+        -:  201:		err = 0;
+        -:  202:		goto vrfy;
+        -:  203:		}
+        -:  204:	
+        -:  205:	/* e > 2, so we really have to use the Tonelli/Shanks algorithm.
+        -:  206:	 * First, find some  y  that is not a square. */
+    #####:  207:	if (!BN_copy(q, p)) goto end; /* use 'q' as temp */
+    #####:  208:	q->neg = 0;
+        -:  209:	i = 2;
+        -:  210:	do
+        -:  211:		{
+        -:  212:		/* For efficiency, try small numbers first;
+        -:  213:		 * if this fails, try random numbers.
+        -:  214:		 */
+    #####:  215:		if (i < 22)
+        -:  216:			{
+    #####:  217:			if (!BN_set_word(y, i)) goto end;
+        -:  218:			}
+        -:  219:		else
+        -:  220:			{
+    #####:  221:			if (!BN_pseudo_rand(y, BN_num_bits(p), 0, 0)) goto end;
+    #####:  222:			if (BN_ucmp(y, p) >= 0)
+        -:  223:				{
+    #####:  224:				if (!(p->neg ? BN_add : BN_sub)(y, y, p)) goto end;
+        -:  225:				}
+        -:  226:			/* now 0 <= y < |p| */
+    #####:  227:			if (BN_is_zero(y))
+    #####:  228:				if (!BN_set_word(y, i)) goto end;
+        -:  229:			}
+        -:  230:		
+    #####:  231:		r = BN_kronecker(y, q, ctx); /* here 'q' is |p| */
+    #####:  232:		if (r < -1) goto end;
+    #####:  233:		if (r == 0)
+        -:  234:			{
+        -:  235:			/* m divides p */
+    #####:  236:			BNerr(BN_F_BN_MOD_SQRT, BN_R_P_IS_NOT_PRIME);
+    #####:  237:			goto end;
+        -:  238:			}
+        -:  239:		}
+    #####:  240:	while (r == 1 && ++i < 82);
+        -:  241:	
+    #####:  242:	if (r != -1)
+        -:  243:		{
+        -:  244:		/* Many rounds and still no non-square -- this is more likely
+        -:  245:		 * a bug than just bad luck.
+        -:  246:		 * Even if  p  is not prime, we should have found some  y
+        -:  247:		 * such that r == -1.
+        -:  248:		 */
+    #####:  249:		BNerr(BN_F_BN_MOD_SQRT, BN_R_TOO_MANY_ITERATIONS);
+    #####:  250:		goto end;
+        -:  251:		}
+        -:  252:
+        -:  253:	/* Here's our actual 'q': */
+    #####:  254:	if (!BN_rshift(q, q, e)) goto end;
+        -:  255:
+        -:  256:	/* Now that we have some non-square, we can find an element
+        -:  257:	 * of order  2^e  by computing its q'th power. */
+    #####:  258:	if (!BN_mod_exp(y, y, q, p, ctx)) goto end;
+    #####:  259:	if (BN_is_one(y))
+        -:  260:		{
+    #####:  261:		BNerr(BN_F_BN_MOD_SQRT, BN_R_P_IS_NOT_PRIME);
+    #####:  262:		goto end;
+        -:  263:		}
+        -:  264:
+        -:  265:	/* Now we know that (if  p  is indeed prime) there is an integer
+        -:  266:	 * k,  0 <= k < 2^e,  such that
+        -:  267:	 *
+        -:  268:	 *      a^q * y^k == 1   (mod p).
+        -:  269:	 *
+        -:  270:	 * As  a^q  is a square and  y  is not,  k  must be even.
+        -:  271:	 * q+1  is even, too, so there is an element
+        -:  272:	 *
+        -:  273:	 *     X := a^((q+1)/2) * y^(k/2),
+        -:  274:	 *
+        -:  275:	 * and it satisfies
+        -:  276:	 *
+        -:  277:	 *     X^2 = a^q * a     * y^k
+        -:  278:	 *         = a,
+        -:  279:	 *
+        -:  280:	 * so it is the square root that we are looking for.
+        -:  281:	 */
+        -:  282:	
+        -:  283:	/* t := (q-1)/2  (note that  q  is odd) */
+    #####:  284:	if (!BN_rshift1(t, q)) goto end;
+        -:  285:	
+        -:  286:	/* x := a^((q-1)/2) */
+    #####:  287:	if (BN_is_zero(t)) /* special case: p = 2^e + 1 */
+        -:  288:		{
+    #####:  289:		if (!BN_nnmod(t, A, p, ctx)) goto end;
+    #####:  290:		if (BN_is_zero(t))
+        -:  291:			{
+        -:  292:			/* special case: a == 0  (mod p) */
+    #####:  293:			BN_zero(ret);
+        -:  294:			err = 0;
+    #####:  295:			goto end;
+        -:  296:			}
+        -:  297:		else
+    #####:  298:			if (!BN_one(x)) goto end;
+        -:  299:		}
+        -:  300:	else
+        -:  301:		{
+    #####:  302:		if (!BN_mod_exp(x, A, t, p, ctx)) goto end;
+    #####:  303:		if (BN_is_zero(x))
+        -:  304:			{
+        -:  305:			/* special case: a == 0  (mod p) */
+    #####:  306:			BN_zero(ret);
+        -:  307:			err = 0;
+    #####:  308:			goto end;
+        -:  309:			}
+        -:  310:		}
+        -:  311:
+        -:  312:	/* b := a*x^2  (= a^q) */
+    #####:  313:	if (!BN_mod_sqr(b, x, p, ctx)) goto end;
+    #####:  314:	if (!BN_mod_mul(b, b, A, p, ctx)) goto end;
+        -:  315:	
+        -:  316:	/* x := a*x    (= a^((q+1)/2)) */
+    #####:  317:	if (!BN_mod_mul(x, x, A, p, ctx)) goto end;
+        -:  318:
+        -:  319:	while (1)
+        -:  320:		{
+        -:  321:		/* Now  b  is  a^q * y^k  for some even  k  (0 <= k < 2^E
+        -:  322:		 * where  E  refers to the original value of  e,  which we
+        -:  323:		 * don't keep in a variable),  and  x  is  a^((q+1)/2) * y^(k/2).
+        -:  324:		 *
+        -:  325:		 * We have  a*b = x^2,
+        -:  326:		 *    y^2^(e-1) = -1,
+        -:  327:		 *    b^2^(e-1) = 1.
+        -:  328:		 */
+        -:  329:
+    #####:  330:		if (BN_is_one(b))
+        -:  331:			{
+    #####:  332:			if (!BN_copy(ret, x)) goto end;
+        -:  333:			err = 0;
+        -:  334:			goto vrfy;
+        -:  335:			}
+        -:  336:
+        -:  337:
+        -:  338:		/* find smallest  i  such that  b^(2^i) = 1 */
+        -:  339:		i = 1;
+    #####:  340:		if (!BN_mod_sqr(t, b, p, ctx)) goto end;
+    #####:  341:		while (!BN_is_one(t))
+        -:  342:			{
+    #####:  343:			i++;
+    #####:  344:			if (i == e)
+        -:  345:				{
+    #####:  346:				BNerr(BN_F_BN_MOD_SQRT, BN_R_NOT_A_SQUARE);
+    #####:  347:				goto end;
+        -:  348:				}
+    #####:  349:			if (!BN_mod_mul(t, t, t, p, ctx)) goto end;
+        -:  350:			}
+        -:  351:		
+        -:  352:
+        -:  353:		/* t := y^2^(e - i - 1) */
+    #####:  354:		if (!BN_copy(t, y)) goto end;
+    #####:  355:		for (j = e - i - 1; j > 0; j--)
+        -:  356:			{
+    #####:  357:			if (!BN_mod_sqr(t, t, p, ctx)) goto end;
+        -:  358:			}
+    #####:  359:		if (!BN_mod_mul(y, t, t, p, ctx)) goto end;
+    #####:  360:		if (!BN_mod_mul(x, x, t, p, ctx)) goto end;
+    #####:  361:		if (!BN_mod_mul(b, b, y, p, ctx)) goto end;
+        -:  362:		e = i;
+        -:  363:		}
+        -:  364:
+        -:  365: vrfy:
+        -:  366:	if (!err)
+        -:  367:		{
+        -:  368:		/* verify the result -- the input might have been not a square
+        -:  369:		 * (test added in 0.9.8) */
+        -:  370:		
+    #####:  371:		if (!BN_mod_sqr(x, ret, p, ctx))
+        -:  372:			err = 1;
+        -:  373:		
+    #####:  374:		if (!err && 0 != BN_cmp(x, A))
+        -:  375:			{
+    #####:  376:			BNerr(BN_F_BN_MOD_SQRT, BN_R_NOT_A_SQUARE);
+        -:  377:			err = 1;
+        -:  378:			}
+        -:  379:		}
+        -:  380:
+        -:  381: end:
+    #####:  382:	if (err)
+        -:  383:		{
+    #####:  384:		if (ret != NULL && ret != in)
+        -:  385:			{
+    #####:  386:			BN_clear_free(ret);
+        -:  387:			}
+        -:  388:		ret = NULL;
+        -:  389:		}
+    #####:  390:	BN_CTX_end(ctx);
+        -:  391:	bn_check_top(ret);
+    #####:  392:	return ret;
+        -:  393:	}

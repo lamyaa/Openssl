@@ -1,0 +1,411 @@
+        -:    0:Source:ec.c
+        -:    0:Graph:ec.gcno
+        -:    0:Data:ec.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* apps/ec.c */
+        -:    2:/*
+        -:    3: * Written by Nils Larsch for the OpenSSL project.
+        -:    4: */
+        -:    5:/* ====================================================================
+        -:    6: * Copyright (c) 1998-2005 The OpenSSL Project.  All rights reserved.
+        -:    7: *
+        -:    8: * Redistribution and use in source and binary forms, with or without
+        -:    9: * modification, are permitted provided that the following conditions
+        -:   10: * are met:
+        -:   11: *
+        -:   12: * 1. Redistributions of source code must retain the above copyright
+        -:   13: *    notice, this list of conditions and the following disclaimer. 
+        -:   14: *
+        -:   15: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   16: *    notice, this list of conditions and the following disclaimer in
+        -:   17: *    the documentation and/or other materials provided with the
+        -:   18: *    distribution.
+        -:   19: *
+        -:   20: * 3. All advertising materials mentioning features or use of this
+        -:   21: *    software must display the following acknowledgment:
+        -:   22: *    "This product includes software developed by the OpenSSL Project
+        -:   23: *    for use in the OpenSSL Toolkit. (http://www.openssl.org/)"
+        -:   24: *
+        -:   25: * 4. The names "OpenSSL Toolkit" and "OpenSSL Project" must not be used to
+        -:   26: *    endorse or promote products derived from this software without
+        -:   27: *    prior written permission. For written permission, please contact
+        -:   28: *    openssl-core@openssl.org.
+        -:   29: *
+        -:   30: * 5. Products derived from this software may not be called "OpenSSL"
+        -:   31: *    nor may "OpenSSL" appear in their names without prior written
+        -:   32: *    permission of the OpenSSL Project.
+        -:   33: *
+        -:   34: * 6. Redistributions of any form whatsoever must retain the following
+        -:   35: *    acknowledgment:
+        -:   36: *    "This product includes software developed by the OpenSSL Project
+        -:   37: *    for use in the OpenSSL Toolkit (http://www.openssl.org/)"
+        -:   38: *
+        -:   39: * THIS SOFTWARE IS PROVIDED BY THE OpenSSL PROJECT ``AS IS'' AND ANY
+        -:   40: * EXPRESSED OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   41: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+        -:   42: * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE OpenSSL PROJECT OR
+        -:   43: * ITS CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+        -:   44: * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+        -:   45: * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+        -:   46: * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   47: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+        -:   48: * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+        -:   49: * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+        -:   50: * OF THE POSSIBILITY OF SUCH DAMAGE.
+        -:   51: * ====================================================================
+        -:   52: *
+        -:   53: * This product includes cryptographic software written by Eric Young
+        -:   54: * (eay@cryptsoft.com).  This product includes software written by Tim
+        -:   55: * Hudson (tjh@cryptsoft.com).
+        -:   56: *
+        -:   57: */
+        -:   58:
+        -:   59:#include <openssl/opensslconf.h>
+        -:   60:#ifndef OPENSSL_NO_EC
+        -:   61:#include <stdio.h>
+        -:   62:#include <stdlib.h>
+        -:   63:#include <string.h>
+        -:   64:#include "apps.h"
+        -:   65:#include <openssl/bio.h>
+        -:   66:#include <openssl/err.h>
+        -:   67:#include <openssl/evp.h>
+        -:   68:#include <openssl/pem.h>
+        -:   69:
+        -:   70:#undef PROG
+        -:   71:#define PROG	ec_main
+        -:   72:
+        -:   73:/* -inform arg    - input format - default PEM (one of DER, NET or PEM)
+        -:   74: * -outform arg   - output format - default PEM
+        -:   75: * -in arg        - input file - default stdin
+        -:   76: * -out arg       - output file - default stdout
+        -:   77: * -des           - encrypt output if PEM format with DES in cbc mode
+        -:   78: * -text          - print a text version
+        -:   79: * -param_out     - print the elliptic curve parameters
+        -:   80: * -conv_form arg - specifies the point encoding form
+        -:   81: * -param_enc arg - specifies the parameter encoding
+        -:   82: */
+        -:   83:
+        -:   84:int MAIN(int, char **);
+        -:   85:
+    #####:   86:int MAIN(int argc, char **argv)
+        -:   87:{
+        -:   88:	int 	ret = 1;
+        -:   89:	EC_KEY 	*eckey = NULL;
+        -:   90:	const EC_GROUP *group;
+        -:   91:	int 	i, badops = 0;
+        -:   92:	const EVP_CIPHER *enc = NULL;
+        -:   93:	BIO 	*in = NULL, *out = NULL;
+        -:   94:	int 	informat, outformat, text=0, noout=0;
+        -:   95:	int  	pubin = 0, pubout = 0, param_out = 0;
+        -:   96:	char 	*infile, *outfile, *prog, *engine;
+        -:   97:	char 	*passargin = NULL, *passargout = NULL;
+    #####:   98:	char 	*passin = NULL, *passout = NULL;
+        -:   99:	point_conversion_form_t form = POINT_CONVERSION_UNCOMPRESSED;
+        -:  100:	int	new_form = 0;
+        -:  101:	int	asn1_flag = OPENSSL_EC_NAMED_CURVE;
+        -:  102:	int 	new_asn1_flag = 0;
+        -:  103:
+    #####:  104:	apps_startup();
+        -:  105:
+    #####:  106:	if (bio_err == NULL)
+    #####:  107:		if ((bio_err=BIO_new(BIO_s_file())) != NULL)
+    #####:  108:			BIO_set_fp(bio_err, stderr, BIO_NOCLOSE|BIO_FP_TEXT);
+        -:  109:
+    #####:  110:	if (!load_config(bio_err, NULL))
+        -:  111:		goto end;
+        -:  112:
+        -:  113:	engine = NULL;
+        -:  114:	infile = NULL;
+        -:  115:	outfile = NULL;
+        -:  116:	informat = FORMAT_PEM;
+        -:  117:	outformat = FORMAT_PEM;
+        -:  118:
+    #####:  119:	prog = argv[0];
+    #####:  120:	argc--;
+    #####:  121:	argv++;
+    #####:  122:	while (argc >= 1)
+        -:  123:		{
+    #####:  124:		if (strcmp(*argv,"-inform") == 0)
+        -:  125:			{
+    #####:  126:			if (--argc < 1) goto bad;
+    #####:  127:			informat=str2fmt(*(++argv));
+        -:  128:			}
+    #####:  129:		else if (strcmp(*argv,"-outform") == 0)
+        -:  130:			{
+    #####:  131:			if (--argc < 1) goto bad;
+    #####:  132:			outformat=str2fmt(*(++argv));
+        -:  133:			}
+    #####:  134:		else if (strcmp(*argv,"-in") == 0)
+        -:  135:			{
+    #####:  136:			if (--argc < 1) goto bad;
+    #####:  137:			infile= *(++argv);
+        -:  138:			}
+    #####:  139:		else if (strcmp(*argv,"-out") == 0)
+        -:  140:			{
+    #####:  141:			if (--argc < 1) goto bad;
+    #####:  142:			outfile= *(++argv);
+        -:  143:			}
+    #####:  144:		else if (strcmp(*argv,"-passin") == 0)
+        -:  145:			{
+    #####:  146:			if (--argc < 1) goto bad;
+    #####:  147:			passargin= *(++argv);
+        -:  148:			}
+    #####:  149:		else if (strcmp(*argv,"-passout") == 0)
+        -:  150:			{
+    #####:  151:			if (--argc < 1) goto bad;
+    #####:  152:			passargout= *(++argv);
+        -:  153:			}
+    #####:  154:		else if (strcmp(*argv, "-engine") == 0)
+        -:  155:			{
+    #####:  156:			if (--argc < 1) goto bad;
+    #####:  157:			engine= *(++argv);
+        -:  158:			}
+    #####:  159:		else if (strcmp(*argv, "-noout") == 0)
+        -:  160:			noout = 1;
+    #####:  161:		else if (strcmp(*argv, "-text") == 0)
+        -:  162:			text = 1;
+    #####:  163:		else if (strcmp(*argv, "-conv_form") == 0)
+        -:  164:			{
+    #####:  165:			if (--argc < 1)
+        -:  166:				goto bad;
+    #####:  167:			++argv;
+        -:  168:			new_form = 1;
+    #####:  169:			if (strcmp(*argv, "compressed") == 0)
+        -:  170:				form = POINT_CONVERSION_COMPRESSED;
+    #####:  171:			else if (strcmp(*argv, "uncompressed") == 0)
+        -:  172:				form = POINT_CONVERSION_UNCOMPRESSED;
+    #####:  173:			else if (strcmp(*argv, "hybrid") == 0)
+        -:  174:				form = POINT_CONVERSION_HYBRID;
+        -:  175:			else
+        -:  176:				goto bad;
+        -:  177:			}
+    #####:  178:		else if (strcmp(*argv, "-param_enc") == 0)
+        -:  179:			{
+    #####:  180:			if (--argc < 1)
+        -:  181:				goto bad;
+    #####:  182:			++argv;
+        -:  183:			new_asn1_flag = 1;
+    #####:  184:			if (strcmp(*argv, "named_curve") == 0)
+        -:  185:				asn1_flag = OPENSSL_EC_NAMED_CURVE;
+    #####:  186:			else if (strcmp(*argv, "explicit") == 0)
+        -:  187:				asn1_flag = 0;
+        -:  188:			else
+        -:  189:				goto bad;
+        -:  190:			}
+    #####:  191:		else if (strcmp(*argv, "-param_out") == 0)
+        -:  192:			param_out = 1;
+    #####:  193:		else if (strcmp(*argv, "-pubin") == 0)
+        -:  194:			pubin=1;
+    #####:  195:		else if (strcmp(*argv, "-pubout") == 0)
+        -:  196:			pubout=1;
+    #####:  197:		else if ((enc=EVP_get_cipherbyname(&(argv[0][1]))) == NULL)
+        -:  198:			{
+    #####:  199:			BIO_printf(bio_err, "unknown option %s\n", *argv);
+        -:  200:			badops=1;
+    #####:  201:			break;
+        -:  202:			}
+    #####:  203:		argc--;
+    #####:  204:		argv++;
+        -:  205:		}
+        -:  206:
+    #####:  207:	if (badops)
+        -:  208:		{
+        -:  209:bad:
+    #####:  210:		BIO_printf(bio_err, "%s [options] <infile >outfile\n", prog);
+    #####:  211:		BIO_printf(bio_err, "where options are\n");
+    #####:  212:		BIO_printf(bio_err, " -inform arg     input format - "
+        -:  213:				"DER or PEM\n");
+    #####:  214:		BIO_printf(bio_err, " -outform arg    output format - "
+        -:  215:				"DER or PEM\n");
+    #####:  216:		BIO_printf(bio_err, " -in arg         input file\n");
+    #####:  217:		BIO_printf(bio_err, " -passin arg     input file pass "
+        -:  218:				"phrase source\n");
+    #####:  219:		BIO_printf(bio_err, " -out arg        output file\n");
+    #####:  220:		BIO_printf(bio_err, " -passout arg    output file pass "
+        -:  221:				"phrase source\n");
+    #####:  222:		BIO_printf(bio_err, " -engine e       use engine e, "
+        -:  223:				"possibly a hardware device.\n");
+    #####:  224:		BIO_printf(bio_err, " -des            encrypt PEM output, "
+        -:  225:				"instead of 'des' every other \n"
+        -:  226:				"                 cipher "
+        -:  227:				"supported by OpenSSL can be used\n");
+    #####:  228:		BIO_printf(bio_err, " -text           print the key\n");
+    #####:  229:		BIO_printf(bio_err, " -noout          don't print key out\n");
+    #####:  230:		BIO_printf(bio_err, " -param_out      print the elliptic "
+        -:  231:				"curve parameters\n");
+    #####:  232:		BIO_printf(bio_err, " -conv_form arg  specifies the "
+        -:  233:				"point conversion form \n");
+    #####:  234:		BIO_printf(bio_err, "                 possible values:"
+        -:  235:				" compressed\n");
+    #####:  236:		BIO_printf(bio_err, "                                 "
+        -:  237:				" uncompressed (default)\n");
+    #####:  238:		BIO_printf(bio_err, "                                  "
+        -:  239:				" hybrid\n");
+    #####:  240:		BIO_printf(bio_err, " -param_enc arg  specifies the way"
+        -:  241:				" the ec parameters are encoded\n");
+    #####:  242:		BIO_printf(bio_err, "                 in the asn1 der "
+        -:  243:				"encoding\n");
+    #####:  244:		BIO_printf(bio_err, "                 possible values:"
+        -:  245:				" named_curve (default)\n");
+    #####:  246:		BIO_printf(bio_err,"                                  "
+        -:  247:				"explicit\n");
+    #####:  248:		goto end;
+        -:  249:		}
+        -:  250:
+    #####:  251:	ERR_load_crypto_strings();
+        -:  252:
+        -:  253:#ifndef OPENSSL_NO_ENGINE
+    #####:  254:        setup_engine(bio_err, engine, 0);
+        -:  255:#endif
+        -:  256:
+    #####:  257:	if(!app_passwd(bio_err, passargin, passargout, &passin, &passout)) 
+        -:  258:		{
+    #####:  259:		BIO_printf(bio_err, "Error getting passwords\n");
+    #####:  260:		goto end;
+        -:  261:		}
+        -:  262:
+    #####:  263:	in = BIO_new(BIO_s_file());
+    #####:  264:	out = BIO_new(BIO_s_file());
+    #####:  265:	if ((in == NULL) || (out == NULL))
+        -:  266:		{
+    #####:  267:		ERR_print_errors(bio_err);
+    #####:  268:		goto end;
+        -:  269:		}
+        -:  270:
+    #####:  271:	if (infile == NULL)
+    #####:  272:		BIO_set_fp(in, stdin, BIO_NOCLOSE);
+        -:  273:	else
+        -:  274:		{
+    #####:  275:		if (BIO_read_filename(in, infile) <= 0)
+        -:  276:			{
+    #####:  277:			perror(infile);
+    #####:  278:			goto end;
+        -:  279:			}
+        -:  280:		}
+        -:  281:
+    #####:  282:	BIO_printf(bio_err, "read EC key\n");
+    #####:  283:	if (informat == FORMAT_ASN1) 
+        -:  284:		{
+    #####:  285:		if (pubin) 
+    #####:  286:			eckey = d2i_EC_PUBKEY_bio(in, NULL);
+        -:  287:		else 
+    #####:  288:			eckey = d2i_ECPrivateKey_bio(in, NULL);
+        -:  289:		} 
+    #####:  290:	else if (informat == FORMAT_PEM) 
+        -:  291:		{
+    #####:  292:		if (pubin) 
+    #####:  293:			eckey = PEM_read_bio_EC_PUBKEY(in, NULL, NULL, 
+        -:  294:				NULL);
+        -:  295:		else 
+    #####:  296:			eckey = PEM_read_bio_ECPrivateKey(in, NULL, NULL,
+        -:  297:				passin);
+        -:  298:		} 
+        -:  299:	else
+        -:  300:		{
+    #####:  301:		BIO_printf(bio_err, "bad input format specified for key\n");
+    #####:  302:		goto end;
+        -:  303:		}
+    #####:  304:	if (eckey == NULL)
+        -:  305:		{
+    #####:  306:		BIO_printf(bio_err,"unable to load Key\n");
+    #####:  307:		ERR_print_errors(bio_err);
+    #####:  308:		goto end;
+        -:  309:		}
+        -:  310:
+    #####:  311:	if (outfile == NULL)
+        -:  312:		{
+    #####:  313:		BIO_set_fp(out, stdout, BIO_NOCLOSE);
+        -:  314:#ifdef OPENSSL_SYS_VMS
+        -:  315:			{
+        -:  316:			BIO *tmpbio = BIO_new(BIO_f_linebuffer());
+        -:  317:			out = BIO_push(tmpbio, out);
+        -:  318:			}
+        -:  319:#endif
+        -:  320:		}
+        -:  321:	else
+        -:  322:		{
+    #####:  323:		if (BIO_write_filename(out, outfile) <= 0)
+        -:  324:			{
+    #####:  325:			perror(outfile);
+    #####:  326:			goto end;
+        -:  327:			}
+        -:  328:		}
+        -:  329:
+    #####:  330:	group = EC_KEY_get0_group(eckey);
+        -:  331:
+    #####:  332:	if (new_form)
+    #####:  333:		EC_KEY_set_conv_form(eckey, form);
+        -:  334:
+    #####:  335:	if (new_asn1_flag)
+    #####:  336:		EC_KEY_set_asn1_flag(eckey, asn1_flag);
+        -:  337:
+    #####:  338:	if (text) 
+    #####:  339:		if (!EC_KEY_print(out, eckey, 0))
+        -:  340:			{
+    #####:  341:			perror(outfile);
+    #####:  342:			ERR_print_errors(bio_err);
+    #####:  343:			goto end;
+        -:  344:			}
+        -:  345:
+    #####:  346:	if (noout) 
+        -:  347:		{
+        -:  348:		ret = 0;
+        -:  349:		goto end;
+        -:  350:		}
+        -:  351:
+    #####:  352:	BIO_printf(bio_err, "writing EC key\n");
+    #####:  353:	if (outformat == FORMAT_ASN1) 
+        -:  354:		{
+    #####:  355:		if (param_out)
+    #####:  356:			i = i2d_ECPKParameters_bio(out, group);
+    #####:  357:		else if (pubin || pubout) 
+    #####:  358:			i = i2d_EC_PUBKEY_bio(out, eckey);
+        -:  359:		else 
+    #####:  360:			i = i2d_ECPrivateKey_bio(out, eckey);
+        -:  361:		} 
+    #####:  362:	else if (outformat == FORMAT_PEM) 
+        -:  363:		{
+    #####:  364:		if (param_out)
+    #####:  365:			i = PEM_write_bio_ECPKParameters(out, group);
+    #####:  366:		else if (pubin || pubout)
+    #####:  367:			i = PEM_write_bio_EC_PUBKEY(out, eckey);
+        -:  368:		else 
+    #####:  369:			i = PEM_write_bio_ECPrivateKey(out, eckey, enc,
+        -:  370:						NULL, 0, NULL, passout);
+        -:  371:		} 
+        -:  372:	else 
+        -:  373:		{
+    #####:  374:		BIO_printf(bio_err, "bad output format specified for "
+        -:  375:			"outfile\n");
+    #####:  376:		goto end;
+        -:  377:		}
+        -:  378:
+    #####:  379:	if (!i)
+        -:  380:		{
+    #####:  381:		BIO_printf(bio_err, "unable to write private key\n");
+    #####:  382:		ERR_print_errors(bio_err);
+        -:  383:		}
+        -:  384:	else
+        -:  385:		ret=0;
+        -:  386:end:
+    #####:  387:	if (in)
+    #####:  388:		BIO_free(in);
+    #####:  389:	if (out)
+    #####:  390:		BIO_free_all(out);
+    #####:  391:	if (eckey)
+    #####:  392:		EC_KEY_free(eckey);
+    #####:  393:	if (passin)
+    #####:  394:		OPENSSL_free(passin);
+    #####:  395:	if (passout)
+    #####:  396:		OPENSSL_free(passout);
+        -:  397:	apps_shutdown();
+    #####:  398:	OPENSSL_EXIT(ret);
+        -:  399:}
+        -:  400:#else /* !OPENSSL_NO_EC */
+        -:  401:
+        -:  402:# if PEDANTIC
+        -:  403:static void *dummy=&dummy;
+        -:  404:# endif
+        -:  405:
+        -:  406:#endif

@@ -1,0 +1,250 @@
+        -:    0:Source:rand.c
+        -:    0:Graph:rand.gcno
+        -:    0:Data:rand.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* apps/rand.c */
+        -:    2:/* ====================================================================
+        -:    3: * Copyright (c) 1998-2001 The OpenSSL Project.  All rights reserved.
+        -:    4: *
+        -:    5: * Redistribution and use in source and binary forms, with or without
+        -:    6: * modification, are permitted provided that the following conditions
+        -:    7: * are met:
+        -:    8: *
+        -:    9: * 1. Redistributions of source code must retain the above copyright
+        -:   10: *    notice, this list of conditions and the following disclaimer. 
+        -:   11: *
+        -:   12: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   13: *    notice, this list of conditions and the following disclaimer in
+        -:   14: *    the documentation and/or other materials provided with the
+        -:   15: *    distribution.
+        -:   16: *
+        -:   17: * 3. All advertising materials mentioning features or use of this
+        -:   18: *    software must display the following acknowledgment:
+        -:   19: *    "This product includes software developed by the OpenSSL Project
+        -:   20: *    for use in the OpenSSL Toolkit. (http://www.openssl.org/)"
+        -:   21: *
+        -:   22: * 4. The names "OpenSSL Toolkit" and "OpenSSL Project" must not be used to
+        -:   23: *    endorse or promote products derived from this software without
+        -:   24: *    prior written permission. For written permission, please contact
+        -:   25: *    openssl-core@openssl.org.
+        -:   26: *
+        -:   27: * 5. Products derived from this software may not be called "OpenSSL"
+        -:   28: *    nor may "OpenSSL" appear in their names without prior written
+        -:   29: *    permission of the OpenSSL Project.
+        -:   30: *
+        -:   31: * 6. Redistributions of any form whatsoever must retain the following
+        -:   32: *    acknowledgment:
+        -:   33: *    "This product includes software developed by the OpenSSL Project
+        -:   34: *    for use in the OpenSSL Toolkit (http://www.openssl.org/)"
+        -:   35: *
+        -:   36: * THIS SOFTWARE IS PROVIDED BY THE OpenSSL PROJECT ``AS IS'' AND ANY
+        -:   37: * EXPRESSED OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   38: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+        -:   39: * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE OpenSSL PROJECT OR
+        -:   40: * ITS CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+        -:   41: * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+        -:   42: * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+        -:   43: * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   44: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+        -:   45: * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+        -:   46: * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+        -:   47: * OF THE POSSIBILITY OF SUCH DAMAGE.
+        -:   48: * ====================================================================
+        -:   49: *
+        -:   50: * This product includes cryptographic software written by Eric Young
+        -:   51: * (eay@cryptsoft.com).  This product includes software written by Tim
+        -:   52: * Hudson (tjh@cryptsoft.com).
+        -:   53: *
+        -:   54: */
+        -:   55:
+        -:   56:#include "apps.h"
+        -:   57:
+        -:   58:#include <ctype.h>
+        -:   59:#include <stdio.h>
+        -:   60:#include <string.h>
+        -:   61:
+        -:   62:#include <openssl/bio.h>
+        -:   63:#include <openssl/err.h>
+        -:   64:#include <openssl/rand.h>
+        -:   65:
+        -:   66:#undef PROG
+        -:   67:#define PROG rand_main
+        -:   68:
+        -:   69:/* -out file         - write to file
+        -:   70: * -rand file:file   - PRNG seed files
+        -:   71: * -base64           - base64 encode output
+        -:   72: * -hex              - hex encode output
+        -:   73: * num               - write 'num' bytes
+        -:   74: */
+        -:   75:
+        -:   76:int MAIN(int, char **);
+        -:   77:
+    #####:   78:int MAIN(int argc, char **argv)
+        -:   79:	{
+        -:   80:	int i, r, ret = 1;
+        -:   81:	int badopt;
+        -:   82:	char *outfile = NULL;
+        -:   83:	char *inrand = NULL;
+        -:   84:	int base64 = 0;
+        -:   85:	int hex = 0;
+        -:   86:	BIO *out = NULL;
+    #####:   87:	int num = -1;
+        -:   88:#ifndef OPENSSL_NO_ENGINE
+        -:   89:	char *engine=NULL;
+        -:   90:#endif
+        -:   91:
+    #####:   92:	apps_startup();
+        -:   93:
+    #####:   94:	if (bio_err == NULL)
+    #####:   95:		if ((bio_err = BIO_new(BIO_s_file())) != NULL)
+    #####:   96:			BIO_set_fp(bio_err, stderr, BIO_NOCLOSE|BIO_FP_TEXT);
+        -:   97:
+    #####:   98:	if (!load_config(bio_err, NULL))
+        -:   99:		goto err;
+        -:  100:
+        -:  101:	badopt = 0;
+        -:  102:	i = 0;
+    #####:  103:	while (!badopt && argv[++i] != NULL)
+        -:  104:		{
+    #####:  105:		if (strcmp(argv[i], "-out") == 0)
+        -:  106:			{
+    #####:  107:			if ((argv[i+1] != NULL) && (outfile == NULL))
+    #####:  108:				outfile = argv[++i];
+        -:  109:			else
+        -:  110:				badopt = 1;
+        -:  111:			}
+        -:  112:#ifndef OPENSSL_NO_ENGINE
+    #####:  113:		else if (strcmp(argv[i], "-engine") == 0)
+        -:  114:			{
+    #####:  115:			if ((argv[i+1] != NULL) && (engine == NULL))
+    #####:  116:				engine = argv[++i];
+        -:  117:			else
+        -:  118:				badopt = 1;
+        -:  119:			}
+        -:  120:#endif
+    #####:  121:		else if (strcmp(argv[i], "-rand") == 0)
+        -:  122:			{
+    #####:  123:			if ((argv[i+1] != NULL) && (inrand == NULL))
+    #####:  124:				inrand = argv[++i];
+        -:  125:			else
+        -:  126:				badopt = 1;
+        -:  127:			}
+    #####:  128:		else if (strcmp(argv[i], "-base64") == 0)
+        -:  129:			{
+    #####:  130:			if (!base64)
+        -:  131:				base64 = 1;
+        -:  132:			else
+        -:  133:				badopt = 1;
+        -:  134:			}
+    #####:  135:		else if (strcmp(argv[i], "-hex") == 0)
+        -:  136:			{
+    #####:  137:			if (!hex)
+        -:  138:				hex = 1;
+        -:  139:			else
+        -:  140:				badopt = 1;
+        -:  141:			}
+    #####:  142:		else if (isdigit((unsigned char)argv[i][0]))
+        -:  143:			{
+    #####:  144:			if (num < 0)
+        -:  145:				{
+    #####:  146:				r = sscanf(argv[i], "%d", &num);
+    #####:  147:				if (r == 0 || num < 0)
+        -:  148:					badopt = 1;
+        -:  149:				}
+        -:  150:			else
+        -:  151:				badopt = 1;
+        -:  152:			}
+        -:  153:		else
+        -:  154:			badopt = 1;
+        -:  155:		}
+        -:  156:
+    #####:  157:	if (hex && base64)
+        -:  158:		badopt = 1;
+        -:  159:
+    #####:  160:	if (num < 0)
+        -:  161:		badopt = 1;
+        -:  162:	
+    #####:  163:	if (badopt) 
+        -:  164:		{
+    #####:  165:		BIO_printf(bio_err, "Usage: rand [options] num\n");
+    #####:  166:		BIO_printf(bio_err, "where options are\n");
+    #####:  167:		BIO_printf(bio_err, "-out file             - write to file\n");
+        -:  168:#ifndef OPENSSL_NO_ENGINE
+    #####:  169:		BIO_printf(bio_err, "-engine e             - use engine e, possibly a hardware device.\n");
+        -:  170:#endif
+    #####:  171:		BIO_printf(bio_err, "-rand file%cfile%c... - seed PRNG from files\n", LIST_SEPARATOR_CHAR, LIST_SEPARATOR_CHAR);
+    #####:  172:		BIO_printf(bio_err, "-base64               - base64 encode output\n");
+    #####:  173:		BIO_printf(bio_err, "-hex                  - hex encode output\n");
+    #####:  174:		goto err;
+        -:  175:		}
+        -:  176:
+        -:  177:#ifndef OPENSSL_NO_ENGINE
+    #####:  178:        setup_engine(bio_err, engine, 0);
+        -:  179:#endif
+        -:  180:
+    #####:  181:	app_RAND_load_file(NULL, bio_err, (inrand != NULL));
+    #####:  182:	if (inrand != NULL)
+    #####:  183:		BIO_printf(bio_err,"%ld semi-random bytes loaded\n",
+        -:  184:			app_RAND_load_files(inrand));
+        -:  185:
+    #####:  186:	out = BIO_new(BIO_s_file());
+    #####:  187:	if (out == NULL)
+        -:  188:		goto err;
+    #####:  189:	if (outfile != NULL)
+    #####:  190:		r = BIO_write_filename(out, outfile);
+        -:  191:	else
+        -:  192:		{
+    #####:  193:		r = BIO_set_fp(out, stdout, BIO_NOCLOSE | BIO_FP_TEXT);
+        -:  194:#ifdef OPENSSL_SYS_VMS
+        -:  195:		{
+        -:  196:		BIO *tmpbio = BIO_new(BIO_f_linebuffer());
+        -:  197:		out = BIO_push(tmpbio, out);
+        -:  198:		}
+        -:  199:#endif
+        -:  200:		}
+    #####:  201:	if (r <= 0)
+        -:  202:		goto err;
+        -:  203:
+    #####:  204:	if (base64)
+        -:  205:		{
+    #####:  206:		BIO *b64 = BIO_new(BIO_f_base64());
+    #####:  207:		if (b64 == NULL)
+        -:  208:			goto err;
+    #####:  209:		out = BIO_push(b64, out);
+        -:  210:		}
+        -:  211:	
+    #####:  212:	while (num > 0) 
+        -:  213:		{
+        -:  214:		unsigned char buf[4096];
+        -:  215:		int chunk;
+        -:  216:
+        -:  217:		chunk = num;
+    #####:  218:		if (chunk > (int)sizeof(buf))
+        -:  219:			chunk = sizeof buf;
+    #####:  220:		r = RAND_bytes(buf, chunk);
+    #####:  221:		if (r <= 0)
+        -:  222:			goto err;
+    #####:  223:		if (!hex) 
+    #####:  224:			BIO_write(out, buf, chunk);
+        -:  225:		else
+        -:  226:			{
+    #####:  227:			for (i = 0; i < chunk; i++)
+    #####:  228:				BIO_printf(out, "%02x", buf[i]);
+        -:  229:			}
+    #####:  230:		num -= chunk;
+        -:  231:		}
+    #####:  232:	if (hex)
+    #####:  233:		BIO_puts(out, "\n");
+    #####:  234:	(void)BIO_flush(out);
+        -:  235:
+    #####:  236:	app_RAND_write_file(NULL, bio_err);
+        -:  237:	ret = 0;
+        -:  238:	
+        -:  239:err:
+    #####:  240:	ERR_print_errors(bio_err);
+    #####:  241:	if (out)
+    #####:  242:		BIO_free_all(out);
+        -:  243:	apps_shutdown();
+    #####:  244:	OPENSSL_EXIT(ret);
+        -:  245:	}

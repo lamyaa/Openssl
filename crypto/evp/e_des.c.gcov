@@ -1,0 +1,229 @@
+        -:    0:Source:e_des.c
+        -:    0:Graph:e_des.gcno
+        -:    0:Data:e_des.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* crypto/evp/e_des.c */
+        -:    2:/* Copyright (C) 1995-1998 Eric Young (eay@cryptsoft.com)
+        -:    3: * All rights reserved.
+        -:    4: *
+        -:    5: * This package is an SSL implementation written
+        -:    6: * by Eric Young (eay@cryptsoft.com).
+        -:    7: * The implementation was written so as to conform with Netscapes SSL.
+        -:    8: * 
+        -:    9: * This library is free for commercial and non-commercial use as long as
+        -:   10: * the following conditions are aheared to.  The following conditions
+        -:   11: * apply to all code found in this distribution, be it the RC4, RSA,
+        -:   12: * lhash, DES, etc., code; not just the SSL code.  The SSL documentation
+        -:   13: * included with this distribution is covered by the same copyright terms
+        -:   14: * except that the holder is Tim Hudson (tjh@cryptsoft.com).
+        -:   15: * 
+        -:   16: * Copyright remains Eric Young's, and as such any Copyright notices in
+        -:   17: * the code are not to be removed.
+        -:   18: * If this package is used in a product, Eric Young should be given attribution
+        -:   19: * as the author of the parts of the library used.
+        -:   20: * This can be in the form of a textual message at program startup or
+        -:   21: * in documentation (online or textual) provided with the package.
+        -:   22: * 
+        -:   23: * Redistribution and use in source and binary forms, with or without
+        -:   24: * modification, are permitted provided that the following conditions
+        -:   25: * are met:
+        -:   26: * 1. Redistributions of source code must retain the copyright
+        -:   27: *    notice, this list of conditions and the following disclaimer.
+        -:   28: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   29: *    notice, this list of conditions and the following disclaimer in the
+        -:   30: *    documentation and/or other materials provided with the distribution.
+        -:   31: * 3. All advertising materials mentioning features or use of this software
+        -:   32: *    must display the following acknowledgement:
+        -:   33: *    "This product includes cryptographic software written by
+        -:   34: *     Eric Young (eay@cryptsoft.com)"
+        -:   35: *    The word 'cryptographic' can be left out if the rouines from the library
+        -:   36: *    being used are not cryptographic related :-).
+        -:   37: * 4. If you include any Windows specific code (or a derivative thereof) from 
+        -:   38: *    the apps directory (application code) you must include an acknowledgement:
+        -:   39: *    "This product includes software written by Tim Hudson (tjh@cryptsoft.com)"
+        -:   40: * 
+        -:   41: * THIS SOFTWARE IS PROVIDED BY ERIC YOUNG ``AS IS'' AND
+        -:   42: * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   43: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+        -:   44: * ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+        -:   45: * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+        -:   46: * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+        -:   47: * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   48: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+        -:   49: * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+        -:   50: * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+        -:   51: * SUCH DAMAGE.
+        -:   52: * 
+        -:   53: * The licence and distribution terms for any publically available version or
+        -:   54: * derivative of this code cannot be changed.  i.e. this code cannot simply be
+        -:   55: * copied and put under another distribution licence
+        -:   56: * [including the GNU Public Licence.]
+        -:   57: */
+        -:   58:
+        -:   59:#include <stdio.h>
+        -:   60:#include "cryptlib.h"
+        -:   61:#ifndef OPENSSL_NO_DES
+        -:   62:#include <openssl/evp.h>
+        -:   63:#include <openssl/objects.h>
+        -:   64:#include "evp_locl.h"
+        -:   65:#include <openssl/des.h>
+        -:   66:#include <openssl/rand.h>
+        -:   67:
+        -:   68:static int des_init_key(EVP_CIPHER_CTX *ctx, const unsigned char *key,
+        -:   69:			const unsigned char *iv, int enc);
+        -:   70:static int des_ctrl(EVP_CIPHER_CTX *c, int type, int arg, void *ptr);
+        -:   71:
+        -:   72:/* Because of various casts and different names can't use IMPLEMENT_BLOCK_CIPHER */
+        -:   73:
+    #####:   74:static int des_ecb_cipher(EVP_CIPHER_CTX *ctx, unsigned char *out,
+        -:   75:			  const unsigned char *in, size_t inl)
+        -:   76:{
+    #####:   77:	BLOCK_CIPHER_ecb_loop()
+    #####:   78:		DES_ecb_encrypt((DES_cblock *)(in + i), (DES_cblock *)(out + i), ctx->cipher_data, ctx->encrypt);
+        -:   79:	return 1;
+        -:   80:}
+        -:   81:
+    #####:   82:static int des_ofb_cipher(EVP_CIPHER_CTX *ctx, unsigned char *out,
+        -:   83:			  const unsigned char *in, size_t inl)
+        -:   84:{
+    #####:   85:	while(inl>=EVP_MAXCHUNK)
+        -:   86:		{
+    #####:   87:		DES_ofb64_encrypt(in, out, (long)EVP_MAXCHUNK, ctx->cipher_data,
+    #####:   88:				(DES_cblock *)ctx->iv, &ctx->num);
+    #####:   89:		inl-=EVP_MAXCHUNK;
+    #####:   90:		in +=EVP_MAXCHUNK;
+    #####:   91:		out+=EVP_MAXCHUNK;
+        -:   92:		}
+    #####:   93:	if (inl)
+    #####:   94:		DES_ofb64_encrypt(in, out, (long)inl, ctx->cipher_data,
+    #####:   95:				(DES_cblock *)ctx->iv, &ctx->num);
+    #####:   96:	return 1;
+        -:   97:}
+        -:   98:
+    #####:   99:static int des_cbc_cipher(EVP_CIPHER_CTX *ctx, unsigned char *out,
+        -:  100:			  const unsigned char *in, size_t inl)
+        -:  101:{
+    #####:  102:	while(inl>=EVP_MAXCHUNK)
+        -:  103:		{
+    #####:  104:		DES_ncbc_encrypt(in, out, (long)EVP_MAXCHUNK, ctx->cipher_data,
+    #####:  105:				(DES_cblock *)ctx->iv, ctx->encrypt);
+    #####:  106:		inl-=EVP_MAXCHUNK;
+    #####:  107:		in +=EVP_MAXCHUNK;
+    #####:  108:		out+=EVP_MAXCHUNK;
+        -:  109:		}
+    #####:  110:	if (inl)
+    #####:  111:		DES_ncbc_encrypt(in, out, (long)inl, ctx->cipher_data,
+    #####:  112:				(DES_cblock *)ctx->iv, ctx->encrypt);
+    #####:  113:	return 1;
+        -:  114:}
+        -:  115:
+    #####:  116:static int des_cfb64_cipher(EVP_CIPHER_CTX *ctx, unsigned char *out,
+        -:  117:			    const unsigned char *in, size_t inl)
+        -:  118:{
+    #####:  119:	while(inl>=EVP_MAXCHUNK)
+        -:  120:		{
+    #####:  121:		DES_cfb64_encrypt(in,out, (long)EVP_MAXCHUNK, ctx->cipher_data,
+    #####:  122:				(DES_cblock *)ctx->iv, &ctx->num, ctx->encrypt);
+    #####:  123:		inl-=EVP_MAXCHUNK;
+    #####:  124:		in +=EVP_MAXCHUNK;
+    #####:  125:		out+=EVP_MAXCHUNK;
+        -:  126:		}
+    #####:  127:	if (inl)
+    #####:  128:		DES_cfb64_encrypt(in, out, (long)inl, ctx->cipher_data,
+    #####:  129:			  (DES_cblock *)ctx->iv, &ctx->num, ctx->encrypt);
+    #####:  130:	return 1;
+        -:  131:}
+        -:  132:
+        -:  133:/* Although we have a CFB-r implementation for DES, it doesn't pack the right
+        -:  134:   way, so wrap it here */
+    #####:  135:static int des_cfb1_cipher(EVP_CIPHER_CTX *ctx, unsigned char *out,
+        -:  136:			   const unsigned char *in, size_t inl)
+        -:  137:    {
+        -:  138:    size_t n,chunk=EVP_MAXCHUNK/8;
+        -:  139:    unsigned char c[1],d[1];
+        -:  140:
+    #####:  141:    if (inl<chunk) chunk=inl;
+        -:  142:
+    #####:  143:    while (inl && inl>=chunk)
+        -:  144:	{
+    #####:  145:	for(n=0 ; n < chunk*8; ++n)
+        -:  146:	    {
+    #####:  147:	    c[0]=(in[n/8]&(1 << (7-n%8))) ? 0x80 : 0;
+    #####:  148:	    DES_cfb_encrypt(c,d,1,1,ctx->cipher_data,(DES_cblock *)ctx->iv,
+        -:  149:			ctx->encrypt);
+    #####:  150:	    out[n/8]=(out[n/8]&~(0x80 >> (unsigned int)(n%8))) |
+    #####:  151:		     ((d[0]&0x80) >> (unsigned int)(n%8));
+        -:  152:	    }
+    #####:  153:	inl-=chunk;
+    #####:  154:	in +=chunk;
+    #####:  155:	out+=chunk;
+    #####:  156:	if (inl<chunk) chunk=inl;
+        -:  157:	}
+        -:  158:
+    #####:  159:    return 1;
+        -:  160:    }
+        -:  161:
+    #####:  162:static int des_cfb8_cipher(EVP_CIPHER_CTX *ctx, unsigned char *out,
+        -:  163:			   const unsigned char *in, size_t inl)
+        -:  164:    {
+    #####:  165:    while (inl>=EVP_MAXCHUNK)
+        -:  166:	{
+    #####:  167:	DES_cfb_encrypt(in,out,8,(long)EVP_MAXCHUNK,ctx->cipher_data,
+    #####:  168:			(DES_cblock *)ctx->iv,ctx->encrypt);
+    #####:  169:	inl-=EVP_MAXCHUNK;
+    #####:  170:	in +=EVP_MAXCHUNK;
+    #####:  171:	out+=EVP_MAXCHUNK;
+        -:  172:	}
+    #####:  173:    if (inl)
+    #####:  174:	DES_cfb_encrypt(in,out,8,(long)inl,ctx->cipher_data,
+    #####:  175:			(DES_cblock *)ctx->iv,ctx->encrypt);
+    #####:  176:    return 1;
+        -:  177:    }
+        -:  178:
+    50000:  179:BLOCK_CIPHER_defs(des, DES_key_schedule, NID_des, 8, 8, 8, 64,
+        -:  180:			EVP_CIPH_RAND_KEY, des_init_key, NULL,
+        -:  181:			EVP_CIPHER_set_asn1_iv,
+        -:  182:			EVP_CIPHER_get_asn1_iv,
+        -:  183:			des_ctrl)
+        -:  184:
+    10000:  185:BLOCK_CIPHER_def_cfb(des,DES_key_schedule,NID_des,8,8,1,
+        -:  186:		     EVP_CIPH_RAND_KEY, des_init_key,NULL,
+        -:  187:		     EVP_CIPHER_set_asn1_iv,
+        -:  188:		     EVP_CIPHER_get_asn1_iv,des_ctrl)
+        -:  189:
+    10000:  190:BLOCK_CIPHER_def_cfb(des,DES_key_schedule,NID_des,8,8,8,
+        -:  191:		     EVP_CIPH_RAND_KEY,des_init_key,NULL,
+        -:  192:		     EVP_CIPHER_set_asn1_iv,
+        -:  193:		     EVP_CIPHER_get_asn1_iv,des_ctrl)
+        -:  194:
+    #####:  195:static int des_init_key(EVP_CIPHER_CTX *ctx, const unsigned char *key,
+        -:  196:			const unsigned char *iv, int enc)
+        -:  197:	{
+        -:  198:	DES_cblock *deskey = (DES_cblock *)key;
+        -:  199:#ifdef EVP_CHECK_DES_KEY
+        -:  200:	if(DES_set_key_checked(deskey,ctx->cipher_data) != 0)
+        -:  201:		return 0;
+        -:  202:#else
+    #####:  203:	DES_set_key_unchecked(deskey,ctx->cipher_data);
+        -:  204:#endif
+    #####:  205:	return 1;
+        -:  206:	}
+        -:  207:
+    #####:  208:static int des_ctrl(EVP_CIPHER_CTX *c, int type, int arg, void *ptr)
+        -:  209:	{
+        -:  210:	
+    #####:  211:	switch(type)
+        -:  212:		{
+        -:  213:	case EVP_CTRL_RAND_KEY:
+    #####:  214:		if (RAND_bytes(ptr, 8) <= 0)
+        -:  215:			return 0;
+    #####:  216:		DES_set_odd_parity((DES_cblock *)ptr);
+    #####:  217:		return 1;
+        -:  218:
+        -:  219:	default:
+        -:  220:		return -1;
+        -:  221:		}
+        -:  222:	}
+        -:  223:
+        -:  224:#endif

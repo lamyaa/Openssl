@@ -1,0 +1,637 @@
+        -:    0:Source:s_time.c
+        -:    0:Graph:s_time.gcno
+        -:    0:Data:s_time.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* apps/s_time.c */
+        -:    2:/* Copyright (C) 1995-1998 Eric Young (eay@cryptsoft.com)
+        -:    3: * All rights reserved.
+        -:    4: *
+        -:    5: * This package is an SSL implementation written
+        -:    6: * by Eric Young (eay@cryptsoft.com).
+        -:    7: * The implementation was written so as to conform with Netscapes SSL.
+        -:    8: * 
+        -:    9: * This library is free for commercial and non-commercial use as long as
+        -:   10: * the following conditions are aheared to.  The following conditions
+        -:   11: * apply to all code found in this distribution, be it the RC4, RSA,
+        -:   12: * lhash, DES, etc., code; not just the SSL code.  The SSL documentation
+        -:   13: * included with this distribution is covered by the same copyright terms
+        -:   14: * except that the holder is Tim Hudson (tjh@cryptsoft.com).
+        -:   15: * 
+        -:   16: * Copyright remains Eric Young's, and as such any Copyright notices in
+        -:   17: * the code are not to be removed.
+        -:   18: * If this package is used in a product, Eric Young should be given attribution
+        -:   19: * as the author of the parts of the library used.
+        -:   20: * This can be in the form of a textual message at program startup or
+        -:   21: * in documentation (online or textual) provided with the package.
+        -:   22: * 
+        -:   23: * Redistribution and use in source and binary forms, with or without
+        -:   24: * modification, are permitted provided that the following conditions
+        -:   25: * are met:
+        -:   26: * 1. Redistributions of source code must retain the copyright
+        -:   27: *    notice, this list of conditions and the following disclaimer.
+        -:   28: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   29: *    notice, this list of conditions and the following disclaimer in the
+        -:   30: *    documentation and/or other materials provided with the distribution.
+        -:   31: * 3. All advertising materials mentioning features or use of this software
+        -:   32: *    must display the following acknowledgement:
+        -:   33: *    "This product includes cryptographic software written by
+        -:   34: *     Eric Young (eay@cryptsoft.com)"
+        -:   35: *    The word 'cryptographic' can be left out if the rouines from the library
+        -:   36: *    being used are not cryptographic related :-).
+        -:   37: * 4. If you include any Windows specific code (or a derivative thereof) from 
+        -:   38: *    the apps directory (application code) you must include an acknowledgement:
+        -:   39: *    "This product includes software written by Tim Hudson (tjh@cryptsoft.com)"
+        -:   40: * 
+        -:   41: * THIS SOFTWARE IS PROVIDED BY ERIC YOUNG ``AS IS'' AND
+        -:   42: * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   43: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+        -:   44: * ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+        -:   45: * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+        -:   46: * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+        -:   47: * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   48: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+        -:   49: * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+        -:   50: * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+        -:   51: * SUCH DAMAGE.
+        -:   52: * 
+        -:   53: * The licence and distribution terms for any publically available version or
+        -:   54: * derivative of this code cannot be changed.  i.e. this code cannot simply be
+        -:   55: * copied and put under another distribution licence
+        -:   56: * [including the GNU Public Licence.]
+        -:   57: */
+        -:   58:
+        -:   59:#define NO_SHUTDOWN
+        -:   60:
+        -:   61:/*-----------------------------------------
+        -:   62:   s_time - SSL client connection timer program
+        -:   63:   Written and donated by Larry Streepy <streepy@healthcare.com>
+        -:   64:  -----------------------------------------*/
+        -:   65:
+        -:   66:#include <stdio.h>
+        -:   67:#include <stdlib.h>
+        -:   68:#include <string.h>
+        -:   69:
+        -:   70:#define USE_SOCKETS
+        -:   71:#include "apps.h"
+        -:   72:#ifdef OPENSSL_NO_STDIO
+        -:   73:#define APPS_WIN16
+        -:   74:#endif
+        -:   75:#include <openssl/x509.h>
+        -:   76:#include <openssl/ssl.h>
+        -:   77:#include <openssl/pem.h>
+        -:   78:#include "s_apps.h"
+        -:   79:#include <openssl/err.h>
+        -:   80:#ifdef WIN32_STUFF
+        -:   81:#include "winmain.h"
+        -:   82:#include "wintext.h"
+        -:   83:#endif
+        -:   84:#if !defined(OPENSSL_SYS_MSDOS)
+        -:   85:#include OPENSSL_UNISTD
+        -:   86:#endif
+        -:   87:
+        -:   88:#undef PROG
+        -:   89:#define PROG s_time_main
+        -:   90:
+        -:   91:#undef ioctl
+        -:   92:#define ioctl ioctlsocket
+        -:   93:
+        -:   94:#define SSL_CONNECT_NAME	"localhost:4433"
+        -:   95:
+        -:   96:/*#define TEST_CERT "client.pem" */ /* no default cert. */
+        -:   97:
+        -:   98:#undef BUFSIZZ
+        -:   99:#define BUFSIZZ 1024*10
+        -:  100:
+        -:  101:#define MYBUFSIZ 1024*8
+        -:  102:
+        -:  103:#undef min
+        -:  104:#undef max
+        -:  105:#define min(a,b) (((a) < (b)) ? (a) : (b))
+        -:  106:#define max(a,b) (((a) > (b)) ? (a) : (b))
+        -:  107:
+        -:  108:#undef SECONDS
+        -:  109:#define SECONDS	30
+        -:  110:extern int verify_depth;
+        -:  111:extern int verify_error;
+        -:  112:
+        -:  113:static void s_time_usage(void);
+        -:  114:static int parseArgs( int argc, char **argv );
+        -:  115:static SSL *doConnection( SSL *scon );
+        -:  116:static void s_time_init(void);
+        -:  117:
+        -:  118:/***********************************************************************
+        -:  119: * Static data declarations
+        -:  120: */
+        -:  121:
+        -:  122:/* static char *port=PORT_STR;*/
+        -:  123:static char *host=SSL_CONNECT_NAME;
+        -:  124:static char *t_cert_file=NULL;
+        -:  125:static char *t_key_file=NULL;
+        -:  126:static char *CApath=NULL;
+        -:  127:static char *CAfile=NULL;
+        -:  128:static char *tm_cipher=NULL;
+        -:  129:static int tm_verify = SSL_VERIFY_NONE;
+        -:  130:static int maxTime = SECONDS;
+        -:  131:static SSL_CTX *tm_ctx=NULL;
+        -:  132:static const SSL_METHOD *s_time_meth=NULL;
+        -:  133:static char *s_www_path=NULL;
+        -:  134:static long bytes_read=0; 
+        -:  135:static int st_bugs=0;
+        -:  136:static int perform=0;
+        -:  137:#ifdef FIONBIO
+        -:  138:static int t_nbio=0;
+        -:  139:#endif
+        -:  140:#ifdef OPENSSL_SYS_WIN32
+        -:  141:static int exitNow = 0;		/* Set when it's time to exit main */
+        -:  142:#endif
+        -:  143:
+    #####:  144:static void s_time_init(void)
+        -:  145:	{
+    #####:  146:	host=SSL_CONNECT_NAME;
+    #####:  147:	t_cert_file=NULL;
+    #####:  148:	t_key_file=NULL;
+    #####:  149:	CApath=NULL;
+    #####:  150:	CAfile=NULL;
+    #####:  151:	tm_cipher=NULL;
+    #####:  152:	tm_verify = SSL_VERIFY_NONE;
+    #####:  153:	maxTime = SECONDS;
+    #####:  154:	tm_ctx=NULL;
+    #####:  155:	s_time_meth=NULL;
+    #####:  156:	s_www_path=NULL;
+    #####:  157:	bytes_read=0; 
+    #####:  158:	st_bugs=0;
+    #####:  159:	perform=0;
+        -:  160:
+        -:  161:#ifdef FIONBIO
+    #####:  162:	t_nbio=0;
+        -:  163:#endif
+        -:  164:#ifdef OPENSSL_SYS_WIN32
+        -:  165:	exitNow = 0;		/* Set when it's time to exit main */
+        -:  166:#endif
+    #####:  167:	}
+        -:  168:
+        -:  169:/***********************************************************************
+        -:  170: * usage - display usage message
+        -:  171: */
+    #####:  172:static void s_time_usage(void)
+        -:  173:{
+        -:  174:	static char umsg[] = "\
+        -:  175:-time arg     - max number of seconds to collect data, default %d\n\
+        -:  176:-verify arg   - turn on peer certificate verification, arg == depth\n\
+        -:  177:-cert arg     - certificate file to use, PEM format assumed\n\
+        -:  178:-key arg      - RSA file to use, PEM format assumed, key is in cert file\n\
+        -:  179:                file if not specified by this option\n\
+        -:  180:-CApath arg   - PEM format directory of CA's\n\
+        -:  181:-CAfile arg   - PEM format file of CA's\n\
+        -:  182:-cipher       - preferred cipher to use, play with 'openssl ciphers'\n\n";
+        -:  183:
+        -:  184:	printf( "usage: s_time <args>\n\n" );
+        -:  185:
+        -:  186:	printf("-connect host:port - host:port to connect to (default is %s)\n",SSL_CONNECT_NAME);
+        -:  187:#ifdef FIONBIO
+        -:  188:	printf("-nbio         - Run with non-blocking IO\n");
+        -:  189:	printf("-ssl2         - Just use SSLv2\n");
+        -:  190:	printf("-ssl3         - Just use SSLv3\n");
+        -:  191:	printf("-bugs         - Turn on SSL bug compatibility\n");
+        -:  192:	printf("-new          - Just time new connections\n");
+        -:  193:	printf("-reuse        - Just time connection reuse\n");
+        -:  194:	printf("-www page     - Retrieve 'page' from the site\n");
+        -:  195:#endif
+        -:  196:	printf( umsg,SECONDS );
+    #####:  197:}
+        -:  198:
+        -:  199:/***********************************************************************
+        -:  200: * parseArgs - Parse command line arguments and initialize data
+        -:  201: *
+        -:  202: * Returns 0 if ok, -1 on bad args
+        -:  203: */
+    #####:  204:static int parseArgs(int argc, char **argv)
+        -:  205:{
+        -:  206:    int badop = 0;
+        -:  207:
+    #####:  208:    verify_depth=0;
+    #####:  209:    verify_error=X509_V_OK;
+        -:  210:
+    #####:  211:    argc--;
+    #####:  212:    argv++;
+        -:  213:
+    #####:  214:    while (argc >= 1) {
+    #####:  215:	if (strcmp(*argv,"-connect") == 0)
+        -:  216:		{
+    #####:  217:		if (--argc < 1) goto bad;
+    #####:  218:		host= *(++argv);
+        -:  219:		}
+        -:  220:#if 0
+        -:  221:	else if( strcmp(*argv,"-host") == 0)
+        -:  222:		{
+        -:  223:		if (--argc < 1) goto bad;
+        -:  224:		host= *(++argv);
+        -:  225:		}
+        -:  226:	else if( strcmp(*argv,"-port") == 0)
+        -:  227:		{
+        -:  228:		if (--argc < 1) goto bad;
+        -:  229:		port= *(++argv);
+        -:  230:		}
+        -:  231:#endif
+    #####:  232:	else if (strcmp(*argv,"-reuse") == 0)
+    #####:  233:		perform=2;
+    #####:  234:	else if (strcmp(*argv,"-new") == 0)
+    #####:  235:		perform=1;
+    #####:  236:	else if( strcmp(*argv,"-verify") == 0) {
+        -:  237:
+    #####:  238:	    tm_verify=SSL_VERIFY_PEER|SSL_VERIFY_CLIENT_ONCE;
+    #####:  239:	    if (--argc < 1) goto bad;
+    #####:  240:	    verify_depth=atoi(*(++argv));
+    #####:  241:	    BIO_printf(bio_err,"verify depth is %d\n",verify_depth);
+        -:  242:
+    #####:  243:	} else if( strcmp(*argv,"-cert") == 0) {
+        -:  244:
+    #####:  245:	    if (--argc < 1) goto bad;
+    #####:  246:	    t_cert_file= *(++argv);
+        -:  247:
+    #####:  248:	} else if( strcmp(*argv,"-key") == 0) {
+        -:  249:
+    #####:  250:	    if (--argc < 1) goto bad;
+    #####:  251:	    t_key_file= *(++argv);
+        -:  252:
+    #####:  253:	} else if( strcmp(*argv,"-CApath") == 0) {
+        -:  254:
+    #####:  255:	    if (--argc < 1) goto bad;
+    #####:  256:	    CApath= *(++argv);
+        -:  257:
+    #####:  258:	} else if( strcmp(*argv,"-CAfile") == 0) {
+        -:  259:
+    #####:  260:	    if (--argc < 1) goto bad;
+    #####:  261:	    CAfile= *(++argv);
+        -:  262:
+    #####:  263:	} else if( strcmp(*argv,"-cipher") == 0) {
+        -:  264:
+    #####:  265:	    if (--argc < 1) goto bad;
+    #####:  266:	    tm_cipher= *(++argv);
+        -:  267:	}
+        -:  268:#ifdef FIONBIO
+    #####:  269:	else if(strcmp(*argv,"-nbio") == 0) {
+    #####:  270:	    t_nbio=1;
+        -:  271:	}
+        -:  272:#endif
+    #####:  273:	else if(strcmp(*argv,"-www") == 0)
+        -:  274:		{
+    #####:  275:		if (--argc < 1) goto bad;
+    #####:  276:		s_www_path= *(++argv);
+    #####:  277:		if(strlen(s_www_path) > MYBUFSIZ-100)
+        -:  278:			{
+    #####:  279:			BIO_printf(bio_err,"-www option too long\n");
+        -:  280:			badop=1;
+        -:  281:			}
+        -:  282:		}
+    #####:  283:	else if(strcmp(*argv,"-bugs") == 0)
+    #####:  284:	    st_bugs=1;
+        -:  285:#ifndef OPENSSL_NO_SSL2
+    #####:  286:	else if(strcmp(*argv,"-ssl2") == 0)
+    #####:  287:	    s_time_meth=SSLv2_client_method();
+        -:  288:#endif
+        -:  289:#ifndef OPENSSL_NO_SSL3
+    #####:  290:	else if(strcmp(*argv,"-ssl3") == 0)
+    #####:  291:	    s_time_meth=SSLv3_client_method();
+        -:  292:#endif
+    #####:  293:	else if( strcmp(*argv,"-time") == 0) {
+        -:  294:
+    #####:  295:	    if (--argc < 1) goto bad;
+    #####:  296:	    maxTime= atoi(*(++argv));
+        -:  297:	}
+        -:  298:	else {
+    #####:  299:	    BIO_printf(bio_err,"unknown option %s\n",*argv);
+        -:  300:	    badop=1;
+    #####:  301:	    break;
+        -:  302:	}
+        -:  303:
+    #####:  304:	argc--;
+    #####:  305:	argv++;
+        -:  306:    }
+        -:  307:
+    #####:  308:    if (perform == 0) perform=3;
+        -:  309:
+    #####:  310:    if(badop) {
+        -:  311:bad:
+    #####:  312:		s_time_usage();
+    #####:  313:		return -1;
+        -:  314:    }
+        -:  315:
+        -:  316:	return 0;			/* Valid args */
+        -:  317:}
+        -:  318:
+        -:  319:/***********************************************************************
+        -:  320: * TIME - time functions
+        -:  321: */
+        -:  322:#define START	0
+        -:  323:#define STOP	1
+        -:  324:
+        -:  325:static double tm_Time_F(int s)
+        -:  326:	{
+    #####:  327:	return app_tminterval(s,1);
+        -:  328:	}
+        -:  329:
+        -:  330:/***********************************************************************
+        -:  331: * MAIN - main processing area for client
+        -:  332: *			real name depends on MONOLITH
+        -:  333: */
+        -:  334:int MAIN(int, char **);
+        -:  335:
+    #####:  336:int MAIN(int argc, char **argv)
+        -:  337:	{
+        -:  338:	double totalTime = 0.0;
+        -:  339:	int nConn = 0;
+        -:  340:	SSL *scon=NULL;
+        -:  341:	long finishtime=0;
+        -:  342:	int ret=1,i;
+        -:  343:	MS_STATIC char buf[1024*8];
+        -:  344:	int ver;
+        -:  345:
+    #####:  346:	apps_startup();
+    #####:  347:	s_time_init();
+        -:  348:
+    #####:  349:	if (bio_err == NULL)
+    #####:  350:		bio_err=BIO_new_fp(stderr,BIO_NOCLOSE);
+        -:  351:
+        -:  352:#if !defined(OPENSSL_NO_SSL2) && !defined(OPENSSL_NO_SSL3)
+    #####:  353:	s_time_meth=SSLv23_client_method();
+        -:  354:#elif !defined(OPENSSL_NO_SSL3)
+        -:  355:	s_time_meth=SSLv3_client_method();
+        -:  356:#elif !defined(OPENSSL_NO_SSL2)
+        -:  357:	s_time_meth=SSLv2_client_method();
+        -:  358:#endif
+        -:  359:
+        -:  360:	/* parse the command line arguments */
+    #####:  361:	if( parseArgs( argc, argv ) < 0 )
+        -:  362:		goto end;
+        -:  363:
+    #####:  364:	OpenSSL_add_ssl_algorithms();
+    #####:  365:	if ((tm_ctx=SSL_CTX_new(s_time_meth)) == NULL) return(1);
+        -:  366:
+    #####:  367:	SSL_CTX_set_quiet_shutdown(tm_ctx,1);
+        -:  368:
+    #####:  369:	if (st_bugs) SSL_CTX_set_options(tm_ctx,SSL_OP_ALL);
+    #####:  370:	SSL_CTX_set_cipher_list(tm_ctx,tm_cipher);
+    #####:  371:	if(!set_cert_stuff(tm_ctx,t_cert_file,t_key_file)) 
+        -:  372:		goto end;
+        -:  373:
+    #####:  374:	SSL_load_error_strings();
+        -:  375:
+    #####:  376:	if ((!SSL_CTX_load_verify_locations(tm_ctx,CAfile,CApath)) ||
+    #####:  377:		(!SSL_CTX_set_default_verify_paths(tm_ctx)))
+        -:  378:		{
+        -:  379:		/* BIO_printf(bio_err,"error setting default verify locations\n"); */
+    #####:  380:		ERR_print_errors(bio_err);
+        -:  381:		/* goto end; */
+        -:  382:		}
+        -:  383:
+    #####:  384:	if (tm_cipher == NULL)
+    #####:  385:		tm_cipher = getenv("SSL_CIPHER");
+        -:  386:
+    #####:  387:	if (tm_cipher == NULL ) {
+    #####:  388:		fprintf( stderr, "No CIPHER specified\n" );
+        -:  389:	}
+        -:  390:
+    #####:  391:	if (!(perform & 1)) goto next;
+    #####:  392:	printf( "Collecting connection statistics for %d seconds\n", maxTime );
+        -:  393:
+        -:  394:	/* Loop and time how long it takes to make connections */
+        -:  395:
+    #####:  396:	bytes_read=0;
+    #####:  397:	finishtime=(long)time(NULL)+maxTime;
+        -:  398:	tm_Time_F(START);
+        -:  399:	for (;;)
+        -:  400:		{
+    #####:  401:		if (finishtime < (long)time(NULL)) break;
+        -:  402:#ifdef WIN32_STUFF
+        -:  403:
+        -:  404:		if( flushWinMsgs(0) == -1 )
+        -:  405:			goto end;
+        -:  406:
+        -:  407:		if( waitingToDie || exitNow )		/* we're dead */
+        -:  408:			goto end;
+        -:  409:#endif
+        -:  410:
+    #####:  411:		if( (scon = doConnection( NULL )) == NULL )
+        -:  412:			goto end;
+        -:  413:
+    #####:  414:		if (s_www_path != NULL)
+        -:  415:			{
+    #####:  416:			BIO_snprintf(buf,sizeof buf,"GET %s HTTP/1.0\r\n\r\n",s_www_path);
+    #####:  417:			SSL_write(scon,buf,strlen(buf));
+    #####:  418:			while ((i=SSL_read(scon,buf,sizeof(buf))) > 0)
+    #####:  419:				bytes_read+=i;
+        -:  420:			}
+        -:  421:
+        -:  422:#ifdef NO_SHUTDOWN
+    #####:  423:		SSL_set_shutdown(scon,SSL_SENT_SHUTDOWN|SSL_RECEIVED_SHUTDOWN);
+        -:  424:#else
+        -:  425:		SSL_shutdown(scon);
+        -:  426:#endif
+    #####:  427:		SHUTDOWN2(SSL_get_fd(scon));
+        -:  428:
+    #####:  429:		nConn += 1;
+    #####:  430:		if (SSL_session_reused(scon))
+        -:  431:			ver='r';
+        -:  432:		else
+        -:  433:			{
+    #####:  434:			ver=SSL_version(scon);
+    #####:  435:			if (ver == TLS1_VERSION)
+        -:  436:				ver='t';
+    #####:  437:			else if (ver == SSL3_VERSION)
+        -:  438:				ver='3';
+    #####:  439:			else if (ver == SSL2_VERSION)
+        -:  440:				ver='2';
+        -:  441:			else
+        -:  442:				ver='*';
+        -:  443:			}
+    #####:  444:		fputc(ver,stdout);
+    #####:  445:		fflush(stdout);
+        -:  446:
+    #####:  447:		SSL_free( scon );
+        -:  448:		scon=NULL;
+    #####:  449:		}
+    #####:  450:	totalTime += tm_Time_F(STOP); /* Add the time for this iteration */
+        -:  451:
+    #####:  452:	i=(int)((long)time(NULL)-finishtime+maxTime);
+    #####:  453:	printf( "\n\n%d connections in %.2fs; %.2f connections/user sec, bytes read %ld\n", nConn, totalTime, ((double)nConn/totalTime),bytes_read);
+    #####:  454:	printf( "%d connections in %ld real seconds, %ld bytes read per connection\n",nConn,(long)time(NULL)-finishtime+maxTime,bytes_read/nConn);
+        -:  455:
+        -:  456:	/* Now loop and time connections using the same session id over and over */
+        -:  457:
+        -:  458:next:
+    #####:  459:	if (!(perform & 2)) goto end;
+        -:  460:	printf( "\n\nNow timing with session id reuse.\n" );
+        -:  461:
+        -:  462:	/* Get an SSL object so we can reuse the session id */
+    #####:  463:	if( (scon = doConnection( NULL )) == NULL )
+        -:  464:		{
+    #####:  465:		fprintf( stderr, "Unable to get connection\n" );
+        -:  466:		goto end;
+        -:  467:		}
+        -:  468:
+    #####:  469:	if (s_www_path != NULL)
+        -:  470:		{
+    #####:  471:		BIO_snprintf(buf,sizeof buf,"GET %s HTTP/1.0\r\n\r\n",s_www_path);
+    #####:  472:		SSL_write(scon,buf,strlen(buf));
+    #####:  473:		while (SSL_read(scon,buf,sizeof(buf)) > 0)
+        -:  474:			;
+        -:  475:		}
+        -:  476:#ifdef NO_SHUTDOWN
+    #####:  477:	SSL_set_shutdown(scon,SSL_SENT_SHUTDOWN|SSL_RECEIVED_SHUTDOWN);
+        -:  478:#else
+        -:  479:	SSL_shutdown(scon);
+        -:  480:#endif
+    #####:  481:	SHUTDOWN2(SSL_get_fd(scon));
+        -:  482:
+        -:  483:	nConn = 0;
+        -:  484:	totalTime = 0.0;
+        -:  485:
+    #####:  486:	finishtime=(long)time(NULL)+maxTime;
+        -:  487:
+        -:  488:	printf( "starting\n" );
+    #####:  489:	bytes_read=0;
+        -:  490:	tm_Time_F(START);
+        -:  491:		
+        -:  492:	for (;;)
+        -:  493:		{
+    #####:  494:		if (finishtime < (long)time(NULL)) break;
+        -:  495:
+        -:  496:#ifdef WIN32_STUFF
+        -:  497:		if( flushWinMsgs(0) == -1 )
+        -:  498:			goto end;
+        -:  499:
+        -:  500:		if( waitingToDie || exitNow )	/* we're dead */
+        -:  501:			goto end;
+        -:  502:#endif
+        -:  503:
+    #####:  504:	 	if( (doConnection( scon )) == NULL )
+        -:  505:			goto end;
+        -:  506:
+    #####:  507:		if (s_www_path)
+        -:  508:			{
+    #####:  509:			BIO_snprintf(buf,sizeof buf,"GET %s HTTP/1.0\r\n\r\n",s_www_path);
+    #####:  510:			SSL_write(scon,buf,strlen(buf));
+    #####:  511:			while ((i=SSL_read(scon,buf,sizeof(buf))) > 0)
+    #####:  512:				bytes_read+=i;
+        -:  513:			}
+        -:  514:
+        -:  515:#ifdef NO_SHUTDOWN
+    #####:  516:		SSL_set_shutdown(scon,SSL_SENT_SHUTDOWN|SSL_RECEIVED_SHUTDOWN);
+        -:  517:#else
+        -:  518:		SSL_shutdown(scon);
+        -:  519:#endif
+    #####:  520:		SHUTDOWN2(SSL_get_fd(scon));
+        -:  521:	
+    #####:  522:		nConn += 1;
+    #####:  523:		if (SSL_session_reused(scon))
+        -:  524:			ver='r';
+        -:  525:		else
+        -:  526:			{
+    #####:  527:			ver=SSL_version(scon);
+    #####:  528:			if (ver == TLS1_VERSION)
+        -:  529:				ver='t';
+    #####:  530:			else if (ver == SSL3_VERSION)
+        -:  531:				ver='3';
+    #####:  532:			else if (ver == SSL2_VERSION)
+        -:  533:				ver='2';
+        -:  534:			else
+        -:  535:				ver='*';
+        -:  536:			}
+    #####:  537:		fputc(ver,stdout);
+    #####:  538:		fflush(stdout);
+    #####:  539:		}
+    #####:  540:	totalTime += tm_Time_F(STOP); /* Add the time for this iteration*/
+        -:  541:
+        -:  542:
+    #####:  543:	printf( "\n\n%d connections in %.2fs; %.2f connections/user sec, bytes read %ld\n", nConn, totalTime, ((double)nConn/totalTime),bytes_read);
+    #####:  544:	printf( "%d connections in %ld real seconds, %ld bytes read per connection\n",nConn,(long)time(NULL)-finishtime+maxTime,bytes_read/nConn);
+        -:  545:
+        -:  546:	ret=0;
+        -:  547:end:
+    #####:  548:	if (scon != NULL) SSL_free(scon);
+        -:  549:
+    #####:  550:	if (tm_ctx != NULL)
+        -:  551:		{
+    #####:  552:		SSL_CTX_free(tm_ctx);
+    #####:  553:		tm_ctx=NULL;
+        -:  554:		}
+        -:  555:	apps_shutdown();
+    #####:  556:	OPENSSL_EXIT(ret);
+        -:  557:	}
+        -:  558:
+        -:  559:/***********************************************************************
+        -:  560: * doConnection - make a connection
+        -:  561: * Args:
+        -:  562: *		scon	= earlier ssl connection for session id, or NULL
+        -:  563: * Returns:
+        -:  564: *		SSL *	= the connection pointer.
+        -:  565: */
+    #####:  566:static SSL *doConnection(SSL *scon)
+        -:  567:	{
+        -:  568:	BIO *conn;
+        -:  569:	SSL *serverCon;
+        -:  570:	int width, i;
+        -:  571:	fd_set readfds;
+        -:  572:
+    #####:  573:	if ((conn=BIO_new(BIO_s_connect())) == NULL)
+        -:  574:		return(NULL);
+        -:  575:
+        -:  576:/*	BIO_set_conn_port(conn,port);*/
+    #####:  577:	BIO_set_conn_hostname(conn,host);
+        -:  578:
+    #####:  579:	if (scon == NULL)
+    #####:  580:		serverCon=SSL_new(tm_ctx);
+        -:  581:	else
+        -:  582:		{
+        -:  583:		serverCon=scon;
+    #####:  584:		SSL_set_connect_state(serverCon);
+        -:  585:		}
+        -:  586:
+    #####:  587:	SSL_set_bio(serverCon,conn,conn);
+        -:  588:
+        -:  589:#if 0
+        -:  590:	if( scon != NULL )
+        -:  591:		SSL_set_session(serverCon,SSL_get_session(scon));
+        -:  592:#endif
+        -:  593:
+        -:  594:	/* ok, lets connect */
+        -:  595:	for(;;) {
+    #####:  596:		i=SSL_connect(serverCon);
+    #####:  597:		if (BIO_sock_should_retry(i))
+        -:  598:			{
+    #####:  599:			BIO_printf(bio_err,"DELAY\n");
+        -:  600:
+    #####:  601:			i=SSL_get_fd(serverCon);
+    #####:  602:			width=i+1;
+    #####:  603:			FD_ZERO(&readfds);
+    #####:  604:			openssl_fdset(i,&readfds);
+        -:  605:			/* Note: under VMS with SOCKETSHR the 2nd parameter
+        -:  606:			 * is currently of type (int *) whereas under other
+        -:  607:			 * systems it is (void *) if you don't have a cast it
+        -:  608:			 * will choke the compiler: if you do have a cast then
+        -:  609:			 * you can either go for (int *) or (void *).
+        -:  610:			 */
+    #####:  611:			select(width,(void *)&readfds,NULL,NULL,NULL);
+    #####:  612:			continue;
+        -:  613:			}
+        -:  614:		break;
+    #####:  615:		}
+    #####:  616:	if(i <= 0)
+        -:  617:		{
+    #####:  618:		BIO_printf(bio_err,"ERROR\n");
+    #####:  619:		if (verify_error != X509_V_OK)
+    #####:  620:			BIO_printf(bio_err,"verify error:%s\n",
+        -:  621:				X509_verify_cert_error_string(verify_error));
+        -:  622:		else
+    #####:  623:			ERR_print_errors(bio_err);
+    #####:  624:		if (scon == NULL)
+    #####:  625:			SSL_free(serverCon);
+        -:  626:		return NULL;
+        -:  627:		}
+        -:  628:
+        -:  629:	return serverCon;
+        -:  630:	}
+        -:  631:
+        -:  632:

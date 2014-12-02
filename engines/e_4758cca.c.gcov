@@ -1,0 +1,992 @@
+        -:    0:Source:e_4758cca.c
+        -:    0:Graph:e_4758cca.gcno
+        -:    0:Data:e_4758cca.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* Author: Maurice Gittens <maurice@gittens.nl>                       */
+        -:    2:/* ====================================================================
+        -:    3: * Copyright (c) 1999 The OpenSSL Project.  All rights reserved.
+        -:    4: *
+        -:    5: * Redistribution and use in source and binary forms, with or without
+        -:    6: * modification, are permitted provided that the following conditions
+        -:    7: * are met:
+        -:    8: *
+        -:    9: * 1. Redistributions of source code must retain the above copyright
+        -:   10: *    notice, this list of conditions and the following disclaimer. 
+        -:   11: *
+        -:   12: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   13: *    notice, this list of conditions and the following disclaimer in
+        -:   14: *    the documentation and/or other materials provided with the
+        -:   15: *    distribution.
+        -:   16: *
+        -:   17: * 3. All advertising materials mentioning features or use of this
+        -:   18: *    software must display the following acknowledgment:
+        -:   19: *    "This product includes software developed by the OpenSSL Project
+        -:   20: *    for use in the OpenSSL Toolkit. (http://www.OpenSSL.org/)"
+        -:   21: *
+        -:   22: * 4. The names "OpenSSL Toolkit" and "OpenSSL Project" must not be used to
+        -:   23: *    endorse or promote products derived from this software without
+        -:   24: *    prior written permission. For written permission, please contact
+        -:   25: *    licensing@OpenSSL.org.
+        -:   26: *
+        -:   27: * 5. Products derived from this software may not be called "OpenSSL"
+        -:   28: *    nor may "OpenSSL" appear in their names without prior written
+        -:   29: *    permission of the OpenSSL Project.
+        -:   30: *
+        -:   31: * 6. Redistributions of any form whatsoever must retain the following
+        -:   32: *    acknowledgment:
+        -:   33: *    "This product includes software developed by the OpenSSL Project
+        -:   34: *    for use in the OpenSSL Toolkit (http://www.OpenSSL.org/)"
+        -:   35: *
+        -:   36: * THIS SOFTWARE IS PROVIDED BY THE OpenSSL PROJECT ``AS IS'' AND ANY
+        -:   37: * EXPRESSED OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   38: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+        -:   39: * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE OpenSSL PROJECT OR
+        -:   40: * ITS CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+        -:   41: * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+        -:   42: * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+        -:   43: * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   44: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+        -:   45: * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+        -:   46: * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+        -:   47: * OF THE POSSIBILITY OF SUCH DAMAGE.
+        -:   48: * ====================================================================
+        -:   49: *
+        -:   50: * This product includes cryptographic software written by Eric Young
+        -:   51: * (eay@cryptsoft.com).  This product includes software written by Tim
+        -:   52: * Hudson (tjh@cryptsoft.com).
+        -:   53: *
+        -:   54: */
+        -:   55:
+        -:   56:#include <stdio.h>
+        -:   57:#include <string.h>
+        -:   58:#include <openssl/crypto.h>
+        -:   59:#include <openssl/dso.h>
+        -:   60:#include <openssl/x509.h>
+        -:   61:#include <openssl/objects.h>
+        -:   62:#include <openssl/engine.h>
+        -:   63:#include <openssl/rand.h>
+        -:   64:#ifndef OPENSSL_NO_RSA
+        -:   65:#include <openssl/rsa.h>
+        -:   66:#endif
+        -:   67:#include <openssl/bn.h>
+        -:   68:
+        -:   69:#ifndef OPENSSL_NO_HW
+        -:   70:#ifndef OPENSSL_NO_HW_4758_CCA
+        -:   71:
+        -:   72:#ifdef FLAT_INC
+        -:   73:#include "hw_4758_cca.h"
+        -:   74:#else
+        -:   75:#include "vendor_defns/hw_4758_cca.h"
+        -:   76:#endif
+        -:   77:
+        -:   78:#include "e_4758cca_err.c"
+        -:   79:
+        -:   80:static int ibm_4758_cca_destroy(ENGINE *e);
+        -:   81:static int ibm_4758_cca_init(ENGINE *e);
+        -:   82:static int ibm_4758_cca_finish(ENGINE *e);
+        -:   83:static int ibm_4758_cca_ctrl(ENGINE *e, int cmd, long i, void *p, void (*f)(void));
+        -:   84:
+        -:   85:/* rsa functions */
+        -:   86:/*---------------*/
+        -:   87:#ifndef OPENSSL_NO_RSA
+        -:   88:static int cca_rsa_pub_enc(int flen, const unsigned char *from,
+        -:   89:		unsigned char *to, RSA *rsa,int padding);
+        -:   90:static int cca_rsa_priv_dec(int flen, const unsigned char *from,
+        -:   91:		unsigned char *to, RSA *rsa,int padding);
+        -:   92:static int cca_rsa_sign(int type, const unsigned char *m, unsigned int m_len,
+        -:   93:		unsigned char *sigret, unsigned int *siglen, const RSA *rsa);
+        -:   94:static int cca_rsa_verify(int dtype, const unsigned char *m, unsigned int m_len,
+        -:   95:	const unsigned char *sigbuf, unsigned int siglen, const RSA *rsa);
+        -:   96:
+        -:   97:/* utility functions */
+        -:   98:/*-----------------------*/
+        -:   99:static EVP_PKEY *ibm_4758_load_privkey(ENGINE*, const char*,
+        -:  100:		UI_METHOD *ui_method, void *callback_data);
+        -:  101:static EVP_PKEY *ibm_4758_load_pubkey(ENGINE*, const char*,
+        -:  102:		UI_METHOD *ui_method, void *callback_data);
+        -:  103:
+        -:  104:static int getModulusAndExponent(const unsigned char *token, long *exponentLength,
+        -:  105:		unsigned char *exponent, long *modulusLength,
+        -:  106:		long *modulusFieldLength, unsigned char *modulus);
+        -:  107:#endif
+        -:  108:
+        -:  109:/* RAND number functions */
+        -:  110:/*-----------------------*/
+        -:  111:static int cca_get_random_bytes(unsigned char*, int);
+        -:  112:static int cca_random_status(void);
+        -:  113:
+        -:  114:#ifndef OPENSSL_NO_RSA
+        -:  115:static void cca_ex_free(void *obj, void *item, CRYPTO_EX_DATA *ad,
+        -:  116:		int idx,long argl, void *argp);
+        -:  117:#endif
+        -:  118:
+        -:  119:/* Function pointers for CCA verbs */
+        -:  120:/*---------------------------------*/
+        -:  121:#ifndef OPENSSL_NO_RSA
+        -:  122:static F_KEYRECORDREAD keyRecordRead;
+        -:  123:static F_DIGITALSIGNATUREGENERATE digitalSignatureGenerate;
+        -:  124:static F_DIGITALSIGNATUREVERIFY digitalSignatureVerify;
+        -:  125:static F_PUBLICKEYEXTRACT publicKeyExtract;
+        -:  126:static F_PKAENCRYPT pkaEncrypt;
+        -:  127:static F_PKADECRYPT pkaDecrypt;
+        -:  128:#endif
+        -:  129:static F_RANDOMNUMBERGENERATE randomNumberGenerate;
+        -:  130:
+        -:  131:/* static variables */
+        -:  132:/*------------------*/
+        -:  133:static const char *CCA4758_LIB_NAME = NULL;
+        -:  134:static const char *get_CCA4758_LIB_NAME(void)
+        -:  135:	{
+    #####:  136:	if(CCA4758_LIB_NAME)
+        -:  137:		return CCA4758_LIB_NAME;
+        -:  138:	return CCA_LIB_NAME;
+        -:  139:	}
+        -:  140:static void free_CCA4758_LIB_NAME(void)
+        -:  141:	{
+    10000:  142:	if(CCA4758_LIB_NAME)
+    #####:  143:		OPENSSL_free((void*)CCA4758_LIB_NAME);
+    10000:  144:	CCA4758_LIB_NAME = NULL;
+        -:  145:	}
+    #####:  146:static long set_CCA4758_LIB_NAME(const char *name)
+        -:  147:	{
+        -:  148:	free_CCA4758_LIB_NAME();
+    #####:  149:	return (((CCA4758_LIB_NAME = BUF_strdup(name)) != NULL) ? 1 : 0);
+        -:  150:	}
+        -:  151:#ifndef OPENSSL_NO_RSA
+        -:  152:static const char* n_keyRecordRead = CSNDKRR;
+        -:  153:static const char* n_digitalSignatureGenerate = CSNDDSG;
+        -:  154:static const char* n_digitalSignatureVerify = CSNDDSV;
+        -:  155:static const char* n_publicKeyExtract = CSNDPKX;
+        -:  156:static const char* n_pkaEncrypt = CSNDPKE;
+        -:  157:static const char* n_pkaDecrypt = CSNDPKD;
+        -:  158:#endif
+        -:  159:static const char* n_randomNumberGenerate = CSNBRNG;
+        -:  160:
+        -:  161:#ifndef OPENSSL_NO_RSA
+        -:  162:static int hndidx = -1;
+        -:  163:#endif
+        -:  164:static DSO *dso = NULL;
+        -:  165:
+        -:  166:/* openssl engine initialization structures */
+        -:  167:/*------------------------------------------*/
+        -:  168:
+        -:  169:#define CCA4758_CMD_SO_PATH		ENGINE_CMD_BASE
+        -:  170:static const ENGINE_CMD_DEFN	cca4758_cmd_defns[] = {
+        -:  171:	{CCA4758_CMD_SO_PATH,
+        -:  172:		"SO_PATH",
+        -:  173:		"Specifies the path to the '4758cca' shared library",
+        -:  174:		ENGINE_CMD_FLAG_STRING},
+        -:  175:	{0, NULL, NULL, 0}
+        -:  176:	};
+        -:  177:
+        -:  178:#ifndef OPENSSL_NO_RSA
+        -:  179:static RSA_METHOD ibm_4758_cca_rsa =
+        -:  180:	{
+        -:  181:	"IBM 4758 CCA RSA method",
+        -:  182:	cca_rsa_pub_enc,
+        -:  183:	NULL,
+        -:  184:	NULL,
+        -:  185:	cca_rsa_priv_dec,
+        -:  186:	NULL, /*rsa_mod_exp,*/
+        -:  187:	NULL, /*mod_exp_mont,*/
+        -:  188:	NULL, /* init */
+        -:  189:	NULL, /* finish */
+        -:  190:	RSA_FLAG_SIGN_VER,	  /* flags */
+        -:  191:	NULL, /* app_data */
+        -:  192:	cca_rsa_sign, /* rsa_sign */
+        -:  193:	cca_rsa_verify, /* rsa_verify */
+        -:  194:	NULL /* rsa_keygen */
+        -:  195:	};
+        -:  196:#endif
+        -:  197:
+        -:  198:static RAND_METHOD ibm_4758_cca_rand =
+        -:  199:	{
+        -:  200:	/* "IBM 4758 RAND method", */
+        -:  201:	NULL, /* seed */
+        -:  202:	cca_get_random_bytes, /* get random bytes from the card */
+        -:  203:	NULL, /* cleanup */
+        -:  204:	NULL, /* add */
+        -:  205:	cca_get_random_bytes, /* pseudo rand */
+        -:  206:	cca_random_status, /* status */
+        -:  207:	};
+        -:  208:
+        -:  209:static const char *engine_4758_cca_id = "4758cca";
+        -:  210:static const char *engine_4758_cca_name = "IBM 4758 CCA hardware engine support";
+        -:  211:#ifndef OPENSSL_NO_DYNAMIC_ENGINE 
+        -:  212:/* Compatibility hack, the dynamic library uses this form in the path */
+        -:  213:static const char *engine_4758_cca_id_alt = "4758_cca";
+        -:  214:#endif
+        -:  215:
+        -:  216:/* engine implementation */
+        -:  217:/*-----------------------*/
+    10000:  218:static int bind_helper(ENGINE *e)
+        -:  219:	{
+    20000:  220:	if(!ENGINE_set_id(e, engine_4758_cca_id) ||
+    20000:  221:			!ENGINE_set_name(e, engine_4758_cca_name) ||
+        -:  222:#ifndef OPENSSL_NO_RSA
+    20000:  223:			!ENGINE_set_RSA(e, &ibm_4758_cca_rsa) ||
+        -:  224:#endif
+    20000:  225:			!ENGINE_set_RAND(e, &ibm_4758_cca_rand) ||
+    20000:  226:			!ENGINE_set_destroy_function(e, ibm_4758_cca_destroy) ||
+    20000:  227:			!ENGINE_set_init_function(e, ibm_4758_cca_init) ||
+    20000:  228:			!ENGINE_set_finish_function(e, ibm_4758_cca_finish) ||
+    20000:  229:			!ENGINE_set_ctrl_function(e, ibm_4758_cca_ctrl) ||
+        -:  230:#ifndef OPENSSL_NO_RSA
+    20000:  231:			!ENGINE_set_load_privkey_function(e, ibm_4758_load_privkey) ||
+    20000:  232:			!ENGINE_set_load_pubkey_function(e, ibm_4758_load_pubkey) ||
+        -:  233:#endif
+    10000:  234:			!ENGINE_set_cmd_defns(e, cca4758_cmd_defns))
+        -:  235:		return 0;
+        -:  236:	/* Ensure the error handling is set up */
+    10000:  237:	ERR_load_CCA4758_strings();
+    10000:  238:	return 1;
+        -:  239:	}
+        -:  240:
+        -:  241:#ifdef OPENSSL_NO_DYNAMIC_ENGINE
+    10000:  242:static ENGINE *engine_4758_cca(void)
+        -:  243:	{
+    10000:  244:	ENGINE *ret = ENGINE_new();
+    10000:  245:	if(!ret)
+        -:  246:		return NULL;
+    10000:  247:	if(!bind_helper(ret))
+        -:  248:		{
+    #####:  249:		ENGINE_free(ret);
+    #####:  250:		return NULL;
+        -:  251:		}
+        -:  252:	return ret;
+        -:  253:	}
+        -:  254:
+    10000:  255:void ENGINE_load_4758cca(void)
+        -:  256:	{
+    10000:  257:	ENGINE *e_4758 = engine_4758_cca();
+    20000:  258:	if (!e_4758) return;
+    10000:  259:	ENGINE_add(e_4758);
+    10000:  260:	ENGINE_free(e_4758);
+    10000:  261:	ERR_clear_error();   
+        -:  262:	}
+        -:  263:#endif
+        -:  264:
+    10000:  265:static int ibm_4758_cca_destroy(ENGINE *e)
+        -:  266:	{
+    10000:  267:	ERR_unload_CCA4758_strings();
+        -:  268:	free_CCA4758_LIB_NAME();
+    10000:  269:	return 1;
+        -:  270:	}
+        -:  271:
+    #####:  272:static int ibm_4758_cca_init(ENGINE *e)
+        -:  273:	{
+    #####:  274:	if(dso)
+        -:  275:		{
+    #####:  276:		CCA4758err(CCA4758_F_IBM_4758_CCA_INIT,CCA4758_R_ALREADY_LOADED);
+    #####:  277:		goto err;
+        -:  278:		}
+        -:  279:
+    #####:  280:	dso = DSO_load(NULL, get_CCA4758_LIB_NAME(), NULL, 0);
+    #####:  281:	if(!dso)
+        -:  282:		{
+    #####:  283:		CCA4758err(CCA4758_F_IBM_4758_CCA_INIT,CCA4758_R_DSO_FAILURE);
+    #####:  284:		goto err;
+        -:  285:		}
+        -:  286:
+        -:  287:#ifndef OPENSSL_NO_RSA
+    #####:  288:	if(!(keyRecordRead = (F_KEYRECORDREAD)
+    #####:  289:				DSO_bind_func(dso, n_keyRecordRead)) ||
+    #####:  290:			!(randomNumberGenerate = (F_RANDOMNUMBERGENERATE)
+    #####:  291:				DSO_bind_func(dso, n_randomNumberGenerate)) ||
+    #####:  292:			!(digitalSignatureGenerate = (F_DIGITALSIGNATUREGENERATE)
+    #####:  293:				DSO_bind_func(dso, n_digitalSignatureGenerate)) ||
+    #####:  294:			!(digitalSignatureVerify = (F_DIGITALSIGNATUREVERIFY)
+    #####:  295:				DSO_bind_func(dso, n_digitalSignatureVerify)) ||
+    #####:  296:			!(publicKeyExtract = (F_PUBLICKEYEXTRACT)
+    #####:  297:				DSO_bind_func(dso, n_publicKeyExtract)) ||
+    #####:  298:			!(pkaEncrypt = (F_PKAENCRYPT)
+    #####:  299:				DSO_bind_func(dso, n_pkaEncrypt)) ||
+    #####:  300:			!(pkaDecrypt = (F_PKADECRYPT)
+    #####:  301:				DSO_bind_func(dso, n_pkaDecrypt)))
+        -:  302:		{
+    #####:  303:		CCA4758err(CCA4758_F_IBM_4758_CCA_INIT,CCA4758_R_DSO_FAILURE);
+    #####:  304:		goto err;
+        -:  305:		}
+        -:  306:#else
+        -:  307:	if(!(randomNumberGenerate = (F_RANDOMNUMBERGENERATE)
+        -:  308:				DSO_bind_func(dso, n_randomNumberGenerate)))
+        -:  309:		{
+        -:  310:		CCA4758err(CCA4758_F_IBM_4758_CCA_INIT,CCA4758_R_DSO_FAILURE);
+        -:  311:		goto err;
+        -:  312:		}
+        -:  313:#endif
+        -:  314:
+        -:  315:#ifndef OPENSSL_NO_RSA
+    #####:  316:	hndidx = RSA_get_ex_new_index(0, "IBM 4758 CCA RSA key handle",
+        -:  317:		NULL, NULL, cca_ex_free);
+        -:  318:#endif
+        -:  319:
+    #####:  320:	return 1;
+        -:  321:err:
+    #####:  322:	if(dso)
+    #####:  323:		DSO_free(dso);
+    #####:  324:	dso = NULL;
+        -:  325:
+        -:  326:#ifndef OPENSSL_NO_RSA
+    #####:  327:	keyRecordRead = (F_KEYRECORDREAD)0;
+    #####:  328:	digitalSignatureGenerate = (F_DIGITALSIGNATUREGENERATE)0;
+    #####:  329:	digitalSignatureVerify = (F_DIGITALSIGNATUREVERIFY)0;
+    #####:  330:	publicKeyExtract = (F_PUBLICKEYEXTRACT)0;
+    #####:  331:	pkaEncrypt = (F_PKAENCRYPT)0;
+    #####:  332:	pkaDecrypt = (F_PKADECRYPT)0;
+        -:  333:#endif
+    #####:  334:	randomNumberGenerate = (F_RANDOMNUMBERGENERATE)0;
+    #####:  335:	return 0;
+        -:  336:	}
+        -:  337:
+    #####:  338:static int ibm_4758_cca_finish(ENGINE *e)
+        -:  339:	{
+        -:  340:	free_CCA4758_LIB_NAME();
+    #####:  341:	if(!dso)
+        -:  342:		{
+    #####:  343:		CCA4758err(CCA4758_F_IBM_4758_CCA_FINISH,
+        -:  344:				CCA4758_R_NOT_LOADED);
+    #####:  345:		return 0;
+        -:  346:		}
+    #####:  347:	if(!DSO_free(dso))
+        -:  348:		{
+    #####:  349:		CCA4758err(CCA4758_F_IBM_4758_CCA_FINISH,
+        -:  350:				CCA4758_R_UNIT_FAILURE);
+    #####:  351:		return 0;
+        -:  352:		}
+    #####:  353:	dso = NULL;
+        -:  354:#ifndef OPENSSL_NO_RSA
+    #####:  355:	keyRecordRead = (F_KEYRECORDREAD)0;
+    #####:  356:	randomNumberGenerate = (F_RANDOMNUMBERGENERATE)0;
+    #####:  357:	digitalSignatureGenerate = (F_DIGITALSIGNATUREGENERATE)0;
+    #####:  358:	digitalSignatureVerify = (F_DIGITALSIGNATUREVERIFY)0;
+    #####:  359:	publicKeyExtract = (F_PUBLICKEYEXTRACT)0;
+    #####:  360:	pkaEncrypt = (F_PKAENCRYPT)0;
+    #####:  361:	pkaDecrypt = (F_PKADECRYPT)0;
+        -:  362:#endif
+        -:  363:	randomNumberGenerate = (F_RANDOMNUMBERGENERATE)0;
+    #####:  364:	return 1;
+        -:  365:	}
+        -:  366:
+    #####:  367:static int ibm_4758_cca_ctrl(ENGINE *e, int cmd, long i, void *p, void (*f)(void))
+        -:  368:	{
+    #####:  369:	int initialised = ((dso == NULL) ? 0 : 1);
+    #####:  370:	switch(cmd)
+        -:  371:		{
+        -:  372:	case CCA4758_CMD_SO_PATH:
+    #####:  373:		if(p == NULL)
+        -:  374:			{
+    #####:  375:			CCA4758err(CCA4758_F_IBM_4758_CCA_CTRL,
+        -:  376:					ERR_R_PASSED_NULL_PARAMETER);
+    #####:  377:			return 0;
+        -:  378:			}
+    #####:  379:		if(initialised)
+        -:  380:			{
+    #####:  381:			CCA4758err(CCA4758_F_IBM_4758_CCA_CTRL,
+        -:  382:					CCA4758_R_ALREADY_LOADED);
+    #####:  383:			return 0;
+        -:  384:			}
+    #####:  385:		return set_CCA4758_LIB_NAME((const char *)p);
+        -:  386:	default:
+        -:  387:		break;
+        -:  388:		}
+    #####:  389:	CCA4758err(CCA4758_F_IBM_4758_CCA_CTRL,
+        -:  390:			CCA4758_R_COMMAND_NOT_IMPLEMENTED);
+    #####:  391:	return 0;
+        -:  392:	}
+        -:  393:
+        -:  394:#ifndef OPENSSL_NO_RSA
+        -:  395:
+        -:  396:#define MAX_CCA_PKA_TOKEN_SIZE 2500
+        -:  397:
+    #####:  398:static EVP_PKEY *ibm_4758_load_privkey(ENGINE* e, const char* key_id,
+        -:  399:			UI_METHOD *ui_method, void *callback_data)
+        -:  400:	{
+        -:  401:	RSA *rtmp = NULL;
+        -:  402:	EVP_PKEY *res = NULL;
+        -:  403:	unsigned char* keyToken = NULL;
+        -:  404:	unsigned char pubKeyToken[MAX_CCA_PKA_TOKEN_SIZE];
+    #####:  405:	long pubKeyTokenLength = MAX_CCA_PKA_TOKEN_SIZE;
+    #####:  406:	long keyTokenLength = MAX_CCA_PKA_TOKEN_SIZE;
+        -:  407:	long returnCode;
+        -:  408:	long reasonCode;
+    #####:  409:	long exitDataLength = 0;
+    #####:  410:	long ruleArrayLength = 0;
+        -:  411:	unsigned char exitData[8];
+        -:  412:	unsigned char ruleArray[8];
+        -:  413:	unsigned char keyLabel[64];
+    #####:  414:	unsigned long keyLabelLength = strlen(key_id);
+        -:  415:	unsigned char modulus[256];
+    #####:  416:	long modulusFieldLength = sizeof(modulus);
+    #####:  417:	long modulusLength = 0;
+        -:  418:	unsigned char exponent[256];
+    #####:  419:	long exponentLength = sizeof(exponent);
+        -:  420:
+    #####:  421:	if (keyLabelLength > sizeof(keyLabel))
+        -:  422:		{
+    #####:  423:		CCA4758err(CCA4758_F_IBM_4758_LOAD_PRIVKEY,
+        -:  424:		CCA4758_R_SIZE_TOO_LARGE_OR_TOO_SMALL);
+    #####:  425:		return NULL;
+        -:  426:		}
+        -:  427:
+        -:  428:	memset(keyLabel,' ', sizeof(keyLabel));
+        -:  429:	memcpy(keyLabel, key_id, keyLabelLength);
+        -:  430:
+    #####:  431:	keyToken = OPENSSL_malloc(MAX_CCA_PKA_TOKEN_SIZE + sizeof(long));
+    #####:  432:	if (!keyToken)
+        -:  433:		{
+    #####:  434:		CCA4758err(CCA4758_F_IBM_4758_LOAD_PRIVKEY,
+        -:  435:				ERR_R_MALLOC_FAILURE);
+    #####:  436:		goto err;
+        -:  437:		}
+        -:  438:
+    #####:  439:	keyRecordRead(&returnCode, &reasonCode, &exitDataLength,
+        -:  440:		exitData, &ruleArrayLength, ruleArray, keyLabel,
+        -:  441:		&keyTokenLength, keyToken+sizeof(long));
+        -:  442:
+    #####:  443:	if (returnCode)
+        -:  444:		{
+    #####:  445:		CCA4758err(CCA4758_F_IBM_4758_LOAD_PRIVKEY,
+        -:  446:			CCA4758_R_FAILED_LOADING_PRIVATE_KEY);
+    #####:  447:		goto err;
+        -:  448:		}
+        -:  449:
+    #####:  450:	publicKeyExtract(&returnCode, &reasonCode, &exitDataLength,
+        -:  451:		exitData, &ruleArrayLength, ruleArray, &keyTokenLength,
+        -:  452:		keyToken+sizeof(long), &pubKeyTokenLength, pubKeyToken);
+        -:  453:
+    #####:  454:	if (returnCode)
+        -:  455:		{
+    #####:  456:		CCA4758err(CCA4758_F_IBM_4758_LOAD_PRIVKEY,
+        -:  457:			CCA4758_R_FAILED_LOADING_PRIVATE_KEY);
+    #####:  458:		goto err;
+        -:  459:		}
+        -:  460:
+    #####:  461:	if (!getModulusAndExponent(pubKeyToken, &exponentLength,
+        -:  462:			exponent, &modulusLength, &modulusFieldLength,
+        -:  463:			modulus))
+        -:  464:		{
+    #####:  465:		CCA4758err(CCA4758_F_IBM_4758_LOAD_PRIVKEY,
+        -:  466:			CCA4758_R_FAILED_LOADING_PRIVATE_KEY);
+    #####:  467:		goto err;
+        -:  468:		}
+        -:  469:
+    #####:  470:	(*(long*)keyToken) = keyTokenLength;
+    #####:  471:	rtmp = RSA_new_method(e);
+    #####:  472:	RSA_set_ex_data(rtmp, hndidx, (char *)keyToken);
+        -:  473:
+    #####:  474:	rtmp->e = BN_bin2bn(exponent, exponentLength, NULL);
+    #####:  475:	rtmp->n = BN_bin2bn(modulus, modulusFieldLength, NULL);
+    #####:  476:	rtmp->flags |= RSA_FLAG_EXT_PKEY;
+        -:  477:
+    #####:  478:	res = EVP_PKEY_new();
+    #####:  479:	EVP_PKEY_assign_RSA(res, rtmp);
+        -:  480:
+    #####:  481:	return res;
+        -:  482:err:
+    #####:  483:	if (keyToken)
+    #####:  484:		OPENSSL_free(keyToken);
+        -:  485:	return NULL;
+        -:  486:	}
+        -:  487:
+    #####:  488:static EVP_PKEY *ibm_4758_load_pubkey(ENGINE* e, const char* key_id,
+        -:  489:			UI_METHOD *ui_method, void *callback_data)
+        -:  490:	{
+        -:  491:	RSA *rtmp = NULL;
+        -:  492:	EVP_PKEY *res = NULL;
+        -:  493:	unsigned char* keyToken = NULL;
+    #####:  494:	long keyTokenLength = MAX_CCA_PKA_TOKEN_SIZE;
+        -:  495:	long returnCode;
+        -:  496:	long reasonCode;
+    #####:  497:	long exitDataLength = 0;
+    #####:  498:	long ruleArrayLength = 0;
+        -:  499:	unsigned char exitData[8];
+        -:  500:	unsigned char ruleArray[8];
+        -:  501:	unsigned char keyLabel[64];
+    #####:  502:	unsigned long keyLabelLength = strlen(key_id);
+        -:  503:	unsigned char modulus[512];
+    #####:  504:	long modulusFieldLength = sizeof(modulus);
+    #####:  505:	long modulusLength = 0;
+        -:  506:	unsigned char exponent[512];
+    #####:  507:	long exponentLength = sizeof(exponent);
+        -:  508:
+    #####:  509:	if (keyLabelLength > sizeof(keyLabel))
+        -:  510:		{
+    #####:  511:		CCA4758err(CCA4758_F_IBM_4758_LOAD_PUBKEY,
+        -:  512:			CCA4758_R_SIZE_TOO_LARGE_OR_TOO_SMALL);
+    #####:  513:		return NULL;
+        -:  514:		}
+        -:  515:
+        -:  516:	memset(keyLabel,' ', sizeof(keyLabel));
+        -:  517:	memcpy(keyLabel, key_id, keyLabelLength);
+        -:  518:
+    #####:  519:	keyToken = OPENSSL_malloc(MAX_CCA_PKA_TOKEN_SIZE + sizeof(long));
+    #####:  520:	if (!keyToken)
+        -:  521:		{
+    #####:  522:		CCA4758err(CCA4758_F_IBM_4758_LOAD_PUBKEY,
+        -:  523:				ERR_R_MALLOC_FAILURE);
+    #####:  524:		goto err;
+        -:  525:		}
+        -:  526:
+    #####:  527:	keyRecordRead(&returnCode, &reasonCode, &exitDataLength, exitData,
+        -:  528:		&ruleArrayLength, ruleArray, keyLabel, &keyTokenLength,
+        -:  529:		keyToken+sizeof(long));
+        -:  530:
+    #####:  531:	if (returnCode)
+        -:  532:		{
+    #####:  533:		CCA4758err(CCA4758_F_IBM_4758_LOAD_PUBKEY,
+        -:  534:				ERR_R_MALLOC_FAILURE);
+    #####:  535:		goto err;
+        -:  536:		}
+        -:  537:
+    #####:  538:	if (!getModulusAndExponent(keyToken+sizeof(long), &exponentLength,
+        -:  539:			exponent, &modulusLength, &modulusFieldLength, modulus))
+        -:  540:		{
+    #####:  541:		CCA4758err(CCA4758_F_IBM_4758_LOAD_PUBKEY,
+        -:  542:			CCA4758_R_FAILED_LOADING_PUBLIC_KEY);
+    #####:  543:		goto err;
+        -:  544:		}
+        -:  545:
+    #####:  546:	(*(long*)keyToken) = keyTokenLength;
+    #####:  547:	rtmp = RSA_new_method(e);
+    #####:  548:	RSA_set_ex_data(rtmp, hndidx, (char *)keyToken);
+    #####:  549:	rtmp->e = BN_bin2bn(exponent, exponentLength, NULL);
+    #####:  550:	rtmp->n = BN_bin2bn(modulus, modulusFieldLength, NULL);
+    #####:  551:	rtmp->flags |= RSA_FLAG_EXT_PKEY;
+    #####:  552:	res = EVP_PKEY_new();
+    #####:  553:	EVP_PKEY_assign_RSA(res, rtmp);
+        -:  554:
+    #####:  555:	return res;
+        -:  556:err:
+    #####:  557:	if (keyToken)
+    #####:  558:		OPENSSL_free(keyToken);
+        -:  559:	return NULL;
+        -:  560:	}
+        -:  561:
+    #####:  562:static int cca_rsa_pub_enc(int flen, const unsigned char *from,
+        -:  563:			unsigned char *to, RSA *rsa,int padding)
+        -:  564:	{
+        -:  565:	long returnCode;
+        -:  566:	long reasonCode;
+    #####:  567:	long lflen = flen;
+    #####:  568:	long exitDataLength = 0;
+        -:  569:	unsigned char exitData[8];
+    #####:  570:	long ruleArrayLength = 1;
+    #####:  571:	unsigned char ruleArray[8] = "PKCS-1.2";
+    #####:  572:	long dataStructureLength = 0;
+        -:  573:	unsigned char dataStructure[8];
+    #####:  574:	long outputLength = RSA_size(rsa);
+        -:  575:	long keyTokenLength;
+    #####:  576:	unsigned char* keyToken = (unsigned char*)RSA_get_ex_data(rsa, hndidx);
+        -:  577:
+    #####:  578:	keyTokenLength = *(long*)keyToken;
+    #####:  579:	keyToken+=sizeof(long);
+        -:  580:
+    #####:  581:	pkaEncrypt(&returnCode, &reasonCode, &exitDataLength, exitData,
+        -:  582:		&ruleArrayLength, ruleArray, &lflen, (unsigned char*)from,
+        -:  583:		&dataStructureLength, dataStructure, &keyTokenLength,
+        -:  584:		keyToken, &outputLength, to);
+        -:  585:
+    #####:  586:	if (returnCode || reasonCode)
+    #####:  587:		return -(returnCode << 16 | reasonCode);
+    #####:  588:	return outputLength;
+        -:  589:	}
+        -:  590:
+    #####:  591:static int cca_rsa_priv_dec(int flen, const unsigned char *from,
+        -:  592:			unsigned char *to, RSA *rsa,int padding)
+        -:  593:	{
+        -:  594:	long returnCode;
+        -:  595:	long reasonCode;
+    #####:  596:	long lflen = flen;
+    #####:  597:	long exitDataLength = 0;
+        -:  598:	unsigned char exitData[8];
+    #####:  599:	long ruleArrayLength = 1;
+    #####:  600:	unsigned char ruleArray[8] = "PKCS-1.2";
+    #####:  601:	long dataStructureLength = 0;
+        -:  602:	unsigned char dataStructure[8];
+    #####:  603:	long outputLength = RSA_size(rsa);
+        -:  604:	long keyTokenLength;
+    #####:  605:	unsigned char* keyToken = (unsigned char*)RSA_get_ex_data(rsa, hndidx);
+        -:  606:
+    #####:  607:	keyTokenLength = *(long*)keyToken;
+    #####:  608:	keyToken+=sizeof(long);
+        -:  609:
+    #####:  610:	pkaDecrypt(&returnCode, &reasonCode, &exitDataLength, exitData,
+        -:  611:		&ruleArrayLength, ruleArray, &lflen, (unsigned char*)from,
+        -:  612:		&dataStructureLength, dataStructure, &keyTokenLength,
+        -:  613:		keyToken, &outputLength, to);
+        -:  614:
+    #####:  615:	return (returnCode | reasonCode) ? 0 : 1;
+        -:  616:	}
+        -:  617:
+        -:  618:#define SSL_SIG_LEN 36
+        -:  619:
+    #####:  620:static int cca_rsa_verify(int type, const unsigned char *m, unsigned int m_len,
+        -:  621:	const unsigned char *sigbuf, unsigned int siglen, const RSA *rsa)
+        -:  622:	{
+        -:  623:	long returnCode;
+        -:  624:	long reasonCode;
+    #####:  625:	long lsiglen = siglen;
+    #####:  626:	long exitDataLength = 0;
+        -:  627:	unsigned char exitData[8];
+    #####:  628:	long ruleArrayLength = 1;
+    #####:  629:	unsigned char ruleArray[8] = "PKCS-1.1";
+        -:  630:	long keyTokenLength;
+    #####:  631:	unsigned char* keyToken = (unsigned char*)RSA_get_ex_data(rsa, hndidx);
+    #####:  632:	long length = SSL_SIG_LEN;
+        -:  633:	long keyLength ;
+        -:  634:	unsigned char *hashBuffer = NULL;
+        -:  635:	X509_SIG sig;
+        -:  636:	ASN1_TYPE parameter;
+        -:  637:	X509_ALGOR algorithm;
+        -:  638:	ASN1_OCTET_STRING digest;
+        -:  639:
+    #####:  640:	keyTokenLength = *(long*)keyToken;
+    #####:  641:	keyToken+=sizeof(long);
+        -:  642:
+    #####:  643:	if (type == NID_md5 || type == NID_sha1)
+        -:  644:		{
+    #####:  645:		sig.algor = &algorithm;
+    #####:  646:		algorithm.algorithm = OBJ_nid2obj(type);
+        -:  647:
+    #####:  648:		if (!algorithm.algorithm)
+        -:  649:			{
+    #####:  650:			CCA4758err(CCA4758_F_CCA_RSA_VERIFY,
+        -:  651:				CCA4758_R_UNKNOWN_ALGORITHM_TYPE);
+    #####:  652:			return 0;
+        -:  653:			}
+        -:  654:
+    #####:  655:		if (!algorithm.algorithm->length)
+        -:  656:			{
+    #####:  657:			CCA4758err(CCA4758_F_CCA_RSA_VERIFY,
+        -:  658:				CCA4758_R_ASN1_OID_UNKNOWN_FOR_MD);
+    #####:  659:			return 0;
+        -:  660:			}
+        -:  661:
+    #####:  662:		parameter.type = V_ASN1_NULL;
+    #####:  663:		parameter.value.ptr = NULL;
+    #####:  664:		algorithm.parameter = &parameter;
+        -:  665:
+    #####:  666:		sig.digest = &digest;
+    #####:  667:		sig.digest->data = (unsigned char*)m;
+    #####:  668:		sig.digest->length = m_len;
+        -:  669:
+    #####:  670:		length = i2d_X509_SIG(&sig, NULL);
+        -:  671:		}
+        -:  672:
+    #####:  673:	keyLength = RSA_size(rsa);
+        -:  674:
+    #####:  675:	if (length - RSA_PKCS1_PADDING > keyLength)
+        -:  676:		{
+    #####:  677:		CCA4758err(CCA4758_F_CCA_RSA_VERIFY,
+        -:  678:			CCA4758_R_SIZE_TOO_LARGE_OR_TOO_SMALL);
+    #####:  679:		return 0;
+        -:  680:		}
+        -:  681:
+    #####:  682:	switch (type)
+        -:  683:		{
+        -:  684:		case NID_md5_sha1 :
+    #####:  685:			if (m_len != SSL_SIG_LEN)
+        -:  686:				{
+    #####:  687:				CCA4758err(CCA4758_F_CCA_RSA_VERIFY,
+        -:  688:				CCA4758_R_SIZE_TOO_LARGE_OR_TOO_SMALL);
+    #####:  689:				return 0;
+        -:  690:				}
+        -:  691:
+        -:  692:			hashBuffer = (unsigned char *)m;
+    #####:  693:			length = m_len;
+    #####:  694:			break;
+        -:  695:		case NID_md5 :
+        -:  696:			{
+        -:  697:			unsigned char *ptr;
+    #####:  698:			ptr = hashBuffer = OPENSSL_malloc(
+        -:  699:					(unsigned int)keyLength+1);
+    #####:  700:			if (!hashBuffer)
+        -:  701:				{
+    #####:  702:				CCA4758err(CCA4758_F_CCA_RSA_VERIFY,
+        -:  703:						ERR_R_MALLOC_FAILURE);
+    #####:  704:				return 0;
+        -:  705:				}
+        -:  706:
+    #####:  707:			i2d_X509_SIG(&sig, &ptr);
+        -:  708:			}
+    #####:  709:			break;
+        -:  710:		case NID_sha1 :
+        -:  711:			{
+        -:  712:			unsigned char *ptr;
+    #####:  713:			ptr = hashBuffer = OPENSSL_malloc(
+        -:  714:					(unsigned int)keyLength+1);
+    #####:  715:			if (!hashBuffer)
+        -:  716:				{
+    #####:  717:				CCA4758err(CCA4758_F_CCA_RSA_VERIFY,
+        -:  718:						ERR_R_MALLOC_FAILURE);
+    #####:  719:				return 0;
+        -:  720:				}
+    #####:  721:			i2d_X509_SIG(&sig, &ptr);
+        -:  722:			}
+    #####:  723:			break;
+        -:  724:		default:
+        -:  725:			return 0;
+        -:  726:		}
+        -:  727:
+    #####:  728:	digitalSignatureVerify(&returnCode, &reasonCode, &exitDataLength,
+        -:  729:		exitData, &ruleArrayLength, ruleArray, &keyTokenLength,
+        -:  730:		keyToken, &length, hashBuffer, &lsiglen,
+        -:  731:						(unsigned char *)sigbuf);
+        -:  732:
+    #####:  733:	if (type == NID_sha1 || type == NID_md5)
+        -:  734:		{
+    #####:  735:		OPENSSL_cleanse(hashBuffer, keyLength+1);
+    #####:  736:		OPENSSL_free(hashBuffer);
+        -:  737:		}
+        -:  738:
+    #####:  739:	return ((returnCode || reasonCode) ? 0 : 1);
+        -:  740:	}
+        -:  741:
+        -:  742:#define SSL_SIG_LEN 36
+        -:  743:
+    #####:  744:static int cca_rsa_sign(int type, const unsigned char *m, unsigned int m_len,
+        -:  745:		unsigned char *sigret, unsigned int *siglen, const RSA *rsa)
+        -:  746:	{
+        -:  747:	long returnCode;
+        -:  748:	long reasonCode;
+    #####:  749:	long exitDataLength = 0;
+        -:  750:	unsigned char exitData[8];
+    #####:  751:	long ruleArrayLength = 1;
+    #####:  752:	unsigned char ruleArray[8] = "PKCS-1.1";
+    #####:  753:	long outputLength=256;
+        -:  754:	long outputBitLength;
+        -:  755:	long keyTokenLength;
+        -:  756:	unsigned char *hashBuffer = NULL;
+    #####:  757:	unsigned char* keyToken = (unsigned char*)RSA_get_ex_data(rsa, hndidx);
+    #####:  758:	long length = SSL_SIG_LEN;
+        -:  759:	long keyLength ;
+        -:  760:	X509_SIG sig;
+        -:  761:	ASN1_TYPE parameter;
+        -:  762:	X509_ALGOR algorithm;
+        -:  763:	ASN1_OCTET_STRING digest;
+        -:  764:
+    #####:  765:	keyTokenLength = *(long*)keyToken;
+    #####:  766:	keyToken+=sizeof(long);
+        -:  767:
+    #####:  768:	if (type == NID_md5 || type == NID_sha1)
+        -:  769:		{
+    #####:  770:		sig.algor = &algorithm;
+    #####:  771:		algorithm.algorithm = OBJ_nid2obj(type);
+        -:  772:
+    #####:  773:		if (!algorithm.algorithm)
+        -:  774:			{
+    #####:  775:			CCA4758err(CCA4758_F_CCA_RSA_SIGN,
+        -:  776:				CCA4758_R_UNKNOWN_ALGORITHM_TYPE);
+    #####:  777:			return 0;
+        -:  778:			}
+        -:  779:
+    #####:  780:		if (!algorithm.algorithm->length)
+        -:  781:			{
+    #####:  782:			CCA4758err(CCA4758_F_CCA_RSA_SIGN,
+        -:  783:				CCA4758_R_ASN1_OID_UNKNOWN_FOR_MD);
+    #####:  784:			return 0;
+        -:  785:			}
+        -:  786:
+    #####:  787:		parameter.type = V_ASN1_NULL;
+    #####:  788:		parameter.value.ptr = NULL;
+    #####:  789:		algorithm.parameter = &parameter;
+        -:  790:
+    #####:  791:		sig.digest = &digest;
+    #####:  792:		sig.digest->data = (unsigned char*)m;
+    #####:  793:		sig.digest->length = m_len;
+        -:  794:
+    #####:  795:		length = i2d_X509_SIG(&sig, NULL);
+        -:  796:		}
+        -:  797:
+    #####:  798:	keyLength = RSA_size(rsa);
+        -:  799:
+    #####:  800:	if (length - RSA_PKCS1_PADDING > keyLength)
+        -:  801:		{
+    #####:  802:		CCA4758err(CCA4758_F_CCA_RSA_SIGN,
+        -:  803:			CCA4758_R_SIZE_TOO_LARGE_OR_TOO_SMALL);
+    #####:  804:		return 0;
+        -:  805:		}
+        -:  806:
+    #####:  807:	switch (type)
+        -:  808:		{
+        -:  809:		case NID_md5_sha1 :
+    #####:  810:			if (m_len != SSL_SIG_LEN)
+        -:  811:				{
+    #####:  812:				CCA4758err(CCA4758_F_CCA_RSA_SIGN,
+        -:  813:				CCA4758_R_SIZE_TOO_LARGE_OR_TOO_SMALL);
+    #####:  814:				return 0;
+        -:  815:				}
+        -:  816:			hashBuffer = (unsigned char*)m;
+    #####:  817:			length = m_len;
+    #####:  818:			break;
+        -:  819:		case NID_md5 :
+        -:  820:			{
+        -:  821:			unsigned char *ptr;
+    #####:  822:			ptr = hashBuffer = OPENSSL_malloc(
+        -:  823:					(unsigned int)keyLength+1);
+    #####:  824:			if (!hashBuffer)
+        -:  825:				{
+    #####:  826:				CCA4758err(CCA4758_F_CCA_RSA_SIGN,
+        -:  827:						ERR_R_MALLOC_FAILURE);
+    #####:  828:				return 0;
+        -:  829:				}
+    #####:  830:			i2d_X509_SIG(&sig, &ptr);
+        -:  831:			}
+    #####:  832:			break;
+        -:  833:		case NID_sha1 :
+        -:  834:			{
+        -:  835:			unsigned char *ptr;
+    #####:  836:			ptr = hashBuffer = OPENSSL_malloc(
+        -:  837:					(unsigned int)keyLength+1);
+    #####:  838:			if (!hashBuffer)
+        -:  839:				{
+    #####:  840:				CCA4758err(CCA4758_F_CCA_RSA_SIGN,
+        -:  841:						ERR_R_MALLOC_FAILURE);
+    #####:  842:				return 0;
+        -:  843:				}
+    #####:  844:			i2d_X509_SIG(&sig, &ptr);
+        -:  845:			}
+    #####:  846:			break;
+        -:  847:		default:
+        -:  848:			return 0;
+        -:  849:		}
+        -:  850:
+    #####:  851:	digitalSignatureGenerate(&returnCode, &reasonCode, &exitDataLength,
+        -:  852:		exitData, &ruleArrayLength, ruleArray, &keyTokenLength,
+        -:  853:		keyToken, &length, hashBuffer, &outputLength, &outputBitLength,
+        -:  854:		sigret);
+        -:  855:
+    #####:  856:	if (type == NID_sha1 || type == NID_md5)
+        -:  857:		{
+    #####:  858:		OPENSSL_cleanse(hashBuffer, keyLength+1);
+    #####:  859:		OPENSSL_free(hashBuffer);
+        -:  860:		}
+        -:  861:
+    #####:  862:	*siglen = outputLength;
+        -:  863:
+    #####:  864:	return ((returnCode || reasonCode) ? 0 : 1);
+        -:  865:	}
+        -:  866:
+    #####:  867:static int getModulusAndExponent(const unsigned char*token, long *exponentLength,
+        -:  868:		unsigned char *exponent, long *modulusLength, long *modulusFieldLength,
+        -:  869:		unsigned char *modulus)
+        -:  870:	{
+        -:  871:	unsigned long len;
+        -:  872:
+    #####:  873:	if (*token++ != (char)0x1E) /* internal PKA token? */
+        -:  874:		return 0;
+        -:  875:
+    #####:  876:	if (*token++) /* token version must be zero */
+        -:  877:		return 0;
+        -:  878:
+        -:  879:	len = *token++;
+        -:  880:	len = len << 8;
+        -:  881:	len |= (unsigned char)*token++;
+        -:  882:
+        -:  883:	token += 4; /* skip reserved bytes */
+        -:  884:
+    #####:  885:	if (*token++ == (char)0x04)
+        -:  886:		{
+    #####:  887:		if (*token++) /* token version must be zero */
+        -:  888:			return 0;
+        -:  889:
+        -:  890:		len = *token++;
+        -:  891:		len = len << 8;
+        -:  892:		len |= (unsigned char)*token++;
+        -:  893:
+        -:  894:		token+=2; /* skip reserved section */
+        -:  895:
+    #####:  896:		len = *token++;
+    #####:  897:		len = len << 8;
+    #####:  898:		len |= (unsigned char)*token++;
+        -:  899:
+    #####:  900:		*exponentLength = len;
+        -:  901:
+    #####:  902:		len = *token++;
+    #####:  903:		len = len << 8;
+    #####:  904:		len |= (unsigned char)*token++;
+        -:  905:
+    #####:  906:		*modulusLength = len;
+        -:  907:
+    #####:  908:		len = *token++;
+    #####:  909:		len = len << 8;
+    #####:  910:		len |= (unsigned char)*token++;
+        -:  911:
+    #####:  912:		*modulusFieldLength = len;
+        -:  913:
+    #####:  914:		memcpy(exponent, token, *exponentLength);
+    #####:  915:		token+= *exponentLength;
+        -:  916:
+    #####:  917:		memcpy(modulus, token, *modulusFieldLength);
+    #####:  918:		return 1;
+        -:  919:		}
+        -:  920:	return 0;
+        -:  921:	}
+        -:  922:
+        -:  923:#endif /* OPENSSL_NO_RSA */
+        -:  924:
+    #####:  925:static int cca_random_status(void)
+        -:  926:	{
+    #####:  927:	return 1;
+        -:  928:	}
+        -:  929:
+    #####:  930:static int cca_get_random_bytes(unsigned char* buf, int num)
+        -:  931:	{
+        -:  932:	long ret_code;
+        -:  933:	long reason_code;
+        -:  934:	long exit_data_length;
+        -:  935:	unsigned char exit_data[4];
+    #####:  936:	unsigned char form[] = "RANDOM  ";
+        -:  937:	unsigned char rand_buf[8];
+        -:  938:
+    #####:  939:	while(num >= (int)sizeof(rand_buf))
+        -:  940:		{
+    #####:  941:		randomNumberGenerate(&ret_code, &reason_code, &exit_data_length,
+        -:  942:			exit_data, form, rand_buf);
+    #####:  943:		if (ret_code)
+        -:  944:			return 0;
+    #####:  945:		num -= sizeof(rand_buf);
+        -:  946:		memcpy(buf, rand_buf, sizeof(rand_buf));
+    #####:  947:		buf += sizeof(rand_buf);
+        -:  948:		}
+        -:  949:
+    #####:  950:	if (num)
+        -:  951:		{
+    #####:  952:		randomNumberGenerate(&ret_code, &reason_code, NULL, NULL,
+        -:  953:			form, rand_buf);
+    #####:  954:		if (ret_code)
+        -:  955:			return 0;
+    #####:  956:		memcpy(buf, rand_buf, num);
+        -:  957:		}
+        -:  958:
+        -:  959:	return 1;
+        -:  960:	}
+        -:  961:
+        -:  962:#ifndef OPENSSL_NO_RSA
+    #####:  963:static void cca_ex_free(void *obj, void *item, CRYPTO_EX_DATA *ad, int idx,
+        -:  964:		long argl, void *argp)
+        -:  965:	{
+    #####:  966:	if (item)
+    #####:  967:		OPENSSL_free(item);
+    #####:  968:	}
+        -:  969:#endif
+        -:  970:
+        -:  971:/* Goo to handle building as a dynamic engine */
+        -:  972:#ifndef OPENSSL_NO_DYNAMIC_ENGINE 
+        -:  973:static int bind_fn(ENGINE *e, const char *id)
+        -:  974:	{
+        -:  975:	if(id && (strcmp(id, engine_4758_cca_id) != 0) &&
+        -:  976:			(strcmp(id, engine_4758_cca_id_alt) != 0))
+        -:  977:		return 0;
+        -:  978:	if(!bind_helper(e))
+        -:  979:		return 0;
+        -:  980:	return 1;
+        -:  981:	}       
+        -:  982:IMPLEMENT_DYNAMIC_CHECK_FN()
+        -:  983:IMPLEMENT_DYNAMIC_BIND_FN(bind_fn)
+        -:  984:#endif /* OPENSSL_NO_DYNAMIC_ENGINE */
+        -:  985:
+        -:  986:#endif /* !OPENSSL_NO_HW_4758_CCA */
+        -:  987:#endif /* !OPENSSL_NO_HW */

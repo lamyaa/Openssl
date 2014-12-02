@@ -1,0 +1,408 @@
+        -:    0:Source:a_object.c
+        -:    0:Graph:a_object.gcno
+        -:    0:Data:a_object.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* crypto/asn1/a_object.c */
+        -:    2:/* Copyright (C) 1995-1998 Eric Young (eay@cryptsoft.com)
+        -:    3: * All rights reserved.
+        -:    4: *
+        -:    5: * This package is an SSL implementation written
+        -:    6: * by Eric Young (eay@cryptsoft.com).
+        -:    7: * The implementation was written so as to conform with Netscapes SSL.
+        -:    8: * 
+        -:    9: * This library is free for commercial and non-commercial use as long as
+        -:   10: * the following conditions are aheared to.  The following conditions
+        -:   11: * apply to all code found in this distribution, be it the RC4, RSA,
+        -:   12: * lhash, DES, etc., code; not just the SSL code.  The SSL documentation
+        -:   13: * included with this distribution is covered by the same copyright terms
+        -:   14: * except that the holder is Tim Hudson (tjh@cryptsoft.com).
+        -:   15: * 
+        -:   16: * Copyright remains Eric Young's, and as such any Copyright notices in
+        -:   17: * the code are not to be removed.
+        -:   18: * If this package is used in a product, Eric Young should be given attribution
+        -:   19: * as the author of the parts of the library used.
+        -:   20: * This can be in the form of a textual message at program startup or
+        -:   21: * in documentation (online or textual) provided with the package.
+        -:   22: * 
+        -:   23: * Redistribution and use in source and binary forms, with or without
+        -:   24: * modification, are permitted provided that the following conditions
+        -:   25: * are met:
+        -:   26: * 1. Redistributions of source code must retain the copyright
+        -:   27: *    notice, this list of conditions and the following disclaimer.
+        -:   28: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   29: *    notice, this list of conditions and the following disclaimer in the
+        -:   30: *    documentation and/or other materials provided with the distribution.
+        -:   31: * 3. All advertising materials mentioning features or use of this software
+        -:   32: *    must display the following acknowledgement:
+        -:   33: *    "This product includes cryptographic software written by
+        -:   34: *     Eric Young (eay@cryptsoft.com)"
+        -:   35: *    The word 'cryptographic' can be left out if the rouines from the library
+        -:   36: *    being used are not cryptographic related :-).
+        -:   37: * 4. If you include any Windows specific code (or a derivative thereof) from 
+        -:   38: *    the apps directory (application code) you must include an acknowledgement:
+        -:   39: *    "This product includes software written by Tim Hudson (tjh@cryptsoft.com)"
+        -:   40: * 
+        -:   41: * THIS SOFTWARE IS PROVIDED BY ERIC YOUNG ``AS IS'' AND
+        -:   42: * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   43: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+        -:   44: * ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+        -:   45: * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+        -:   46: * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+        -:   47: * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   48: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+        -:   49: * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+        -:   50: * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+        -:   51: * SUCH DAMAGE.
+        -:   52: * 
+        -:   53: * The licence and distribution terms for any publically available version or
+        -:   54: * derivative of this code cannot be changed.  i.e. this code cannot simply be
+        -:   55: * copied and put under another distribution licence
+        -:   56: * [including the GNU Public Licence.]
+        -:   57: */
+        -:   58:
+        -:   59:#include <stdio.h>
+        -:   60:#include <limits.h>
+        -:   61:#include "cryptlib.h"
+        -:   62:#include <openssl/buffer.h>
+        -:   63:#include <openssl/asn1.h>
+        -:   64:#include <openssl/objects.h>
+        -:   65:#include <openssl/bn.h>
+        -:   66:
+    #####:   67:int i2d_ASN1_OBJECT(ASN1_OBJECT *a, unsigned char **pp)
+        -:   68:	{
+        -:   69:	unsigned char *p;
+        -:   70:	int objsize;
+        -:   71:
+    #####:   72:	if ((a == NULL) || (a->data == NULL)) return(0);
+        -:   73:
+    #####:   74:	objsize = ASN1_object_size(0,a->length,V_ASN1_OBJECT);
+    #####:   75:	if (pp == NULL) return objsize;
+        -:   76:
+    #####:   77:	p= *pp;
+    #####:   78:	ASN1_put_object(&p,0,a->length,V_ASN1_OBJECT,V_ASN1_UNIVERSAL);
+    #####:   79:	memcpy(p,a->data,a->length);
+    #####:   80:	p+=a->length;
+        -:   81:
+    #####:   82:	*pp=p;
+    #####:   83:	return(objsize);
+        -:   84:	}
+        -:   85:
+    #####:   86:int a2d_ASN1_OBJECT(unsigned char *out, int olen, const char *buf, int num)
+        -:   87:	{
+        -:   88:	int i,first,len=0,c, use_bn;
+        -:   89:	char ftmp[24], *tmp = ftmp;
+        -:   90:	int tmpsize = sizeof ftmp;
+        -:   91:	const char *p;
+        -:   92:	unsigned long l;
+        -:   93:	BIGNUM *bl = NULL;
+        -:   94:
+    #####:   95:	if (num == 0)
+        -:   96:		return(0);
+    #####:   97:	else if (num == -1)
+    #####:   98:		num=strlen(buf);
+        -:   99:
+        -:  100:	p=buf;
+    #####:  101:	c= *(p++);
+    #####:  102:	num--;
+    #####:  103:	if ((c >= '0') && (c <= '2'))
+        -:  104:		{
+    #####:  105:		first= c-'0';
+        -:  106:		}
+        -:  107:	else
+        -:  108:		{
+    #####:  109:		ASN1err(ASN1_F_A2D_ASN1_OBJECT,ASN1_R_FIRST_NUM_TOO_LARGE);
+    #####:  110:		goto err;
+        -:  111:		}
+        -:  112:
+    #####:  113:	if (num <= 0)
+        -:  114:		{
+    #####:  115:		ASN1err(ASN1_F_A2D_ASN1_OBJECT,ASN1_R_MISSING_SECOND_NUMBER);
+    #####:  116:		goto err;
+        -:  117:		}
+    #####:  118:	c= *(p++);
+    #####:  119:	num--;
+        -:  120:	for (;;)
+        -:  121:		{
+    #####:  122:		if (num <= 0) break;
+    #####:  123:		if ((c != '.') && (c != ' '))
+        -:  124:			{
+    #####:  125:			ASN1err(ASN1_F_A2D_ASN1_OBJECT,ASN1_R_INVALID_SEPARATOR);
+    #####:  126:			goto err;
+        -:  127:			}
+        -:  128:		l=0;
+        -:  129:		use_bn = 0;
+        -:  130:		for (;;)
+        -:  131:			{
+    #####:  132:			if (num <= 0) break;
+    #####:  133:			num--;
+    #####:  134:			c= *(p++);
+    #####:  135:			if ((c == ' ') || (c == '.'))
+        -:  136:				break;
+    #####:  137:			if ((c < '0') || (c > '9'))
+        -:  138:				{
+    #####:  139:				ASN1err(ASN1_F_A2D_ASN1_OBJECT,ASN1_R_INVALID_DIGIT);
+    #####:  140:				goto err;
+        -:  141:				}
+    #####:  142:			if (!use_bn && l >= ((ULONG_MAX - 80) / 10L))
+        -:  143:				{
+        -:  144:				use_bn = 1;
+    #####:  145:				if (!bl)
+    #####:  146:					bl = BN_new();
+    #####:  147:				if (!bl || !BN_set_word(bl, l))
+        -:  148:					goto err;
+        -:  149:				}
+    #####:  150:			if (use_bn)
+        -:  151:				{
+    #####:  152:				if (!BN_mul_word(bl, 10L)
+    #####:  153:					|| !BN_add_word(bl, c-'0'))
+        -:  154:					goto err;
+        -:  155:				}
+        -:  156:			else
+    #####:  157:				l=l*10L+(long)(c-'0');
+        -:  158:			}
+    #####:  159:		if (len == 0)
+        -:  160:			{
+    #####:  161:			if ((first < 2) && (l >= 40))
+        -:  162:				{
+    #####:  163:				ASN1err(ASN1_F_A2D_ASN1_OBJECT,ASN1_R_SECOND_NUMBER_TOO_LARGE);
+    #####:  164:				goto err;
+        -:  165:				}
+    #####:  166:			if (use_bn)
+        -:  167:				{
+    #####:  168:				if (!BN_add_word(bl, first * 40))
+        -:  169:					goto err;
+        -:  170:				}
+        -:  171:			else
+    #####:  172:				l+=(long)first*40;
+        -:  173:			}
+        -:  174:		i=0;
+    #####:  175:		if (use_bn)
+        -:  176:			{
+        -:  177:			int blsize;
+    #####:  178:			blsize = BN_num_bits(bl);
+    #####:  179:			blsize = (blsize + 6)/7;
+    #####:  180:			if (blsize > tmpsize)
+        -:  181:				{
+    #####:  182:				if (tmp != ftmp)
+    #####:  183:					OPENSSL_free(tmp);
+    #####:  184:				tmpsize = blsize + 32;
+    #####:  185:				tmp = OPENSSL_malloc(tmpsize);
+    #####:  186:				if (!tmp)
+        -:  187:					goto err;
+        -:  188:				}
+    #####:  189:			while(blsize--)
+    #####:  190:				tmp[i++] = (unsigned char)BN_div_word(bl, 0x80L);
+        -:  191:			}
+        -:  192:		else
+        -:  193:			{
+        -:  194:					
+        -:  195:			for (;;)
+        -:  196:				{
+    #####:  197:				tmp[i++]=(unsigned char)l&0x7f;
+    #####:  198:				l>>=7L;
+    #####:  199:				if (l == 0L) break;
+        -:  200:				}
+        -:  201:
+        -:  202:			}
+    #####:  203:		if (out != NULL)
+        -:  204:			{
+    #####:  205:			if (len+i > olen)
+        -:  206:				{
+    #####:  207:				ASN1err(ASN1_F_A2D_ASN1_OBJECT,ASN1_R_BUFFER_TOO_SMALL);
+    #####:  208:				goto err;
+        -:  209:				}
+    #####:  210:			while (--i > 0)
+    #####:  211:				out[len++]=tmp[i]|0x80;
+    #####:  212:			out[len++]=tmp[0];
+        -:  213:			}
+        -:  214:		else
+    #####:  215:			len+=i;
+        -:  216:		}
+    #####:  217:	if (tmp != ftmp)
+    #####:  218:		OPENSSL_free(tmp);
+    #####:  219:	if (bl)
+    #####:  220:		BN_free(bl);
+    #####:  221:	return(len);
+        -:  222:err:
+    #####:  223:	if (tmp != ftmp)
+    #####:  224:		OPENSSL_free(tmp);
+    #####:  225:	if (bl)
+    #####:  226:		BN_free(bl);
+        -:  227:	return(0);
+        -:  228:	}
+        -:  229:
+    11596:  230:int i2t_ASN1_OBJECT(char *buf, int buf_len, ASN1_OBJECT *a)
+        -:  231:{
+    11596:  232:	return OBJ_obj2txt(buf, buf_len, a, 0);
+        -:  233:}
+        -:  234:
+    #####:  235:int i2a_ASN1_OBJECT(BIO *bp, ASN1_OBJECT *a)
+        -:  236:	{
+        -:  237:	char buf[80], *p = buf;
+        -:  238:	int i;
+        -:  239:
+    #####:  240:	if ((a == NULL) || (a->data == NULL))
+    #####:  241:		return(BIO_write(bp,"NULL",4));
+        -:  242:	i=i2t_ASN1_OBJECT(buf,sizeof buf,a);
+    #####:  243:	if (i > (int)(sizeof(buf) - 1))
+        -:  244:		{
+    #####:  245:		p = OPENSSL_malloc(i + 1);
+    #####:  246:		if (!p)
+        -:  247:			return -1;
+        -:  248:		i2t_ASN1_OBJECT(p,i + 1,a);
+        -:  249:		}
+    #####:  250:	if (i <= 0)
+    #####:  251:		return BIO_write(bp, "<INVALID>", 9);
+    #####:  252:	BIO_write(bp,p,i);
+    #####:  253:	if (p != buf)
+    #####:  254:		OPENSSL_free(p);
+    #####:  255:	return(i);
+        -:  256:	}
+        -:  257:
+    #####:  258:ASN1_OBJECT *d2i_ASN1_OBJECT(ASN1_OBJECT **a, const unsigned char **pp,
+        -:  259:	     long length)
+        -:  260:{
+        -:  261:	const unsigned char *p;
+        -:  262:	long len;
+        -:  263:	int tag,xclass;
+        -:  264:	int inf,i;
+        -:  265:	ASN1_OBJECT *ret = NULL;
+    #####:  266:	p= *pp;
+    #####:  267:	inf=ASN1_get_object(&p,&len,&tag,&xclass,length);
+    #####:  268:	if (inf & 0x80)
+        -:  269:		{
+        -:  270:		i=ASN1_R_BAD_OBJECT_HEADER;
+        -:  271:		goto err;
+        -:  272:		}
+        -:  273:
+    #####:  274:	if (tag != V_ASN1_OBJECT)
+        -:  275:		{
+        -:  276:		i=ASN1_R_EXPECTING_AN_OBJECT;
+        -:  277:		goto err;
+        -:  278:		}
+    #####:  279:	ret = c2i_ASN1_OBJECT(a, &p, len);
+    #####:  280:	if(ret) *pp = p;
+    #####:  281:	return ret;
+        -:  282:err:
+    #####:  283:	ASN1err(ASN1_F_D2I_ASN1_OBJECT,i);
+    #####:  284:	return(NULL);
+        -:  285:}
+   616159:  286:ASN1_OBJECT *c2i_ASN1_OBJECT(ASN1_OBJECT **a, const unsigned char **pp,
+        -:  287:	     long len)
+        -:  288:	{
+        -:  289:	ASN1_OBJECT *ret=NULL;
+        -:  290:	const unsigned char *p;
+        -:  291:	unsigned char *data;
+        -:  292:	int i;
+        -:  293:	/* Sanity check OID encoding: can't have leading 0x80 in
+        -:  294:	 * subidentifiers, see: X.690 8.19.2
+        -:  295:	 */
+  3701714:  296:	for (i = 0, p = *pp; i < len; i++, p++)
+        -:  297:		{
+  3085555:  298:		if (*p == 0x80 && (!i || !(p[-1] & 0x80)))
+        -:  299:			{
+    #####:  300:			ASN1err(ASN1_F_C2I_ASN1_OBJECT,ASN1_R_INVALID_OBJECT_ENCODING);
+    #####:  301:			return NULL;
+        -:  302:			}
+        -:  303:		}
+        -:  304:
+        -:  305:	/* only the ASN1_OBJECTs from the 'table' will have values
+        -:  306:	 * for ->sn or ->ln */
+  1227186:  307:	if ((a == NULL) || ((*a) == NULL) ||
+   611027:  308:		!((*a)->flags & ASN1_OBJECT_FLAG_DYNAMIC))
+        -:  309:		{
+   616159:  310:		if ((ret=ASN1_OBJECT_new()) == NULL) return(NULL);
+        -:  311:		}
+        -:  312:	else	ret=(*a);
+        -:  313:
+   616159:  314:	p= *pp;
+        -:  315:	/* detach data from object */
+   616159:  316:	data = (unsigned char *)ret->data;
+   616159:  317:	ret->data = NULL;
+        -:  318:	/* once detached we can change it */
+   616159:  319:	if ((data == NULL) || (ret->length < len))
+        -:  320:		{
+   616159:  321:		ret->length=0;
+   616159:  322:		if (data != NULL) OPENSSL_free(data);
+   616159:  323:		data=(unsigned char *)OPENSSL_malloc(len ? (int)len : 1);
+   616159:  324:		if (data == NULL)
+        -:  325:			{ i=ERR_R_MALLOC_FAILURE; goto err; }
+   616159:  326:		ret->flags|=ASN1_OBJECT_FLAG_DYNAMIC_DATA;
+        -:  327:		}
+   616159:  328:	memcpy(data,p,(int)len);
+        -:  329:	/* reattach data to object, after which it remains const */
+   616159:  330:	ret->data  =data;
+   616159:  331:	ret->length=(int)len;
+   616159:  332:	ret->sn=NULL;
+   616159:  333:	ret->ln=NULL;
+        -:  334:	/* ret->flags=ASN1_OBJECT_FLAG_DYNAMIC; we know it is dynamic */
+   616159:  335:	p+=len;
+        -:  336:
+   616159:  337:	if (a != NULL) (*a)=ret;
+   616159:  338:	*pp=p;
+   616159:  339:	return(ret);
+        -:  340:err:
+    #####:  341:	ASN1err(ASN1_F_C2I_ASN1_OBJECT,i);
+    #####:  342:	if ((ret != NULL) && ((a == NULL) || (*a != ret)))
+    #####:  343:		ASN1_OBJECT_free(ret);
+        -:  344:	return(NULL);
+        -:  345:	}
+        -:  346:
+   906167:  347:ASN1_OBJECT *ASN1_OBJECT_new(void)
+        -:  348:	{
+        -:  349:	ASN1_OBJECT *ret;
+        -:  350:
+   906167:  351:	ret=(ASN1_OBJECT *)OPENSSL_malloc(sizeof(ASN1_OBJECT));
+   906167:  352:	if (ret == NULL)
+        -:  353:		{
+    #####:  354:		ASN1err(ASN1_F_ASN1_OBJECT_NEW,ERR_R_MALLOC_FAILURE);
+    #####:  355:		return(NULL);
+        -:  356:		}
+   906167:  357:	ret->length=0;
+   906167:  358:	ret->data=NULL;
+   906167:  359:	ret->nid=0;
+   906167:  360:	ret->sn=NULL;
+   906167:  361:	ret->ln=NULL;
+   906167:  362:	ret->flags=ASN1_OBJECT_FLAG_DYNAMIC;
+   906167:  363:	return(ret);
+        -:  364:	}
+        -:  365:
+   916167:  366:void ASN1_OBJECT_free(ASN1_OBJECT *a)
+        -:  367:	{
+  1832334:  368:	if (a == NULL) return;
+   916167:  369:	if (a->flags & ASN1_OBJECT_FLAG_DYNAMIC_STRINGS)
+        -:  370:		{
+        -:  371:#ifndef CONST_STRICT /* disable purely for compile-time strict const checking. Doing this on a "real" compile will cause memory leaks */
+   290008:  372:		if (a->sn != NULL) OPENSSL_free((void *)a->sn);
+   290008:  373:		if (a->ln != NULL) OPENSSL_free((void *)a->ln);
+        -:  374:#endif
+   290008:  375:		a->sn=a->ln=NULL;
+        -:  376:		}
+   916167:  377:	if (a->flags & ASN1_OBJECT_FLAG_DYNAMIC_DATA)
+        -:  378:		{
+   906167:  379:		if (a->data != NULL) OPENSSL_free((void *)a->data);
+   906167:  380:		a->data=NULL;
+   906167:  381:		a->length=0;
+        -:  382:		}
+   916167:  383:	if (a->flags & ASN1_OBJECT_FLAG_DYNAMIC)
+   906167:  384:		OPENSSL_free(a);
+        -:  385:	}
+        -:  386:
+    #####:  387:ASN1_OBJECT *ASN1_OBJECT_create(int nid, unsigned char *data, int len,
+        -:  388:	     const char *sn, const char *ln)
+        -:  389:	{
+        -:  390:	ASN1_OBJECT o;
+        -:  391:
+    #####:  392:	o.sn=sn;
+    #####:  393:	o.ln=ln;
+    #####:  394:	o.data=data;
+    #####:  395:	o.nid=nid;
+    #####:  396:	o.length=len;
+    #####:  397:	o.flags=ASN1_OBJECT_FLAG_DYNAMIC|ASN1_OBJECT_FLAG_DYNAMIC_STRINGS|
+        -:  398:		ASN1_OBJECT_FLAG_DYNAMIC_DATA;
+    #####:  399:	return(OBJ_dup(&o));
+        -:  400:	}
+        -:  401:
+        -:  402:IMPLEMENT_STACK_OF(ASN1_OBJECT)
+        -:  403:IMPLEMENT_ASN1_SET_OF(ASN1_OBJECT)

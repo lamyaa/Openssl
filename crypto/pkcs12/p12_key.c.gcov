@@ -1,0 +1,232 @@
+        -:    0:Source:p12_key.c
+        -:    0:Graph:p12_key.gcno
+        -:    0:Data:p12_key.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* p12_key.c */
+        -:    2:/* Written by Dr Stephen N Henson (steve@openssl.org) for the OpenSSL
+        -:    3: * project 1999.
+        -:    4: */
+        -:    5:/* ====================================================================
+        -:    6: * Copyright (c) 1999 The OpenSSL Project.  All rights reserved.
+        -:    7: *
+        -:    8: * Redistribution and use in source and binary forms, with or without
+        -:    9: * modification, are permitted provided that the following conditions
+        -:   10: * are met:
+        -:   11: *
+        -:   12: * 1. Redistributions of source code must retain the above copyright
+        -:   13: *    notice, this list of conditions and the following disclaimer. 
+        -:   14: *
+        -:   15: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   16: *    notice, this list of conditions and the following disclaimer in
+        -:   17: *    the documentation and/or other materials provided with the
+        -:   18: *    distribution.
+        -:   19: *
+        -:   20: * 3. All advertising materials mentioning features or use of this
+        -:   21: *    software must display the following acknowledgment:
+        -:   22: *    "This product includes software developed by the OpenSSL Project
+        -:   23: *    for use in the OpenSSL Toolkit. (http://www.OpenSSL.org/)"
+        -:   24: *
+        -:   25: * 4. The names "OpenSSL Toolkit" and "OpenSSL Project" must not be used to
+        -:   26: *    endorse or promote products derived from this software without
+        -:   27: *    prior written permission. For written permission, please contact
+        -:   28: *    licensing@OpenSSL.org.
+        -:   29: *
+        -:   30: * 5. Products derived from this software may not be called "OpenSSL"
+        -:   31: *    nor may "OpenSSL" appear in their names without prior written
+        -:   32: *    permission of the OpenSSL Project.
+        -:   33: *
+        -:   34: * 6. Redistributions of any form whatsoever must retain the following
+        -:   35: *    acknowledgment:
+        -:   36: *    "This product includes software developed by the OpenSSL Project
+        -:   37: *    for use in the OpenSSL Toolkit (http://www.OpenSSL.org/)"
+        -:   38: *
+        -:   39: * THIS SOFTWARE IS PROVIDED BY THE OpenSSL PROJECT ``AS IS'' AND ANY
+        -:   40: * EXPRESSED OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   41: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+        -:   42: * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE OpenSSL PROJECT OR
+        -:   43: * ITS CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+        -:   44: * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+        -:   45: * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+        -:   46: * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   47: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+        -:   48: * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+        -:   49: * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+        -:   50: * OF THE POSSIBILITY OF SUCH DAMAGE.
+        -:   51: * ====================================================================
+        -:   52: *
+        -:   53: * This product includes cryptographic software written by Eric Young
+        -:   54: * (eay@cryptsoft.com).  This product includes software written by Tim
+        -:   55: * Hudson (tjh@cryptsoft.com).
+        -:   56: *
+        -:   57: */
+        -:   58:
+        -:   59:#include <stdio.h>
+        -:   60:#include "cryptlib.h"
+        -:   61:#include <openssl/pkcs12.h>
+        -:   62:#include <openssl/bn.h>
+        -:   63:
+        -:   64:/* Uncomment out this line to get debugging info about key generation */
+        -:   65:/*#define DEBUG_KEYGEN*/
+        -:   66:#ifdef DEBUG_KEYGEN
+        -:   67:#include <openssl/bio.h>
+        -:   68:extern BIO *bio_err;
+        -:   69:void h__dump (unsigned char *p, int len);
+        -:   70:#endif
+        -:   71:
+        -:   72:/* PKCS12 compatible key/IV generation */
+        -:   73:#ifndef min
+        -:   74:#define min(a,b) ((a) < (b) ? (a) : (b))
+        -:   75:#endif
+        -:   76:
+    #####:   77:int PKCS12_key_gen_asc(const char *pass, int passlen, unsigned char *salt,
+        -:   78:	     int saltlen, int id, int iter, int n, unsigned char *out,
+        -:   79:	     const EVP_MD *md_type)
+        -:   80:{
+        -:   81:	int ret;
+        -:   82:	unsigned char *unipass;
+        -:   83:	int uniplen;
+        -:   84:
+    #####:   85:	if(!pass) {
+    #####:   86:		unipass = NULL;
+    #####:   87:		uniplen = 0;
+    #####:   88:	} else if (!OPENSSL_asc2uni(pass, passlen, &unipass, &uniplen)) {
+    #####:   89:		PKCS12err(PKCS12_F_PKCS12_KEY_GEN_ASC,ERR_R_MALLOC_FAILURE);
+    #####:   90:		return 0;
+        -:   91:	}
+    #####:   92:	ret = PKCS12_key_gen_uni(unipass, uniplen, salt, saltlen,
+        -:   93:						 id, iter, n, out, md_type);
+    #####:   94:	if (ret <= 0)
+        -:   95:	    return 0;
+    #####:   96:	if(unipass) {
+    #####:   97:		OPENSSL_cleanse(unipass, uniplen);	/* Clear password from memory */
+    #####:   98:		OPENSSL_free(unipass);
+        -:   99:	}
+    #####:  100:	return ret;
+        -:  101:}
+        -:  102:
+    #####:  103:int PKCS12_key_gen_uni(unsigned char *pass, int passlen, unsigned char *salt,
+        -:  104:	     int saltlen, int id, int iter, int n, unsigned char *out,
+        -:  105:	     const EVP_MD *md_type)
+        -:  106:{
+        -:  107:	unsigned char *B, *D, *I, *p, *Ai;
+        -:  108:	int Slen, Plen, Ilen, Ijlen;
+        -:  109:	int i, j, u, v;
+        -:  110:	int ret = 0;
+        -:  111:	BIGNUM *Ij, *Bpl1;	/* These hold Ij and B + 1 */
+        -:  112:	EVP_MD_CTX ctx;
+        -:  113:#ifdef  DEBUG_KEYGEN
+        -:  114:	unsigned char *tmpout = out;
+        -:  115:	int tmpn = n;
+        -:  116:#endif
+        -:  117:
+        -:  118:#if 0
+        -:  119:	if (!pass) {
+        -:  120:		PKCS12err(PKCS12_F_PKCS12_KEY_GEN_UNI,ERR_R_PASSED_NULL_PARAMETER);
+        -:  121:		return 0;
+        -:  122:	}
+        -:  123:#endif
+        -:  124:
+    #####:  125:	EVP_MD_CTX_init(&ctx);
+        -:  126:#ifdef  DEBUG_KEYGEN
+        -:  127:	fprintf(stderr, "KEYGEN DEBUG\n");
+        -:  128:	fprintf(stderr, "ID %d, ITER %d\n", id, iter);
+        -:  129:	fprintf(stderr, "Password (length %d):\n", passlen);
+        -:  130:	h__dump(pass, passlen);
+        -:  131:	fprintf(stderr, "Salt (length %d):\n", saltlen);
+        -:  132:	h__dump(salt, saltlen);
+        -:  133:#endif
+    #####:  134:	v = EVP_MD_block_size (md_type);
+    #####:  135:	u = EVP_MD_size (md_type);
+    #####:  136:	if (u < 0)
+        -:  137:	    return 0;
+    #####:  138:	D = OPENSSL_malloc (v);
+    #####:  139:	Ai = OPENSSL_malloc (u);
+    #####:  140:	B = OPENSSL_malloc (v + 1);
+    #####:  141:	Slen = v * ((saltlen+v-1)/v);
+    #####:  142:	if(passlen) Plen = v * ((passlen+v-1)/v);
+        -:  143:	else Plen = 0;
+    #####:  144:	Ilen = Slen + Plen;
+    #####:  145:	I = OPENSSL_malloc (Ilen);
+    #####:  146:	Ij = BN_new();
+    #####:  147:	Bpl1 = BN_new();
+    #####:  148:	if (!D || !Ai || !B || !I || !Ij || !Bpl1)
+        -:  149:		goto err;
+    #####:  150:	for (i = 0; i < v; i++) D[i] = id;
+        -:  151:	p = I;
+    #####:  152:	for (i = 0; i < Slen; i++) *p++ = salt[i % saltlen];
+    #####:  153:	for (i = 0; i < Plen; i++) *p++ = pass[i % passlen];
+        -:  154:	for (;;) {
+    #####:  155:		if (!EVP_DigestInit_ex(&ctx, md_type, NULL)
+    #####:  156:			|| !EVP_DigestUpdate(&ctx, D, v)
+    #####:  157:			|| !EVP_DigestUpdate(&ctx, I, Ilen)
+    #####:  158:			|| !EVP_DigestFinal_ex(&ctx, Ai, NULL))
+        -:  159:			goto err;
+    #####:  160:		for (j = 1; j < iter; j++) {
+    #####:  161:			if (!EVP_DigestInit_ex(&ctx, md_type, NULL)
+    #####:  162:				|| !EVP_DigestUpdate(&ctx, Ai, u)
+    #####:  163:				|| !EVP_DigestFinal_ex(&ctx, Ai, NULL))
+        -:  164:			goto err;
+        -:  165:		}
+    #####:  166:		memcpy (out, Ai, min (n, u));
+    #####:  167:		if (u >= n) {
+        -:  168:#ifdef DEBUG_KEYGEN
+        -:  169:			fprintf(stderr, "Output KEY (length %d)\n", tmpn);
+        -:  170:			h__dump(tmpout, tmpn);
+        -:  171:#endif
+        -:  172:			ret = 1;
+        -:  173:			goto end;
+        -:  174:		}
+    #####:  175:		n -= u;
+    #####:  176:		out += u;
+    #####:  177:		for (j = 0; j < v; j++) B[j] = Ai[j % u];
+        -:  178:		/* Work out B + 1 first then can use B as tmp space */
+    #####:  179:		if (!BN_bin2bn (B, v, Bpl1))
+        -:  180:			goto err;
+    #####:  181:		if (!BN_add_word (Bpl1, 1))
+        -:  182:			goto err;
+    #####:  183:		for (j = 0; j < Ilen ; j+=v) {
+    #####:  184:			if (!BN_bin2bn(I + j, v, Ij))
+        -:  185:				goto err;
+    #####:  186:			if (!BN_add(Ij, Ij, Bpl1))
+        -:  187:				goto err;
+    #####:  188:			if (!BN_bn2bin(Ij, B))
+        -:  189:				goto err;
+    #####:  190:			Ijlen = BN_num_bytes (Ij);
+        -:  191:			/* If more than 2^(v*8) - 1 cut off MSB */
+    #####:  192:			if (Ijlen > v) {
+    #####:  193:				if (!BN_bn2bin (Ij, B))
+        -:  194:					goto err;
+    #####:  195:				memcpy (I + j, B + 1, v);
+        -:  196:#ifndef PKCS12_BROKEN_KEYGEN
+        -:  197:			/* If less than v bytes pad with zeroes */
+    #####:  198:			} else if (Ijlen < v) {
+    #####:  199:				memset(I + j, 0, v - Ijlen);
+    #####:  200:				if (!BN_bn2bin(Ij, I + j + v - Ijlen))
+        -:  201:					goto err;
+        -:  202:#endif
+    #####:  203:			} else if (!BN_bn2bin (Ij, I + j))
+        -:  204:				goto err;
+        -:  205:		}
+        -:  206:	}
+        -:  207:
+        -:  208:err:
+    #####:  209:	PKCS12err(PKCS12_F_PKCS12_KEY_GEN_UNI,ERR_R_MALLOC_FAILURE);
+        -:  210:
+        -:  211:end:
+    #####:  212:	OPENSSL_free (Ai);
+    #####:  213:	OPENSSL_free (B);
+    #####:  214:	OPENSSL_free (D);
+    #####:  215:	OPENSSL_free (I);
+    #####:  216:	BN_free (Ij);
+    #####:  217:	BN_free (Bpl1);
+    #####:  218:	EVP_MD_CTX_cleanup(&ctx);
+    #####:  219:	return ret;
+        -:  220:}
+        -:  221:#ifdef DEBUG_KEYGEN
+        -:  222:void h__dump (unsigned char *p, int len)
+        -:  223:{
+        -:  224:	for (; len --; p++) fprintf(stderr, "%02X", *p);
+        -:  225:	fprintf(stderr, "\n");	
+        -:  226:}
+        -:  227:#endif

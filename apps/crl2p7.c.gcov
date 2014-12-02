@@ -1,0 +1,342 @@
+        -:    0:Source:crl2p7.c
+        -:    0:Graph:crl2p7.gcno
+        -:    0:Data:crl2p7.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* apps/crl2p7.c */
+        -:    2:/* Copyright (C) 1995-1998 Eric Young (eay@cryptsoft.com)
+        -:    3: * All rights reserved.
+        -:    4: *
+        -:    5: * This package is an SSL implementation written
+        -:    6: * by Eric Young (eay@cryptsoft.com).
+        -:    7: * The implementation was written so as to conform with Netscapes SSL.
+        -:    8: * 
+        -:    9: * This library is free for commercial and non-commercial use as long as
+        -:   10: * the following conditions are aheared to.  The following conditions
+        -:   11: * apply to all code found in this distribution, be it the RC4, RSA,
+        -:   12: * lhash, DES, etc., code; not just the SSL code.  The SSL documentation
+        -:   13: * included with this distribution is covered by the same copyright terms
+        -:   14: * except that the holder is Tim Hudson (tjh@cryptsoft.com).
+        -:   15: * 
+        -:   16: * Copyright remains Eric Young's, and as such any Copyright notices in
+        -:   17: * the code are not to be removed.
+        -:   18: * If this package is used in a product, Eric Young should be given attribution
+        -:   19: * as the author of the parts of the library used.
+        -:   20: * This can be in the form of a textual message at program startup or
+        -:   21: * in documentation (online or textual) provided with the package.
+        -:   22: * 
+        -:   23: * Redistribution and use in source and binary forms, with or without
+        -:   24: * modification, are permitted provided that the following conditions
+        -:   25: * are met:
+        -:   26: * 1. Redistributions of source code must retain the copyright
+        -:   27: *    notice, this list of conditions and the following disclaimer.
+        -:   28: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   29: *    notice, this list of conditions and the following disclaimer in the
+        -:   30: *    documentation and/or other materials provided with the distribution.
+        -:   31: * 3. All advertising materials mentioning features or use of this software
+        -:   32: *    must display the following acknowledgement:
+        -:   33: *    "This product includes cryptographic software written by
+        -:   34: *     Eric Young (eay@cryptsoft.com)"
+        -:   35: *    The word 'cryptographic' can be left out if the rouines from the library
+        -:   36: *    being used are not cryptographic related :-).
+        -:   37: * 4. If you include any Windows specific code (or a derivative thereof) from 
+        -:   38: *    the apps directory (application code) you must include an acknowledgement:
+        -:   39: *    "This product includes software written by Tim Hudson (tjh@cryptsoft.com)"
+        -:   40: * 
+        -:   41: * THIS SOFTWARE IS PROVIDED BY ERIC YOUNG ``AS IS'' AND
+        -:   42: * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   43: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+        -:   44: * ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+        -:   45: * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+        -:   46: * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+        -:   47: * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   48: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+        -:   49: * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+        -:   50: * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+        -:   51: * SUCH DAMAGE.
+        -:   52: * 
+        -:   53: * The licence and distribution terms for any publically available version or
+        -:   54: * derivative of this code cannot be changed.  i.e. this code cannot simply be
+        -:   55: * copied and put under another distribution licence
+        -:   56: * [including the GNU Public Licence.]
+        -:   57: */
+        -:   58:
+        -:   59:/* This was written by Gordon Chaffee <chaffee@plateau.cs.berkeley.edu>
+        -:   60: * and donated 'to the cause' along with lots and lots of other fixes to
+        -:   61: * the library. */
+        -:   62:
+        -:   63:#include <stdio.h>
+        -:   64:#include <string.h>
+        -:   65:#include <sys/types.h>
+        -:   66:#include "apps.h"
+        -:   67:#include <openssl/err.h>
+        -:   68:#include <openssl/evp.h>
+        -:   69:#include <openssl/x509.h>
+        -:   70:#include <openssl/pkcs7.h>
+        -:   71:#include <openssl/pem.h>
+        -:   72:#include <openssl/objects.h>
+        -:   73:
+        -:   74:static int add_certs_from_file(STACK_OF(X509) *stack, char *certfile);
+        -:   75:#undef PROG
+        -:   76:#define PROG	crl2pkcs7_main
+        -:   77:
+        -:   78:/* -inform arg	- input format - default PEM (DER or PEM)
+        -:   79: * -outform arg - output format - default PEM
+        -:   80: * -in arg	- input file - default stdin
+        -:   81: * -out arg	- output file - default stdout
+        -:   82: */
+        -:   83:
+        -:   84:int MAIN(int, char **);
+        -:   85:
+    #####:   86:int MAIN(int argc, char **argv)
+        -:   87:	{
+        -:   88:	int i,badops=0;
+        -:   89:	BIO *in=NULL,*out=NULL;
+        -:   90:	int informat,outformat;
+        -:   91:	char *infile,*outfile,*prog,*certfile;
+        -:   92:	PKCS7 *p7 = NULL;
+        -:   93:	PKCS7_SIGNED *p7s = NULL;
+        -:   94:	X509_CRL *crl=NULL;
+        -:   95:	STACK_OF(OPENSSL_STRING) *certflst=NULL;
+        -:   96:	STACK_OF(X509_CRL) *crl_stack=NULL;
+        -:   97:	STACK_OF(X509) *cert_stack=NULL;
+        -:   98:	int ret=1,nocrl=0;
+        -:   99:
+    #####:  100:	apps_startup();
+        -:  101:
+    #####:  102:	if (bio_err == NULL)
+    #####:  103:		if ((bio_err=BIO_new(BIO_s_file())) != NULL)
+    #####:  104:			BIO_set_fp(bio_err,stderr,BIO_NOCLOSE|BIO_FP_TEXT);
+        -:  105:
+        -:  106:	infile=NULL;
+        -:  107:	outfile=NULL;
+        -:  108:	informat=FORMAT_PEM;
+        -:  109:	outformat=FORMAT_PEM;
+        -:  110:
+    #####:  111:	prog=argv[0];
+    #####:  112:	argc--;
+    #####:  113:	argv++;
+    #####:  114:	while (argc >= 1)
+        -:  115:		{
+    #####:  116:		if 	(strcmp(*argv,"-inform") == 0)
+        -:  117:			{
+    #####:  118:			if (--argc < 1) goto bad;
+    #####:  119:			informat=str2fmt(*(++argv));
+        -:  120:			}
+    #####:  121:		else if (strcmp(*argv,"-outform") == 0)
+        -:  122:			{
+    #####:  123:			if (--argc < 1) goto bad;
+    #####:  124:			outformat=str2fmt(*(++argv));
+        -:  125:			}
+    #####:  126:		else if (strcmp(*argv,"-in") == 0)
+        -:  127:			{
+    #####:  128:			if (--argc < 1) goto bad;
+    #####:  129:			infile= *(++argv);
+        -:  130:			}
+    #####:  131:		else if (strcmp(*argv,"-nocrl") == 0)
+        -:  132:			{
+        -:  133:			nocrl=1;
+        -:  134:			}
+    #####:  135:		else if (strcmp(*argv,"-out") == 0)
+        -:  136:			{
+    #####:  137:			if (--argc < 1) goto bad;
+    #####:  138:			outfile= *(++argv);
+        -:  139:			}
+    #####:  140:		else if (strcmp(*argv,"-certfile") == 0)
+        -:  141:			{
+    #####:  142:			if (--argc < 1) goto bad;
+    #####:  143:			if(!certflst) certflst = sk_OPENSSL_STRING_new_null();
+    #####:  144:			sk_OPENSSL_STRING_push(certflst,*(++argv));
+        -:  145:			}
+        -:  146:		else
+        -:  147:			{
+    #####:  148:			BIO_printf(bio_err,"unknown option %s\n",*argv);
+        -:  149:			badops=1;
+    #####:  150:			break;
+        -:  151:			}
+    #####:  152:		argc--;
+    #####:  153:		argv++;
+        -:  154:		}
+        -:  155:
+    #####:  156:	if (badops)
+        -:  157:		{
+        -:  158:bad:
+    #####:  159:		BIO_printf(bio_err,"%s [options] <infile >outfile\n",prog);
+    #####:  160:		BIO_printf(bio_err,"where options are\n");
+    #####:  161:		BIO_printf(bio_err," -inform arg    input format - DER or PEM\n");
+    #####:  162:		BIO_printf(bio_err," -outform arg   output format - DER or PEM\n");
+    #####:  163:		BIO_printf(bio_err," -in arg        input file\n");
+    #####:  164:		BIO_printf(bio_err," -out arg       output file\n");
+    #####:  165:		BIO_printf(bio_err," -certfile arg  certificates file of chain to a trusted CA\n");
+    #####:  166:		BIO_printf(bio_err,"                (can be used more than once)\n");
+    #####:  167:		BIO_printf(bio_err," -nocrl         no crl to load, just certs from '-certfile'\n");
+        -:  168:		ret = 1;
+    #####:  169:		goto end;
+        -:  170:		}
+        -:  171:
+    #####:  172:	ERR_load_crypto_strings();
+        -:  173:
+    #####:  174:	in=BIO_new(BIO_s_file());
+    #####:  175:	out=BIO_new(BIO_s_file());
+    #####:  176:	if ((in == NULL) || (out == NULL))
+        -:  177:		{
+    #####:  178:		ERR_print_errors(bio_err);
+    #####:  179:		goto end;
+        -:  180:		}
+        -:  181:
+    #####:  182:	if (!nocrl)
+        -:  183:		{
+    #####:  184:		if (infile == NULL)
+    #####:  185:			BIO_set_fp(in,stdin,BIO_NOCLOSE);
+        -:  186:		else
+        -:  187:			{
+    #####:  188:			if (BIO_read_filename(in,infile) <= 0)
+        -:  189:				{
+    #####:  190:				perror(infile);
+    #####:  191:				goto end;
+        -:  192:				}
+        -:  193:			}
+        -:  194:
+    #####:  195:		if 	(informat == FORMAT_ASN1)
+    #####:  196:			crl=d2i_X509_CRL_bio(in,NULL);
+    #####:  197:		else if (informat == FORMAT_PEM)
+    #####:  198:			crl=PEM_read_bio_X509_CRL(in,NULL,NULL,NULL);
+        -:  199:		else	{
+    #####:  200:			BIO_printf(bio_err,"bad input format specified for input crl\n");
+    #####:  201:			goto end;
+        -:  202:			}
+    #####:  203:		if (crl == NULL)
+        -:  204:			{
+    #####:  205:			BIO_printf(bio_err,"unable to load CRL\n");
+    #####:  206:			ERR_print_errors(bio_err);
+    #####:  207:			goto end;
+        -:  208:			}
+        -:  209:		}
+        -:  210:	
+    #####:  211:	if ((p7=PKCS7_new()) == NULL) goto end;
+    #####:  212:	if ((p7s=PKCS7_SIGNED_new()) == NULL) goto end;
+    #####:  213:	p7->type=OBJ_nid2obj(NID_pkcs7_signed);
+    #####:  214:	p7->d.sign=p7s;
+    #####:  215:	p7s->contents->type=OBJ_nid2obj(NID_pkcs7_data);
+        -:  216:
+    #####:  217:	if (!ASN1_INTEGER_set(p7s->version,1)) goto end;
+    #####:  218:	if ((crl_stack=sk_X509_CRL_new_null()) == NULL) goto end;
+    #####:  219:	p7s->crl=crl_stack;
+    #####:  220:	if (crl != NULL)
+        -:  221:		{
+    #####:  222:		sk_X509_CRL_push(crl_stack,crl);
+        -:  223:		crl=NULL; /* now part of p7 for OPENSSL_freeing */
+        -:  224:		}
+        -:  225:
+    #####:  226:	if ((cert_stack=sk_X509_new_null()) == NULL) goto end;
+    #####:  227:	p7s->cert=cert_stack;
+        -:  228:
+    #####:  229:	if(certflst) for(i = 0; i < sk_OPENSSL_STRING_num(certflst); i++) {
+    #####:  230:		certfile = sk_OPENSSL_STRING_value(certflst, i);
+    #####:  231:		if (add_certs_from_file(cert_stack,certfile) < 0)
+        -:  232:			{
+    #####:  233:			BIO_printf(bio_err, "error loading certificates\n");
+    #####:  234:			ERR_print_errors(bio_err);
+    #####:  235:			goto end;
+        -:  236:			}
+        -:  237:	}
+        -:  238:
+    #####:  239:	sk_OPENSSL_STRING_free(certflst);
+        -:  240:
+    #####:  241:	if (outfile == NULL)
+        -:  242:		{
+    #####:  243:		BIO_set_fp(out,stdout,BIO_NOCLOSE);
+        -:  244:#ifdef OPENSSL_SYS_VMS
+        -:  245:		{
+        -:  246:		BIO *tmpbio = BIO_new(BIO_f_linebuffer());
+        -:  247:		out = BIO_push(tmpbio, out);
+        -:  248:		}
+        -:  249:#endif
+        -:  250:		}
+        -:  251:	else
+        -:  252:		{
+    #####:  253:		if (BIO_write_filename(out,outfile) <= 0)
+        -:  254:			{
+    #####:  255:			perror(outfile);
+    #####:  256:			goto end;
+        -:  257:			}
+        -:  258:		}
+        -:  259:
+    #####:  260:	if 	(outformat == FORMAT_ASN1)
+    #####:  261:		i=i2d_PKCS7_bio(out,p7);
+    #####:  262:	else if (outformat == FORMAT_PEM)
+    #####:  263:		i=PEM_write_bio_PKCS7(out,p7);
+        -:  264:	else	{
+    #####:  265:		BIO_printf(bio_err,"bad output format specified for outfile\n");
+    #####:  266:		goto end;
+        -:  267:		}
+    #####:  268:	if (!i)
+        -:  269:		{
+    #####:  270:		BIO_printf(bio_err,"unable to write pkcs7 object\n");
+    #####:  271:		ERR_print_errors(bio_err);
+    #####:  272:		goto end;
+        -:  273:		}
+        -:  274:	ret=0;
+        -:  275:end:
+    #####:  276:	if (in != NULL) BIO_free(in);
+    #####:  277:	if (out != NULL) BIO_free_all(out);
+    #####:  278:	if (p7 != NULL) PKCS7_free(p7);
+    #####:  279:	if (crl != NULL) X509_CRL_free(crl);
+        -:  280:
+        -:  281:	apps_shutdown();
+    #####:  282:	OPENSSL_EXIT(ret);
+        -:  283:	}
+        -:  284:
+        -:  285:/*
+        -:  286: *----------------------------------------------------------------------
+        -:  287: * int add_certs_from_file
+        -:  288: *
+        -:  289: *	Read a list of certificates to be checked from a file.
+        -:  290: *
+        -:  291: * Results:
+        -:  292: *	number of certs added if successful, -1 if not.
+        -:  293: *----------------------------------------------------------------------
+        -:  294: */
+    #####:  295:static int add_certs_from_file(STACK_OF(X509) *stack, char *certfile)
+        -:  296:	{
+        -:  297:	BIO *in=NULL;
+        -:  298:	int count=0;
+        -:  299:	int ret= -1;
+        -:  300:	STACK_OF(X509_INFO) *sk=NULL;
+        -:  301:	X509_INFO *xi;
+        -:  302:
+    #####:  303:	in=BIO_new(BIO_s_file());
+    #####:  304:	if ((in == NULL) || (BIO_read_filename(in,certfile) <= 0))
+        -:  305:		{
+    #####:  306:		BIO_printf(bio_err,"error opening the file, %s\n",certfile);
+    #####:  307:		goto end;
+        -:  308:		}
+        -:  309:
+        -:  310:	/* This loads from a file, a stack of x509/crl/pkey sets */
+    #####:  311:	sk=PEM_X509_INFO_read_bio(in,NULL,NULL,NULL);
+    #####:  312:	if (sk == NULL) {
+    #####:  313:		BIO_printf(bio_err,"error reading the file, %s\n",certfile);
+    #####:  314:		goto end;
+        -:  315:	}
+        -:  316:
+        -:  317:	/* scan over it and pull out the CRL's */
+    #####:  318:	while (sk_X509_INFO_num(sk))
+        -:  319:		{
+    #####:  320:		xi=sk_X509_INFO_shift(sk);
+    #####:  321:		if (xi->x509 != NULL)
+        -:  322:			{
+    #####:  323:			sk_X509_push(stack,xi->x509);
+    #####:  324:			xi->x509=NULL;
+    #####:  325:			count++;
+        -:  326:			}
+    #####:  327:		X509_INFO_free(xi);
+        -:  328:		}
+        -:  329:
+        -:  330:	ret=count;
+        -:  331:end:
+        -:  332: 	/* never need to OPENSSL_free x */
+    #####:  333:	if (in != NULL) BIO_free(in);
+    #####:  334:	if (sk != NULL) sk_X509_INFO_free(sk);
+    #####:  335:	return(ret);
+        -:  336:	}
+        -:  337:

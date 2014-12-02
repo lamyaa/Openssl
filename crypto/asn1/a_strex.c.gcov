@@ -1,0 +1,580 @@
+        -:    0:Source:a_strex.c
+        -:    0:Graph:a_strex.gcno
+        -:    0:Data:a_strex.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* a_strex.c */
+        -:    2:/* Written by Dr Stephen N Henson (steve@openssl.org) for the OpenSSL
+        -:    3: * project 2000.
+        -:    4: */
+        -:    5:/* ====================================================================
+        -:    6: * Copyright (c) 2000 The OpenSSL Project.  All rights reserved.
+        -:    7: *
+        -:    8: * Redistribution and use in source and binary forms, with or without
+        -:    9: * modification, are permitted provided that the following conditions
+        -:   10: * are met:
+        -:   11: *
+        -:   12: * 1. Redistributions of source code must retain the above copyright
+        -:   13: *    notice, this list of conditions and the following disclaimer. 
+        -:   14: *
+        -:   15: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   16: *    notice, this list of conditions and the following disclaimer in
+        -:   17: *    the documentation and/or other materials provided with the
+        -:   18: *    distribution.
+        -:   19: *
+        -:   20: * 3. All advertising materials mentioning features or use of this
+        -:   21: *    software must display the following acknowledgment:
+        -:   22: *    "This product includes software developed by the OpenSSL Project
+        -:   23: *    for use in the OpenSSL Toolkit. (http://www.OpenSSL.org/)"
+        -:   24: *
+        -:   25: * 4. The names "OpenSSL Toolkit" and "OpenSSL Project" must not be used to
+        -:   26: *    endorse or promote products derived from this software without
+        -:   27: *    prior written permission. For written permission, please contact
+        -:   28: *    licensing@OpenSSL.org.
+        -:   29: *
+        -:   30: * 5. Products derived from this software may not be called "OpenSSL"
+        -:   31: *    nor may "OpenSSL" appear in their names without prior written
+        -:   32: *    permission of the OpenSSL Project.
+        -:   33: *
+        -:   34: * 6. Redistributions of any form whatsoever must retain the following
+        -:   35: *    acknowledgment:
+        -:   36: *    "This product includes software developed by the OpenSSL Project
+        -:   37: *    for use in the OpenSSL Toolkit (http://www.OpenSSL.org/)"
+        -:   38: *
+        -:   39: * THIS SOFTWARE IS PROVIDED BY THE OpenSSL PROJECT ``AS IS'' AND ANY
+        -:   40: * EXPRESSED OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   41: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+        -:   42: * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE OpenSSL PROJECT OR
+        -:   43: * ITS CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+        -:   44: * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+        -:   45: * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+        -:   46: * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   47: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+        -:   48: * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+        -:   49: * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+        -:   50: * OF THE POSSIBILITY OF SUCH DAMAGE.
+        -:   51: * ====================================================================
+        -:   52: *
+        -:   53: * This product includes cryptographic software written by Eric Young
+        -:   54: * (eay@cryptsoft.com).  This product includes software written by Tim
+        -:   55: * Hudson (tjh@cryptsoft.com).
+        -:   56: *
+        -:   57: */
+        -:   58:
+        -:   59:#include <stdio.h>
+        -:   60:#include <string.h>
+        -:   61:#include "cryptlib.h"
+        -:   62:#include <openssl/crypto.h>
+        -:   63:#include <openssl/x509.h>
+        -:   64:#include <openssl/asn1.h>
+        -:   65:
+        -:   66:#include "charmap.h"
+        -:   67:
+        -:   68:/* ASN1_STRING_print_ex() and X509_NAME_print_ex().
+        -:   69: * Enhanced string and name printing routines handling
+        -:   70: * multibyte characters, RFC2253 and a host of other
+        -:   71: * options.
+        -:   72: */
+        -:   73:
+        -:   74:
+        -:   75:#define CHARTYPE_BS_ESC		(ASN1_STRFLGS_ESC_2253 | CHARTYPE_FIRST_ESC_2253 | CHARTYPE_LAST_ESC_2253)
+        -:   76:
+        -:   77:#define ESC_FLAGS (ASN1_STRFLGS_ESC_2253 | \
+        -:   78:		  ASN1_STRFLGS_ESC_QUOTE | \
+        -:   79:		  ASN1_STRFLGS_ESC_CTRL | \
+        -:   80:		  ASN1_STRFLGS_ESC_MSB)
+        -:   81:
+        -:   82:
+        -:   83:/* Three IO functions for sending data to memory, a BIO and
+        -:   84: * and a FILE pointer.
+        -:   85: */
+        -:   86:#if 0				/* never used */
+        -:   87:static int send_mem_chars(void *arg, const void *buf, int len)
+        -:   88:{
+        -:   89:	unsigned char **out = arg;
+        -:   90:	if(!out) return 1;
+        -:   91:	memcpy(*out, buf, len);
+        -:   92:	*out += len;
+        -:   93:	return 1;
+        -:   94:}
+        -:   95:#endif
+        -:   96:
+  4007063:   97:static int send_bio_chars(void *arg, const void *buf, int len)
+        -:   98:{
+  4007063:   99:	if(!arg) return 1;
+  2191201:  100:	if(BIO_write(arg, buf, len) != len) return 0;
+  2191201:  101:	return 1;
+        -:  102:}
+        -:  103:
+    #####:  104:static int send_fp_chars(void *arg, const void *buf, int len)
+        -:  105:{
+    #####:  106:	if(!arg) return 1;
+    #####:  107:	if(fwrite(buf, 1, len, arg) != (unsigned int)len) return 0;
+    #####:  108:	return 1;
+        -:  109:}
+        -:  110:
+        -:  111:typedef int char_io(void *arg, const void *buf, int len);
+        -:  112:
+        -:  113:/* This function handles display of
+        -:  114: * strings, one character at a time.
+        -:  115: * It is passed an unsigned long for each
+        -:  116: * character because it could come from 2 or even
+        -:  117: * 4 byte forms.
+        -:  118: */
+        -:  119:
+  3631724:  120:static int do_esc_char(unsigned long c, unsigned char flags, char *do_quotes, char_io *io_ch, void *arg)
+        -:  121:{
+        -:  122:	unsigned char chflgs, chtmp;
+        -:  123:	char tmphex[HEX_SIZE(long)+3];
+        -:  124:
+  3631724:  125:	if(c > 0xffffffffL)
+        -:  126:		return -1;
+  3631724:  127:	if(c > 0xffff) {
+    #####:  128:		BIO_snprintf(tmphex, sizeof tmphex, "\\W%08lX", c);
+    #####:  129:		if(!io_ch(arg, tmphex, 10)) return -1;
+    #####:  130:		return 10;
+        -:  131:	}
+  3631724:  132:	if(c > 0xff) {
+    #####:  133:		BIO_snprintf(tmphex, sizeof tmphex, "\\U%04lX", c);
+    #####:  134:		if(!io_ch(arg, tmphex, 6)) return -1;
+    #####:  135:		return 6;
+        -:  136:	}
+  3631724:  137:	chtmp = (unsigned char)c;
+  3631724:  138:	if(chtmp > 0x7f) chflgs = flags & ASN1_STRFLGS_ESC_MSB;
+  3617316:  139:	else chflgs = char_type[chtmp] & flags;
+  3631724:  140:	if(chflgs & CHARTYPE_BS_ESC) {
+        -:  141:		/* If we don't escape with quotes, signal we need quotes */
+    13012:  142:		if(chflgs & ASN1_STRFLGS_ESC_QUOTE) {
+    13012:  143:			if(do_quotes) *do_quotes = 1;
+    13012:  144:			if(!io_ch(arg, &chtmp, 1)) return -1;
+    13012:  145:			return 1;
+        -:  146:		}
+    #####:  147:		if(!io_ch(arg, "\\", 1)) return -1;
+    #####:  148:		if(!io_ch(arg, &chtmp, 1)) return -1;
+    #####:  149:		return 2;
+        -:  150:	}
+  3618712:  151:	if(chflgs & (ASN1_STRFLGS_ESC_CTRL|ASN1_STRFLGS_ESC_MSB)) {
+    14408:  152:		BIO_snprintf(tmphex, 11, "\\%02X", chtmp);
+    14408:  153:		if(!io_ch(arg, tmphex, 3)) return -1;
+    14408:  154:		return 3;
+        -:  155:	}
+        -:  156:	/* If we get this far and do any escaping at all must escape 
+        -:  157:	 * the escape character itself: backslash.
+        -:  158:	 */
+  3604304:  159:	if (chtmp == '\\' && flags & ESC_FLAGS) {
+    #####:  160:		if(!io_ch(arg, "\\\\", 2)) return -1;
+    #####:  161:		return 2;
+        -:  162:	}
+  3604304:  163:	if(!io_ch(arg, &chtmp, 1)) return -1;
+  3604304:  164:	return 1;
+        -:  165:}
+        -:  166:
+        -:  167:#define BUF_TYPE_WIDTH_MASK	0x7
+        -:  168:#define BUF_TYPE_CONVUTF8	0x8
+        -:  169:
+        -:  170:/* This function sends each character in a buffer to
+        -:  171: * do_esc_char(). It interprets the content formats
+        -:  172: * and converts to or from UTF8 as appropriate.
+        -:  173: */
+        -:  174:
+   258454:  175:static int do_buf(unsigned char *buf, int buflen,
+        -:  176:			int type, unsigned char flags, char *quotes, char_io *io_ch, void *arg)
+        -:  177:{
+        -:  178:	int i, outlen, len;
+        -:  179:	unsigned char orflags, *p, *q;
+        -:  180:	unsigned long c;
+        -:  181:	p = buf;
+   258454:  182:	q = buf + buflen;
+        -:  183:	outlen = 0;
+  4148632:  184:	while(p != q) {
+  3631724:  185:		if(p == buf && flags & ASN1_STRFLGS_ESC_2253) orflags = CHARTYPE_FIRST_ESC_2253;
+        -:  186:		else orflags = 0;
+  3631724:  187:		switch(type & BUF_TYPE_WIDTH_MASK) {
+        -:  188:			case 4:
+    #####:  189:			c = ((unsigned long)*p++) << 24;
+    #####:  190:			c |= ((unsigned long)*p++) << 16;
+    #####:  191:			c |= ((unsigned long)*p++) << 8;
+    #####:  192:			c |= *p++;
+    #####:  193:			break;
+        -:  194:
+        -:  195:			case 2:
+    #####:  196:			c = ((unsigned long)*p++) << 8;
+    #####:  197:			c |= *p++;
+    #####:  198:			break;
+        -:  199:
+        -:  200:			case 1:
+  3631724:  201:			c = *p++;
+  3631724:  202:			break;
+        -:  203:			
+        -:  204:			case 0:
+    #####:  205:			i = UTF8_getc(p, buflen, &c);
+    #####:  206:			if(i < 0) return -1;	/* Invalid UTF8String */
+    #####:  207:			p += i;
+    #####:  208:			break;
+        -:  209:			default:
+        -:  210:			return -1;	/* invalid width */
+        -:  211:		}
+  3631724:  212:		if (p == q && flags & ASN1_STRFLGS_ESC_2253) orflags = CHARTYPE_LAST_ESC_2253;
+  3631724:  213:		if(type & BUF_TYPE_CONVUTF8) {
+        -:  214:			unsigned char utfbuf[6];
+        -:  215:			int utflen;
+  3141398:  216:			utflen = UTF8_putc(utfbuf, sizeof utfbuf, c);
+  6282796:  217:			for(i = 0; i < utflen; i++) {
+        -:  218:				/* We don't need to worry about setting orflags correctly
+        -:  219:				 * because if utflen==1 its value will be correct anyway 
+        -:  220:				 * otherwise each character will be > 0x7f and so the 
+        -:  221:				 * character will never be escaped on first and last.
+        -:  222:				 */
+  3141398:  223:				len = do_esc_char(utfbuf[i], (unsigned char)(flags | orflags), quotes, io_ch, arg);
+  3141398:  224:				if(len < 0) return -1;
+  3141398:  225:				outlen += len;
+        -:  226:			}
+        -:  227:		} else {
+   490326:  228:			len = do_esc_char(c, (unsigned char)(flags | orflags), quotes, io_ch, arg);
+   490326:  229:			if(len < 0) return -1;
+   490326:  230:			outlen += len;
+        -:  231:		}
+        -:  232:	}
+        -:  233:	return outlen;
+        -:  234:}
+        -:  235:
+        -:  236:/* This function hex dumps a buffer of characters */
+        -:  237:
+    #####:  238:static int do_hex_dump(char_io *io_ch, void *arg, unsigned char *buf, int buflen)
+        -:  239:{
+        -:  240:	static const char hexdig[] = "0123456789ABCDEF";
+        -:  241:	unsigned char *p, *q;
+        -:  242:	char hextmp[2];
+    #####:  243:	if(arg) {
+        -:  244:		p = buf;
+    #####:  245:		q = buf + buflen;
+    #####:  246:		while(p != q) {
+    #####:  247:			hextmp[0] = hexdig[*p >> 4];
+    #####:  248:			hextmp[1] = hexdig[*p & 0xf];
+    #####:  249:			if(!io_ch(arg, hextmp, 2)) return -1;
+    #####:  250:			p++;
+        -:  251:		}
+        -:  252:	}
+    #####:  253:	return buflen << 1;
+        -:  254:}
+        -:  255:
+        -:  256:/* "dump" a string. This is done when the type is unknown,
+        -:  257: * or the flags request it. We can either dump the content
+        -:  258: * octets or the entire DER encoding. This uses the RFC2253
+        -:  259: * #01234 format.
+        -:  260: */
+        -:  261:
+    #####:  262:static int do_dump(unsigned long lflags, char_io *io_ch, void *arg, ASN1_STRING *str)
+        -:  263:{
+        -:  264:	/* Placing the ASN1_STRING in a temp ASN1_TYPE allows
+        -:  265:	 * the DER encoding to readily obtained
+        -:  266:	 */
+        -:  267:	ASN1_TYPE t;
+        -:  268:	unsigned char *der_buf, *p;
+        -:  269:	int outlen, der_len;
+        -:  270:
+    #####:  271:	if(!io_ch(arg, "#", 1)) return -1;
+        -:  272:	/* If we don't dump DER encoding just dump content octets */
+    #####:  273:	if(!(lflags & ASN1_STRFLGS_DUMP_DER)) {
+    #####:  274:		outlen = do_hex_dump(io_ch, arg, str->data, str->length);
+    #####:  275:		if(outlen < 0) return -1;
+    #####:  276:		return outlen + 1;
+        -:  277:	}
+    #####:  278:	t.type = str->type;
+    #####:  279:	t.value.ptr = (char *)str;
+    #####:  280:	der_len = i2d_ASN1_TYPE(&t, NULL);
+    #####:  281:	der_buf = OPENSSL_malloc(der_len);
+    #####:  282:	if(!der_buf) return -1;
+    #####:  283:	p = der_buf;
+    #####:  284:	i2d_ASN1_TYPE(&t, &p);
+    #####:  285:	outlen = do_hex_dump(io_ch, arg, der_buf, der_len);
+    #####:  286:	OPENSSL_free(der_buf);
+    #####:  287:	if(outlen < 0) return -1;
+    #####:  288:	return outlen + 1;
+        -:  289:}
+        -:  290:
+        -:  291:/* Lookup table to convert tags to character widths,
+        -:  292: * 0 = UTF8 encoded, -1 is used for non string types
+        -:  293: * otherwise it is the number of bytes per character
+        -:  294: */
+        -:  295:
+        -:  296:static const signed char tag2nbyte[] = {
+        -:  297:	-1, -1, -1, -1, -1,	/* 0-4 */
+        -:  298:	-1, -1, -1, -1, -1,	/* 5-9 */
+        -:  299:	-1, -1, 0, -1,		/* 10-13 */
+        -:  300:	-1, -1, -1, -1,		/* 15-17 */
+        -:  301:	-1, 1, 1,		/* 18-20 */
+        -:  302:	-1, 1, 1, 1,		/* 21-24 */
+        -:  303:	-1, 1, -1,		/* 25-27 */
+        -:  304:	4, -1, 2		/* 28-30 */
+        -:  305:};
+        -:  306:
+        -:  307:/* This is the main function, print out an
+        -:  308: * ASN1_STRING taking note of various escape
+        -:  309: * and display options. Returns number of
+        -:  310: * characters written or -1 if an error
+        -:  311: * occurred.
+        -:  312: */
+        -:  313:
+   129227:  314:static int do_print_ex(char_io *io_ch, void *arg, unsigned long lflags, ASN1_STRING *str)
+        -:  315:{
+        -:  316:	int outlen, len;
+        -:  317:	int type;
+        -:  318:	char quotes;
+        -:  319:	unsigned char flags;
+   129227:  320:	quotes = 0;
+        -:  321:	/* Keep a copy of escape flags */
+   129227:  322:	flags = (unsigned char)(lflags & ESC_FLAGS);
+        -:  323:
+   129227:  324:	type = str->type;
+        -:  325:
+        -:  326:	outlen = 0;
+        -:  327:
+        -:  328:
+   129227:  329:	if(lflags & ASN1_STRFLGS_SHOW_TYPE) {
+        -:  330:		const char *tagname;
+    #####:  331:		tagname = ASN1_tag2str(type);
+    #####:  332:		outlen += strlen(tagname);
+    #####:  333:		if(!io_ch(arg, tagname, outlen) || !io_ch(arg, ":", 1)) return -1; 
+    #####:  334:		outlen++;
+        -:  335:	}
+        -:  336:
+        -:  337:	/* Decide what to do with type, either dump content or display it */
+        -:  338:
+        -:  339:	/* Dump everything */
+   129227:  340:	if(lflags & ASN1_STRFLGS_DUMP_ALL) type = -1;
+        -:  341:	/* Ignore the string type */
+   129227:  342:	else if(lflags & ASN1_STRFLGS_IGNORE_TYPE) type = 1;
+        -:  343:	else {
+        -:  344:		/* Else determine width based on type */
+   129227:  345:		if((type > 0) && (type < 31)) type = tag2nbyte[type];
+        -:  346:		else type = -1;
+   129227:  347:		if((type == -1) && !(lflags & ASN1_STRFLGS_DUMP_UNKNOWN)) type = 1;
+        -:  348:	}
+        -:  349:
+   129227:  350:	if(type == -1) {
+    #####:  351:		len = do_dump(lflags, io_ch, arg, str);
+    #####:  352:		if(len < 0) return -1;
+    #####:  353:		outlen += len;
+    #####:  354:		return outlen;
+        -:  355:	}
+        -:  356:
+   129227:  357:	if(lflags & ASN1_STRFLGS_UTF8_CONVERT) {
+        -:  358:		/* Note: if string is UTF8 and we want
+        -:  359:		 * to convert to UTF8 then we just interpret
+        -:  360:		 * it as 1 byte per character to avoid converting
+        -:  361:		 * twice.
+        -:  362:		 */
+   129227:  363:		if(!type) type = 1;
+   112525:  364:		else type |= BUF_TYPE_CONVUTF8;
+        -:  365:	}
+        -:  366:
+   129227:  367:	len = do_buf(str->data, str->length, type, flags, &quotes, io_ch, NULL);
+   129227:  368:	if(len < 0) return -1;
+   129227:  369:	outlen += len;
+   129227:  370:	if(quotes) outlen += 2;
+   129227:  371:	if(!arg) return outlen;
+   129227:  372:	if(quotes && !io_ch(arg, "\"", 1)) return -1;
+   129227:  373:	if(do_buf(str->data, str->length, type, flags, NULL, io_ch, arg) < 0)
+        -:  374:		return -1;
+   129227:  375:	if(quotes && !io_ch(arg, "\"", 1)) return -1;
+   129227:  376:	return outlen;
+        -:  377:}
+        -:  378:
+        -:  379:/* Used for line indenting: print 'indent' spaces */
+        -:  380:
+        -:  381:static int do_indent(char_io *io_ch, void *arg, int indent)
+        -:  382:{
+        -:  383:	int i;
+    #####:  384:	for(i = 0; i < indent; i++)
+    #####:  385:			if(!io_ch(arg, " ", 1)) return 0;
+        -:  386:	return 1;
+        -:  387:}
+        -:  388:
+        -:  389:#define FN_WIDTH_LN	25
+        -:  390:#define FN_WIDTH_SN	10
+        -:  391:
+    24346:  392:static int do_name_ex(char_io *io_ch, void *arg, X509_NAME *n,
+        -:  393:				int indent, unsigned long flags)
+        -:  394:{
+        -:  395:	int i, prev = -1, orflags, cnt;
+        -:  396:	int fn_opt, fn_nid;
+        -:  397:	ASN1_OBJECT *fn;
+        -:  398:	ASN1_STRING *val;
+        -:  399:	X509_NAME_ENTRY *ent;
+        -:  400:	char objtmp[80];
+        -:  401:	const char *objbuf;
+        -:  402:	int outlen, len;
+        -:  403:	char *sep_dn, *sep_mv, *sep_eq;
+        -:  404:	int sep_dn_len, sep_mv_len, sep_eq_len;
+    24346:  405:	if(indent < 0) indent = 0;
+        -:  406:	outlen = indent;
+    24346:  407:	if(!do_indent(io_ch, arg, indent)) return -1;
+    24346:  408:	switch (flags & XN_FLAG_SEP_MASK)
+        -:  409:	{
+        -:  410:		case XN_FLAG_SEP_MULTILINE:
+        -:  411:		sep_dn = "\n";
+        -:  412:		sep_dn_len = 1;
+        -:  413:		sep_mv = " + ";
+        -:  414:		sep_mv_len = 3;
+        -:  415:		break;
+        -:  416:
+        -:  417:		case XN_FLAG_SEP_COMMA_PLUS:
+        -:  418:		sep_dn = ",";
+        -:  419:		sep_dn_len = 1;
+        -:  420:		sep_mv = "+";
+        -:  421:		sep_mv_len = 1;
+        -:  422:		indent = 0;
+    #####:  423:		break;
+        -:  424:
+        -:  425:		case XN_FLAG_SEP_CPLUS_SPC:
+        -:  426:		sep_dn = ", ";
+        -:  427:		sep_dn_len = 2;
+        -:  428:		sep_mv = " + ";
+        -:  429:		sep_mv_len = 3;
+        -:  430:		indent = 0;
+    24346:  431:		break;
+        -:  432:
+        -:  433:		case XN_FLAG_SEP_SPLUS_SPC:
+        -:  434:		sep_dn = "; ";
+        -:  435:		sep_dn_len = 2;
+        -:  436:		sep_mv = " + ";
+        -:  437:		sep_mv_len = 3;
+        -:  438:		indent = 0;
+    #####:  439:		break;
+        -:  440:
+        -:  441:		default:
+        -:  442:		return -1;
+        -:  443:	}
+        -:  444:
+    24346:  445:	if(flags & XN_FLAG_SPC_EQ) {
+        -:  446:		sep_eq = " = ";
+        -:  447:		sep_eq_len = 3;
+        -:  448:	} else {
+        -:  449:		sep_eq = "=";
+        -:  450:		sep_eq_len = 1;
+        -:  451:	}
+        -:  452:
+    24346:  453:	fn_opt = flags & XN_FLAG_FN_MASK;
+        -:  454:
+    24346:  455:	cnt = X509_NAME_entry_count(n);	
+   153573:  456:	for(i = 0; i < cnt; i++) {
+   129227:  457:		if(flags & XN_FLAG_DN_REV)
+    #####:  458:				ent = X509_NAME_get_entry(n, cnt - i - 1);
+   129227:  459:		else ent = X509_NAME_get_entry(n, i);
+   129227:  460:		if(prev != -1) {
+   104881:  461:			if(prev == ent->set) {
+       55:  462:				if(!io_ch(arg, sep_mv, sep_mv_len)) return -1;
+       55:  463:				outlen += sep_mv_len;
+        -:  464:			} else {
+   104826:  465:				if(!io_ch(arg, sep_dn, sep_dn_len)) return -1;
+   104826:  466:				outlen += sep_dn_len;
+   104826:  467:				if(!do_indent(io_ch, arg, indent)) return -1;
+   104826:  468:				outlen += indent;
+        -:  469:			}
+        -:  470:		}
+   129227:  471:		prev = ent->set;
+   129227:  472:		fn = X509_NAME_ENTRY_get_object(ent);
+   129227:  473:		val = X509_NAME_ENTRY_get_data(ent);
+   129227:  474:		fn_nid = OBJ_obj2nid(fn);
+   129227:  475:		if(fn_opt != XN_FLAG_FN_NONE) {
+        -:  476:			int objlen, fld_len;
+   129227:  477:			if((fn_opt == XN_FLAG_FN_OID) || (fn_nid==NID_undef) ) {
+     3904:  478:				OBJ_obj2txt(objtmp, sizeof objtmp, fn, 1);
+        -:  479:				fld_len = 0; /* XXX: what should this be? */
+        -:  480:				objbuf = objtmp;
+        -:  481:			} else {
+   125323:  482:				if(fn_opt == XN_FLAG_FN_SN) {
+        -:  483:					fld_len = FN_WIDTH_SN;
+   125323:  484:					objbuf = OBJ_nid2sn(fn_nid);
+    #####:  485:				} else if(fn_opt == XN_FLAG_FN_LN) {
+        -:  486:					fld_len = FN_WIDTH_LN;
+    #####:  487:					objbuf = OBJ_nid2ln(fn_nid);
+        -:  488:				} else {
+        -:  489:					fld_len = 0; /* XXX: what should this be? */
+        -:  490:					objbuf = "";
+        -:  491:				}
+        -:  492:			}
+   129227:  493:			objlen = strlen(objbuf);
+   129227:  494:			if(!io_ch(arg, objbuf, objlen)) return -1;
+   129227:  495:			if ((objlen < fld_len) && (flags & XN_FLAG_FN_ALIGN)) {
+    #####:  496:				if (!do_indent(io_ch, arg, fld_len - objlen)) return -1;
+    #####:  497:				outlen += fld_len - objlen;
+        -:  498:			}
+   129227:  499:			if(!io_ch(arg, sep_eq, sep_eq_len)) return -1;
+   129227:  500:			outlen += objlen + sep_eq_len;
+        -:  501:		}
+        -:  502:		/* If the field name is unknown then fix up the DER dump
+        -:  503:		 * flag. We might want to limit this further so it will
+        -:  504: 		 * DER dump on anything other than a few 'standard' fields.
+        -:  505:		 */
+   129227:  506:		if((fn_nid == NID_undef) && (flags & XN_FLAG_DUMP_UNKNOWN_FIELDS)) 
+        -:  507:					orflags = ASN1_STRFLGS_DUMP_ALL;
+        -:  508:		else orflags = 0;
+        -:  509:     
+   129227:  510:		len = do_print_ex(io_ch, arg, flags | orflags, val);
+   129227:  511:		if(len < 0) return -1;
+   129227:  512:		outlen += len;
+        -:  513:	}
+        -:  514:	return outlen;
+        -:  515:}
+        -:  516:
+        -:  517:/* Wrappers round the main functions */
+        -:  518:
+    24346:  519:int X509_NAME_print_ex(BIO *out, X509_NAME *nm, int indent, unsigned long flags)
+        -:  520:{
+    24346:  521:	if(flags == XN_FLAG_COMPAT)
+    #####:  522:		return X509_NAME_print(out, nm, indent);
+    24346:  523:	return do_name_ex(send_bio_chars, out, nm, indent, flags);
+        -:  524:}
+        -:  525:
+        -:  526:#ifndef OPENSSL_NO_FP_API
+    #####:  527:int X509_NAME_print_ex_fp(FILE *fp, X509_NAME *nm, int indent, unsigned long flags)
+        -:  528:{
+    #####:  529:	if(flags == XN_FLAG_COMPAT)
+        -:  530:		{
+        -:  531:		BIO *btmp;
+        -:  532:		int ret;
+    #####:  533:		btmp = BIO_new_fp(fp, BIO_NOCLOSE);
+    #####:  534:		if(!btmp) return -1;
+    #####:  535:		ret = X509_NAME_print(btmp, nm, indent);
+    #####:  536:		BIO_free(btmp);
+    #####:  537:		return ret;
+        -:  538:		}
+    #####:  539:	return do_name_ex(send_fp_chars, fp, nm, indent, flags);
+        -:  540:}
+        -:  541:#endif
+        -:  542:
+    #####:  543:int ASN1_STRING_print_ex(BIO *out, ASN1_STRING *str, unsigned long flags)
+        -:  544:{
+    #####:  545:	return do_print_ex(send_bio_chars, out, flags, str);
+        -:  546:}
+        -:  547:
+        -:  548:#ifndef OPENSSL_NO_FP_API
+    #####:  549:int ASN1_STRING_print_ex_fp(FILE *fp, ASN1_STRING *str, unsigned long flags)
+        -:  550:{
+    #####:  551:	return do_print_ex(send_fp_chars, fp, flags, str);
+        -:  552:}
+        -:  553:#endif
+        -:  554:
+        -:  555:/* Utility function: convert any string type to UTF8, returns number of bytes
+        -:  556: * in output string or a negative error code
+        -:  557: */
+        -:  558:
+   290008:  559:int ASN1_STRING_to_UTF8(unsigned char **out, ASN1_STRING *in)
+        -:  560:{
+   290008:  561:	ASN1_STRING stmp, *str = &stmp;
+        -:  562:	int mbflag, type, ret;
+   290008:  563:	if(!in) return -1;
+   290008:  564:	type = in->type;
+   290008:  565:	if((type < 0) || (type > 30)) return -1;
+   290008:  566:	mbflag = tag2nbyte[type];
+   290008:  567:	if(mbflag == -1) return -1;
+   290008:  568:	mbflag |= MBSTRING_FLAG;
+   290008:  569:	stmp.data = NULL;
+   290008:  570:	stmp.length = 0;
+   290008:  571:	ret = ASN1_mbstring_copy(&str, in->data, in->length, mbflag, B_ASN1_UTF8STRING);
+   290008:  572:	if(ret < 0) return ret;
+   290008:  573:	*out = stmp.data;
+   290008:  574:	return stmp.length;
+        -:  575:}

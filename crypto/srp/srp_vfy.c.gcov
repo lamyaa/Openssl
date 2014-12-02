@@ -1,0 +1,663 @@
+        -:    0:Source:srp_vfy.c
+        -:    0:Graph:srp_vfy.gcno
+        -:    0:Data:srp_vfy.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* crypto/srp/srp_vfy.c */
+        -:    2:/* Written by Christophe Renou (christophe.renou@edelweb.fr) with 
+        -:    3: * the precious help of Peter Sylvester (peter.sylvester@edelweb.fr) 
+        -:    4: * for the EdelKey project and contributed to the OpenSSL project 2004.
+        -:    5: */
+        -:    6:/* ====================================================================
+        -:    7: * Copyright (c) 2004 The OpenSSL Project.  All rights reserved.
+        -:    8: *
+        -:    9: * Redistribution and use in source and binary forms, with or without
+        -:   10: * modification, are permitted provided that the following conditions
+        -:   11: * are met:
+        -:   12: *
+        -:   13: * 1. Redistributions of source code must retain the above copyright
+        -:   14: *    notice, this list of conditions and the following disclaimer. 
+        -:   15: *
+        -:   16: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   17: *    notice, this list of conditions and the following disclaimer in
+        -:   18: *    the documentation and/or other materials provided with the
+        -:   19: *    distribution.
+        -:   20: *
+        -:   21: * 3. All advertising materials mentioning features or use of this
+        -:   22: *    software must display the following acknowledgment:
+        -:   23: *    "This product includes software developed by the OpenSSL Project
+        -:   24: *    for use in the OpenSSL Toolkit. (http://www.OpenSSL.org/)"
+        -:   25: *
+        -:   26: * 4. The names "OpenSSL Toolkit" and "OpenSSL Project" must not be used to
+        -:   27: *    endorse or promote products derived from this software without
+        -:   28: *    prior written permission. For written permission, please contact
+        -:   29: *    licensing@OpenSSL.org.
+        -:   30: *
+        -:   31: * 5. Products derived from this software may not be called "OpenSSL"
+        -:   32: *    nor may "OpenSSL" appear in their names without prior written
+        -:   33: *    permission of the OpenSSL Project.
+        -:   34: *
+        -:   35: * 6. Redistributions of any form whatsoever must retain the following
+        -:   36: *    acknowledgment:
+        -:   37: *    "This product includes software developed by the OpenSSL Project
+        -:   38: *    for use in the OpenSSL Toolkit (http://www.OpenSSL.org/)"
+        -:   39: *
+        -:   40: * THIS SOFTWARE IS PROVIDED BY THE OpenSSL PROJECT ``AS IS'' AND ANY
+        -:   41: * EXPRESSED OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   42: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+        -:   43: * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE OpenSSL PROJECT OR
+        -:   44: * ITS CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+        -:   45: * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+        -:   46: * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+        -:   47: * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   48: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+        -:   49: * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+        -:   50: * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+        -:   51: * OF THE POSSIBILITY OF SUCH DAMAGE.
+        -:   52: * ====================================================================
+        -:   53: *
+        -:   54: * This product includes cryptographic software written by Eric Young
+        -:   55: * (eay@cryptsoft.com).  This product includes software written by Tim
+        -:   56: * Hudson (tjh@cryptsoft.com).
+        -:   57: *
+        -:   58: */
+        -:   59:#ifndef OPENSSL_NO_SRP
+        -:   60:#include "cryptlib.h"
+        -:   61:#include "srp_lcl.h"
+        -:   62:#include <openssl/srp.h>
+        -:   63:#include <openssl/evp.h>
+        -:   64:#include <openssl/buffer.h>
+        -:   65:#include <openssl/rand.h>
+        -:   66:#include <openssl/txt_db.h>
+        -:   67:
+        -:   68:#define SRP_RANDOM_SALT_LEN 20
+        -:   69:#define MAX_LEN 2500
+        -:   70:
+        -:   71:static char b64table[] =
+        -:   72:  "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz./";
+        -:   73:
+        -:   74:/* the following two conversion routines have been inspired by code from Stanford */ 
+        -:   75:
+        -:   76:/*
+        -:   77: * Convert a base64 string into raw byte array representation.
+        -:   78: */
+    #####:   79:static int t_fromb64(unsigned char *a, const char *src)
+        -:   80:	{
+        -:   81:	char *loc;
+        -:   82:	int i, j;
+        -:   83:	int size;
+        -:   84:
+    #####:   85:	while(*src && (*src == ' ' || *src == '\t' || *src == '\n'))
+    #####:   86:		++src;
+    #####:   87:	size = strlen(src);
+        -:   88:	i = 0;
+    #####:   89:	while(i < size)
+        -:   90:		{
+    #####:   91:		loc = strchr(b64table, src[i]);
+    #####:   92:		if(loc == (char *) 0) break;
+    #####:   93:		else a[i] = loc - b64table;
+    #####:   94:		++i;
+        -:   95:		}
+        -:   96:	size = i;
+    #####:   97:	i = size - 1;
+        -:   98:	j = size;
+        -:   99:	while(1)
+        -:  100:		{
+    #####:  101:		a[j] = a[i];
+    #####:  102:		if(--i < 0) break;
+    #####:  103:		a[j] |= (a[i] & 3) << 6;
+    #####:  104:		--j;
+    #####:  105:		a[j] = (unsigned char) ((a[i] & 0x3c) >> 2);
+    #####:  106:		if(--i < 0) break;
+    #####:  107:		a[j] |= (a[i] & 0xf) << 4;
+    #####:  108:		--j;
+    #####:  109:		a[j] = (unsigned char) ((a[i] & 0x30) >> 4);
+    #####:  110:		if(--i < 0) break;
+    #####:  111:		a[j] |= (a[i] << 2);
+        -:  112:
+    #####:  113:		a[--j] = 0;
+    #####:  114:		if(--i < 0) break;
+        -:  115:		}
+    #####:  116:	while(a[j] == 0 && j <= size) ++j;
+        -:  117:	i = 0;
+    #####:  118:	while (j <= size) a[i++] = a[j++];
+    #####:  119:	return i;
+        -:  120:	}
+        -:  121:
+        -:  122:
+        -:  123:/*
+        -:  124: * Convert a raw byte string into a null-terminated base64 ASCII string.
+        -:  125: */
+    #####:  126:static char *t_tob64(char *dst, const unsigned char *src, int size)
+        -:  127:	{
+    #####:  128:	int c, pos = size % 3;
+        -:  129:	unsigned char b0 = 0, b1 = 0, b2 = 0, notleading = 0;
+        -:  130:	char *olddst = dst;
+        -:  131:
+    #####:  132:	switch(pos)
+        -:  133:		{
+        -:  134:	case 1:
+    #####:  135:		b2 = src[0];
+    #####:  136:		break;
+        -:  137:	case 2:
+    #####:  138:		b1 = src[0];
+    #####:  139:		b2 = src[1];
+    #####:  140:		break;
+        -:  141:		}
+        -:  142:
+        -:  143:	while(1)
+        -:  144:		{
+    #####:  145:		c = (b0 & 0xfc) >> 2;
+    #####:  146:		if(notleading || c != 0)
+        -:  147:			{
+    #####:  148:			*dst++ = b64table[c];
+        -:  149:			notleading = 1;
+        -:  150:			}
+    #####:  151:		c = ((b0 & 3) << 4) | ((b1 & 0xf0) >> 4);
+    #####:  152:		if(notleading || c != 0)
+        -:  153:			{
+    #####:  154:			*dst++ = b64table[c];
+        -:  155:			notleading = 1;
+        -:  156:			}
+    #####:  157:		c = ((b1 & 0xf) << 2) | ((b2 & 0xc0) >> 6);
+    #####:  158:		if(notleading || c != 0)
+        -:  159:			{
+    #####:  160:			*dst++ = b64table[c];
+        -:  161:			notleading = 1;
+        -:  162:			}
+    #####:  163:		c = b2 & 0x3f;
+    #####:  164:		if(notleading || c != 0)
+        -:  165:			{
+    #####:  166:			*dst++ = b64table[c];
+        -:  167:			notleading = 1;
+        -:  168:			}
+    #####:  169:		if(pos >= size) break;
+        -:  170:		else
+        -:  171:			{
+    #####:  172:			b0 = src[pos++];
+    #####:  173:			b1 = src[pos++];
+    #####:  174:			b2 = src[pos++];
+        -:  175:			}
+    #####:  176:		}
+        -:  177:
+    #####:  178:	*dst++ = '\0';
+    #####:  179:	return olddst;
+        -:  180:	}
+        -:  181:
+    #####:  182:static void SRP_user_pwd_free(SRP_user_pwd *user_pwd)
+        -:  183:	{
+    #####:  184:	if (user_pwd == NULL) 
+    #####:  185:		return;
+    #####:  186:	BN_free(user_pwd->s);
+    #####:  187:	BN_clear_free(user_pwd->v);
+    #####:  188:	OPENSSL_free(user_pwd->id);
+    #####:  189:	OPENSSL_free(user_pwd->info);
+    #####:  190:	OPENSSL_free(user_pwd);
+        -:  191:	}
+        -:  192:
+    #####:  193:static SRP_user_pwd *SRP_user_pwd_new()
+        -:  194:	{
+    #####:  195:	SRP_user_pwd *ret = OPENSSL_malloc(sizeof(SRP_user_pwd));
+    #####:  196:	if (ret == NULL)
+        -:  197:		return NULL;								
+    #####:  198:	ret->N = NULL;
+    #####:  199:	ret->g = NULL;	
+    #####:  200:	ret->s = NULL;
+    #####:  201:	ret->v = NULL;
+    #####:  202:	ret->id = NULL ;
+    #####:  203:	ret->info = NULL;
+    #####:  204:	return ret;
+        -:  205:	}
+        -:  206:
+        -:  207:static void SRP_user_pwd_set_gN(SRP_user_pwd *vinfo, const BIGNUM *g,
+        -:  208:				const BIGNUM *N)
+        -:  209:	{
+    #####:  210:	vinfo->N = N;
+    #####:  211:	vinfo->g = g;	
+        -:  212:	}
+        -:  213:
+    #####:  214:static int SRP_user_pwd_set_ids(SRP_user_pwd *vinfo, const char *id,
+        -:  215:				const char *info)
+        -:  216:	{
+    #####:  217:	if (id != NULL && NULL == (vinfo->id = BUF_strdup(id)))
+        -:  218:		return 0;
+    #####:  219:	return (info == NULL || NULL != (vinfo->info = BUF_strdup(info))) ;
+        -:  220:	}
+        -:  221:
+    #####:  222:static int SRP_user_pwd_set_sv(SRP_user_pwd *vinfo, const char *s,
+        -:  223:			       const char *v)
+        -:  224:	{
+        -:  225:	unsigned char tmp[MAX_LEN];
+        -:  226:	int len;
+        -:  227:
+    #####:  228:	if (strlen(s) > MAX_LEN || strlen(v) > MAX_LEN) 
+        -:  229:		return 0; 
+    #####:  230:	len = t_fromb64(tmp, v);
+    #####:  231:	if (NULL == (vinfo->v = BN_bin2bn(tmp, len, NULL)) )
+        -:  232:		return 0;
+    #####:  233:	len = t_fromb64(tmp, s);
+    #####:  234:	return ((vinfo->s = BN_bin2bn(tmp, len, NULL)) != NULL) ;
+        -:  235:	}
+        -:  236:
+        -:  237:static int SRP_user_pwd_set_sv_BN(SRP_user_pwd *vinfo, BIGNUM *s, BIGNUM *v)
+        -:  238:	{
+    #####:  239:	vinfo->v = v;
+    #####:  240:	vinfo->s = s;
+    #####:  241:	return (vinfo->s != NULL && vinfo->v != NULL) ;
+        -:  242:	}
+        -:  243:
+    #####:  244:SRP_VBASE *SRP_VBASE_new(char *seed_key)
+        -:  245:	{
+    #####:  246:	SRP_VBASE *vb = (SRP_VBASE *) OPENSSL_malloc(sizeof(SRP_VBASE));
+        -:  247:
+    #####:  248:	if (vb == NULL)
+        -:  249:		return NULL;
+    #####:  250:	if (!(vb->users_pwd = sk_SRP_user_pwd_new_null()) ||
+    #####:  251:		!(vb->gN_cache = sk_SRP_gN_cache_new_null()))
+        -:  252:		{
+    #####:  253:		OPENSSL_free(vb);
+    #####:  254:		return NULL;
+        -:  255:		}
+    #####:  256:	vb->default_g = NULL;
+    #####:  257:	vb->default_N = NULL;
+    #####:  258:	vb->seed_key = NULL;
+    #####:  259:	if ((seed_key != NULL) && 
+    #####:  260:		(vb->seed_key = BUF_strdup(seed_key)) == NULL)
+        -:  261:		{
+    #####:  262:		sk_SRP_user_pwd_free(vb->users_pwd);
+    #####:  263:		sk_SRP_gN_cache_free(vb->gN_cache);
+    #####:  264:		OPENSSL_free(vb);
+    #####:  265:		return NULL;
+        -:  266:		}
+    #####:  267:	return vb;
+        -:  268:	}
+        -:  269:
+        -:  270:
+    #####:  271:int SRP_VBASE_free(SRP_VBASE *vb)
+        -:  272:	{
+    #####:  273:	sk_SRP_user_pwd_pop_free(vb->users_pwd,SRP_user_pwd_free);
+    #####:  274:	sk_SRP_gN_cache_free(vb->gN_cache);
+    #####:  275:	OPENSSL_free(vb->seed_key);
+    #####:  276:	OPENSSL_free(vb);
+    #####:  277:	return 0;
+        -:  278:	}
+        -:  279:
+        -:  280:
+    #####:  281:static SRP_gN_cache *SRP_gN_new_init(const char *ch)
+        -:  282:	{
+        -:  283:	unsigned char tmp[MAX_LEN];
+        -:  284:	int len;
+        -:  285:
+    #####:  286:	SRP_gN_cache *newgN = (SRP_gN_cache *)OPENSSL_malloc(sizeof(SRP_gN_cache));
+    #####:  287:	if (newgN == NULL)
+        -:  288:		return NULL;
+        -:  289:
+    #####:  290:	if ((newgN->b64_bn = BUF_strdup(ch)) == NULL)
+        -:  291:		goto err;
+        -:  292:
+    #####:  293:	len = t_fromb64(tmp, ch);
+    #####:  294:	if ((newgN->bn = BN_bin2bn(tmp, len, NULL)))
+        -:  295:		return newgN;
+        -:  296:
+    #####:  297:	OPENSSL_free(newgN->b64_bn);
+        -:  298:err:
+    #####:  299:	OPENSSL_free(newgN);
+    #####:  300:	return NULL;
+        -:  301:	}
+        -:  302:
+        -:  303:
+    #####:  304:static void SRP_gN_free(SRP_gN_cache *gN_cache)
+        -:  305:	{
+    #####:  306:	if (gN_cache == NULL)
+    #####:  307:		return;
+    #####:  308:	OPENSSL_free(gN_cache->b64_bn);
+    #####:  309:	BN_free(gN_cache->bn);
+    #####:  310:	OPENSSL_free(gN_cache);
+        -:  311:	}
+        -:  312:
+    #####:  313:static SRP_gN *SRP_get_gN_by_id(const char *id, STACK_OF(SRP_gN) *gN_tab)
+        -:  314:	{
+        -:  315:	int i;
+        -:  316:
+        -:  317:	SRP_gN *gN;
+    #####:  318:	if (gN_tab != NULL) 
+    #####:  319:	for(i = 0; i < sk_SRP_gN_num(gN_tab); i++)
+        -:  320:		{
+    #####:  321:		gN = sk_SRP_gN_value(gN_tab, i);
+    #####:  322:		if (gN && (id == NULL || strcmp(gN->id,id)==0))
+        -:  323:			return gN;
+        -:  324:		}
+        -:  325:	
+    #####:  326:	return SRP_get_default_gN(id);
+        -:  327:	}
+        -:  328:
+    #####:  329:static BIGNUM *SRP_gN_place_bn(STACK_OF(SRP_gN_cache) *gN_cache, char *ch)
+        -:  330:	{
+        -:  331:	int i;
+    #####:  332:	if (gN_cache == NULL)
+        -:  333:		return NULL;
+        -:  334:
+        -:  335:	/* search if we have already one... */
+    #####:  336:	for(i = 0; i < sk_SRP_gN_cache_num(gN_cache); i++)
+        -:  337:		{
+    #####:  338:		SRP_gN_cache *cache = sk_SRP_gN_cache_value(gN_cache, i);
+    #####:  339:		if (strcmp(cache->b64_bn,ch)==0)
+    #####:  340:			return cache->bn;
+        -:  341:		}
+        -:  342:		{		/* it is the first time that we find it */
+    #####:  343:		SRP_gN_cache *newgN = SRP_gN_new_init(ch);
+    #####:  344:		if (newgN)
+        -:  345:			{
+    #####:  346:			if (sk_SRP_gN_cache_insert(gN_cache,newgN,0)>0)
+    #####:  347:				return newgN->bn;
+    #####:  348:			SRP_gN_free(newgN);
+        -:  349:			}
+        -:  350:		}
+        -:  351:	return NULL;
+        -:  352:	}
+        -:  353:
+        -:  354:/* this function parses verifier file. Format is:
+        -:  355: * string(index):base64(N):base64(g):0
+        -:  356: * string(username):base64(v):base64(salt):int(index)
+        -:  357: */
+        -:  358:
+        -:  359:
+    #####:  360:int SRP_VBASE_init(SRP_VBASE *vb, char *verifier_file)
+        -:  361:	{
+        -:  362:	int error_code ;
+    #####:  363:	STACK_OF(SRP_gN) *SRP_gN_tab = sk_SRP_gN_new_null();
+        -:  364:	char *last_index = NULL;
+        -:  365:	int i;
+        -:  366:	char **pp;
+        -:  367:
+        -:  368:	SRP_gN *gN = NULL;
+        -:  369:	SRP_user_pwd *user_pwd = NULL ;
+        -:  370:
+        -:  371:	TXT_DB *tmpdb = NULL;
+    #####:  372:	BIO *in = BIO_new(BIO_s_file());
+        -:  373:
+        -:  374:	error_code = SRP_ERR_OPEN_FILE;
+        -:  375:
+    #####:  376:	if (in == NULL || BIO_read_filename(in,verifier_file) <= 0)
+        -:  377:		goto err;
+        -:  378:
+        -:  379:	error_code = SRP_ERR_VBASE_INCOMPLETE_FILE;
+        -:  380:
+    #####:  381:	if ((tmpdb =TXT_DB_read(in,DB_NUMBER)) == NULL)
+        -:  382:		goto err;
+        -:  383:
+        -:  384:	error_code = SRP_ERR_MEMORY;
+        -:  385:
+        -:  386:
+    #####:  387:	if (vb->seed_key)
+        -:  388:		{
+    #####:  389:		last_index = SRP_get_default_gN(NULL)->id;
+        -:  390:		}
+    #####:  391:	for (i = 0; i < sk_OPENSSL_PSTRING_num(tmpdb->data); i++)
+        -:  392:		{
+    #####:  393:		pp = sk_OPENSSL_PSTRING_value(tmpdb->data,i);
+    #####:  394:		if (pp[DB_srptype][0] == DB_SRP_INDEX)
+        -:  395:			{
+        -:  396:			/*we add this couple in the internal Stack */
+        -:  397:
+    #####:  398:			if ((gN = (SRP_gN *)OPENSSL_malloc(sizeof(SRP_gN))) == NULL) 
+        -:  399: 				goto err;
+        -:  400:
+    #####:  401:			if  (!(gN->id = BUF_strdup(pp[DB_srpid]))
+    #####:  402:	                ||  !(gN->N = SRP_gN_place_bn(vb->gN_cache,pp[DB_srpverifier]))
+    #####:  403:			||  !(gN->g = SRP_gN_place_bn(vb->gN_cache,pp[DB_srpsalt]))
+    #####:  404:			||  sk_SRP_gN_insert(SRP_gN_tab,gN,0) == 0)
+        -:  405:				goto err;
+        -:  406:
+        -:  407:			gN = NULL;
+        -:  408:
+    #####:  409:			if (vb->seed_key != NULL)
+        -:  410:				{
+    #####:  411:				last_index = pp[DB_srpid];
+        -:  412:				}
+        -:  413:			}
+    #####:  414:		else if (pp[DB_srptype][0] == DB_SRP_VALID)
+        -:  415:			{
+        -:  416:			/* it is a user .... */
+        -:  417:			SRP_gN *lgN;
+    #####:  418:			if ((lgN = SRP_get_gN_by_id(pp[DB_srpgN],SRP_gN_tab))!=NULL)
+        -:  419:				{
+        -:  420:				error_code = SRP_ERR_MEMORY;
+    #####:  421:				if ((user_pwd = SRP_user_pwd_new()) == NULL) 
+        -:  422:					goto err;
+        -:  423:				
+    #####:  424:				SRP_user_pwd_set_gN(user_pwd,lgN->g,lgN->N);
+    #####:  425:				if (!SRP_user_pwd_set_ids(user_pwd, pp[DB_srpid],pp[DB_srpinfo]))
+        -:  426:					goto err;
+        -:  427:				
+        -:  428:				error_code = SRP_ERR_VBASE_BN_LIB;
+    #####:  429:				if (!SRP_user_pwd_set_sv(user_pwd, pp[DB_srpsalt],pp[DB_srpverifier]))
+        -:  430:					goto err;
+        -:  431:
+    #####:  432:				if (sk_SRP_user_pwd_insert(vb->users_pwd, user_pwd, 0) == 0)
+        -:  433:					goto err;
+        -:  434:				user_pwd = NULL; /* abandon responsability */
+        -:  435:				}
+        -:  436:			}
+        -:  437:		}
+        -:  438:	
+    #####:  439:	if (last_index != NULL)
+        -:  440:		{
+        -:  441:		/* this means that we want to simulate a default user */
+        -:  442:
+    #####:  443:		if (((gN = SRP_get_gN_by_id(last_index,SRP_gN_tab))==NULL))
+        -:  444:			{
+        -:  445:			error_code = SRP_ERR_VBASE_BN_LIB;
+        -:  446:			goto err;
+        -:  447:			}
+    #####:  448:		vb->default_g = gN->g ;
+    #####:  449:		vb->default_N = gN->N ;
+        -:  450:		gN = NULL ;
+        -:  451:		}
+        -:  452:	error_code = SRP_NO_ERROR;
+        -:  453:
+        -:  454: err:
+        -:  455:	/* there may be still some leaks to fix, if this fails, the application terminates most likely */
+        -:  456:
+    #####:  457:	if (gN != NULL)
+        -:  458:		{
+    #####:  459:		OPENSSL_free(gN->id);
+    #####:  460:		OPENSSL_free(gN);
+        -:  461:		}
+        -:  462:
+    #####:  463:	SRP_user_pwd_free(user_pwd);
+        -:  464:
+    #####:  465:	if (tmpdb) TXT_DB_free(tmpdb);
+    #####:  466:	if (in) BIO_free_all(in);
+        -:  467:
+    #####:  468:	sk_SRP_gN_free(SRP_gN_tab);
+        -:  469:
+    #####:  470:	return error_code;
+        -:  471:
+        -:  472:	}
+        -:  473:
+        -:  474:
+    #####:  475:SRP_user_pwd *SRP_VBASE_get_by_user(SRP_VBASE *vb, char *username)
+        -:  476:	{
+        -:  477:	int i;
+        -:  478:	SRP_user_pwd *user;
+        -:  479:	unsigned char digv[SHA_DIGEST_LENGTH];
+        -:  480:	unsigned char digs[SHA_DIGEST_LENGTH];
+        -:  481:	EVP_MD_CTX ctxt;
+        -:  482:
+    #####:  483:	if (vb == NULL)
+        -:  484:		return NULL;
+    #####:  485:	for(i = 0; i < sk_SRP_user_pwd_num(vb->users_pwd); i++)
+        -:  486:		{
+    #####:  487:		user = sk_SRP_user_pwd_value(vb->users_pwd, i);
+    #####:  488:		if (strcmp(user->id,username)==0)
+        -:  489:			return user;
+        -:  490:		}
+    #####:  491:	if ((vb->seed_key == NULL) ||
+    #####:  492:		(vb->default_g == NULL) ||
+    #####:  493:		(vb->default_N == NULL))
+        -:  494:		return NULL;
+        -:  495:
+        -:  496:/* if the user is unknown we set parameters as well if we have a seed_key */
+        -:  497:
+    #####:  498:	if ((user = SRP_user_pwd_new()) == NULL) 
+        -:  499:		return NULL;
+        -:  500:
+    #####:  501:	SRP_user_pwd_set_gN(user,vb->default_g,vb->default_N);
+        -:  502:				
+    #####:  503:	if (!SRP_user_pwd_set_ids(user,username,NULL))
+        -:  504:		goto err;
+        -:  505:		
+    #####:  506:	RAND_pseudo_bytes(digv, SHA_DIGEST_LENGTH);
+    #####:  507:	EVP_MD_CTX_init(&ctxt);
+    #####:  508:	EVP_DigestInit_ex(&ctxt, EVP_sha1(), NULL);
+    #####:  509:	EVP_DigestUpdate(&ctxt, vb->seed_key, strlen(vb->seed_key));
+    #####:  510:	EVP_DigestUpdate(&ctxt, username, strlen(username));
+    #####:  511:	EVP_DigestFinal_ex(&ctxt, digs, NULL);
+    #####:  512:	EVP_MD_CTX_cleanup(&ctxt);
+    #####:  513:	if (SRP_user_pwd_set_sv_BN(user, BN_bin2bn(digs,SHA_DIGEST_LENGTH,NULL), BN_bin2bn(digv,SHA_DIGEST_LENGTH, NULL))) 
+        -:  514:		return user;
+        -:  515:
+    #####:  516:err:    SRP_user_pwd_free(user);
+    #####:  517:	return NULL;
+        -:  518:	}
+        -:  519:
+        -:  520:
+        -:  521:/*
+        -:  522:   create a verifier (*salt,*verifier,g and N are in base64)
+        -:  523:*/
+    #####:  524:char *SRP_create_verifier(const char *user, const char *pass, char **salt,
+        -:  525:			  char **verifier, const char *N, const char *g)
+        -:  526:	{
+        -:  527:	int len;
+        -:  528:	char * result=NULL;
+        -:  529:	char *vf;
+    #####:  530:	BIGNUM *N_bn = NULL, *g_bn = NULL, *s = NULL, *v = NULL;
+        -:  531:	unsigned char tmp[MAX_LEN];
+        -:  532:	unsigned char tmp2[MAX_LEN];
+        -:  533:	char * defgNid = NULL;
+        -:  534:
+    #####:  535:	if ((user == NULL)||
+    #####:  536:		(pass == NULL)||
+    #####:  537:		(salt == NULL)||
+    #####:  538:		(verifier == NULL))
+        -:  539:		goto err;
+        -:  540:
+    #####:  541:	if (N)
+        -:  542:		{
+    #####:  543:		if (!(len = t_fromb64(tmp, N))) goto err;
+    #####:  544:		N_bn = BN_bin2bn(tmp, len, NULL);
+    #####:  545:		if (!(len = t_fromb64(tmp, g))) goto err;
+    #####:  546:		g_bn = BN_bin2bn(tmp, len, NULL);
+        -:  547:		defgNid = "*";
+        -:  548:		}
+        -:  549:	else
+        -:  550:		{ 
+    #####:  551:		SRP_gN * gN = SRP_get_gN_by_id(g, NULL) ;
+    #####:  552:		if (gN == NULL)
+        -:  553:			goto err;
+    #####:  554:		N_bn = gN->N;
+    #####:  555:		g_bn = gN->g;
+    #####:  556:		defgNid = gN->id;
+        -:  557:		}
+        -:  558:
+    #####:  559:	if (*salt == NULL)
+        -:  560:		{
+    #####:  561:		RAND_pseudo_bytes(tmp2, SRP_RANDOM_SALT_LEN);
+        -:  562:
+    #####:  563:		s = BN_bin2bn(tmp2, SRP_RANDOM_SALT_LEN, NULL);
+        -:  564:		}
+        -:  565:	else
+        -:  566:		{
+    #####:  567:		if (!(len = t_fromb64(tmp2, *salt)))
+        -:  568:			goto err;
+    #####:  569:		s = BN_bin2bn(tmp2, len, NULL);
+        -:  570:		}
+        -:  571:
+        -:  572:
+    #####:  573:	if(!SRP_create_verifier_BN(user, pass, &s, &v, N_bn, g_bn)) goto err;
+        -:  574:
+    #####:  575:	BN_bn2bin(v,tmp);
+    #####:  576:	if (((vf = OPENSSL_malloc(BN_num_bytes(v)*2)) == NULL))
+        -:  577:		goto err;
+    #####:  578:	t_tob64(vf, tmp, BN_num_bytes(v));
+        -:  579:
+    #####:  580:	*verifier = vf;
+    #####:  581:	if (*salt == NULL)
+        -:  582:		{
+        -:  583:		char *tmp_salt;
+        -:  584:
+    #####:  585:		if ((tmp_salt = OPENSSL_malloc(SRP_RANDOM_SALT_LEN * 2)) == NULL)
+        -:  586:			{
+    #####:  587:			OPENSSL_free(vf);
+    #####:  588:			goto err;
+        -:  589:			}
+    #####:  590:		t_tob64(tmp_salt, tmp2, SRP_RANDOM_SALT_LEN);
+    #####:  591:		*salt = tmp_salt;
+        -:  592:		}
+        -:  593:
+        -:  594:	result=defgNid;
+        -:  595:
+        -:  596:err:
+    #####:  597:	if(N)
+        -:  598:		{
+    #####:  599:		BN_free(N_bn);
+    #####:  600:		BN_free(g_bn);
+        -:  601:		}
+    #####:  602:	return result;
+        -:  603:	}
+        -:  604:
+        -:  605:/*
+        -:  606:   create a verifier (*salt,*verifier,g and N are BIGNUMs)
+        -:  607:*/
+    #####:  608:int SRP_create_verifier_BN(const char *user, const char *pass, BIGNUM **salt, BIGNUM **verifier, BIGNUM *N, BIGNUM *g)
+        -:  609:	{
+        -:  610:	int result=0;
+        -:  611:	BIGNUM *x = NULL;
+    #####:  612:	BN_CTX *bn_ctx = BN_CTX_new();
+        -:  613:	unsigned char tmp2[MAX_LEN];
+        -:  614:
+    #####:  615:	if ((user == NULL)||
+    #####:  616:		(pass == NULL)||
+    #####:  617:		(salt == NULL)||
+    #####:  618:		(verifier == NULL)||
+    #####:  619:		(N == NULL)||
+    #####:  620:		(g == NULL)||
+        -:  621:		(bn_ctx == NULL))
+        -:  622:		goto err;
+        -:  623:
+        -:  624:	srp_bn_print(N);
+        -:  625:	srp_bn_print(g);
+        -:  626:
+    #####:  627:	if (*salt == NULL)
+        -:  628:		{
+    #####:  629:		RAND_pseudo_bytes(tmp2, SRP_RANDOM_SALT_LEN);
+        -:  630:
+    #####:  631:		*salt = BN_bin2bn(tmp2,SRP_RANDOM_SALT_LEN,NULL);
+        -:  632:		}
+        -:  633:
+    #####:  634:	x = SRP_Calc_x(*salt,user,pass);
+        -:  635:
+    #####:  636:	*verifier = BN_new();
+    #####:  637:	if(*verifier == NULL) goto err;
+        -:  638:
+    #####:  639:	if (!BN_mod_exp(*verifier,g,x,N,bn_ctx))
+        -:  640:		{
+    #####:  641:		BN_clear_free(*verifier);
+    #####:  642:		goto err;
+        -:  643:		}
+        -:  644:
+        -:  645:	srp_bn_print(*verifier);
+        -:  646:
+        -:  647:	result=1;
+        -:  648:
+        -:  649:err:
+        -:  650:
+    #####:  651:	BN_clear_free(x);
+    #####:  652:	BN_CTX_free(bn_ctx);
+    #####:  653:	return result;
+        -:  654:	}
+        -:  655:
+        -:  656:
+        -:  657:
+        -:  658:#endif

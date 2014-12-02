@@ -1,0 +1,356 @@
+        -:    0:Source:rsautl.c
+        -:    0:Graph:rsautl.gcno
+        -:    0:Data:rsautl.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* rsautl.c */
+        -:    2:/* Written by Dr Stephen N Henson (steve@openssl.org) for the OpenSSL
+        -:    3: * project 2000.
+        -:    4: */
+        -:    5:/* ====================================================================
+        -:    6: * Copyright (c) 2000 The OpenSSL Project.  All rights reserved.
+        -:    7: *
+        -:    8: * Redistribution and use in source and binary forms, with or without
+        -:    9: * modification, are permitted provided that the following conditions
+        -:   10: * are met:
+        -:   11: *
+        -:   12: * 1. Redistributions of source code must retain the above copyright
+        -:   13: *    notice, this list of conditions and the following disclaimer. 
+        -:   14: *
+        -:   15: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   16: *    notice, this list of conditions and the following disclaimer in
+        -:   17: *    the documentation and/or other materials provided with the
+        -:   18: *    distribution.
+        -:   19: *
+        -:   20: * 3. All advertising materials mentioning features or use of this
+        -:   21: *    software must display the following acknowledgment:
+        -:   22: *    "This product includes software developed by the OpenSSL Project
+        -:   23: *    for use in the OpenSSL Toolkit. (http://www.OpenSSL.org/)"
+        -:   24: *
+        -:   25: * 4. The names "OpenSSL Toolkit" and "OpenSSL Project" must not be used to
+        -:   26: *    endorse or promote products derived from this software without
+        -:   27: *    prior written permission. For written permission, please contact
+        -:   28: *    licensing@OpenSSL.org.
+        -:   29: *
+        -:   30: * 5. Products derived from this software may not be called "OpenSSL"
+        -:   31: *    nor may "OpenSSL" appear in their names without prior written
+        -:   32: *    permission of the OpenSSL Project.
+        -:   33: *
+        -:   34: * 6. Redistributions of any form whatsoever must retain the following
+        -:   35: *    acknowledgment:
+        -:   36: *    "This product includes software developed by the OpenSSL Project
+        -:   37: *    for use in the OpenSSL Toolkit (http://www.OpenSSL.org/)"
+        -:   38: *
+        -:   39: * THIS SOFTWARE IS PROVIDED BY THE OpenSSL PROJECT ``AS IS'' AND ANY
+        -:   40: * EXPRESSED OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   41: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+        -:   42: * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE OpenSSL PROJECT OR
+        -:   43: * ITS CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+        -:   44: * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+        -:   45: * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+        -:   46: * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   47: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+        -:   48: * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+        -:   49: * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+        -:   50: * OF THE POSSIBILITY OF SUCH DAMAGE.
+        -:   51: * ====================================================================
+        -:   52: *
+        -:   53: * This product includes cryptographic software written by Eric Young
+        -:   54: * (eay@cryptsoft.com).  This product includes software written by Tim
+        -:   55: * Hudson (tjh@cryptsoft.com).
+        -:   56: *
+        -:   57: */
+        -:   58:
+        -:   59:#include <openssl/opensslconf.h>
+        -:   60:#ifndef OPENSSL_NO_RSA
+        -:   61:
+        -:   62:#include "apps.h"
+        -:   63:#include <string.h>
+        -:   64:#include <openssl/err.h>
+        -:   65:#include <openssl/pem.h>
+        -:   66:#include <openssl/rsa.h>
+        -:   67:
+        -:   68:#define RSA_SIGN 	1
+        -:   69:#define RSA_VERIFY 	2
+        -:   70:#define RSA_ENCRYPT 	3
+        -:   71:#define RSA_DECRYPT 	4
+        -:   72:
+        -:   73:#define KEY_PRIVKEY	1
+        -:   74:#define KEY_PUBKEY	2
+        -:   75:#define KEY_CERT	3
+        -:   76:
+        -:   77:static void usage(void);
+        -:   78:
+        -:   79:#undef PROG
+        -:   80:
+        -:   81:#define PROG rsautl_main
+        -:   82:
+        -:   83:int MAIN(int argc, char **);
+        -:   84:
+    #####:   85:int MAIN(int argc, char **argv)
+        -:   86:{
+        -:   87:	ENGINE *e = NULL;
+        -:   88:	BIO *in = NULL, *out = NULL;
+        -:   89:	char *infile = NULL, *outfile = NULL;
+        -:   90:#ifndef OPENSSL_NO_ENGINE
+        -:   91:	char *engine = NULL;
+        -:   92:#endif
+        -:   93:	char *keyfile = NULL;
+        -:   94:	char rsa_mode = RSA_VERIFY, key_type = KEY_PRIVKEY;
+        -:   95:	int keyform = FORMAT_PEM;
+        -:   96:	char need_priv = 0, badarg = 0, rev = 0;
+        -:   97:	char hexdump = 0, asn1parse = 0;
+        -:   98:	X509 *x;
+        -:   99:	EVP_PKEY *pkey = NULL;
+        -:  100:	RSA *rsa = NULL;
+        -:  101:	unsigned char *rsa_in = NULL, *rsa_out = NULL, pad;
+    #####:  102:	char *passargin = NULL, *passin = NULL;
+        -:  103:	int rsa_inlen, rsa_outlen = 0;
+        -:  104:	int keysize;
+        -:  105:
+        -:  106:	int ret = 1;
+        -:  107:
+    #####:  108:	argc--;
+    #####:  109:	argv++;
+        -:  110:
+    #####:  111:	if(!bio_err) bio_err = BIO_new_fp(stderr, BIO_NOCLOSE);
+        -:  112:
+    #####:  113:	if (!load_config(bio_err, NULL))
+        -:  114:		goto end;
+    #####:  115:	ERR_load_crypto_strings();
+    #####:  116:	OpenSSL_add_all_algorithms();
+        -:  117:	pad = RSA_PKCS1_PADDING;
+        -:  118:	
+    #####:  119:	while(argc >= 1)
+        -:  120:	{
+    #####:  121:		if (!strcmp(*argv,"-in")) {
+    #####:  122:			if (--argc < 1)
+        -:  123:				badarg = 1;
+        -:  124:			else
+    #####:  125:				infile= *(++argv);
+    #####:  126:		} else if (!strcmp(*argv,"-out")) {
+    #####:  127:			if (--argc < 1)
+        -:  128:				badarg = 1;
+        -:  129:			else
+    #####:  130:				outfile= *(++argv);
+    #####:  131:		} else if(!strcmp(*argv, "-inkey")) {
+    #####:  132:			if (--argc < 1)
+        -:  133:				badarg = 1;
+        -:  134:			else
+    #####:  135:				keyfile = *(++argv);
+    #####:  136:		} else if (!strcmp(*argv,"-passin")) {
+    #####:  137:			if (--argc < 1)
+        -:  138:				badarg = 1;
+        -:  139:			else
+    #####:  140:				passargin= *(++argv);
+    #####:  141:		} else if (strcmp(*argv,"-keyform") == 0) {
+    #####:  142:			if (--argc < 1)
+        -:  143:				badarg = 1;
+        -:  144:			else
+    #####:  145:				keyform=str2fmt(*(++argv));
+        -:  146:#ifndef OPENSSL_NO_ENGINE
+    #####:  147:		} else if(!strcmp(*argv, "-engine")) {
+    #####:  148:			if (--argc < 1)
+        -:  149:				badarg = 1;
+        -:  150:			else
+    #####:  151:				engine = *(++argv);
+        -:  152:#endif
+    #####:  153:		} else if(!strcmp(*argv, "-pubin")) {
+        -:  154:			key_type = KEY_PUBKEY;
+    #####:  155:		} else if(!strcmp(*argv, "-certin")) {
+        -:  156:			key_type = KEY_CERT;
+        -:  157:		} 
+    #####:  158:		else if(!strcmp(*argv, "-asn1parse")) asn1parse = 1;
+    #####:  159:		else if(!strcmp(*argv, "-hexdump")) hexdump = 1;
+    #####:  160:		else if(!strcmp(*argv, "-raw")) pad = RSA_NO_PADDING;
+    #####:  161:		else if(!strcmp(*argv, "-oaep")) pad = RSA_PKCS1_OAEP_PADDING;
+    #####:  162:		else if(!strcmp(*argv, "-ssl")) pad = RSA_SSLV23_PADDING;
+    #####:  163:		else if(!strcmp(*argv, "-pkcs")) pad = RSA_PKCS1_PADDING;
+    #####:  164:		else if(!strcmp(*argv, "-x931")) pad = RSA_X931_PADDING;
+    #####:  165:		else if(!strcmp(*argv, "-sign")) {
+        -:  166:			rsa_mode = RSA_SIGN;
+        -:  167:			need_priv = 1;
+    #####:  168:		} else if(!strcmp(*argv, "-verify")) rsa_mode = RSA_VERIFY;
+    #####:  169:		else if(!strcmp(*argv, "-rev")) rev = 1;
+    #####:  170:		else if(!strcmp(*argv, "-encrypt")) rsa_mode = RSA_ENCRYPT;
+    #####:  171:		else if(!strcmp(*argv, "-decrypt")) {
+        -:  172:			rsa_mode = RSA_DECRYPT;
+        -:  173:			need_priv = 1;
+        -:  174:		} else badarg = 1;
+    #####:  175:		if(badarg) {
+    #####:  176:			usage();
+    #####:  177:			goto end;
+        -:  178:		}
+    #####:  179:		argc--;
+    #####:  180:		argv++;
+        -:  181:	}
+        -:  182:
+    #####:  183:	if(need_priv && (key_type != KEY_PRIVKEY)) {
+    #####:  184:		BIO_printf(bio_err, "A private key is needed for this operation\n");
+    #####:  185:		goto end;
+        -:  186:	}
+        -:  187:
+        -:  188:#ifndef OPENSSL_NO_ENGINE
+    #####:  189:        e = setup_engine(bio_err, engine, 0);
+        -:  190:#endif
+    #####:  191:	if(!app_passwd(bio_err, passargin, NULL, &passin, NULL)) {
+    #####:  192:		BIO_printf(bio_err, "Error getting password\n");
+    #####:  193:		goto end;
+        -:  194:	}
+        -:  195:
+        -:  196:/* FIXME: seed PRNG only if needed */
+    #####:  197:	app_RAND_load_file(NULL, bio_err, 0);
+        -:  198:	
+    #####:  199:	switch(key_type) {
+        -:  200:		case KEY_PRIVKEY:
+    #####:  201:		pkey = load_key(bio_err, keyfile, keyform, 0,
+        -:  202:			passin, e, "Private Key");
+    #####:  203:		break;
+        -:  204:
+        -:  205:		case KEY_PUBKEY:
+    #####:  206:		pkey = load_pubkey(bio_err, keyfile, keyform, 0,
+        -:  207:			NULL, e, "Public Key");
+    #####:  208:		break;
+        -:  209:
+        -:  210:		case KEY_CERT:
+    #####:  211:		x = load_cert(bio_err, keyfile, keyform,
+        -:  212:			NULL, e, "Certificate");
+    #####:  213:		if(x) {
+    #####:  214:			pkey = X509_get_pubkey(x);
+    #####:  215:			X509_free(x);
+        -:  216:		}
+        -:  217:		break;
+        -:  218:	}
+        -:  219:
+    #####:  220:	if(!pkey) {
+        -:  221:		return 1;
+        -:  222:	}
+        -:  223:
+    #####:  224:	rsa = EVP_PKEY_get1_RSA(pkey);
+    #####:  225:	EVP_PKEY_free(pkey);
+        -:  226:
+    #####:  227:	if(!rsa) {
+    #####:  228:		BIO_printf(bio_err, "Error getting RSA key\n");
+    #####:  229:		ERR_print_errors(bio_err);
+    #####:  230:		goto end;
+        -:  231:	}
+        -:  232:
+        -:  233:
+    #####:  234:	if(infile) {
+    #####:  235:		if(!(in = BIO_new_file(infile, "rb"))) {
+    #####:  236:			BIO_printf(bio_err, "Error Reading Input File\n");
+    #####:  237:			ERR_print_errors(bio_err);	
+    #####:  238:			goto end;
+        -:  239:		}
+    #####:  240:	} else in = BIO_new_fp(stdin, BIO_NOCLOSE);
+        -:  241:
+    #####:  242:	if(outfile) {
+    #####:  243:		if(!(out = BIO_new_file(outfile, "wb"))) {
+    #####:  244:			BIO_printf(bio_err, "Error Reading Output File\n");
+    #####:  245:			ERR_print_errors(bio_err);	
+    #####:  246:			goto end;
+        -:  247:		}
+        -:  248:	} else {
+    #####:  249:		out = BIO_new_fp(stdout, BIO_NOCLOSE);
+        -:  250:#ifdef OPENSSL_SYS_VMS
+        -:  251:		{
+        -:  252:		    BIO *tmpbio = BIO_new(BIO_f_linebuffer());
+        -:  253:		    out = BIO_push(tmpbio, out);
+        -:  254:		}
+        -:  255:#endif
+        -:  256:	}
+        -:  257:
+    #####:  258:	keysize = RSA_size(rsa);
+        -:  259:
+    #####:  260:	rsa_in = OPENSSL_malloc(keysize * 2);
+    #####:  261:	rsa_out = OPENSSL_malloc(keysize);
+        -:  262:
+        -:  263:	/* Read the input data */
+    #####:  264:	rsa_inlen = BIO_read(in, rsa_in, keysize * 2);
+    #####:  265:	if(rsa_inlen <= 0) {
+    #####:  266:		BIO_printf(bio_err, "Error reading input Data\n");
+    #####:  267:		exit(1);
+        -:  268:	}
+    #####:  269:	if(rev) {
+        -:  270:		int i;
+        -:  271:		unsigned char ctmp;
+    #####:  272:		for(i = 0; i < rsa_inlen/2; i++) {
+    #####:  273:			ctmp = rsa_in[i];
+    #####:  274:			rsa_in[i] = rsa_in[rsa_inlen - 1 - i];
+    #####:  275:			rsa_in[rsa_inlen - 1 - i] = ctmp;
+        -:  276:		}
+        -:  277:	}
+    #####:  278:	switch(rsa_mode) {
+        -:  279:
+        -:  280:		case RSA_VERIFY:
+    #####:  281:			rsa_outlen  = RSA_public_decrypt(rsa_inlen, rsa_in, rsa_out, rsa, pad);
+    #####:  282:		break;
+        -:  283:
+        -:  284:		case RSA_SIGN:
+    #####:  285:			rsa_outlen  = RSA_private_encrypt(rsa_inlen, rsa_in, rsa_out, rsa, pad);
+    #####:  286:		break;
+        -:  287:
+        -:  288:		case RSA_ENCRYPT:
+    #####:  289:			rsa_outlen  = RSA_public_encrypt(rsa_inlen, rsa_in, rsa_out, rsa, pad);
+    #####:  290:		break;
+        -:  291:
+        -:  292:		case RSA_DECRYPT:
+    #####:  293:			rsa_outlen  = RSA_private_decrypt(rsa_inlen, rsa_in, rsa_out, rsa, pad);
+    #####:  294:		break;
+        -:  295:
+        -:  296:	}
+        -:  297:
+    #####:  298:	if(rsa_outlen <= 0) {
+    #####:  299:		BIO_printf(bio_err, "RSA operation error\n");
+    #####:  300:		ERR_print_errors(bio_err);
+    #####:  301:		goto end;
+        -:  302:	}
+        -:  303:	ret = 0;
+    #####:  304:	if(asn1parse) {
+    #####:  305:		if(!ASN1_parse_dump(out, rsa_out, rsa_outlen, 1, -1)) {
+    #####:  306:			ERR_print_errors(bio_err);
+        -:  307:		}
+    #####:  308:	} else if(hexdump) BIO_dump(out, (char *)rsa_out, rsa_outlen);
+    #####:  309:	else BIO_write(out, rsa_out, rsa_outlen);
+        -:  310:	end:
+    #####:  311:	RSA_free(rsa);
+    #####:  312:	BIO_free(in);
+    #####:  313:	BIO_free_all(out);
+    #####:  314:	if(rsa_in) OPENSSL_free(rsa_in);
+    #####:  315:	if(rsa_out) OPENSSL_free(rsa_out);
+    #####:  316:	if(passin) OPENSSL_free(passin);
+    #####:  317:	return ret;
+        -:  318:}
+        -:  319:
+    #####:  320:static void usage()
+        -:  321:{
+    #####:  322:	BIO_printf(bio_err, "Usage: rsautl [options]\n");
+    #####:  323:	BIO_printf(bio_err, "-in file        input file\n");
+    #####:  324:	BIO_printf(bio_err, "-out file       output file\n");
+    #####:  325:	BIO_printf(bio_err, "-inkey file     input key\n");
+    #####:  326:	BIO_printf(bio_err, "-keyform arg    private key format - default PEM\n");
+    #####:  327:	BIO_printf(bio_err, "-pubin          input is an RSA public\n");
+    #####:  328:	BIO_printf(bio_err, "-certin         input is a certificate carrying an RSA public key\n");
+    #####:  329:	BIO_printf(bio_err, "-ssl            use SSL v2 padding\n");
+    #####:  330:	BIO_printf(bio_err, "-raw            use no padding\n");
+    #####:  331:	BIO_printf(bio_err, "-pkcs           use PKCS#1 v1.5 padding (default)\n");
+    #####:  332:	BIO_printf(bio_err, "-oaep           use PKCS#1 OAEP\n");
+    #####:  333:	BIO_printf(bio_err, "-sign           sign with private key\n");
+    #####:  334:	BIO_printf(bio_err, "-verify         verify with public key\n");
+    #####:  335:	BIO_printf(bio_err, "-encrypt        encrypt with public key\n");
+    #####:  336:	BIO_printf(bio_err, "-decrypt        decrypt with private key\n");
+    #####:  337:	BIO_printf(bio_err, "-hexdump        hex dump output\n");
+        -:  338:#ifndef OPENSSL_NO_ENGINE
+    #####:  339:	BIO_printf(bio_err, "-engine e       use engine e, possibly a hardware device.\n");
+    #####:  340:	BIO_printf (bio_err, "-passin arg    pass phrase source\n");
+        -:  341:#endif
+        -:  342:
+    #####:  343:}
+        -:  344:
+        -:  345:#else /* !OPENSSL_NO_RSA */
+        -:  346:
+        -:  347:# if PEDANTIC
+        -:  348:static void *dummy=&dummy;
+        -:  349:# endif
+        -:  350:
+        -:  351:#endif

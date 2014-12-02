@@ -1,0 +1,132 @@
+        -:    0:Source:LPdir_unix.c
+        -:    0:Graph:o_dir.gcno
+        -:    0:Data:o_dir.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* $LP: LPlib/source/LPdir_unix.c,v 1.11 2004/09/23 22:07:22 _cvs_levitte Exp $ */
+        -:    2:/*
+        -:    3: * Copyright (c) 2004, Richard Levitte <richard@levitte.org>
+        -:    4: * All rights reserved.
+        -:    5: *
+        -:    6: * Redistribution and use in source and binary forms, with or without
+        -:    7: * modification, are permitted provided that the following conditions
+        -:    8: * are met:
+        -:    9: * 1. Redistributions of source code must retain the above copyright
+        -:   10: *    notice, this list of conditions and the following disclaimer.
+        -:   11: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   12: *    notice, this list of conditions and the following disclaimer in the
+        -:   13: *    documentation and/or other materials provided with the distribution.
+        -:   14: * 
+        -:   15: * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+        -:   16: * ``AS IS'' AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+        -:   17: * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+        -:   18: * A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+        -:   19: * OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+        -:   20: * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+        -:   21: * LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+        -:   22: * DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+        -:   23: * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+        -:   24: * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+        -:   25: * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+        -:   26: */
+        -:   27:
+        -:   28:#include <stddef.h>
+        -:   29:#include <stdlib.h>
+        -:   30:#include <limits.h>
+        -:   31:#include <string.h>
+        -:   32:#include <sys/types.h>
+        -:   33:#include <dirent.h>
+        -:   34:#include <errno.h>
+        -:   35:#ifndef LPDIR_H
+        -:   36:#include "LPdir.h"
+        -:   37:#endif
+        -:   38:
+        -:   39:/* The POSIXly macro for the maximum number of characters in a file path
+        -:   40:   is NAME_MAX.  However, some operating systems use PATH_MAX instead.
+        -:   41:   Therefore, it seems natural to first check for PATH_MAX and use that,
+        -:   42:   and if it doesn't exist, use NAME_MAX. */
+        -:   43:#if defined(PATH_MAX)
+        -:   44:# define LP_ENTRY_SIZE PATH_MAX
+        -:   45:#elif defined(NAME_MAX)
+        -:   46:# define LP_ENTRY_SIZE NAME_MAX
+        -:   47:#endif
+        -:   48:
+        -:   49:/* Of course, there's the possibility that neither PATH_MAX nor NAME_MAX
+        -:   50:   exist.  It's also possible that NAME_MAX exists but is define to a
+        -:   51:   very small value (HP-UX offers 14), so we need to check if we got a
+        -:   52:   result, and if it meets a minimum standard, and create or change it
+        -:   53:   if not. */
+        -:   54:#if !defined(LP_ENTRY_SIZE) || LP_ENTRY_SIZE<255
+        -:   55:# undef LP_ENTRY_SIZE
+        -:   56:# define LP_ENTRY_SIZE 255
+        -:   57:#endif
+        -:   58:
+        -:   59:struct LP_dir_context_st
+        -:   60:{
+        -:   61:  DIR *dir;
+        -:   62:  char entry_name[LP_ENTRY_SIZE+1];
+        -:   63:};
+        -:   64:
+    #####:   65:const char *LP_find_file(LP_DIR_CTX **ctx, const char *directory)
+        -:   66:{
+        -:   67:  struct dirent *direntry = NULL;
+        -:   68:
+    #####:   69:  if (ctx == NULL || directory == NULL)
+        -:   70:    {
+    #####:   71:      errno = EINVAL;
+    #####:   72:      return 0;
+        -:   73:    }
+        -:   74:
+    #####:   75:  errno = 0;
+    #####:   76:  if (*ctx == NULL)
+        -:   77:    {
+    #####:   78:      *ctx = (LP_DIR_CTX *)malloc(sizeof(LP_DIR_CTX));
+    #####:   79:      if (*ctx == NULL)
+        -:   80:	{
+    #####:   81:	  errno = ENOMEM;
+    #####:   82:	  return 0;
+        -:   83:	}
+        -:   84:      memset(*ctx, '\0', sizeof(LP_DIR_CTX));
+        -:   85:
+    #####:   86:      (*ctx)->dir = opendir(directory);
+    #####:   87:      if ((*ctx)->dir == NULL)
+        -:   88:	{
+    #####:   89:	  int save_errno = errno; /* Probably not needed, but I'm paranoid */
+    #####:   90:	  free(*ctx);
+    #####:   91:	  *ctx = NULL;
+    #####:   92:	  errno = save_errno;
+    #####:   93:	  return 0;
+        -:   94:	}
+        -:   95:    }
+        -:   96:
+    #####:   97:  direntry = readdir((*ctx)->dir);
+    #####:   98:  if (direntry == NULL)
+        -:   99:    {
+        -:  100:      return 0;
+        -:  101:    }
+        -:  102:
+    #####:  103:  strncpy((*ctx)->entry_name, direntry->d_name, sizeof((*ctx)->entry_name) - 1);
+    #####:  104:  (*ctx)->entry_name[sizeof((*ctx)->entry_name) - 1] = '\0';
+    #####:  105:  return (*ctx)->entry_name;
+        -:  106:}
+        -:  107:
+    #####:  108:int LP_find_file_end(LP_DIR_CTX **ctx)
+        -:  109:{
+    #####:  110:  if (ctx != NULL && *ctx != NULL)
+        -:  111:    {
+    #####:  112:      int ret = closedir((*ctx)->dir);
+        -:  113:
+    #####:  114:      free(*ctx);
+    #####:  115:      switch (ret)
+        -:  116:	{
+        -:  117:	case 0:
+        -:  118:	  return 1;
+        -:  119:	case -1:
+    #####:  120:	  return 0;
+        -:  121:	default:
+        -:  122:	  break;
+        -:  123:	}
+        -:  124:    }
+    #####:  125:  errno = EINVAL;
+    #####:  126:  return 0;
+        -:  127:}

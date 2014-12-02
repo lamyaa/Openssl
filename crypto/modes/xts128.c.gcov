@@ -1,0 +1,192 @@
+        -:    0:Source:xts128.c
+        -:    0:Graph:xts128.gcno
+        -:    0:Data:xts128.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* ====================================================================
+        -:    2: * Copyright (c) 2011 The OpenSSL Project.  All rights reserved.
+        -:    3: *
+        -:    4: * Redistribution and use in source and binary forms, with or without
+        -:    5: * modification, are permitted provided that the following conditions
+        -:    6: * are met:
+        -:    7: *
+        -:    8: * 1. Redistributions of source code must retain the above copyright
+        -:    9: *    notice, this list of conditions and the following disclaimer. 
+        -:   10: *
+        -:   11: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   12: *    notice, this list of conditions and the following disclaimer in
+        -:   13: *    the documentation and/or other materials provided with the
+        -:   14: *    distribution.
+        -:   15: *
+        -:   16: * 3. All advertising materials mentioning features or use of this
+        -:   17: *    software must display the following acknowledgment:
+        -:   18: *    "This product includes software developed by the OpenSSL Project
+        -:   19: *    for use in the OpenSSL Toolkit. (http://www.openssl.org/)"
+        -:   20: *
+        -:   21: * 4. The names "OpenSSL Toolkit" and "OpenSSL Project" must not be used to
+        -:   22: *    endorse or promote products derived from this software without
+        -:   23: *    prior written permission. For written permission, please contact
+        -:   24: *    openssl-core@openssl.org.
+        -:   25: *
+        -:   26: * 5. Products derived from this software may not be called "OpenSSL"
+        -:   27: *    nor may "OpenSSL" appear in their names without prior written
+        -:   28: *    permission of the OpenSSL Project.
+        -:   29: *
+        -:   30: * 6. Redistributions of any form whatsoever must retain the following
+        -:   31: *    acknowledgment:
+        -:   32: *    "This product includes software developed by the OpenSSL Project
+        -:   33: *    for use in the OpenSSL Toolkit (http://www.openssl.org/)"
+        -:   34: *
+        -:   35: * THIS SOFTWARE IS PROVIDED BY THE OpenSSL PROJECT ``AS IS'' AND ANY
+        -:   36: * EXPRESSED OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   37: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+        -:   38: * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE OpenSSL PROJECT OR
+        -:   39: * ITS CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+        -:   40: * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+        -:   41: * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+        -:   42: * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   43: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+        -:   44: * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+        -:   45: * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+        -:   46: * OF THE POSSIBILITY OF SUCH DAMAGE.
+        -:   47: * ====================================================================
+        -:   48: */
+        -:   49:
+        -:   50:#include <openssl/crypto.h>
+        -:   51:#include "modes_lcl.h"
+        -:   52:#include <string.h>
+        -:   53:
+        -:   54:#ifndef MODES_DEBUG
+        -:   55:# ifndef NDEBUG
+        -:   56:#  define NDEBUG
+        -:   57:# endif
+        -:   58:#endif
+        -:   59:#include <assert.h>
+        -:   60:
+    #####:   61:int CRYPTO_xts128_encrypt(const XTS128_CONTEXT *ctx, const unsigned char iv[16],
+        -:   62:	const unsigned char *inp, unsigned char *out,
+        -:   63:	size_t len, int enc)
+        -:   64:{
+        -:   65:	const union { long one; char little; } is_endian = {1};
+        -:   66:	union { u64 u[2]; u32 d[4]; u8 c[16]; } tweak, scratch;
+        -:   67:	unsigned int i;
+        -:   68:
+    #####:   69:	if (len<16) return -1;
+        -:   70:
+        -:   71:	memcpy(tweak.c, iv, 16);
+        -:   72:
+    #####:   73:	(*ctx->block2)(tweak.c,tweak.c,ctx->key2);
+        -:   74:
+    #####:   75:	if (!enc && (len%16)) len-=16;
+        -:   76:
+    #####:   77:	while (len>=16) {
+        -:   78:#if defined(STRICT_ALIGNMENT)
+        -:   79:		memcpy(scratch.c,inp,16);
+        -:   80:		scratch.u[0] ^= tweak.u[0];
+        -:   81:		scratch.u[1] ^= tweak.u[1];
+        -:   82:#else
+    #####:   83:		scratch.u[0] = ((u64*)inp)[0]^tweak.u[0];
+    #####:   84:		scratch.u[1] = ((u64*)inp)[1]^tweak.u[1];
+        -:   85:#endif
+    #####:   86:		(*ctx->block1)(scratch.c,scratch.c,ctx->key1);
+        -:   87:#if defined(STRICT_ALIGNMENT)
+        -:   88:		scratch.u[0] ^= tweak.u[0];
+        -:   89:		scratch.u[1] ^= tweak.u[1];
+        -:   90:		memcpy(out,scratch.c,16);
+        -:   91:#else
+    #####:   92:		((u64*)out)[0] = scratch.u[0]^=tweak.u[0];
+    #####:   93:		((u64*)out)[1] = scratch.u[1]^=tweak.u[1];
+        -:   94:#endif
+    #####:   95:		inp += 16;
+    #####:   96:		out += 16;
+    #####:   97:		len -= 16;
+        -:   98:
+    #####:   99:		if (len==0)	return 0;
+        -:  100:
+        -:  101:		if (is_endian.little) {
+        -:  102:			unsigned int carry,res;
+        -:  103:			
+    #####:  104:			res = 0x87&(((int)tweak.d[3])>>31);
+    #####:  105:			carry = (unsigned int)(tweak.u[0]>>63);
+    #####:  106:			tweak.u[0] = (tweak.u[0]<<1)^res;
+    #####:  107:			tweak.u[1] = (tweak.u[1]<<1)|carry;
+        -:  108:		}
+        -:  109:		else {
+        -:  110:			size_t c;
+        -:  111:
+        -:  112:			for (c=0,i=0;i<16;++i) {
+        -:  113:				/*+ substitutes for |, because c is 1 bit */ 
+        -:  114:				c += ((size_t)tweak.c[i])<<1;
+        -:  115:				tweak.c[i] = (u8)c;
+        -:  116:				c = c>>8;
+        -:  117:			}
+        -:  118:			tweak.c[0] ^= (u8)(0x87&(0-c));
+        -:  119:		}
+        -:  120:	}
+    #####:  121:	if (enc) {
+    #####:  122:		for (i=0;i<len;++i) {
+    #####:  123:			u8 c = inp[i];
+    #####:  124:			out[i] = scratch.c[i];
+    #####:  125:			scratch.c[i] = c;
+        -:  126:		}
+    #####:  127:		scratch.u[0] ^= tweak.u[0];
+    #####:  128:		scratch.u[1] ^= tweak.u[1];
+    #####:  129:		(*ctx->block1)(scratch.c,scratch.c,ctx->key1);
+    #####:  130:		scratch.u[0] ^= tweak.u[0];
+    #####:  131:		scratch.u[1] ^= tweak.u[1];
+    #####:  132:		memcpy(out-16,scratch.c,16);
+        -:  133:	}
+        -:  134:	else {
+        -:  135:		union { u64 u[2]; u8 c[16]; } tweak1;
+        -:  136:
+        -:  137:		if (is_endian.little) {
+        -:  138:			unsigned int carry,res;
+        -:  139:
+    #####:  140:			res = 0x87&(((int)tweak.d[3])>>31);
+    #####:  141:			carry = (unsigned int)(tweak.u[0]>>63);
+    #####:  142:			tweak1.u[0] = (tweak.u[0]<<1)^res;
+    #####:  143:			tweak1.u[1] = (tweak.u[1]<<1)|carry;
+        -:  144:		}
+        -:  145:		else {
+        -:  146:			size_t c;
+        -:  147:
+        -:  148:			for (c=0,i=0;i<16;++i) {
+        -:  149:				/*+ substitutes for |, because c is 1 bit */ 
+        -:  150:				c += ((size_t)tweak.c[i])<<1;
+        -:  151:				tweak1.c[i] = (u8)c;
+        -:  152:				c = c>>8;
+        -:  153:			}
+        -:  154:			tweak1.c[0] ^= (u8)(0x87&(0-c));
+        -:  155:		}
+        -:  156:#if defined(STRICT_ALIGNMENT)
+        -:  157:		memcpy(scratch.c,inp,16);
+        -:  158:		scratch.u[0] ^= tweak1.u[0];
+        -:  159:		scratch.u[1] ^= tweak1.u[1];
+        -:  160:#else
+    #####:  161:		scratch.u[0] = ((u64*)inp)[0]^tweak1.u[0];
+    #####:  162:		scratch.u[1] = ((u64*)inp)[1]^tweak1.u[1];
+        -:  163:#endif
+    #####:  164:		(*ctx->block1)(scratch.c,scratch.c,ctx->key1);
+    #####:  165:		scratch.u[0] ^= tweak1.u[0];
+    #####:  166:		scratch.u[1] ^= tweak1.u[1];
+        -:  167:
+    #####:  168:		for (i=0;i<len;++i) {
+    #####:  169:			u8 c = inp[16+i];
+    #####:  170:			out[16+i] = scratch.c[i];
+    #####:  171:			scratch.c[i] = c;
+        -:  172:		}
+    #####:  173:		scratch.u[0] ^= tweak.u[0];
+    #####:  174:		scratch.u[1] ^= tweak.u[1];
+    #####:  175:		(*ctx->block1)(scratch.c,scratch.c,ctx->key1);
+        -:  176:#if defined(STRICT_ALIGNMENT)
+        -:  177:		scratch.u[0] ^= tweak.u[0];
+        -:  178:		scratch.u[1] ^= tweak.u[1];
+        -:  179:		memcpy (out,scratch.c,16);
+        -:  180:#else
+    #####:  181:		((u64*)out)[0] = scratch.u[0]^tweak.u[0];
+    #####:  182:		((u64*)out)[1] = scratch.u[1]^tweak.u[1];
+        -:  183:#endif
+        -:  184:	}
+        -:  185:
+        -:  186:	return 0;
+        -:  187:}

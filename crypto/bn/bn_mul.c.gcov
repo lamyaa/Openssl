@@ -1,0 +1,1171 @@
+        -:    0:Source:bn_mul.c
+        -:    0:Graph:bn_mul.gcno
+        -:    0:Data:bn_mul.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* crypto/bn/bn_mul.c */
+        -:    2:/* Copyright (C) 1995-1998 Eric Young (eay@cryptsoft.com)
+        -:    3: * All rights reserved.
+        -:    4: *
+        -:    5: * This package is an SSL implementation written
+        -:    6: * by Eric Young (eay@cryptsoft.com).
+        -:    7: * The implementation was written so as to conform with Netscapes SSL.
+        -:    8: * 
+        -:    9: * This library is free for commercial and non-commercial use as long as
+        -:   10: * the following conditions are aheared to.  The following conditions
+        -:   11: * apply to all code found in this distribution, be it the RC4, RSA,
+        -:   12: * lhash, DES, etc., code; not just the SSL code.  The SSL documentation
+        -:   13: * included with this distribution is covered by the same copyright terms
+        -:   14: * except that the holder is Tim Hudson (tjh@cryptsoft.com).
+        -:   15: * 
+        -:   16: * Copyright remains Eric Young's, and as such any Copyright notices in
+        -:   17: * the code are not to be removed.
+        -:   18: * If this package is used in a product, Eric Young should be given attribution
+        -:   19: * as the author of the parts of the library used.
+        -:   20: * This can be in the form of a textual message at program startup or
+        -:   21: * in documentation (online or textual) provided with the package.
+        -:   22: * 
+        -:   23: * Redistribution and use in source and binary forms, with or without
+        -:   24: * modification, are permitted provided that the following conditions
+        -:   25: * are met:
+        -:   26: * 1. Redistributions of source code must retain the copyright
+        -:   27: *    notice, this list of conditions and the following disclaimer.
+        -:   28: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   29: *    notice, this list of conditions and the following disclaimer in the
+        -:   30: *    documentation and/or other materials provided with the distribution.
+        -:   31: * 3. All advertising materials mentioning features or use of this software
+        -:   32: *    must display the following acknowledgement:
+        -:   33: *    "This product includes cryptographic software written by
+        -:   34: *     Eric Young (eay@cryptsoft.com)"
+        -:   35: *    The word 'cryptographic' can be left out if the rouines from the library
+        -:   36: *    being used are not cryptographic related :-).
+        -:   37: * 4. If you include any Windows specific code (or a derivative thereof) from 
+        -:   38: *    the apps directory (application code) you must include an acknowledgement:
+        -:   39: *    "This product includes software written by Tim Hudson (tjh@cryptsoft.com)"
+        -:   40: * 
+        -:   41: * THIS SOFTWARE IS PROVIDED BY ERIC YOUNG ``AS IS'' AND
+        -:   42: * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   43: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+        -:   44: * ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+        -:   45: * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+        -:   46: * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+        -:   47: * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   48: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+        -:   49: * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+        -:   50: * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+        -:   51: * SUCH DAMAGE.
+        -:   52: * 
+        -:   53: * The licence and distribution terms for any publically available version or
+        -:   54: * derivative of this code cannot be changed.  i.e. this code cannot simply be
+        -:   55: * copied and put under another distribution licence
+        -:   56: * [including the GNU Public Licence.]
+        -:   57: */
+        -:   58:
+        -:   59:#ifndef BN_DEBUG
+        -:   60:# undef NDEBUG /* avoid conflicting definitions */
+        -:   61:# define NDEBUG
+        -:   62:#endif
+        -:   63:
+        -:   64:#include <stdio.h>
+        -:   65:#include <assert.h>
+        -:   66:#include "cryptlib.h"
+        -:   67:#include "bn_lcl.h"
+        -:   68:
+        -:   69:#if defined(OPENSSL_NO_ASM) || !defined(OPENSSL_BN_ASM_PART_WORDS)
+        -:   70:/* Here follows specialised variants of bn_add_words() and
+        -:   71:   bn_sub_words().  They have the property performing operations on
+        -:   72:   arrays of different sizes.  The sizes of those arrays is expressed through
+        -:   73:   cl, which is the common length ( basicall, min(len(a),len(b)) ), and dl,
+        -:   74:   which is the delta between the two lengths, calculated as len(a)-len(b).
+        -:   75:   All lengths are the number of BN_ULONGs...  For the operations that require
+        -:   76:   a result array as parameter, it must have the length cl+abs(dl).
+        -:   77:   These functions should probably end up in bn_asm.c as soon as there are
+        -:   78:   assembler counterparts for the systems that use assembler files.  */
+        -:   79:
+    #####:   80:BN_ULONG bn_sub_part_words(BN_ULONG *r,
+        -:   81:	const BN_ULONG *a, const BN_ULONG *b,
+        -:   82:	int cl, int dl)
+        -:   83:	{
+        -:   84:	BN_ULONG c, t;
+        -:   85:
+        -:   86:	assert(cl >= 0);
+    #####:   87:	c = bn_sub_words(r, a, b, cl);
+        -:   88:
+    #####:   89:	if (dl == 0)
+        -:   90:		return c;
+        -:   91:
+    #####:   92:	r += cl;
+    #####:   93:	a += cl;
+    #####:   94:	b += cl;
+        -:   95:
+    #####:   96:	if (dl < 0)
+        -:   97:		{
+        -:   98:#ifdef BN_COUNT
+        -:   99:		fprintf(stderr, "  bn_sub_part_words %d + %d (dl < 0, c = %d)\n", cl, dl, c);
+        -:  100:#endif
+        -:  101:		for (;;)
+        -:  102:			{
+    #####:  103:			t = b[0];
+    #####:  104:			r[0] = (0-t-c)&BN_MASK2;
+    #####:  105:			if (t != 0) c=1;
+    #####:  106:			if (++dl >= 0) break;
+        -:  107:
+    #####:  108:			t = b[1];
+    #####:  109:			r[1] = (0-t-c)&BN_MASK2;
+    #####:  110:			if (t != 0) c=1;
+    #####:  111:			if (++dl >= 0) break;
+        -:  112:
+    #####:  113:			t = b[2];
+    #####:  114:			r[2] = (0-t-c)&BN_MASK2;
+    #####:  115:			if (t != 0) c=1;
+    #####:  116:			if (++dl >= 0) break;
+        -:  117:
+    #####:  118:			t = b[3];
+    #####:  119:			r[3] = (0-t-c)&BN_MASK2;
+    #####:  120:			if (t != 0) c=1;
+    #####:  121:			if (++dl >= 0) break;
+        -:  122:
+    #####:  123:			b += 4;
+    #####:  124:			r += 4;
+    #####:  125:			}
+        -:  126:		}
+        -:  127:	else
+        -:  128:		{
+        -:  129:		int save_dl = dl;
+        -:  130:#ifdef BN_COUNT
+        -:  131:		fprintf(stderr, "  bn_sub_part_words %d + %d (dl > 0, c = %d)\n", cl, dl, c);
+        -:  132:#endif
+    #####:  133:		while(c)
+        -:  134:			{
+    #####:  135:			t = a[0];
+    #####:  136:			r[0] = (t-c)&BN_MASK2;
+    #####:  137:			if (t != 0) c=0;
+    #####:  138:			if (--dl <= 0) break;
+        -:  139:
+    #####:  140:			t = a[1];
+    #####:  141:			r[1] = (t-c)&BN_MASK2;
+    #####:  142:			if (t != 0) c=0;
+    #####:  143:			if (--dl <= 0) break;
+        -:  144:
+    #####:  145:			t = a[2];
+    #####:  146:			r[2] = (t-c)&BN_MASK2;
+    #####:  147:			if (t != 0) c=0;
+    #####:  148:			if (--dl <= 0) break;
+        -:  149:
+    #####:  150:			t = a[3];
+    #####:  151:			r[3] = (t-c)&BN_MASK2;
+    #####:  152:			if (t != 0) c=0;
+    #####:  153:			if (--dl <= 0) break;
+        -:  154:
+        -:  155:			save_dl = dl;
+    #####:  156:			a += 4;
+    #####:  157:			r += 4;
+        -:  158:			}
+    #####:  159:		if (dl > 0)
+        -:  160:			{
+        -:  161:#ifdef BN_COUNT
+        -:  162:			fprintf(stderr, "  bn_sub_part_words %d + %d (dl > 0, c == 0)\n", cl, dl);
+        -:  163:#endif
+    #####:  164:			if (save_dl > dl)
+        -:  165:				{
+    #####:  166:				switch (save_dl - dl)
+        -:  167:					{
+        -:  168:				case 1:
+    #####:  169:					r[1] = a[1];
+    #####:  170:					if (--dl <= 0) break;
+        -:  171:				case 2:
+    #####:  172:					r[2] = a[2];
+    #####:  173:					if (--dl <= 0) break;
+        -:  174:				case 3:
+    #####:  175:					r[3] = a[3];
+    #####:  176:					if (--dl <= 0) break;
+        -:  177:					}
+    #####:  178:				a += 4;
+    #####:  179:				r += 4;
+        -:  180:				}
+        -:  181:			}
+    #####:  182:		if (dl > 0)
+        -:  183:			{
+        -:  184:#ifdef BN_COUNT
+        -:  185:			fprintf(stderr, "  bn_sub_part_words %d + %d (dl > 0, copy)\n", cl, dl);
+        -:  186:#endif
+        -:  187:			for(;;)
+        -:  188:				{
+    #####:  189:				r[0] = a[0];
+    #####:  190:				if (--dl <= 0) break;
+    #####:  191:				r[1] = a[1];
+    #####:  192:				if (--dl <= 0) break;
+    #####:  193:				r[2] = a[2];
+    #####:  194:				if (--dl <= 0) break;
+    #####:  195:				r[3] = a[3];
+    #####:  196:				if (--dl <= 0) break;
+        -:  197:
+    #####:  198:				a += 4;
+    #####:  199:				r += 4;
+    #####:  200:				}
+        -:  201:			}
+        -:  202:		}
+    #####:  203:	return c;
+        -:  204:	}
+        -:  205:#endif
+        -:  206:
+    #####:  207:BN_ULONG bn_add_part_words(BN_ULONG *r,
+        -:  208:	const BN_ULONG *a, const BN_ULONG *b,
+        -:  209:	int cl, int dl)
+        -:  210:	{
+        -:  211:	BN_ULONG c, l, t;
+        -:  212:
+        -:  213:	assert(cl >= 0);
+    #####:  214:	c = bn_add_words(r, a, b, cl);
+        -:  215:
+    #####:  216:	if (dl == 0)
+        -:  217:		return c;
+        -:  218:
+    #####:  219:	r += cl;
+    #####:  220:	a += cl;
+    #####:  221:	b += cl;
+        -:  222:
+    #####:  223:	if (dl < 0)
+        -:  224:		{
+        -:  225:		int save_dl = dl;
+        -:  226:#ifdef BN_COUNT
+        -:  227:		fprintf(stderr, "  bn_add_part_words %d + %d (dl < 0, c = %d)\n", cl, dl, c);
+        -:  228:#endif
+    #####:  229:		while (c)
+        -:  230:			{
+    #####:  231:			l=(c+b[0])&BN_MASK2;
+    #####:  232:			c=(l < c);
+    #####:  233:			r[0]=l;
+    #####:  234:			if (++dl >= 0) break;
+        -:  235:
+    #####:  236:			l=(c+b[1])&BN_MASK2;
+    #####:  237:			c=(l < c);
+    #####:  238:			r[1]=l;
+    #####:  239:			if (++dl >= 0) break;
+        -:  240:
+    #####:  241:			l=(c+b[2])&BN_MASK2;
+    #####:  242:			c=(l < c);
+    #####:  243:			r[2]=l;
+    #####:  244:			if (++dl >= 0) break;
+        -:  245:
+    #####:  246:			l=(c+b[3])&BN_MASK2;
+    #####:  247:			c=(l < c);
+    #####:  248:			r[3]=l;
+    #####:  249:			if (++dl >= 0) break;
+        -:  250:
+        -:  251:			save_dl = dl;
+    #####:  252:			b+=4;
+    #####:  253:			r+=4;
+        -:  254:			}
+    #####:  255:		if (dl < 0)
+        -:  256:			{
+        -:  257:#ifdef BN_COUNT
+        -:  258:			fprintf(stderr, "  bn_add_part_words %d + %d (dl < 0, c == 0)\n", cl, dl);
+        -:  259:#endif
+    #####:  260:			if (save_dl < dl)
+        -:  261:				{
+    #####:  262:				switch (dl - save_dl)
+        -:  263:					{
+        -:  264:				case 1:
+    #####:  265:					r[1] = b[1];
+    #####:  266:					if (++dl >= 0) break;
+        -:  267:				case 2:
+    #####:  268:					r[2] = b[2];
+    #####:  269:					if (++dl >= 0) break;
+        -:  270:				case 3:
+    #####:  271:					r[3] = b[3];
+    #####:  272:					if (++dl >= 0) break;
+        -:  273:					}
+    #####:  274:				b += 4;
+    #####:  275:				r += 4;
+        -:  276:				}
+        -:  277:			}
+    #####:  278:		if (dl < 0)
+        -:  279:			{
+        -:  280:#ifdef BN_COUNT
+        -:  281:			fprintf(stderr, "  bn_add_part_words %d + %d (dl < 0, copy)\n", cl, dl);
+        -:  282:#endif
+        -:  283:			for(;;)
+        -:  284:				{
+    #####:  285:				r[0] = b[0];
+    #####:  286:				if (++dl >= 0) break;
+    #####:  287:				r[1] = b[1];
+    #####:  288:				if (++dl >= 0) break;
+    #####:  289:				r[2] = b[2];
+    #####:  290:				if (++dl >= 0) break;
+    #####:  291:				r[3] = b[3];
+    #####:  292:				if (++dl >= 0) break;
+        -:  293:
+    #####:  294:				b += 4;
+    #####:  295:				r += 4;
+    #####:  296:				}
+        -:  297:			}
+        -:  298:		}
+        -:  299:	else
+        -:  300:		{
+        -:  301:		int save_dl = dl;
+        -:  302:#ifdef BN_COUNT
+        -:  303:		fprintf(stderr, "  bn_add_part_words %d + %d (dl > 0)\n", cl, dl);
+        -:  304:#endif
+    #####:  305:		while (c)
+        -:  306:			{
+    #####:  307:			t=(a[0]+c)&BN_MASK2;
+    #####:  308:			c=(t < c);
+    #####:  309:			r[0]=t;
+    #####:  310:			if (--dl <= 0) break;
+        -:  311:
+    #####:  312:			t=(a[1]+c)&BN_MASK2;
+    #####:  313:			c=(t < c);
+    #####:  314:			r[1]=t;
+    #####:  315:			if (--dl <= 0) break;
+        -:  316:
+    #####:  317:			t=(a[2]+c)&BN_MASK2;
+    #####:  318:			c=(t < c);
+    #####:  319:			r[2]=t;
+    #####:  320:			if (--dl <= 0) break;
+        -:  321:
+    #####:  322:			t=(a[3]+c)&BN_MASK2;
+    #####:  323:			c=(t < c);
+    #####:  324:			r[3]=t;
+    #####:  325:			if (--dl <= 0) break;
+        -:  326:
+        -:  327:			save_dl = dl;
+    #####:  328:			a+=4;
+    #####:  329:			r+=4;
+        -:  330:			}
+        -:  331:#ifdef BN_COUNT
+        -:  332:		fprintf(stderr, "  bn_add_part_words %d + %d (dl > 0, c == 0)\n", cl, dl);
+        -:  333:#endif
+    #####:  334:		if (dl > 0)
+        -:  335:			{
+    #####:  336:			if (save_dl > dl)
+        -:  337:				{
+    #####:  338:				switch (save_dl - dl)
+        -:  339:					{
+        -:  340:				case 1:
+    #####:  341:					r[1] = a[1];
+    #####:  342:					if (--dl <= 0) break;
+        -:  343:				case 2:
+    #####:  344:					r[2] = a[2];
+    #####:  345:					if (--dl <= 0) break;
+        -:  346:				case 3:
+    #####:  347:					r[3] = a[3];
+    #####:  348:					if (--dl <= 0) break;
+        -:  349:					}
+    #####:  350:				a += 4;
+    #####:  351:				r += 4;
+        -:  352:				}
+        -:  353:			}
+    #####:  354:		if (dl > 0)
+        -:  355:			{
+        -:  356:#ifdef BN_COUNT
+        -:  357:			fprintf(stderr, "  bn_add_part_words %d + %d (dl > 0, copy)\n", cl, dl);
+        -:  358:#endif
+        -:  359:			for(;;)
+        -:  360:				{
+    #####:  361:				r[0] = a[0];
+    #####:  362:				if (--dl <= 0) break;
+    #####:  363:				r[1] = a[1];
+    #####:  364:				if (--dl <= 0) break;
+    #####:  365:				r[2] = a[2];
+    #####:  366:				if (--dl <= 0) break;
+    #####:  367:				r[3] = a[3];
+    #####:  368:				if (--dl <= 0) break;
+        -:  369:
+    #####:  370:				a += 4;
+    #####:  371:				r += 4;
+    #####:  372:				}
+        -:  373:			}
+        -:  374:		}
+    #####:  375:	return c;
+        -:  376:	}
+        -:  377:
+        -:  378:#ifdef BN_RECURSION
+        -:  379:/* Karatsuba recursive multiplication algorithm
+        -:  380: * (cf. Knuth, The Art of Computer Programming, Vol. 2) */
+        -:  381:
+        -:  382:/* r is 2*n2 words in size,
+        -:  383: * a and b are both n2 words in size.
+        -:  384: * n2 must be a power of 2.
+        -:  385: * We multiply and return the result.
+        -:  386: * t must be 2*n2 words in size
+        -:  387: * We calculate
+        -:  388: * a[0]*b[0]
+        -:  389: * a[0]*b[0]+a[1]*b[1]+(a[0]-a[1])*(b[1]-b[0])
+        -:  390: * a[1]*b[1]
+        -:  391: */
+        -:  392:/* dnX may not be positive, but n2/2+dnX has to be */
+    #####:  393:void bn_mul_recursive(BN_ULONG *r, BN_ULONG *a, BN_ULONG *b, int n2,
+        -:  394:	int dna, int dnb, BN_ULONG *t)
+        -:  395:	{
+    #####:  396:	int n=n2/2,c1,c2;
+    #####:  397:	int tna=n+dna, tnb=n+dnb;
+        -:  398:	unsigned int neg,zero;
+        -:  399:	BN_ULONG ln,lo,*p;
+        -:  400:
+        -:  401:# ifdef BN_COUNT
+        -:  402:	fprintf(stderr," bn_mul_recursive %d%+d * %d%+d\n",n2,dna,n2,dnb);
+        -:  403:# endif
+        -:  404:# ifdef BN_MUL_COMBA
+        -:  405:#  if 0
+        -:  406:	if (n2 == 4)
+        -:  407:		{
+        -:  408:		bn_mul_comba4(r,a,b);
+        -:  409:		return;
+        -:  410:		}
+        -:  411:#  endif
+        -:  412:	/* Only call bn_mul_comba 8 if n2 == 8 and the
+        -:  413:	 * two arrays are complete [steve]
+        -:  414:	 */
+    #####:  415:	if (n2 == 8 && dna == 0 && dnb == 0)
+        -:  416:		{
+    #####:  417:		bn_mul_comba8(r,a,b);
+    #####:  418:		return; 
+        -:  419:		}
+        -:  420:# endif /* BN_MUL_COMBA */
+        -:  421:	/* Else do normal multiply */
+    #####:  422:	if (n2 < BN_MUL_RECURSIVE_SIZE_NORMAL)
+        -:  423:		{
+    #####:  424:		bn_mul_normal(r,a,n2+dna,b,n2+dnb);
+    #####:  425:		if ((dna + dnb) < 0)
+    #####:  426:			memset(&r[2*n2 + dna + dnb], 0,
+    #####:  427:				sizeof(BN_ULONG) * -(dna + dnb));
+        -:  428:		return;
+        -:  429:		}
+        -:  430:	/* r=(a[0]-a[1])*(b[1]-b[0]) */
+    #####:  431:	c1=bn_cmp_part_words(a,&(a[n]),tna,n-tna);
+    #####:  432:	c2=bn_cmp_part_words(&(b[n]),b,tnb,tnb-n);
+        -:  433:	zero=neg=0;
+    #####:  434:	switch (c1*3+c2)
+        -:  435:		{
+        -:  436:	case -4:
+    #####:  437:		bn_sub_part_words(t,      &(a[n]),a,      tna,tna-n); /* - */
+    #####:  438:		bn_sub_part_words(&(t[n]),b,      &(b[n]),tnb,n-tnb); /* - */
+    #####:  439:		break;
+        -:  440:	case -3:
+        -:  441:		zero=1;
+    #####:  442:		break;
+        -:  443:	case -2:
+    #####:  444:		bn_sub_part_words(t,      &(a[n]),a,      tna,tna-n); /* - */
+    #####:  445:		bn_sub_part_words(&(t[n]),&(b[n]),b,      tnb,tnb-n); /* + */
+        -:  446:		neg=1;
+    #####:  447:		break;
+        -:  448:	case -1:
+        -:  449:	case 0:
+        -:  450:	case 1:
+        -:  451:		zero=1;
+    #####:  452:		break;
+        -:  453:	case 2:
+    #####:  454:		bn_sub_part_words(t,      a,      &(a[n]),tna,n-tna); /* + */
+    #####:  455:		bn_sub_part_words(&(t[n]),b,      &(b[n]),tnb,n-tnb); /* - */
+        -:  456:		neg=1;
+    #####:  457:		break;
+        -:  458:	case 3:
+        -:  459:		zero=1;
+    #####:  460:		break;
+        -:  461:	case 4:
+    #####:  462:		bn_sub_part_words(t,      a,      &(a[n]),tna,n-tna);
+    #####:  463:		bn_sub_part_words(&(t[n]),&(b[n]),b,      tnb,tnb-n);
+    #####:  464:		break;
+        -:  465:		}
+        -:  466:
+        -:  467:# ifdef BN_MUL_COMBA
+    #####:  468:	if (n == 4 && dna == 0 && dnb == 0) /* XXX: bn_mul_comba4 could take
+        -:  469:					       extra args to do this well */
+        -:  470:		{
+    #####:  471:		if (!zero)
+    #####:  472:			bn_mul_comba4(&(t[n2]),t,&(t[n]));
+        -:  473:		else
+    #####:  474:			memset(&(t[n2]),0,8*sizeof(BN_ULONG));
+        -:  475:		
+    #####:  476:		bn_mul_comba4(r,a,b);
+    #####:  477:		bn_mul_comba4(&(r[n2]),&(a[n]),&(b[n]));
+        -:  478:		}
+    #####:  479:	else if (n == 8 && dna == 0 && dnb == 0) /* XXX: bn_mul_comba8 could
+        -:  480:						    take extra args to do this
+        -:  481:						    well */
+        -:  482:		{
+    #####:  483:		if (!zero)
+    #####:  484:			bn_mul_comba8(&(t[n2]),t,&(t[n]));
+        -:  485:		else
+    #####:  486:			memset(&(t[n2]),0,16*sizeof(BN_ULONG));
+        -:  487:		
+    #####:  488:		bn_mul_comba8(r,a,b);
+    #####:  489:		bn_mul_comba8(&(r[n2]),&(a[n]),&(b[n]));
+        -:  490:		}
+        -:  491:	else
+        -:  492:# endif /* BN_MUL_COMBA */
+        -:  493:		{
+    #####:  494:		p= &(t[n2*2]);
+    #####:  495:		if (!zero)
+    #####:  496:			bn_mul_recursive(&(t[n2]),t,&(t[n]),n,0,0,p);
+        -:  497:		else
+    #####:  498:			memset(&(t[n2]),0,n2*sizeof(BN_ULONG));
+    #####:  499:		bn_mul_recursive(r,a,b,n,0,0,p);
+    #####:  500:		bn_mul_recursive(&(r[n2]),&(a[n]),&(b[n]),n,dna,dnb,p);
+        -:  501:		}
+        -:  502:
+        -:  503:	/* t[32] holds (a[0]-a[1])*(b[1]-b[0]), c1 is the sign
+        -:  504:	 * r[10] holds (a[0]*b[0])
+        -:  505:	 * r[32] holds (b[1]*b[1])
+        -:  506:	 */
+        -:  507:
+    #####:  508:	c1=(int)(bn_add_words(t,r,&(r[n2]),n2));
+        -:  509:
+    #####:  510:	if (neg) /* if t[32] is negative */
+        -:  511:		{
+    #####:  512:		c1-=(int)(bn_sub_words(&(t[n2]),t,&(t[n2]),n2));
+        -:  513:		}
+        -:  514:	else
+        -:  515:		{
+        -:  516:		/* Might have a carry */
+    #####:  517:		c1+=(int)(bn_add_words(&(t[n2]),&(t[n2]),t,n2));
+        -:  518:		}
+        -:  519:
+        -:  520:	/* t[32] holds (a[0]-a[1])*(b[1]-b[0])+(a[0]*b[0])+(a[1]*b[1])
+        -:  521:	 * r[10] holds (a[0]*b[0])
+        -:  522:	 * r[32] holds (b[1]*b[1])
+        -:  523:	 * c1 holds the carry bits
+        -:  524:	 */
+    #####:  525:	c1+=(int)(bn_add_words(&(r[n]),&(r[n]),&(t[n2]),n2));
+    #####:  526:	if (c1)
+        -:  527:		{
+    #####:  528:		p= &(r[n+n2]);
+    #####:  529:		lo= *p;
+    #####:  530:		ln=(lo+c1)&BN_MASK2;
+    #####:  531:		*p=ln;
+        -:  532:
+        -:  533:		/* The overflow will stop before we over write
+        -:  534:		 * words we should not overwrite */
+    #####:  535:		if (ln < (BN_ULONG)c1)
+        -:  536:			{
+        -:  537:			do	{
+    #####:  538:				p++;
+    #####:  539:				lo= *p;
+    #####:  540:				ln=(lo+1)&BN_MASK2;
+    #####:  541:				*p=ln;
+    #####:  542:				} while (ln == 0);
+        -:  543:			}
+        -:  544:		}
+        -:  545:	}
+        -:  546:
+        -:  547:/* n+tn is the word length
+        -:  548: * t needs to be n*4 is size, as does r */
+        -:  549:/* tnX may not be negative but less than n */
+    #####:  550:void bn_mul_part_recursive(BN_ULONG *r, BN_ULONG *a, BN_ULONG *b, int n,
+        -:  551:	     int tna, int tnb, BN_ULONG *t)
+        -:  552:	{
+    #####:  553:	int i,j,n2=n*2;
+        -:  554:	int c1,c2,neg;
+        -:  555:	BN_ULONG ln,lo,*p;
+        -:  556:
+        -:  557:# ifdef BN_COUNT
+        -:  558:	fprintf(stderr," bn_mul_part_recursive (%d%+d) * (%d%+d)\n",
+        -:  559:		n, tna, n, tnb);
+        -:  560:# endif
+    #####:  561:	if (n < 8)
+        -:  562:		{
+    #####:  563:		bn_mul_normal(r,a,n+tna,b,n+tnb);
+    #####:  564:		return;
+        -:  565:		}
+        -:  566:
+        -:  567:	/* r=(a[0]-a[1])*(b[1]-b[0]) */
+    #####:  568:	c1=bn_cmp_part_words(a,&(a[n]),tna,n-tna);
+    #####:  569:	c2=bn_cmp_part_words(&(b[n]),b,tnb,tnb-n);
+        -:  570:	neg=0;
+    #####:  571:	switch (c1*3+c2)
+        -:  572:		{
+        -:  573:	case -4:
+    #####:  574:		bn_sub_part_words(t,      &(a[n]),a,      tna,tna-n); /* - */
+    #####:  575:		bn_sub_part_words(&(t[n]),b,      &(b[n]),tnb,n-tnb); /* - */
+    #####:  576:		break;
+        -:  577:	case -3:
+        -:  578:		/* break; */
+        -:  579:	case -2:
+    #####:  580:		bn_sub_part_words(t,      &(a[n]),a,      tna,tna-n); /* - */
+    #####:  581:		bn_sub_part_words(&(t[n]),&(b[n]),b,      tnb,tnb-n); /* + */
+        -:  582:		neg=1;
+    #####:  583:		break;
+        -:  584:	case -1:
+        -:  585:	case 0:
+        -:  586:	case 1:
+        -:  587:		/* break; */
+        -:  588:	case 2:
+    #####:  589:		bn_sub_part_words(t,      a,      &(a[n]),tna,n-tna); /* + */
+    #####:  590:		bn_sub_part_words(&(t[n]),b,      &(b[n]),tnb,n-tnb); /* - */
+        -:  591:		neg=1;
+    #####:  592:		break;
+        -:  593:	case 3:
+        -:  594:		/* break; */
+        -:  595:	case 4:
+    #####:  596:		bn_sub_part_words(t,      a,      &(a[n]),tna,n-tna);
+    #####:  597:		bn_sub_part_words(&(t[n]),&(b[n]),b,      tnb,tnb-n);
+    #####:  598:		break;
+        -:  599:		}
+        -:  600:		/* The zero case isn't yet implemented here. The speedup
+        -:  601:		   would probably be negligible. */
+        -:  602:# if 0
+        -:  603:	if (n == 4)
+        -:  604:		{
+        -:  605:		bn_mul_comba4(&(t[n2]),t,&(t[n]));
+        -:  606:		bn_mul_comba4(r,a,b);
+        -:  607:		bn_mul_normal(&(r[n2]),&(a[n]),tn,&(b[n]),tn);
+        -:  608:		memset(&(r[n2+tn*2]),0,sizeof(BN_ULONG)*(n2-tn*2));
+        -:  609:		}
+        -:  610:	else
+        -:  611:# endif
+    #####:  612:	if (n == 8)
+        -:  613:		{
+    #####:  614:		bn_mul_comba8(&(t[n2]),t,&(t[n]));
+    #####:  615:		bn_mul_comba8(r,a,b);
+    #####:  616:		bn_mul_normal(&(r[n2]),&(a[n]),tna,&(b[n]),tnb);
+    #####:  617:		memset(&(r[n2+tna+tnb]),0,sizeof(BN_ULONG)*(n2-tna-tnb));
+        -:  618:		}
+        -:  619:	else
+        -:  620:		{
+    #####:  621:		p= &(t[n2*2]);
+    #####:  622:		bn_mul_recursive(&(t[n2]),t,&(t[n]),n,0,0,p);
+    #####:  623:		bn_mul_recursive(r,a,b,n,0,0,p);
+    #####:  624:		i=n/2;
+        -:  625:		/* If there is only a bottom half to the number,
+        -:  626:		 * just do it */
+    #####:  627:		if (tna > tnb)
+    #####:  628:			j = tna - i;
+        -:  629:		else
+    #####:  630:			j = tnb - i;
+    #####:  631:		if (j == 0)
+        -:  632:			{
+    #####:  633:			bn_mul_recursive(&(r[n2]),&(a[n]),&(b[n]),
+        -:  634:				i,tna-i,tnb-i,p);
+    #####:  635:			memset(&(r[n2+i*2]),0,sizeof(BN_ULONG)*(n2-i*2));
+        -:  636:			}
+    #####:  637:		else if (j > 0) /* eg, n == 16, i == 8 and tn == 11 */
+        -:  638:				{
+    #####:  639:				bn_mul_part_recursive(&(r[n2]),&(a[n]),&(b[n]),
+        -:  640:					i,tna-i,tnb-i,p);
+    #####:  641:				memset(&(r[n2+tna+tnb]),0,
+    #####:  642:					sizeof(BN_ULONG)*(n2-tna-tnb));
+        -:  643:				}
+        -:  644:		else /* (j < 0) eg, n == 16, i == 8 and tn == 5 */
+        -:  645:			{
+    #####:  646:			memset(&(r[n2]),0,sizeof(BN_ULONG)*n2);
+    #####:  647:			if (tna < BN_MUL_RECURSIVE_SIZE_NORMAL
+    #####:  648:				&& tnb < BN_MUL_RECURSIVE_SIZE_NORMAL)
+        -:  649:				{
+    #####:  650:				bn_mul_normal(&(r[n2]),&(a[n]),tna,&(b[n]),tnb);
+        -:  651:				}
+        -:  652:			else
+        -:  653:				{
+        -:  654:				for (;;)
+        -:  655:					{
+    #####:  656:					i/=2;
+        -:  657:					/* these simplified conditions work
+        -:  658:					 * exclusively because difference
+        -:  659:					 * between tna and tnb is 1 or 0 */
+    #####:  660:					if (i < tna || i < tnb)
+        -:  661:						{
+    #####:  662:						bn_mul_part_recursive(&(r[n2]),
+        -:  663:							&(a[n]),&(b[n]),
+        -:  664:							i,tna-i,tnb-i,p);
+    #####:  665:						break;
+        -:  666:						}
+    #####:  667:					else if (i == tna || i == tnb)
+        -:  668:						{
+    #####:  669:						bn_mul_recursive(&(r[n2]),
+        -:  670:							&(a[n]),&(b[n]),
+        -:  671:							i,tna-i,tnb-i,p);
+    #####:  672:						break;
+        -:  673:						}
+        -:  674:					}
+        -:  675:				}
+        -:  676:			}
+        -:  677:		}
+        -:  678:
+        -:  679:	/* t[32] holds (a[0]-a[1])*(b[1]-b[0]), c1 is the sign
+        -:  680:	 * r[10] holds (a[0]*b[0])
+        -:  681:	 * r[32] holds (b[1]*b[1])
+        -:  682:	 */
+        -:  683:
+    #####:  684:	c1=(int)(bn_add_words(t,r,&(r[n2]),n2));
+        -:  685:
+    #####:  686:	if (neg) /* if t[32] is negative */
+        -:  687:		{
+    #####:  688:		c1-=(int)(bn_sub_words(&(t[n2]),t,&(t[n2]),n2));
+        -:  689:		}
+        -:  690:	else
+        -:  691:		{
+        -:  692:		/* Might have a carry */
+    #####:  693:		c1+=(int)(bn_add_words(&(t[n2]),&(t[n2]),t,n2));
+        -:  694:		}
+        -:  695:
+        -:  696:	/* t[32] holds (a[0]-a[1])*(b[1]-b[0])+(a[0]*b[0])+(a[1]*b[1])
+        -:  697:	 * r[10] holds (a[0]*b[0])
+        -:  698:	 * r[32] holds (b[1]*b[1])
+        -:  699:	 * c1 holds the carry bits
+        -:  700:	 */
+    #####:  701:	c1+=(int)(bn_add_words(&(r[n]),&(r[n]),&(t[n2]),n2));
+    #####:  702:	if (c1)
+        -:  703:		{
+    #####:  704:		p= &(r[n+n2]);
+    #####:  705:		lo= *p;
+    #####:  706:		ln=(lo+c1)&BN_MASK2;
+    #####:  707:		*p=ln;
+        -:  708:
+        -:  709:		/* The overflow will stop before we over write
+        -:  710:		 * words we should not overwrite */
+    #####:  711:		if (ln < (BN_ULONG)c1)
+        -:  712:			{
+        -:  713:			do	{
+    #####:  714:				p++;
+    #####:  715:				lo= *p;
+    #####:  716:				ln=(lo+1)&BN_MASK2;
+    #####:  717:				*p=ln;
+    #####:  718:				} while (ln == 0);
+        -:  719:			}
+        -:  720:		}
+        -:  721:	}
+        -:  722:
+        -:  723:/* a and b must be the same size, which is n2.
+        -:  724: * r needs to be n2 words and t needs to be n2*2
+        -:  725: */
+    #####:  726:void bn_mul_low_recursive(BN_ULONG *r, BN_ULONG *a, BN_ULONG *b, int n2,
+        -:  727:	     BN_ULONG *t)
+        -:  728:	{
+    #####:  729:	int n=n2/2;
+        -:  730:
+        -:  731:# ifdef BN_COUNT
+        -:  732:	fprintf(stderr," bn_mul_low_recursive %d * %d\n",n2,n2);
+        -:  733:# endif
+        -:  734:
+    #####:  735:	bn_mul_recursive(r,a,b,n,0,0,&(t[0]));
+    #####:  736:	if (n >= BN_MUL_LOW_RECURSIVE_SIZE_NORMAL)
+        -:  737:		{
+    #####:  738:		bn_mul_low_recursive(&(t[0]),&(a[0]),&(b[n]),n,&(t[n2]));
+    #####:  739:		bn_add_words(&(r[n]),&(r[n]),&(t[0]),n);
+    #####:  740:		bn_mul_low_recursive(&(t[0]),&(a[n]),&(b[0]),n,&(t[n2]));
+    #####:  741:		bn_add_words(&(r[n]),&(r[n]),&(t[0]),n);
+        -:  742:		}
+        -:  743:	else
+        -:  744:		{
+    #####:  745:		bn_mul_low_normal(&(t[0]),&(a[0]),&(b[n]),n);
+    #####:  746:		bn_mul_low_normal(&(t[n]),&(a[n]),&(b[0]),n);
+    #####:  747:		bn_add_words(&(r[n]),&(r[n]),&(t[0]),n);
+    #####:  748:		bn_add_words(&(r[n]),&(r[n]),&(t[n]),n);
+        -:  749:		}
+    #####:  750:	}
+        -:  751:
+        -:  752:/* a and b must be the same size, which is n2.
+        -:  753: * r needs to be n2 words and t needs to be n2*2
+        -:  754: * l is the low words of the output.
+        -:  755: * t needs to be n2*3
+        -:  756: */
+    #####:  757:void bn_mul_high(BN_ULONG *r, BN_ULONG *a, BN_ULONG *b, BN_ULONG *l, int n2,
+        -:  758:	     BN_ULONG *t)
+        -:  759:	{
+        -:  760:	int i,n;
+        -:  761:	int c1,c2;
+        -:  762:	int neg,oneg,zero;
+        -:  763:	BN_ULONG ll,lc,*lp,*mp;
+        -:  764:
+        -:  765:# ifdef BN_COUNT
+        -:  766:	fprintf(stderr," bn_mul_high %d * %d\n",n2,n2);
+        -:  767:# endif
+    #####:  768:	n=n2/2;
+        -:  769:
+        -:  770:	/* Calculate (al-ah)*(bh-bl) */
+        -:  771:	neg=zero=0;
+    #####:  772:	c1=bn_cmp_words(&(a[0]),&(a[n]),n);
+    #####:  773:	c2=bn_cmp_words(&(b[n]),&(b[0]),n);
+    #####:  774:	switch (c1*3+c2)
+        -:  775:		{
+        -:  776:	case -4:
+    #####:  777:		bn_sub_words(&(r[0]),&(a[n]),&(a[0]),n);
+    #####:  778:		bn_sub_words(&(r[n]),&(b[0]),&(b[n]),n);
+    #####:  779:		break;
+        -:  780:	case -3:
+        -:  781:		zero=1;
+        -:  782:		break;
+        -:  783:	case -2:
+    #####:  784:		bn_sub_words(&(r[0]),&(a[n]),&(a[0]),n);
+    #####:  785:		bn_sub_words(&(r[n]),&(b[n]),&(b[0]),n);
+        -:  786:		neg=1;
+    #####:  787:		break;
+        -:  788:	case -1:
+        -:  789:	case 0:
+        -:  790:	case 1:
+        -:  791:		zero=1;
+        -:  792:		break;
+        -:  793:	case 2:
+    #####:  794:		bn_sub_words(&(r[0]),&(a[0]),&(a[n]),n);
+    #####:  795:		bn_sub_words(&(r[n]),&(b[0]),&(b[n]),n);
+        -:  796:		neg=1;
+    #####:  797:		break;
+        -:  798:	case 3:
+        -:  799:		zero=1;
+        -:  800:		break;
+        -:  801:	case 4:
+    #####:  802:		bn_sub_words(&(r[0]),&(a[0]),&(a[n]),n);
+    #####:  803:		bn_sub_words(&(r[n]),&(b[n]),&(b[0]),n);
+    #####:  804:		break;
+        -:  805:		}
+        -:  806:		
+        -:  807:	oneg=neg;
+        -:  808:	/* t[10] = (a[0]-a[1])*(b[1]-b[0]) */
+        -:  809:	/* r[10] = (a[1]*b[1]) */
+        -:  810:# ifdef BN_MUL_COMBA
+    #####:  811:	if (n == 8)
+        -:  812:		{
+    #####:  813:		bn_mul_comba8(&(t[0]),&(r[0]),&(r[n]));
+    #####:  814:		bn_mul_comba8(r,&(a[n]),&(b[n]));
+        -:  815:		}
+        -:  816:	else
+        -:  817:# endif
+        -:  818:		{
+    #####:  819:		bn_mul_recursive(&(t[0]),&(r[0]),&(r[n]),n,0,0,&(t[n2]));
+    #####:  820:		bn_mul_recursive(r,&(a[n]),&(b[n]),n,0,0,&(t[n2]));
+        -:  821:		}
+        -:  822:
+        -:  823:	/* s0 == low(al*bl)
+        -:  824:	 * s1 == low(ah*bh)+low((al-ah)*(bh-bl))+low(al*bl)+high(al*bl)
+        -:  825:	 * We know s0 and s1 so the only unknown is high(al*bl)
+        -:  826:	 * high(al*bl) == s1 - low(ah*bh+s0+(al-ah)*(bh-bl))
+        -:  827:	 * high(al*bl) == s1 - (r[0]+l[0]+t[0])
+        -:  828:	 */
+    #####:  829:	if (l != NULL)
+        -:  830:		{
+    #####:  831:		lp= &(t[n2+n]);
+    #####:  832:		c1=(int)(bn_add_words(lp,&(r[0]),&(l[0]),n));
+        -:  833:		}
+        -:  834:	else
+        -:  835:		{
+        -:  836:		c1=0;
+        -:  837:		lp= &(r[0]);
+        -:  838:		}
+        -:  839:
+    #####:  840:	if (neg)
+    #####:  841:		neg=(int)(bn_sub_words(&(t[n2]),lp,&(t[0]),n));
+        -:  842:	else
+        -:  843:		{
+    #####:  844:		bn_add_words(&(t[n2]),lp,&(t[0]),n);
+        -:  845:		neg=0;
+        -:  846:		}
+        -:  847:
+    #####:  848:	if (l != NULL)
+        -:  849:		{
+    #####:  850:		bn_sub_words(&(t[n2+n]),&(l[n]),&(t[n2]),n);
+        -:  851:		}
+        -:  852:	else
+        -:  853:		{
+    #####:  854:		lp= &(t[n2+n]);
+    #####:  855:		mp= &(t[n2]);
+    #####:  856:		for (i=0; i<n; i++)
+    #####:  857:			lp[i]=((~mp[i])+1)&BN_MASK2;
+        -:  858:		}
+        -:  859:
+        -:  860:	/* s[0] = low(al*bl)
+        -:  861:	 * t[3] = high(al*bl)
+        -:  862:	 * t[10] = (a[0]-a[1])*(b[1]-b[0]) neg is the sign
+        -:  863:	 * r[10] = (a[1]*b[1])
+        -:  864:	 */
+        -:  865:	/* R[10] = al*bl
+        -:  866:	 * R[21] = al*bl + ah*bh + (a[0]-a[1])*(b[1]-b[0])
+        -:  867:	 * R[32] = ah*bh
+        -:  868:	 */
+        -:  869:	/* R[1]=t[3]+l[0]+r[0](+-)t[0] (have carry/borrow)
+        -:  870:	 * R[2]=r[0]+t[3]+r[1](+-)t[1] (have carry/borrow)
+        -:  871:	 * R[3]=r[1]+(carry/borrow)
+        -:  872:	 */
+    #####:  873:	if (l != NULL)
+        -:  874:		{
+    #####:  875:		lp= &(t[n2]);
+    #####:  876:		c1= (int)(bn_add_words(lp,&(t[n2+n]),&(l[0]),n));
+        -:  877:		}
+        -:  878:	else
+        -:  879:		{
+    #####:  880:		lp= &(t[n2+n]);
+        -:  881:		c1=0;
+        -:  882:		}
+    #####:  883:	c1+=(int)(bn_add_words(&(t[n2]),lp,  &(r[0]),n));
+    #####:  884:	if (oneg)
+    #####:  885:		c1-=(int)(bn_sub_words(&(t[n2]),&(t[n2]),&(t[0]),n));
+        -:  886:	else
+    #####:  887:		c1+=(int)(bn_add_words(&(t[n2]),&(t[n2]),&(t[0]),n));
+        -:  888:
+    #####:  889:	c2 =(int)(bn_add_words(&(r[0]),&(r[0]),&(t[n2+n]),n));
+    #####:  890:	c2+=(int)(bn_add_words(&(r[0]),&(r[0]),&(r[n]),n));
+    #####:  891:	if (oneg)
+    #####:  892:		c2-=(int)(bn_sub_words(&(r[0]),&(r[0]),&(t[n]),n));
+        -:  893:	else
+    #####:  894:		c2+=(int)(bn_add_words(&(r[0]),&(r[0]),&(t[n]),n));
+        -:  895:	
+    #####:  896:	if (c1 != 0) /* Add starting at r[0], could be +ve or -ve */
+        -:  897:		{
+        -:  898:		i=0;
+    #####:  899:		if (c1 > 0)
+        -:  900:			{
+    #####:  901:			lc=c1;
+        -:  902:			do	{
+    #####:  903:				ll=(r[i]+lc)&BN_MASK2;
+    #####:  904:				r[i++]=ll;
+    #####:  905:				lc=(lc > ll);
+    #####:  906:				} while (lc);
+        -:  907:			}
+        -:  908:		else
+        -:  909:			{
+    #####:  910:			lc= -c1;
+        -:  911:			do	{
+    #####:  912:				ll=r[i];
+    #####:  913:				r[i++]=(ll-lc)&BN_MASK2;
+    #####:  914:				lc=(lc > ll);
+    #####:  915:				} while (lc);
+        -:  916:			}
+        -:  917:		}
+    #####:  918:	if (c2 != 0) /* Add starting at r[1] */
+        -:  919:		{
+        -:  920:		i=n;
+    #####:  921:		if (c2 > 0)
+        -:  922:			{
+    #####:  923:			lc=c2;
+        -:  924:			do	{
+    #####:  925:				ll=(r[i]+lc)&BN_MASK2;
+    #####:  926:				r[i++]=ll;
+    #####:  927:				lc=(lc > ll);
+    #####:  928:				} while (lc);
+        -:  929:			}
+        -:  930:		else
+        -:  931:			{
+    #####:  932:			lc= -c2;
+        -:  933:			do	{
+    #####:  934:				ll=r[i];
+    #####:  935:				r[i++]=(ll-lc)&BN_MASK2;
+    #####:  936:				lc=(lc > ll);
+    #####:  937:				} while (lc);
+        -:  938:			}
+        -:  939:		}
+    #####:  940:	}
+        -:  941:#endif /* BN_RECURSION */
+        -:  942:
+    11942:  943:int BN_mul(BIGNUM *r, const BIGNUM *a, const BIGNUM *b, BN_CTX *ctx)
+        -:  944:	{
+        -:  945:	int ret=0;
+        -:  946:	int top,al,bl;
+        -:  947:	BIGNUM *rr;
+        -:  948:#if defined(BN_MUL_COMBA) || defined(BN_RECURSION)
+        -:  949:	int i;
+        -:  950:#endif
+        -:  951:#ifdef BN_RECURSION
+        -:  952:	BIGNUM *t=NULL;
+        -:  953:	int j=0,k;
+        -:  954:#endif
+        -:  955:
+        -:  956:#ifdef BN_COUNT
+        -:  957:	fprintf(stderr,"BN_mul %d * %d\n",a->top,b->top);
+        -:  958:#endif
+        -:  959:
+        -:  960:	bn_check_top(a);
+        -:  961:	bn_check_top(b);
+        -:  962:	bn_check_top(r);
+        -:  963:
+    11942:  964:	al=a->top;
+    11942:  965:	bl=b->top;
+        -:  966:
+    11942:  967:	if ((al == 0) || (bl == 0))
+        -:  968:		{
+    #####:  969:		BN_zero(r);
+    #####:  970:		return(1);
+        -:  971:		}
+    11942:  972:	top=al+bl;
+        -:  973:
+    11942:  974:	BN_CTX_start(ctx);
+    11942:  975:	if ((r == a) || (r == b))
+        -:  976:		{
+    #####:  977:		if ((rr = BN_CTX_get(ctx)) == NULL) goto err;
+        -:  978:		}
+        -:  979:	else
+        -:  980:		rr = r;
+    11942:  981:	rr->neg=a->neg^b->neg;
+        -:  982:
+        -:  983:#if defined(BN_MUL_COMBA) || defined(BN_RECURSION)
+    11942:  984:	i = al-bl;
+        -:  985:#endif
+        -:  986:#ifdef BN_MUL_COMBA
+    11942:  987:	if (i == 0)
+        -:  988:		{
+        -:  989:# if 0
+        -:  990:		if (al == 4)
+        -:  991:			{
+        -:  992:			if (bn_wexpand(rr,8) == NULL) goto err;
+        -:  993:			rr->top=8;
+        -:  994:			bn_mul_comba4(rr->d,a->d,b->d);
+        -:  995:			goto end;
+        -:  996:			}
+        -:  997:# endif
+    #####:  998:		if (al == 8)
+        -:  999:			{
+    #####: 1000:			if (bn_wexpand(rr,16) == NULL) goto err;
+    #####: 1001:			rr->top=16;
+    #####: 1002:			bn_mul_comba8(rr->d,a->d,b->d);
+    #####: 1003:			goto end;
+        -: 1004:			}
+        -: 1005:		}
+        -: 1006:#endif /* BN_MUL_COMBA */
+        -: 1007:#ifdef BN_RECURSION
+    11942: 1008:	if ((al >= BN_MULL_SIZE_NORMAL) && (bl >= BN_MULL_SIZE_NORMAL))
+        -: 1009:		{
+    #####: 1010:		if (i >= -1 && i <= 1)
+        -: 1011:			{
+        -: 1012:			/* Find out the power of two lower or equal
+        -: 1013:			   to the longest of the two numbers */
+    #####: 1014:			if (i >= 0)
+        -: 1015:				{
+    #####: 1016:				j = BN_num_bits_word((BN_ULONG)al);
+        -: 1017:				}
+    #####: 1018:			if (i == -1)
+        -: 1019:				{
+    #####: 1020:				j = BN_num_bits_word((BN_ULONG)bl);
+        -: 1021:				}
+    #####: 1022:			j = 1<<(j-1);
+        -: 1023:			assert(j <= al || j <= bl);
+    #####: 1024:			k = j+j;
+    #####: 1025:			t = BN_CTX_get(ctx);
+    #####: 1026:			if (t == NULL)
+        -: 1027:				goto err;
+    #####: 1028:			if (al > j || bl > j)
+        -: 1029:				{
+    #####: 1030:				if (bn_wexpand(t,k*4) == NULL) goto err;
+    #####: 1031:				if (bn_wexpand(rr,k*4) == NULL) goto err;
+    #####: 1032:				bn_mul_part_recursive(rr->d,a->d,b->d,
+        -: 1033:					j,al-j,bl-j,t->d);
+        -: 1034:				}
+        -: 1035:			else	/* al <= j || bl <= j */
+        -: 1036:				{
+    #####: 1037:				if (bn_wexpand(t,k*2) == NULL) goto err;
+    #####: 1038:				if (bn_wexpand(rr,k*2) == NULL) goto err;
+    #####: 1039:				bn_mul_recursive(rr->d,a->d,b->d,
+        -: 1040:					j,al-j,bl-j,t->d);
+        -: 1041:				}
+    #####: 1042:			rr->top=top;
+    #####: 1043:			goto end;
+        -: 1044:			}
+        -: 1045:#if 0
+        -: 1046:		if (i == 1 && !BN_get_flags(b,BN_FLG_STATIC_DATA))
+        -: 1047:			{
+        -: 1048:			BIGNUM *tmp_bn = (BIGNUM *)b;
+        -: 1049:			if (bn_wexpand(tmp_bn,al) == NULL) goto err;
+        -: 1050:			tmp_bn->d[bl]=0;
+        -: 1051:			bl++;
+        -: 1052:			i--;
+        -: 1053:			}
+        -: 1054:		else if (i == -1 && !BN_get_flags(a,BN_FLG_STATIC_DATA))
+        -: 1055:			{
+        -: 1056:			BIGNUM *tmp_bn = (BIGNUM *)a;
+        -: 1057:			if (bn_wexpand(tmp_bn,bl) == NULL) goto err;
+        -: 1058:			tmp_bn->d[al]=0;
+        -: 1059:			al++;
+        -: 1060:			i++;
+        -: 1061:			}
+        -: 1062:		if (i == 0)
+        -: 1063:			{
+        -: 1064:			/* symmetric and > 4 */
+        -: 1065:			/* 16 or larger */
+        -: 1066:			j=BN_num_bits_word((BN_ULONG)al);
+        -: 1067:			j=1<<(j-1);
+        -: 1068:			k=j+j;
+        -: 1069:			t = BN_CTX_get(ctx);
+        -: 1070:			if (al == j) /* exact multiple */
+        -: 1071:				{
+        -: 1072:				if (bn_wexpand(t,k*2) == NULL) goto err;
+        -: 1073:				if (bn_wexpand(rr,k*2) == NULL) goto err;
+        -: 1074:				bn_mul_recursive(rr->d,a->d,b->d,al,t->d);
+        -: 1075:				}
+        -: 1076:			else
+        -: 1077:				{
+        -: 1078:				if (bn_wexpand(t,k*4) == NULL) goto err;
+        -: 1079:				if (bn_wexpand(rr,k*4) == NULL) goto err;
+        -: 1080:				bn_mul_part_recursive(rr->d,a->d,b->d,al-j,j,t->d);
+        -: 1081:				}
+        -: 1082:			rr->top=top;
+        -: 1083:			goto end;
+        -: 1084:			}
+        -: 1085:#endif
+        -: 1086:		}
+        -: 1087:#endif /* BN_RECURSION */
+    11942: 1088:	if (bn_wexpand(rr,top) == NULL) goto err;
+    11942: 1089:	rr->top=top;
+    11942: 1090:	bn_mul_normal(rr->d,a->d,al,b->d,bl);
+        -: 1091:
+        -: 1092:#if defined(BN_MUL_COMBA) || defined(BN_RECURSION)
+        -: 1093:end:
+        -: 1094:#endif
+    11942: 1095:	bn_correct_top(rr);
+    11942: 1096:	if (r != rr) BN_copy(r,rr);
+        -: 1097:	ret=1;
+        -: 1098:err:
+        -: 1099:	bn_check_top(r);
+    11942: 1100:	BN_CTX_end(ctx);
+    11942: 1101:	return(ret);
+        -: 1102:	}
+        -: 1103:
+    11942: 1104:void bn_mul_normal(BN_ULONG *r, BN_ULONG *a, int na, BN_ULONG *b, int nb)
+        -: 1105:	{
+        -: 1106:	BN_ULONG *rr;
+        -: 1107:
+        -: 1108:#ifdef BN_COUNT
+        -: 1109:	fprintf(stderr," bn_mul_normal %d * %d\n",na,nb);
+        -: 1110:#endif
+        -: 1111:
+    11942: 1112:	if (na < nb)
+        -: 1113:		{
+        -: 1114:		int itmp;
+        -: 1115:		BN_ULONG *ltmp;
+        -: 1116:
+        -: 1117:		itmp=na; na=nb; nb=itmp;
+        -: 1118:		ltmp=a;   a=b;   b=ltmp;
+        -: 1119:
+        -: 1120:		}
+    11942: 1121:	rr= &(r[na]);
+    11942: 1122:	if (nb <= 0)
+        -: 1123:		{
+    #####: 1124:		(void)bn_mul_words(r,a,na,0);
+    #####: 1125:		return;
+        -: 1126:		}
+        -: 1127:	else
+    11942: 1128:		rr[0]=bn_mul_words(r,a,na,b[0]);
+        -: 1129:
+        -: 1130:	for (;;)
+        -: 1131:		{
+    11942: 1132:		if (--nb <= 0) return;
+    #####: 1133:		rr[1]=bn_mul_add_words(&(r[1]),a,na,b[1]);
+    #####: 1134:		if (--nb <= 0) return;
+    #####: 1135:		rr[2]=bn_mul_add_words(&(r[2]),a,na,b[2]);
+    #####: 1136:		if (--nb <= 0) return;
+    #####: 1137:		rr[3]=bn_mul_add_words(&(r[3]),a,na,b[3]);
+    #####: 1138:		if (--nb <= 0) return;
+    #####: 1139:		rr[4]=bn_mul_add_words(&(r[4]),a,na,b[4]);
+    #####: 1140:		rr+=4;
+        -: 1141:		r+=4;
+    #####: 1142:		b+=4;
+    #####: 1143:		}
+        -: 1144:	}
+        -: 1145:
+    #####: 1146:void bn_mul_low_normal(BN_ULONG *r, BN_ULONG *a, BN_ULONG *b, int n)
+        -: 1147:	{
+        -: 1148:#ifdef BN_COUNT
+        -: 1149:	fprintf(stderr," bn_mul_low_normal %d * %d\n",n,n);
+        -: 1150:#endif
+    #####: 1151:	bn_mul_words(r,a,n,b[0]);
+        -: 1152:
+        -: 1153:	for (;;)
+        -: 1154:		{
+    #####: 1155:		if (--n <= 0) return;
+    #####: 1156:		bn_mul_add_words(&(r[1]),a,n,b[1]);
+    #####: 1157:		if (--n <= 0) return;
+    #####: 1158:		bn_mul_add_words(&(r[2]),a,n,b[2]);
+    #####: 1159:		if (--n <= 0) return;
+    #####: 1160:		bn_mul_add_words(&(r[3]),a,n,b[3]);
+    #####: 1161:		if (--n <= 0) return;
+    #####: 1162:		bn_mul_add_words(&(r[4]),a,n,b[4]);
+        -: 1163:		r+=4;
+    #####: 1164:		b+=4;
+    #####: 1165:		}
+        -: 1166:	}

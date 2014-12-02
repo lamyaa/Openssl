@@ -1,0 +1,401 @@
+        -:    0:Source:tasn_new.c
+        -:    0:Graph:tasn_new.gcno
+        -:    0:Data:tasn_new.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* tasn_new.c */
+        -:    2:/* Written by Dr Stephen N Henson (steve@openssl.org) for the OpenSSL
+        -:    3: * project 2000.
+        -:    4: */
+        -:    5:/* ====================================================================
+        -:    6: * Copyright (c) 2000-2004 The OpenSSL Project.  All rights reserved.
+        -:    7: *
+        -:    8: * Redistribution and use in source and binary forms, with or without
+        -:    9: * modification, are permitted provided that the following conditions
+        -:   10: * are met:
+        -:   11: *
+        -:   12: * 1. Redistributions of source code must retain the above copyright
+        -:   13: *    notice, this list of conditions and the following disclaimer. 
+        -:   14: *
+        -:   15: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   16: *    notice, this list of conditions and the following disclaimer in
+        -:   17: *    the documentation and/or other materials provided with the
+        -:   18: *    distribution.
+        -:   19: *
+        -:   20: * 3. All advertising materials mentioning features or use of this
+        -:   21: *    software must display the following acknowledgment:
+        -:   22: *    "This product includes software developed by the OpenSSL Project
+        -:   23: *    for use in the OpenSSL Toolkit. (http://www.OpenSSL.org/)"
+        -:   24: *
+        -:   25: * 4. The names "OpenSSL Toolkit" and "OpenSSL Project" must not be used to
+        -:   26: *    endorse or promote products derived from this software without
+        -:   27: *    prior written permission. For written permission, please contact
+        -:   28: *    licensing@OpenSSL.org.
+        -:   29: *
+        -:   30: * 5. Products derived from this software may not be called "OpenSSL"
+        -:   31: *    nor may "OpenSSL" appear in their names without prior written
+        -:   32: *    permission of the OpenSSL Project.
+        -:   33: *
+        -:   34: * 6. Redistributions of any form whatsoever must retain the following
+        -:   35: *    acknowledgment:
+        -:   36: *    "This product includes software developed by the OpenSSL Project
+        -:   37: *    for use in the OpenSSL Toolkit (http://www.OpenSSL.org/)"
+        -:   38: *
+        -:   39: * THIS SOFTWARE IS PROVIDED BY THE OpenSSL PROJECT ``AS IS'' AND ANY
+        -:   40: * EXPRESSED OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   41: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+        -:   42: * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE OpenSSL PROJECT OR
+        -:   43: * ITS CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+        -:   44: * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+        -:   45: * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+        -:   46: * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   47: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+        -:   48: * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+        -:   49: * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+        -:   50: * OF THE POSSIBILITY OF SUCH DAMAGE.
+        -:   51: * ====================================================================
+        -:   52: *
+        -:   53: * This product includes cryptographic software written by Eric Young
+        -:   54: * (eay@cryptsoft.com).  This product includes software written by Tim
+        -:   55: * Hudson (tjh@cryptsoft.com).
+        -:   56: *
+        -:   57: */
+        -:   58:
+        -:   59:
+        -:   60:#include <stddef.h>
+        -:   61:#include <openssl/asn1.h>
+        -:   62:#include <openssl/objects.h>
+        -:   63:#include <openssl/err.h>
+        -:   64:#include <openssl/asn1t.h>
+        -:   65:#include <string.h>
+        -:   66:
+        -:   67:static int asn1_item_ex_combine_new(ASN1_VALUE **pval, const ASN1_ITEM *it,
+        -:   68:								int combine);
+        -:   69:static void asn1_item_clear(ASN1_VALUE **pval, const ASN1_ITEM *it);
+        -:   70:static void asn1_template_clear(ASN1_VALUE **pval, const ASN1_TEMPLATE *tt);
+        -:   71:static void asn1_primitive_clear(ASN1_VALUE **pval, const ASN1_ITEM *it);
+        -:   72:
+   391875:   73:ASN1_VALUE *ASN1_item_new(const ASN1_ITEM *it)
+        -:   74:	{
+   391875:   75:	ASN1_VALUE *ret = NULL;
+   391875:   76:	if (ASN1_item_ex_new(&ret, it) > 0)
+   391875:   77:		return ret;
+        -:   78:	return NULL;
+        -:   79:	}
+        -:   80:
+        -:   81:/* Allocate an ASN1 structure */
+        -:   82:
+   637917:   83:int ASN1_item_ex_new(ASN1_VALUE **pval, const ASN1_ITEM *it)
+        -:   84:	{
+  1029792:   85:	return asn1_item_ex_combine_new(pval, it, 0);
+        -:   86:	}
+        -:   87:
+  3143554:   88:static int asn1_item_ex_combine_new(ASN1_VALUE **pval, const ASN1_ITEM *it,
+        -:   89:								int combine)
+        -:   90:	{
+        -:   91:	const ASN1_TEMPLATE *tt = NULL;
+        -:   92:	const ASN1_COMPAT_FUNCS *cf;
+        -:   93:	const ASN1_EXTERN_FUNCS *ef;
+  3143554:   94:	const ASN1_AUX *aux = it->funcs;
+        -:   95:	ASN1_aux_cb *asn1_cb;
+        -:   96:	ASN1_VALUE **pseqval;
+        -:   97:	int i;
+  3143554:   98:	if (aux && aux->asn1_cb)
+    78494:   99:		asn1_cb = aux->asn1_cb;
+        -:  100:	else
+        -:  101:		asn1_cb = 0;
+        -:  102:
+  3143554:  103:	if (!combine) *pval = NULL;
+        -:  104:
+        -:  105:#ifdef CRYPTO_MDEBUG
+        -:  106:	if (it->sname)
+        -:  107:		CRYPTO_push_info(it->sname);
+        -:  108:#endif
+        -:  109:
+  3143554:  110:	switch(it->itype)
+        -:  111:		{
+        -:  112:
+        -:  113:		case ASN1_ITYPE_EXTERN:
+    59950:  114:		ef = it->funcs;
+    59950:  115:		if (ef && ef->asn1_ex_new)
+        -:  116:			{
+    59950:  117:			if (!ef->asn1_ex_new(pval, it))
+        -:  118:				goto memerr;
+        -:  119:			}
+        -:  120:		break;
+        -:  121:
+        -:  122:		case ASN1_ITYPE_COMPAT:
+    #####:  123:		cf = it->funcs;
+    #####:  124:		if (cf && cf->asn1_new) {
+    #####:  125:			*pval = cf->asn1_new();
+    #####:  126:			if (!*pval)
+        -:  127:				goto memerr;
+        -:  128:		}
+        -:  129:		break;
+        -:  130:
+        -:  131:		case ASN1_ITYPE_PRIMITIVE:
+  1323921:  132:		if (it->templates)
+        -:  133:			{
+    #####:  134:			if (!ASN1_template_new(pval, it->templates))
+        -:  135:				goto memerr;
+        -:  136:			}
+  1323921:  137:		else if (!ASN1_primitive_new(pval, it))
+        -:  138:				goto memerr;
+        -:  139:		break;
+        -:  140:
+        -:  141:		case ASN1_ITYPE_MSTRING:
+   639966:  142:		if (!ASN1_primitive_new(pval, it))
+        -:  143:				goto memerr;
+        -:  144:		break;
+        -:  145:
+        -:  146:		case ASN1_ITYPE_CHOICE:
+    45815:  147:		if (asn1_cb)
+        -:  148:			{
+     6602:  149:			i = asn1_cb(ASN1_OP_NEW_PRE, pval, it, NULL);
+     6602:  150:			if (!i)
+        -:  151:				goto auxerr;
+     6602:  152:			if (i==2)
+        -:  153:				{
+        -:  154:#ifdef CRYPTO_MDEBUG
+        -:  155:				if (it->sname)
+        -:  156:					CRYPTO_pop_info();
+        -:  157:#endif
+        -:  158:				return 1;
+        -:  159:				}
+        -:  160:			}
+    45815:  161:		if (!combine)
+        -:  162:			{
+    45815:  163:			*pval = OPENSSL_malloc(it->size);
+    45815:  164:			if (!*pval)
+        -:  165:				goto memerr;
+    45815:  166:			memset(*pval, 0, it->size);
+        -:  167:			}
+    45815:  168:		asn1_set_choice_selector(pval, -1, it);
+    45815:  169:		if (asn1_cb && !asn1_cb(ASN1_OP_NEW_POST, pval, it, NULL))
+        -:  170:				goto auxerr;
+        -:  171:		break;
+        -:  172:
+        -:  173:		case ASN1_ITYPE_NDEF_SEQUENCE:
+        -:  174:		case ASN1_ITYPE_SEQUENCE:
+  1073902:  175:		if (asn1_cb)
+        -:  176:			{
+    71892:  177:			i = asn1_cb(ASN1_OP_NEW_PRE, pval, it, NULL);
+    71892:  178:			if (!i)
+        -:  179:				goto auxerr;
+    71892:  180:			if (i==2)
+        -:  181:				{
+        -:  182:#ifdef CRYPTO_MDEBUG
+        -:  183:				if (it->sname)
+        -:  184:					CRYPTO_pop_info();
+        -:  185:#endif
+        -:  186:				return 1;
+        -:  187:				}
+        -:  188:			}
+  1061960:  189:		if (!combine)
+        -:  190:			{
+  1061960:  191:			*pval = OPENSSL_malloc(it->size);
+  1061960:  192:			if (!*pval)
+        -:  193:				goto memerr;
+  1061960:  194:			memset(*pval, 0, it->size);
+  1061960:  195:			asn1_do_lock(pval, 0, it);
+  1061960:  196:			asn1_enc_init(pval, it);
+        -:  197:			}
+  3704146:  198:		for (i = 0, tt = it->templates; i < it->tcount; tt++, i++)
+        -:  199:			{
+  2642186:  200:			pseqval = asn1_get_field_ptr(pval, tt);
+  2642186:  201:			if (!ASN1_template_new(pseqval, tt))
+        -:  202:				goto memerr;
+        -:  203:			}
+  1061960:  204:		if (asn1_cb && !asn1_cb(ASN1_OP_NEW_POST, pval, it, NULL))
+        -:  205:				goto auxerr;
+        -:  206:		break;
+        -:  207:	}
+        -:  208:#ifdef CRYPTO_MDEBUG
+        -:  209:	if (it->sname) CRYPTO_pop_info();
+        -:  210:#endif
+        -:  211:	return 1;
+        -:  212:
+        -:  213:	memerr:
+    #####:  214:	ASN1err(ASN1_F_ASN1_ITEM_EX_COMBINE_NEW, ERR_R_MALLOC_FAILURE);
+        -:  215:#ifdef CRYPTO_MDEBUG
+        -:  216:	if (it->sname) CRYPTO_pop_info();
+        -:  217:#endif
+    #####:  218:	return 0;
+        -:  219:
+        -:  220:	auxerr:
+    #####:  221:	ASN1err(ASN1_F_ASN1_ITEM_EX_COMBINE_NEW, ASN1_R_AUX_ERROR);
+    #####:  222:	ASN1_item_ex_free(pval, it);
+        -:  223:#ifdef CRYPTO_MDEBUG
+        -:  224:	if (it->sname) CRYPTO_pop_info();
+        -:  225:#endif
+    #####:  226:	return 0;
+        -:  227:
+        -:  228:	}
+        -:  229:
+   479066:  230:static void asn1_item_clear(ASN1_VALUE **pval, const ASN1_ITEM *it)
+        -:  231:	{
+        -:  232:	const ASN1_EXTERN_FUNCS *ef;
+        -:  233:
+   479066:  234:	switch(it->itype)
+        -:  235:		{
+        -:  236:
+        -:  237:		case ASN1_ITYPE_EXTERN:
+    #####:  238:		ef = it->funcs;
+    #####:  239:		if (ef && ef->asn1_ex_clear) 
+    #####:  240:			ef->asn1_ex_clear(pval, it);
+    #####:  241:		else *pval = NULL;
+        -:  242:		break;
+        -:  243:
+        -:  244:
+        -:  245:		case ASN1_ITYPE_PRIMITIVE:
+   472464:  246:		if (it->templates) 
+    #####:  247:			asn1_template_clear(pval, it->templates);
+        -:  248:		else
+   472464:  249:			asn1_primitive_clear(pval, it);
+        -:  250:		break;
+        -:  251:
+        -:  252:		case ASN1_ITYPE_MSTRING:
+    #####:  253:		asn1_primitive_clear(pval, it);
+    #####:  254:		break;
+        -:  255:
+        -:  256:		case ASN1_ITYPE_COMPAT:
+        -:  257:		case ASN1_ITYPE_CHOICE:
+        -:  258:		case ASN1_ITYPE_SEQUENCE:
+        -:  259:		case ASN1_ITYPE_NDEF_SEQUENCE:
+     6602:  260:		*pval = NULL;
+     6602:  261:		break;
+        -:  262:		}
+   479066:  263:	}
+        -:  264:
+        -:  265:
+  2642186:  266:int ASN1_template_new(ASN1_VALUE **pval, const ASN1_TEMPLATE *tt)
+        -:  267:	{
+  2642186:  268:	const ASN1_ITEM *it = ASN1_ITEM_ptr(tt->item);
+        -:  269:	int ret;
+  2642186:  270:	if (tt->flags & ASN1_TFLG_OPTIONAL)
+        -:  271:		{
+        -:  272:		asn1_template_clear(pval, tt);
+        -:  273:		return 1;
+        -:  274:		}
+        -:  275:	/* If ANY DEFINED BY nothing to do */
+        -:  276:
+  2113762:  277:	if (tt->flags & ASN1_TFLG_ADB_MASK)
+        -:  278:		{
+    #####:  279:		*pval = NULL;
+    #####:  280:		return 1;
+        -:  281:		}
+        -:  282:#ifdef CRYPTO_MDEBUG
+        -:  283:	if (tt->field_name)
+        -:  284:		CRYPTO_push_info(tt->field_name);
+        -:  285:#endif
+        -:  286:	/* If SET OF or SEQUENCE OF, its a STACK */
+  2113762:  287:	if (tt->flags & ASN1_TFLG_SK_MASK)
+        -:  288:		{
+        -:  289:		STACK_OF(ASN1_VALUE) *skval;
+    #####:  290:		skval = sk_ASN1_VALUE_new_null();
+    #####:  291:		if (!skval)
+        -:  292:			{
+    #####:  293:			ASN1err(ASN1_F_ASN1_TEMPLATE_NEW, ERR_R_MALLOC_FAILURE);
+        -:  294:			ret = 0;
+    #####:  295:			goto done;
+        -:  296:			}
+    #####:  297:		*pval = (ASN1_VALUE *)skval;
+        -:  298:		ret = 1;
+    #####:  299:		goto done;
+        -:  300:		}
+        -:  301:	/* Otherwise pass it back to the item routine */
+  2113762:  302:	ret = asn1_item_ex_combine_new(pval, it, tt->flags & ASN1_TFLG_COMBINE);
+        -:  303:	done:
+        -:  304:#ifdef CRYPTO_MDEBUG
+        -:  305:	if (it->sname)
+        -:  306:		CRYPTO_pop_info();
+        -:  307:#endif
+  2113762:  308:	return ret;
+        -:  309:	}
+        -:  310:
+    #####:  311:static void asn1_template_clear(ASN1_VALUE **pval, const ASN1_TEMPLATE *tt)
+        -:  312:	{
+        -:  313:	/* If ADB or STACK just NULL the field */
+   528424:  314:	if (tt->flags & (ASN1_TFLG_ADB_MASK|ASN1_TFLG_SK_MASK)) 
+    49358:  315:		*pval = NULL;
+        -:  316:	else
+   479066:  317:		asn1_item_clear(pval, ASN1_ITEM_ptr(tt->item));
+    #####:  318:	}
+        -:  319:
+        -:  320:
+        -:  321:/* NB: could probably combine most of the real XXX_new() behaviour and junk
+        -:  322: * all the old functions.
+        -:  323: */
+        -:  324:
+  1963887:  325:int ASN1_primitive_new(ASN1_VALUE **pval, const ASN1_ITEM *it)
+        -:  326:	{
+        -:  327:	ASN1_TYPE *typ;
+        -:  328:	ASN1_STRING *str;
+        -:  329:	int utype;
+        -:  330:
+  1963887:  331:	if (it && it->funcs)
+        -:  332:		{
+        -:  333:		const ASN1_PRIMITIVE_FUNCS *pf = it->funcs;
+    #####:  334:		if (pf->prim_new)
+    #####:  335:			return pf->prim_new(pval, it);
+        -:  336:		}
+        -:  337:
+  1963887:  338:	if (!it || (it->itype == ASN1_ITYPE_MSTRING))
+        -:  339:		utype = -1;
+        -:  340:	else
+  1323921:  341:		utype = it->utype;
+  1963887:  342:	switch(utype)
+        -:  343:		{
+        -:  344:		case V_ASN1_OBJECT:
+   911035:  345:		*pval = (ASN1_VALUE *)OBJ_nid2obj(NID_undef);
+   911035:  346:		return 1;
+        -:  347:
+        -:  348:		case V_ASN1_BOOLEAN:
+    #####:  349:		*(ASN1_BOOLEAN *)pval = it->size;
+    #####:  350:		return 1;
+        -:  351:
+        -:  352:		case V_ASN1_NULL:
+    #####:  353:		*pval = (ASN1_VALUE *)1;
+    #####:  354:		return 1;
+        -:  355:
+        -:  356:		case V_ASN1_ANY:
+    91911:  357:		typ = OPENSSL_malloc(sizeof(ASN1_TYPE));
+    91911:  358:		if (!typ)
+        -:  359:			return 0;
+    91911:  360:		typ->value.ptr = NULL;
+    91911:  361:		typ->type = -1;
+    91911:  362:		*pval = (ASN1_VALUE *)typ;
+    91911:  363:		break;
+        -:  364:
+        -:  365:		default:
+   960941:  366:		str = ASN1_STRING_type_new(utype);
+   960941:  367:		if (it->itype == ASN1_ITYPE_MSTRING && str)
+   639966:  368:			str->flags |= ASN1_STRING_FLAG_MSTRING;
+   960941:  369:		*pval = (ASN1_VALUE *)str;
+   960941:  370:		break;
+        -:  371:		}
+  1052852:  372:	if (*pval)
+        -:  373:		return 1;
+    #####:  374:	return 0;
+        -:  375:	}
+        -:  376:
+   472464:  377:static void asn1_primitive_clear(ASN1_VALUE **pval, const ASN1_ITEM *it)
+        -:  378:	{
+        -:  379:	int utype;
+   472464:  380:	if (it && it->funcs)
+        -:  381:		{
+        -:  382:		const ASN1_PRIMITIVE_FUNCS *pf = it->funcs;
+    #####:  383:		if (pf->prim_clear)
+    #####:  384:			pf->prim_clear(pval, it);
+        -:  385:		else 
+    #####:  386:			*pval = NULL;
+   472464:  387:		return;
+        -:  388:		}
+   472464:  389:	if (!it || (it->itype == ASN1_ITYPE_MSTRING))
+        -:  390:		utype = -1;
+        -:  391:	else
+   472464:  392:		utype = it->utype;
+   472464:  393:	if (utype == V_ASN1_BOOLEAN)
+   238808:  394:		*(ASN1_BOOLEAN *)pval = it->size;
+   233656:  395:	else *pval = NULL;
+        -:  396:	}

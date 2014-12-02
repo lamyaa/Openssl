@@ -1,0 +1,575 @@
+        -:    0:Source:pkeyutl.c
+        -:    0:Graph:pkeyutl.gcno
+        -:    0:Data:pkeyutl.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* Written by Dr Stephen N Henson (steve@openssl.org) for the OpenSSL
+        -:    2: * project 2006.
+        -:    3: */
+        -:    4:/* ====================================================================
+        -:    5: * Copyright (c) 2006 The OpenSSL Project.  All rights reserved.
+        -:    6: *
+        -:    7: * Redistribution and use in source and binary forms, with or without
+        -:    8: * modification, are permitted provided that the following conditions
+        -:    9: * are met:
+        -:   10: *
+        -:   11: * 1. Redistributions of source code must retain the above copyright
+        -:   12: *    notice, this list of conditions and the following disclaimer. 
+        -:   13: *
+        -:   14: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   15: *    notice, this list of conditions and the following disclaimer in
+        -:   16: *    the documentation and/or other materials provided with the
+        -:   17: *    distribution.
+        -:   18: *
+        -:   19: * 3. All advertising materials mentioning features or use of this
+        -:   20: *    software must display the following acknowledgment:
+        -:   21: *    "This product includes software developed by the OpenSSL Project
+        -:   22: *    for use in the OpenSSL Toolkit. (http://www.OpenSSL.org/)"
+        -:   23: *
+        -:   24: * 4. The names "OpenSSL Toolkit" and "OpenSSL Project" must not be used to
+        -:   25: *    endorse or promote products derived from this software without
+        -:   26: *    prior written permission. For written permission, please contact
+        -:   27: *    licensing@OpenSSL.org.
+        -:   28: *
+        -:   29: * 5. Products derived from this software may not be called "OpenSSL"
+        -:   30: *    nor may "OpenSSL" appear in their names without prior written
+        -:   31: *    permission of the OpenSSL Project.
+        -:   32: *
+        -:   33: * 6. Redistributions of any form whatsoever must retain the following
+        -:   34: *    acknowledgment:
+        -:   35: *    "This product includes software developed by the OpenSSL Project
+        -:   36: *    for use in the OpenSSL Toolkit (http://www.OpenSSL.org/)"
+        -:   37: *
+        -:   38: * THIS SOFTWARE IS PROVIDED BY THE OpenSSL PROJECT ``AS IS'' AND ANY
+        -:   39: * EXPRESSED OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   40: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+        -:   41: * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE OpenSSL PROJECT OR
+        -:   42: * ITS CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+        -:   43: * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+        -:   44: * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+        -:   45: * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   46: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+        -:   47: * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+        -:   48: * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+        -:   49: * OF THE POSSIBILITY OF SUCH DAMAGE.
+        -:   50: * ====================================================================
+        -:   51: *
+        -:   52: * This product includes cryptographic software written by Eric Young
+        -:   53: * (eay@cryptsoft.com).  This product includes software written by Tim
+        -:   54: * Hudson (tjh@cryptsoft.com).
+        -:   55: *
+        -:   56: */
+        -:   57:
+        -:   58:
+        -:   59:#include "apps.h"
+        -:   60:#include <string.h>
+        -:   61:#include <openssl/err.h>
+        -:   62:#include <openssl/pem.h>
+        -:   63:#include <openssl/evp.h>
+        -:   64:
+        -:   65:#define KEY_PRIVKEY	1
+        -:   66:#define KEY_PUBKEY	2
+        -:   67:#define KEY_CERT	3
+        -:   68:
+        -:   69:static void usage(void);
+        -:   70:
+        -:   71:#undef PROG
+        -:   72:
+        -:   73:#define PROG pkeyutl_main
+        -:   74:
+        -:   75:static EVP_PKEY_CTX *init_ctx(int *pkeysize,
+        -:   76:				char *keyfile, int keyform, int key_type,
+        -:   77:				char *passargin, int pkey_op, ENGINE *e);
+        -:   78:
+        -:   79:static int setup_peer(BIO *err, EVP_PKEY_CTX *ctx, int peerform,
+        -:   80:							const char *file);
+        -:   81:
+        -:   82:static int do_keyop(EVP_PKEY_CTX *ctx, int pkey_op,
+        -:   83:		unsigned char *out, size_t *poutlen,
+        -:   84:		unsigned char *in, size_t inlen);
+        -:   85:
+        -:   86:int MAIN(int argc, char **);
+        -:   87:
+    #####:   88:int MAIN(int argc, char **argv)
+        -:   89:{
+        -:   90:	BIO *in = NULL, *out = NULL;
+        -:   91:	char *infile = NULL, *outfile = NULL, *sigfile = NULL;
+        -:   92:	ENGINE *e = NULL;
+        -:   93:	int pkey_op = EVP_PKEY_OP_SIGN, key_type = KEY_PRIVKEY;
+        -:   94:	int keyform = FORMAT_PEM, peerform = FORMAT_PEM;
+        -:   95:	char badarg = 0, rev = 0;
+        -:   96:	char hexdump = 0, asn1parse = 0;
+        -:   97:	EVP_PKEY_CTX *ctx = NULL;
+        -:   98:	char *passargin = NULL;
+    #####:   99:	int keysize = -1;
+        -:  100:
+    #####:  101:	unsigned char *buf_in = NULL, *buf_out = NULL, *sig = NULL;
+        -:  102:	size_t buf_outlen;
+        -:  103:	int buf_inlen = 0, siglen = -1;
+        -:  104:
+        -:  105:	int ret = 1, rv = -1;
+        -:  106:
+    #####:  107:	argc--;
+    #####:  108:	argv++;
+        -:  109:
+    #####:  110:	if(!bio_err) bio_err = BIO_new_fp(stderr, BIO_NOCLOSE);
+        -:  111:
+    #####:  112:	if (!load_config(bio_err, NULL))
+        -:  113:		goto end;
+    #####:  114:	ERR_load_crypto_strings();
+    #####:  115:	OpenSSL_add_all_algorithms();
+        -:  116:	
+    #####:  117:	while(argc >= 1)
+        -:  118:		{
+    #####:  119:		if (!strcmp(*argv,"-in"))
+        -:  120:			{
+    #####:  121:			if (--argc < 1) badarg = 1;
+    #####:  122:                        else infile= *(++argv);
+        -:  123:			}
+    #####:  124:		else if (!strcmp(*argv,"-out"))
+        -:  125:			{
+    #####:  126:			if (--argc < 1) badarg = 1;
+    #####:  127:			else outfile= *(++argv);
+        -:  128:			}
+    #####:  129:		else if (!strcmp(*argv,"-sigfile"))
+        -:  130:			{
+    #####:  131:			if (--argc < 1) badarg = 1;
+    #####:  132:			else sigfile= *(++argv);
+        -:  133:			}
+    #####:  134:		else if(!strcmp(*argv, "-inkey"))
+        -:  135:			{
+    #####:  136:			if (--argc < 1)
+        -:  137:				badarg = 1;
+        -:  138:			else
+        -:  139:				{
+    #####:  140:				ctx = init_ctx(&keysize,
+        -:  141:						*(++argv), keyform, key_type,
+        -:  142:						passargin, pkey_op, e);
+    #####:  143:				if (!ctx)
+        -:  144:					{
+    #####:  145:					BIO_puts(bio_err,
+        -:  146:						"Error initializing context\n");
+    #####:  147:					ERR_print_errors(bio_err);
+        -:  148:					badarg = 1;
+        -:  149:					}
+        -:  150:				}
+        -:  151:			}
+    #####:  152:		else if (!strcmp(*argv,"-peerkey"))
+        -:  153:			{
+    #####:  154:			if (--argc < 1)
+        -:  155:				badarg = 1;
+    #####:  156:			else if (!setup_peer(bio_err, ctx, peerform, *(++argv)))
+        -:  157:				badarg = 1;
+        -:  158:			}
+    #####:  159:		else if (!strcmp(*argv,"-passin"))
+        -:  160:			{
+    #####:  161:			if (--argc < 1) badarg = 1;
+    #####:  162:			else passargin= *(++argv);
+        -:  163:			}
+    #####:  164:		else if (strcmp(*argv,"-peerform") == 0)
+        -:  165:			{
+    #####:  166:			if (--argc < 1) badarg = 1;
+    #####:  167:			else peerform=str2fmt(*(++argv));
+        -:  168:			}
+    #####:  169:		else if (strcmp(*argv,"-keyform") == 0)
+        -:  170:			{
+    #####:  171:			if (--argc < 1) badarg = 1;
+    #####:  172:			else keyform=str2fmt(*(++argv));
+        -:  173:			}
+        -:  174:#ifndef OPENSSL_NO_ENGINE
+    #####:  175:		else if(!strcmp(*argv, "-engine"))
+        -:  176:			{
+    #####:  177:			if (--argc < 1)
+        -:  178:				badarg = 1;
+        -:  179:			else
+    #####:  180:				e = setup_engine(bio_err, *(++argv), 0);
+        -:  181:			}
+        -:  182:#endif
+    #####:  183:		else if(!strcmp(*argv, "-pubin"))
+        -:  184:			key_type = KEY_PUBKEY;
+    #####:  185:		else if(!strcmp(*argv, "-certin"))
+        -:  186:			key_type = KEY_CERT;
+    #####:  187:		else if(!strcmp(*argv, "-asn1parse"))
+        -:  188:			asn1parse = 1;
+    #####:  189:		else if(!strcmp(*argv, "-hexdump"))
+        -:  190:			hexdump = 1;
+    #####:  191:		else if(!strcmp(*argv, "-sign"))
+        -:  192:			pkey_op = EVP_PKEY_OP_SIGN;
+    #####:  193:		else if(!strcmp(*argv, "-verify"))
+        -:  194:			pkey_op = EVP_PKEY_OP_VERIFY;
+    #####:  195:		else if(!strcmp(*argv, "-verifyrecover"))
+        -:  196:			pkey_op = EVP_PKEY_OP_VERIFYRECOVER;
+    #####:  197:		else if(!strcmp(*argv, "-rev"))
+        -:  198:			rev = 1;
+    #####:  199:		else if(!strcmp(*argv, "-encrypt"))
+        -:  200:			pkey_op = EVP_PKEY_OP_ENCRYPT;
+    #####:  201:		else if(!strcmp(*argv, "-decrypt"))
+        -:  202:			pkey_op = EVP_PKEY_OP_DECRYPT;
+    #####:  203:		else if(!strcmp(*argv, "-derive"))
+        -:  204:			pkey_op = EVP_PKEY_OP_DERIVE;
+    #####:  205:		else if (strcmp(*argv,"-pkeyopt") == 0)
+        -:  206:			{
+    #####:  207:			if (--argc < 1)
+        -:  208:				badarg = 1;
+    #####:  209:			else if (!ctx)
+        -:  210:				{
+    #####:  211:				BIO_puts(bio_err,
+        -:  212:					"-pkeyopt command before -inkey\n");
+        -:  213:				badarg = 1;
+        -:  214:				}
+    #####:  215:			else if (pkey_ctrl_string(ctx, *(++argv)) <= 0)
+        -:  216:				{
+    #####:  217:				BIO_puts(bio_err, "parameter setting error\n");
+    #####:  218:				ERR_print_errors(bio_err);
+    #####:  219:				goto end;
+        -:  220:				}
+        -:  221:			}
+        -:  222:		else badarg = 1;
+    #####:  223:		if(badarg)
+        -:  224:			{
+    #####:  225:			usage();
+    #####:  226:			goto end;
+        -:  227:			}
+    #####:  228:		argc--;
+    #####:  229:		argv++;
+        -:  230:		}
+        -:  231:
+    #####:  232:	if (!ctx)
+        -:  233:		{
+    #####:  234:		usage();
+    #####:  235:		goto end;
+        -:  236:		}
+        -:  237:
+    #####:  238:	if (sigfile && (pkey_op != EVP_PKEY_OP_VERIFY))
+        -:  239:		{
+    #####:  240:		BIO_puts(bio_err, "Signature file specified for non verify\n");
+    #####:  241:		goto end;
+        -:  242:		}
+        -:  243:
+    #####:  244:	if (!sigfile && (pkey_op == EVP_PKEY_OP_VERIFY))
+        -:  245:		{
+    #####:  246:		BIO_puts(bio_err, "No signature file specified for verify\n");
+    #####:  247:		goto end;
+        -:  248:		}
+        -:  249:
+        -:  250:/* FIXME: seed PRNG only if needed */
+    #####:  251:	app_RAND_load_file(NULL, bio_err, 0);
+        -:  252:
+    #####:  253:	if (pkey_op != EVP_PKEY_OP_DERIVE)
+        -:  254:		{
+    #####:  255:		if(infile)
+        -:  256:			{
+    #####:  257:			if(!(in = BIO_new_file(infile, "rb")))
+        -:  258:				{
+    #####:  259:				BIO_puts(bio_err,
+        -:  260:					"Error Opening Input File\n");
+    #####:  261:				ERR_print_errors(bio_err);	
+    #####:  262:				goto end;
+        -:  263:				}
+        -:  264:			}
+        -:  265:		else
+    #####:  266:			in = BIO_new_fp(stdin, BIO_NOCLOSE);
+        -:  267:		}
+        -:  268:
+    #####:  269:	if(outfile)
+        -:  270:		{
+    #####:  271:		if(!(out = BIO_new_file(outfile, "wb")))
+        -:  272:			{
+    #####:  273:			BIO_printf(bio_err, "Error Creating Output File\n");
+    #####:  274:			ERR_print_errors(bio_err);	
+    #####:  275:			goto end;
+        -:  276:			}
+        -:  277:		}
+        -:  278:	else
+        -:  279:		{
+    #####:  280:		out = BIO_new_fp(stdout, BIO_NOCLOSE);
+        -:  281:#ifdef OPENSSL_SYS_VMS
+        -:  282:		{
+        -:  283:		    BIO *tmpbio = BIO_new(BIO_f_linebuffer());
+        -:  284:		    out = BIO_push(tmpbio, out);
+        -:  285:		}
+        -:  286:#endif
+        -:  287:	}
+        -:  288:
+    #####:  289:	if (sigfile)
+        -:  290:		{
+    #####:  291:		BIO *sigbio = BIO_new_file(sigfile, "rb");
+    #####:  292:		if (!sigbio)
+        -:  293:			{
+    #####:  294:			BIO_printf(bio_err, "Can't open signature file %s\n",
+        -:  295:								sigfile);
+    #####:  296:			goto end;
+        -:  297:			}
+    #####:  298:		siglen = bio_to_mem(&sig, keysize * 10, sigbio);
+    #####:  299:		BIO_free(sigbio);
+    #####:  300:		if (siglen <= 0)
+        -:  301:			{
+    #####:  302:			BIO_printf(bio_err, "Error reading signature data\n");
+    #####:  303:			goto end;
+        -:  304:			}
+        -:  305:		}
+        -:  306:	
+    #####:  307:	if (in)
+        -:  308:		{
+        -:  309:		/* Read the input data */
+    #####:  310:		buf_inlen = bio_to_mem(&buf_in, keysize * 10, in);
+    #####:  311:		if(buf_inlen <= 0)
+        -:  312:			{
+    #####:  313:			BIO_printf(bio_err, "Error reading input Data\n");
+    #####:  314:			exit(1);
+        -:  315:			}
+    #####:  316:		if(rev)
+        -:  317:			{
+        -:  318:			size_t i;
+        -:  319:			unsigned char ctmp;
+    #####:  320:			size_t l = (size_t)buf_inlen;
+    #####:  321:			for(i = 0; i < l/2; i++)
+        -:  322:				{
+    #####:  323:				ctmp = buf_in[i];
+    #####:  324:				buf_in[i] = buf_in[l - 1 - i];
+    #####:  325:				buf_in[l - 1 - i] = ctmp;
+        -:  326:				}
+        -:  327:			}
+        -:  328:		}
+        -:  329:
+    #####:  330:	if(pkey_op == EVP_PKEY_OP_VERIFY)
+        -:  331:		{
+    #####:  332:		rv  = EVP_PKEY_verify(ctx, sig, (size_t)siglen,
+        -:  333:				      buf_in, (size_t)buf_inlen);
+    #####:  334:		if (rv == 0)
+    #####:  335:			BIO_puts(out, "Signature Verification Failure\n");
+    #####:  336:		else if (rv == 1)
+    #####:  337:			BIO_puts(out, "Signature Verified Successfully\n");
+    #####:  338:		if (rv >= 0)
+        -:  339:			goto end;
+        -:  340:		}
+        -:  341:	else
+        -:  342:		{	
+    #####:  343:		rv = do_keyop(ctx, pkey_op, NULL, (size_t *)&buf_outlen,
+        -:  344:			      buf_in, (size_t)buf_inlen);
+    #####:  345:		if (rv > 0)
+        -:  346:			{
+    #####:  347:			buf_out = OPENSSL_malloc(buf_outlen);
+    #####:  348:			if (!buf_out)
+        -:  349:				rv = -1;
+        -:  350:			else
+    #####:  351:				rv = do_keyop(ctx, pkey_op,
+        -:  352:						buf_out, (size_t *)&buf_outlen,
+        -:  353:						buf_in, (size_t)buf_inlen);
+        -:  354:			}
+        -:  355:		}
+        -:  356:
+    #####:  357:	if(rv <= 0)
+        -:  358:		{
+    #####:  359:		BIO_printf(bio_err, "Public Key operation error\n");
+    #####:  360:		ERR_print_errors(bio_err);
+    #####:  361:		goto end;
+        -:  362:		}
+        -:  363:	ret = 0;
+    #####:  364:	if(asn1parse)
+        -:  365:		{
+    #####:  366:		if(!ASN1_parse_dump(out, buf_out, buf_outlen, 1, -1))
+    #####:  367:			ERR_print_errors(bio_err);
+        -:  368:		}
+    #####:  369:	else if(hexdump)
+    #####:  370:		BIO_dump(out, (char *)buf_out, buf_outlen);
+        -:  371:	else
+    #####:  372:		BIO_write(out, buf_out, buf_outlen);
+        -:  373:
+        -:  374:	end:
+    #####:  375:	if (ctx)
+    #####:  376:		EVP_PKEY_CTX_free(ctx);
+    #####:  377:	BIO_free(in);
+    #####:  378:	BIO_free_all(out);
+    #####:  379:	if (buf_in)
+    #####:  380:		OPENSSL_free(buf_in);
+    #####:  381:	if (buf_out)
+    #####:  382:		OPENSSL_free(buf_out);
+    #####:  383:	if (sig)
+    #####:  384:		OPENSSL_free(sig);
+    #####:  385:	return ret;
+        -:  386:}
+        -:  387:
+    #####:  388:static void usage()
+        -:  389:{
+    #####:  390:	BIO_printf(bio_err, "Usage: pkeyutl [options]\n");
+    #####:  391:	BIO_printf(bio_err, "-in file        input file\n");
+    #####:  392:	BIO_printf(bio_err, "-out file       output file\n");
+    #####:  393:	BIO_printf(bio_err, "-sigfile file signature file (verify operation only)\n");
+    #####:  394:	BIO_printf(bio_err, "-inkey file     input key\n");
+    #####:  395:	BIO_printf(bio_err, "-keyform arg    private key format - default PEM\n");
+    #####:  396:	BIO_printf(bio_err, "-pubin          input is a public key\n");
+    #####:  397:	BIO_printf(bio_err, "-certin         input is a certificate carrying a public key\n");
+    #####:  398:	BIO_printf(bio_err, "-pkeyopt X:Y    public key options\n");
+    #####:  399:	BIO_printf(bio_err, "-sign           sign with private key\n");
+    #####:  400:	BIO_printf(bio_err, "-verify         verify with public key\n");
+    #####:  401:	BIO_printf(bio_err, "-verifyrecover  verify with public key, recover original data\n");
+    #####:  402:	BIO_printf(bio_err, "-encrypt        encrypt with public key\n");
+    #####:  403:	BIO_printf(bio_err, "-decrypt        decrypt with private key\n");
+    #####:  404:	BIO_printf(bio_err, "-derive         derive shared secret\n");
+    #####:  405:	BIO_printf(bio_err, "-hexdump        hex dump output\n");
+        -:  406:#ifndef OPENSSL_NO_ENGINE
+    #####:  407:	BIO_printf(bio_err, "-engine e       use engine e, possibly a hardware device.\n");
+        -:  408:#endif
+    #####:  409:	BIO_printf(bio_err, "-passin arg     pass phrase source\n");
+        -:  410:
+    #####:  411:}
+        -:  412:
+    #####:  413:static EVP_PKEY_CTX *init_ctx(int *pkeysize,
+        -:  414:				char *keyfile, int keyform, int key_type,
+        -:  415:				char *passargin, int pkey_op, ENGINE *e)
+        -:  416:	{
+        -:  417:	EVP_PKEY *pkey = NULL;
+        -:  418:	EVP_PKEY_CTX *ctx = NULL;
+    #####:  419:	char *passin = NULL;
+        -:  420:	int rv = -1;
+        -:  421:	X509 *x;
+    #####:  422:	if(((pkey_op == EVP_PKEY_OP_SIGN) || (pkey_op == EVP_PKEY_OP_DECRYPT) 
+    #####:  423:		|| (pkey_op == EVP_PKEY_OP_DERIVE))
+    #####:  424:		&& (key_type != KEY_PRIVKEY))
+        -:  425:		{
+    #####:  426:		BIO_printf(bio_err, "A private key is needed for this operation\n");
+    #####:  427:		goto end;
+        -:  428:		}
+    #####:  429:	if(!app_passwd(bio_err, passargin, NULL, &passin, NULL))
+        -:  430:		{
+    #####:  431:		BIO_printf(bio_err, "Error getting password\n");
+    #####:  432:		goto end;
+        -:  433:		}
+    #####:  434:	switch(key_type)
+        -:  435:		{
+        -:  436:		case KEY_PRIVKEY:
+    #####:  437:		pkey = load_key(bio_err, keyfile, keyform, 0,
+        -:  438:			passin, e, "Private Key");
+    #####:  439:		break;
+        -:  440:
+        -:  441:		case KEY_PUBKEY:
+    #####:  442:		pkey = load_pubkey(bio_err, keyfile, keyform, 0,
+        -:  443:			NULL, e, "Public Key");
+    #####:  444:		break;
+        -:  445:
+        -:  446:		case KEY_CERT:
+    #####:  447:		x = load_cert(bio_err, keyfile, keyform,
+        -:  448:			NULL, e, "Certificate");
+    #####:  449:		if(x)
+        -:  450:			{
+    #####:  451:			pkey = X509_get_pubkey(x);
+    #####:  452:			X509_free(x);
+        -:  453:			}
+        -:  454:		break;
+        -:  455:
+        -:  456:		}
+        -:  457:
+    #####:  458:	*pkeysize = EVP_PKEY_size(pkey);
+        -:  459:
+    #####:  460:	if (!pkey)
+        -:  461:		goto end;
+        -:  462:
+    #####:  463:	ctx = EVP_PKEY_CTX_new(pkey, e);
+        -:  464:
+    #####:  465:	EVP_PKEY_free(pkey);
+        -:  466:
+    #####:  467:	if (!ctx)
+        -:  468:		goto end;
+        -:  469:
+    #####:  470:	switch(pkey_op)
+        -:  471:		{
+        -:  472:		case EVP_PKEY_OP_SIGN:
+    #####:  473:		rv = EVP_PKEY_sign_init(ctx);
+    #####:  474:		break;
+        -:  475:
+        -:  476:		case EVP_PKEY_OP_VERIFY:
+    #####:  477:		rv = EVP_PKEY_verify_init(ctx);
+    #####:  478:		break;
+        -:  479:
+        -:  480:		case EVP_PKEY_OP_VERIFYRECOVER:
+    #####:  481:		rv = EVP_PKEY_verify_recover_init(ctx);
+    #####:  482:		break;
+        -:  483:
+        -:  484:		case EVP_PKEY_OP_ENCRYPT:
+    #####:  485:		rv = EVP_PKEY_encrypt_init(ctx);
+    #####:  486:		break;
+        -:  487:
+        -:  488:		case EVP_PKEY_OP_DECRYPT:
+    #####:  489:		rv = EVP_PKEY_decrypt_init(ctx);
+    #####:  490:		break;
+        -:  491:
+        -:  492:		case EVP_PKEY_OP_DERIVE:
+    #####:  493:		rv = EVP_PKEY_derive_init(ctx);
+    #####:  494:		break;
+        -:  495:		}
+        -:  496:
+    #####:  497:	if (rv <= 0)
+        -:  498:		{
+    #####:  499:		EVP_PKEY_CTX_free(ctx);
+        -:  500:		ctx = NULL;
+        -:  501:		}
+        -:  502:
+        -:  503:	end:
+        -:  504:
+    #####:  505:	if (passin)
+    #####:  506:		OPENSSL_free(passin);
+        -:  507:
+    #####:  508:	return ctx;
+        -:  509:
+        -:  510:
+        -:  511:	}
+        -:  512:
+    #####:  513:static int setup_peer(BIO *err, EVP_PKEY_CTX *ctx, int peerform,
+        -:  514:							const char *file)
+        -:  515:	{
+        -:  516:	EVP_PKEY *peer = NULL;
+        -:  517:	int ret;
+    #####:  518:	if (!ctx)
+        -:  519:		{
+    #####:  520:		BIO_puts(err, "-peerkey command before -inkey\n");
+    #####:  521:		return 0;
+        -:  522:		}
+        -:  523:		
+    #####:  524:	peer = load_pubkey(bio_err, file, peerform, 0, NULL, NULL, "Peer Key");
+        -:  525:
+    #####:  526:	if (!peer)
+        -:  527:		{
+    #####:  528:		BIO_printf(bio_err, "Error reading peer key %s\n", file);
+    #####:  529:		ERR_print_errors(err);
+    #####:  530:		return 0;
+        -:  531:		}
+        -:  532:
+    #####:  533:	ret = EVP_PKEY_derive_set_peer(ctx, peer);
+        -:  534:
+    #####:  535:	EVP_PKEY_free(peer);
+    #####:  536:	if (ret <= 0)
+    #####:  537:		ERR_print_errors(err);
+    #####:  538:	return ret;
+        -:  539:	}
+        -:  540:
+    #####:  541:static int do_keyop(EVP_PKEY_CTX *ctx, int pkey_op,
+        -:  542:		unsigned char *out, size_t *poutlen,
+        -:  543:		unsigned char *in, size_t inlen)
+        -:  544:	{
+        -:  545:	int rv = 0;
+    #####:  546:	switch(pkey_op)
+        -:  547:		{
+        -:  548:		case EVP_PKEY_OP_VERIFYRECOVER:
+    #####:  549:		rv  = EVP_PKEY_verify_recover(ctx, out, poutlen, in, inlen);
+    #####:  550:		break;
+        -:  551:
+        -:  552:		case EVP_PKEY_OP_SIGN:
+    #####:  553:		rv  = EVP_PKEY_sign(ctx, out, poutlen, in, inlen);
+    #####:  554:		break;
+        -:  555:
+        -:  556:		case EVP_PKEY_OP_ENCRYPT:
+    #####:  557:		rv  = EVP_PKEY_encrypt(ctx, out, poutlen, in, inlen);
+    #####:  558:		break;
+        -:  559:
+        -:  560:		case EVP_PKEY_OP_DECRYPT:
+    #####:  561:		rv  = EVP_PKEY_decrypt(ctx, out, poutlen, in, inlen);
+    #####:  562:		break; 
+        -:  563:
+        -:  564:		case EVP_PKEY_OP_DERIVE:
+    #####:  565:		rv  = EVP_PKEY_derive(ctx, out, poutlen);
+    #####:  566:		break;
+        -:  567:
+        -:  568:		}
+    #####:  569:	return rv;
+        -:  570:	}

@@ -1,0 +1,788 @@
+        -:    0:Source:ssl_rsa.c
+        -:    0:Graph:ssl_rsa.gcno
+        -:    0:Data:ssl_rsa.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* ssl/ssl_rsa.c */
+        -:    2:/* Copyright (C) 1995-1998 Eric Young (eay@cryptsoft.com)
+        -:    3: * All rights reserved.
+        -:    4: *
+        -:    5: * This package is an SSL implementation written
+        -:    6: * by Eric Young (eay@cryptsoft.com).
+        -:    7: * The implementation was written so as to conform with Netscapes SSL.
+        -:    8: * 
+        -:    9: * This library is free for commercial and non-commercial use as long as
+        -:   10: * the following conditions are aheared to.  The following conditions
+        -:   11: * apply to all code found in this distribution, be it the RC4, RSA,
+        -:   12: * lhash, DES, etc., code; not just the SSL code.  The SSL documentation
+        -:   13: * included with this distribution is covered by the same copyright terms
+        -:   14: * except that the holder is Tim Hudson (tjh@cryptsoft.com).
+        -:   15: * 
+        -:   16: * Copyright remains Eric Young's, and as such any Copyright notices in
+        -:   17: * the code are not to be removed.
+        -:   18: * If this package is used in a product, Eric Young should be given attribution
+        -:   19: * as the author of the parts of the library used.
+        -:   20: * This can be in the form of a textual message at program startup or
+        -:   21: * in documentation (online or textual) provided with the package.
+        -:   22: * 
+        -:   23: * Redistribution and use in source and binary forms, with or without
+        -:   24: * modification, are permitted provided that the following conditions
+        -:   25: * are met:
+        -:   26: * 1. Redistributions of source code must retain the copyright
+        -:   27: *    notice, this list of conditions and the following disclaimer.
+        -:   28: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   29: *    notice, this list of conditions and the following disclaimer in the
+        -:   30: *    documentation and/or other materials provided with the distribution.
+        -:   31: * 3. All advertising materials mentioning features or use of this software
+        -:   32: *    must display the following acknowledgement:
+        -:   33: *    "This product includes cryptographic software written by
+        -:   34: *     Eric Young (eay@cryptsoft.com)"
+        -:   35: *    The word 'cryptographic' can be left out if the rouines from the library
+        -:   36: *    being used are not cryptographic related :-).
+        -:   37: * 4. If you include any Windows specific code (or a derivative thereof) from 
+        -:   38: *    the apps directory (application code) you must include an acknowledgement:
+        -:   39: *    "This product includes software written by Tim Hudson (tjh@cryptsoft.com)"
+        -:   40: * 
+        -:   41: * THIS SOFTWARE IS PROVIDED BY ERIC YOUNG ``AS IS'' AND
+        -:   42: * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   43: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+        -:   44: * ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+        -:   45: * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+        -:   46: * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+        -:   47: * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   48: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+        -:   49: * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+        -:   50: * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+        -:   51: * SUCH DAMAGE.
+        -:   52: * 
+        -:   53: * The licence and distribution terms for any publically available version or
+        -:   54: * derivative of this code cannot be changed.  i.e. this code cannot simply be
+        -:   55: * copied and put under another distribution licence
+        -:   56: * [including the GNU Public Licence.]
+        -:   57: */
+        -:   58:
+        -:   59:#include <stdio.h>
+        -:   60:#include "ssl_locl.h"
+        -:   61:#include <openssl/bio.h>
+        -:   62:#include <openssl/objects.h>
+        -:   63:#include <openssl/evp.h>
+        -:   64:#include <openssl/x509.h>
+        -:   65:#include <openssl/pem.h>
+        -:   66:
+        -:   67:static int ssl_set_cert(CERT *c, X509 *x509);
+        -:   68:static int ssl_set_pkey(CERT *c, EVP_PKEY *pkey);
+    #####:   69:int SSL_use_certificate(SSL *ssl, X509 *x)
+        -:   70:	{
+    #####:   71:	if (x == NULL)
+        -:   72:		{
+    #####:   73:		SSLerr(SSL_F_SSL_USE_CERTIFICATE,ERR_R_PASSED_NULL_PARAMETER);
+    #####:   74:		return(0);
+        -:   75:		}
+    #####:   76:	if (!ssl_cert_inst(&ssl->cert))
+        -:   77:		{
+    #####:   78:		SSLerr(SSL_F_SSL_USE_CERTIFICATE,ERR_R_MALLOC_FAILURE);
+    #####:   79:		return(0);
+        -:   80:		}
+    #####:   81:	return(ssl_set_cert(ssl->cert,x));
+        -:   82:	}
+        -:   83:
+        -:   84:#ifndef OPENSSL_NO_STDIO
+    #####:   85:int SSL_use_certificate_file(SSL *ssl, const char *file, int type)
+        -:   86:	{
+        -:   87:	int j;
+        -:   88:	BIO *in;
+        -:   89:	int ret=0;
+        -:   90:	X509 *x=NULL;
+        -:   91:
+    #####:   92:	in=BIO_new(BIO_s_file_internal());
+    #####:   93:	if (in == NULL)
+        -:   94:		{
+    #####:   95:		SSLerr(SSL_F_SSL_USE_CERTIFICATE_FILE,ERR_R_BUF_LIB);
+    #####:   96:		goto end;
+        -:   97:		}
+        -:   98:
+    #####:   99:	if (BIO_read_filename(in,file) <= 0)
+        -:  100:		{
+    #####:  101:		SSLerr(SSL_F_SSL_USE_CERTIFICATE_FILE,ERR_R_SYS_LIB);
+    #####:  102:		goto end;
+        -:  103:		}
+    #####:  104:	if (type == SSL_FILETYPE_ASN1)
+        -:  105:		{
+        -:  106:		j=ERR_R_ASN1_LIB;
+    #####:  107:		x=d2i_X509_bio(in,NULL);
+        -:  108:		}
+    #####:  109:	else if (type == SSL_FILETYPE_PEM)
+        -:  110:		{
+        -:  111:		j=ERR_R_PEM_LIB;
+    #####:  112:		x=PEM_read_bio_X509(in,NULL,ssl->ctx->default_passwd_callback,ssl->ctx->default_passwd_callback_userdata);
+        -:  113:		}
+        -:  114:	else
+        -:  115:		{
+    #####:  116:		SSLerr(SSL_F_SSL_USE_CERTIFICATE_FILE,SSL_R_BAD_SSL_FILETYPE);
+    #####:  117:		goto end;
+        -:  118:		}
+        -:  119:
+    #####:  120:	if (x == NULL)
+        -:  121:		{
+    #####:  122:		SSLerr(SSL_F_SSL_USE_CERTIFICATE_FILE,j);
+    #####:  123:		goto end;
+        -:  124:		}
+        -:  125:
+    #####:  126:	ret=SSL_use_certificate(ssl,x);
+        -:  127:end:
+    #####:  128:	if (x != NULL) X509_free(x);
+    #####:  129:	if (in != NULL) BIO_free(in);
+    #####:  130:	return(ret);
+        -:  131:	}
+        -:  132:#endif
+        -:  133:
+    #####:  134:int SSL_use_certificate_ASN1(SSL *ssl, const unsigned char *d, int len)
+        -:  135:	{
+        -:  136:	X509 *x;
+        -:  137:	int ret;
+        -:  138:
+    #####:  139:	x=d2i_X509(NULL,&d,(long)len);
+    #####:  140:	if (x == NULL)
+        -:  141:		{
+    #####:  142:		SSLerr(SSL_F_SSL_USE_CERTIFICATE_ASN1,ERR_R_ASN1_LIB);
+    #####:  143:		return(0);
+        -:  144:		}
+        -:  145:
+    #####:  146:	ret=SSL_use_certificate(ssl,x);
+    #####:  147:	X509_free(x);
+    #####:  148:	return(ret);
+        -:  149:	}
+        -:  150:
+        -:  151:#ifndef OPENSSL_NO_RSA
+    #####:  152:int SSL_use_RSAPrivateKey(SSL *ssl, RSA *rsa)
+        -:  153:	{
+        -:  154:	EVP_PKEY *pkey;
+        -:  155:	int ret;
+        -:  156:
+    #####:  157:	if (rsa == NULL)
+        -:  158:		{
+    #####:  159:		SSLerr(SSL_F_SSL_USE_RSAPRIVATEKEY,ERR_R_PASSED_NULL_PARAMETER);
+    #####:  160:		return(0);
+        -:  161:		}
+    #####:  162:	if (!ssl_cert_inst(&ssl->cert))
+        -:  163:		{
+    #####:  164:		SSLerr(SSL_F_SSL_USE_RSAPRIVATEKEY,ERR_R_MALLOC_FAILURE);
+    #####:  165:		return(0);
+        -:  166:		}
+    #####:  167:	if ((pkey=EVP_PKEY_new()) == NULL)
+        -:  168:		{
+    #####:  169:		SSLerr(SSL_F_SSL_USE_RSAPRIVATEKEY,ERR_R_EVP_LIB);
+    #####:  170:		return(0);
+        -:  171:		}
+        -:  172:
+    #####:  173:	RSA_up_ref(rsa);
+    #####:  174:	EVP_PKEY_assign_RSA(pkey,rsa);
+        -:  175:
+    #####:  176:	ret=ssl_set_pkey(ssl->cert,pkey);
+    #####:  177:	EVP_PKEY_free(pkey);
+    #####:  178:	return(ret);
+        -:  179:	}
+        -:  180:#endif
+        -:  181:
+    #####:  182:static int ssl_set_pkey(CERT *c, EVP_PKEY *pkey)
+        -:  183:	{
+        -:  184:	int i;
+        -:  185:
+    #####:  186:	i=ssl_cert_type(NULL,pkey);
+    #####:  187:	if (i < 0)
+        -:  188:		{
+    #####:  189:		SSLerr(SSL_F_SSL_SET_PKEY,SSL_R_UNKNOWN_CERTIFICATE_TYPE);
+    #####:  190:		return(0);
+        -:  191:		}
+        -:  192:
+    #####:  193:	if (c->pkeys[i].x509 != NULL)
+        -:  194:		{
+        -:  195:		EVP_PKEY *pktmp;
+    #####:  196:		pktmp =	X509_get_pubkey(c->pkeys[i].x509);
+    #####:  197:		EVP_PKEY_copy_parameters(pktmp,pkey);
+    #####:  198:		EVP_PKEY_free(pktmp);
+    #####:  199:		ERR_clear_error();
+        -:  200:
+        -:  201:#ifndef OPENSSL_NO_RSA
+        -:  202:		/* Don't check the public/private key, this is mostly
+        -:  203:		 * for smart cards. */
+    #####:  204:		if ((pkey->type == EVP_PKEY_RSA) &&
+    #####:  205:			(RSA_flags(pkey->pkey.rsa) & RSA_METHOD_FLAG_NO_CHECK))
+        -:  206:			;
+        -:  207:		else
+        -:  208:#endif
+    #####:  209:		if (!X509_check_private_key(c->pkeys[i].x509,pkey))
+        -:  210:			{
+    #####:  211:			X509_free(c->pkeys[i].x509);
+    #####:  212:			c->pkeys[i].x509 = NULL;
+    #####:  213:			return 0;
+        -:  214:			}
+        -:  215:		}
+        -:  216:
+    #####:  217:	if (c->pkeys[i].privatekey != NULL)
+    #####:  218:		EVP_PKEY_free(c->pkeys[i].privatekey);
+    #####:  219:	CRYPTO_add(&pkey->references,1,CRYPTO_LOCK_EVP_PKEY);
+    #####:  220:	c->pkeys[i].privatekey=pkey;
+    #####:  221:	c->key= &(c->pkeys[i]);
+        -:  222:
+    #####:  223:	c->valid=0;
+    #####:  224:	return(1);
+        -:  225:	}
+        -:  226:
+        -:  227:#ifndef OPENSSL_NO_RSA
+        -:  228:#ifndef OPENSSL_NO_STDIO
+    #####:  229:int SSL_use_RSAPrivateKey_file(SSL *ssl, const char *file, int type)
+        -:  230:	{
+        -:  231:	int j,ret=0;
+        -:  232:	BIO *in;
+        -:  233:	RSA *rsa=NULL;
+        -:  234:
+    #####:  235:	in=BIO_new(BIO_s_file_internal());
+    #####:  236:	if (in == NULL)
+        -:  237:		{
+    #####:  238:		SSLerr(SSL_F_SSL_USE_RSAPRIVATEKEY_FILE,ERR_R_BUF_LIB);
+    #####:  239:		goto end;
+        -:  240:		}
+        -:  241:
+    #####:  242:	if (BIO_read_filename(in,file) <= 0)
+        -:  243:		{
+    #####:  244:		SSLerr(SSL_F_SSL_USE_RSAPRIVATEKEY_FILE,ERR_R_SYS_LIB);
+    #####:  245:		goto end;
+        -:  246:		}
+    #####:  247:	if	(type == SSL_FILETYPE_ASN1)
+        -:  248:		{
+        -:  249:		j=ERR_R_ASN1_LIB;
+    #####:  250:		rsa=d2i_RSAPrivateKey_bio(in,NULL);
+        -:  251:		}
+    #####:  252:	else if (type == SSL_FILETYPE_PEM)
+        -:  253:		{
+        -:  254:		j=ERR_R_PEM_LIB;
+    #####:  255:		rsa=PEM_read_bio_RSAPrivateKey(in,NULL,
+    #####:  256:			ssl->ctx->default_passwd_callback,ssl->ctx->default_passwd_callback_userdata);
+        -:  257:		}
+        -:  258:	else
+        -:  259:		{
+    #####:  260:		SSLerr(SSL_F_SSL_USE_RSAPRIVATEKEY_FILE,SSL_R_BAD_SSL_FILETYPE);
+    #####:  261:		goto end;
+        -:  262:		}
+    #####:  263:	if (rsa == NULL)
+        -:  264:		{
+    #####:  265:		SSLerr(SSL_F_SSL_USE_RSAPRIVATEKEY_FILE,j);
+    #####:  266:		goto end;
+        -:  267:		}
+    #####:  268:	ret=SSL_use_RSAPrivateKey(ssl,rsa);
+    #####:  269:	RSA_free(rsa);
+        -:  270:end:
+    #####:  271:	if (in != NULL) BIO_free(in);
+    #####:  272:	return(ret);
+        -:  273:	}
+        -:  274:#endif
+        -:  275:
+    #####:  276:int SSL_use_RSAPrivateKey_ASN1(SSL *ssl, unsigned char *d, long len)
+        -:  277:	{
+        -:  278:	int ret;
+        -:  279:	const unsigned char *p;
+        -:  280:	RSA *rsa;
+        -:  281:
+    #####:  282:	p=d;
+    #####:  283:	if ((rsa=d2i_RSAPrivateKey(NULL,&p,(long)len)) == NULL)
+        -:  284:		{
+    #####:  285:		SSLerr(SSL_F_SSL_USE_RSAPRIVATEKEY_ASN1,ERR_R_ASN1_LIB);
+    #####:  286:		return(0);
+        -:  287:		}
+        -:  288:
+    #####:  289:	ret=SSL_use_RSAPrivateKey(ssl,rsa);
+    #####:  290:	RSA_free(rsa);
+    #####:  291:	return(ret);
+        -:  292:	}
+        -:  293:#endif /* !OPENSSL_NO_RSA */
+        -:  294:
+    #####:  295:int SSL_use_PrivateKey(SSL *ssl, EVP_PKEY *pkey)
+        -:  296:	{
+        -:  297:	int ret;
+        -:  298:
+    #####:  299:	if (pkey == NULL)
+        -:  300:		{
+    #####:  301:		SSLerr(SSL_F_SSL_USE_PRIVATEKEY,ERR_R_PASSED_NULL_PARAMETER);
+    #####:  302:		return(0);
+        -:  303:		}
+    #####:  304:	if (!ssl_cert_inst(&ssl->cert))
+        -:  305:		{
+    #####:  306:		SSLerr(SSL_F_SSL_USE_PRIVATEKEY,ERR_R_MALLOC_FAILURE);
+    #####:  307:		return(0);
+        -:  308:		}
+    #####:  309:	ret=ssl_set_pkey(ssl->cert,pkey);
+    #####:  310:	return(ret);
+        -:  311:	}
+        -:  312:
+        -:  313:#ifndef OPENSSL_NO_STDIO
+    #####:  314:int SSL_use_PrivateKey_file(SSL *ssl, const char *file, int type)
+        -:  315:	{
+        -:  316:	int j,ret=0;
+        -:  317:	BIO *in;
+        -:  318:	EVP_PKEY *pkey=NULL;
+        -:  319:
+    #####:  320:	in=BIO_new(BIO_s_file_internal());
+    #####:  321:	if (in == NULL)
+        -:  322:		{
+    #####:  323:		SSLerr(SSL_F_SSL_USE_PRIVATEKEY_FILE,ERR_R_BUF_LIB);
+    #####:  324:		goto end;
+        -:  325:		}
+        -:  326:
+    #####:  327:	if (BIO_read_filename(in,file) <= 0)
+        -:  328:		{
+    #####:  329:		SSLerr(SSL_F_SSL_USE_PRIVATEKEY_FILE,ERR_R_SYS_LIB);
+    #####:  330:		goto end;
+        -:  331:		}
+    #####:  332:	if (type == SSL_FILETYPE_PEM)
+        -:  333:		{
+        -:  334:		j=ERR_R_PEM_LIB;
+    #####:  335:		pkey=PEM_read_bio_PrivateKey(in,NULL,
+    #####:  336:			ssl->ctx->default_passwd_callback,ssl->ctx->default_passwd_callback_userdata);
+        -:  337:		}
+    #####:  338:	else if (type == SSL_FILETYPE_ASN1)
+        -:  339:		{
+        -:  340:		j = ERR_R_ASN1_LIB;
+    #####:  341:		pkey = d2i_PrivateKey_bio(in,NULL);
+        -:  342:		}
+        -:  343:	else
+        -:  344:		{
+    #####:  345:		SSLerr(SSL_F_SSL_USE_PRIVATEKEY_FILE,SSL_R_BAD_SSL_FILETYPE);
+    #####:  346:		goto end;
+        -:  347:		}
+    #####:  348:	if (pkey == NULL)
+        -:  349:		{
+    #####:  350:		SSLerr(SSL_F_SSL_USE_PRIVATEKEY_FILE,j);
+    #####:  351:		goto end;
+        -:  352:		}
+    #####:  353:	ret=SSL_use_PrivateKey(ssl,pkey);
+    #####:  354:	EVP_PKEY_free(pkey);
+        -:  355:end:
+    #####:  356:	if (in != NULL) BIO_free(in);
+    #####:  357:	return(ret);
+        -:  358:	}
+        -:  359:#endif
+        -:  360:
+    #####:  361:int SSL_use_PrivateKey_ASN1(int type, SSL *ssl, const unsigned char *d, long len)
+        -:  362:	{
+        -:  363:	int ret;
+        -:  364:	const unsigned char *p;
+        -:  365:	EVP_PKEY *pkey;
+        -:  366:
+    #####:  367:	p=d;
+    #####:  368:	if ((pkey=d2i_PrivateKey(type,NULL,&p,(long)len)) == NULL)
+        -:  369:		{
+    #####:  370:		SSLerr(SSL_F_SSL_USE_PRIVATEKEY_ASN1,ERR_R_ASN1_LIB);
+    #####:  371:		return(0);
+        -:  372:		}
+        -:  373:
+    #####:  374:	ret=SSL_use_PrivateKey(ssl,pkey);
+    #####:  375:	EVP_PKEY_free(pkey);
+    #####:  376:	return(ret);
+        -:  377:	}
+        -:  378:
+    #####:  379:int SSL_CTX_use_certificate(SSL_CTX *ctx, X509 *x)
+        -:  380:	{
+    #####:  381:	if (x == NULL)
+        -:  382:		{
+    #####:  383:		SSLerr(SSL_F_SSL_CTX_USE_CERTIFICATE,ERR_R_PASSED_NULL_PARAMETER);
+    #####:  384:		return(0);
+        -:  385:		}
+    #####:  386:	if (!ssl_cert_inst(&ctx->cert))
+        -:  387:		{
+    #####:  388:		SSLerr(SSL_F_SSL_CTX_USE_CERTIFICATE,ERR_R_MALLOC_FAILURE);
+    #####:  389:		return(0);
+        -:  390:		}
+    #####:  391:	return(ssl_set_cert(ctx->cert, x));
+        -:  392:	}
+        -:  393:
+    #####:  394:static int ssl_set_cert(CERT *c, X509 *x)
+        -:  395:	{
+        -:  396:	EVP_PKEY *pkey;
+        -:  397:	int i;
+        -:  398:
+    #####:  399:	pkey=X509_get_pubkey(x);
+    #####:  400:	if (pkey == NULL)
+        -:  401:		{
+    #####:  402:		SSLerr(SSL_F_SSL_SET_CERT,SSL_R_X509_LIB);
+    #####:  403:		return(0);
+        -:  404:		}
+        -:  405:
+    #####:  406:	i=ssl_cert_type(x,pkey);
+    #####:  407:	if (i < 0)
+        -:  408:		{
+    #####:  409:		SSLerr(SSL_F_SSL_SET_CERT,SSL_R_UNKNOWN_CERTIFICATE_TYPE);
+    #####:  410:		EVP_PKEY_free(pkey);
+    #####:  411:		return(0);
+        -:  412:		}
+        -:  413:
+    #####:  414:	if (c->pkeys[i].privatekey != NULL)
+        -:  415:		{
+    #####:  416:		EVP_PKEY_copy_parameters(pkey,c->pkeys[i].privatekey);
+    #####:  417:		ERR_clear_error();
+        -:  418:
+        -:  419:#ifndef OPENSSL_NO_RSA
+        -:  420:		/* Don't check the public/private key, this is mostly
+        -:  421:		 * for smart cards. */
+    #####:  422:		if ((c->pkeys[i].privatekey->type == EVP_PKEY_RSA) &&
+    #####:  423:			(RSA_flags(c->pkeys[i].privatekey->pkey.rsa) &
+        -:  424:			 RSA_METHOD_FLAG_NO_CHECK))
+        -:  425:			 ;
+        -:  426:		else
+        -:  427:#endif /* OPENSSL_NO_RSA */
+    #####:  428:		if (!X509_check_private_key(x,c->pkeys[i].privatekey))
+        -:  429:			{
+        -:  430:			/* don't fail for a cert/key mismatch, just free
+        -:  431:			 * current private key (when switching to a different
+        -:  432:			 * cert & key, first this function should be used,
+        -:  433:			 * then ssl_set_pkey */
+    #####:  434:			EVP_PKEY_free(c->pkeys[i].privatekey);
+    #####:  435:			c->pkeys[i].privatekey=NULL;
+        -:  436:			/* clear error queue */
+    #####:  437:			ERR_clear_error();
+        -:  438:			}
+        -:  439:		}
+        -:  440:
+    #####:  441:	EVP_PKEY_free(pkey);
+        -:  442:
+    #####:  443:	if (c->pkeys[i].x509 != NULL)
+    #####:  444:		X509_free(c->pkeys[i].x509);
+    #####:  445:	CRYPTO_add(&x->references,1,CRYPTO_LOCK_X509);
+    #####:  446:	c->pkeys[i].x509=x;
+    #####:  447:	c->key= &(c->pkeys[i]);
+        -:  448:
+    #####:  449:	c->valid=0;
+    #####:  450:	return(1);
+        -:  451:	}
+        -:  452:
+        -:  453:#ifndef OPENSSL_NO_STDIO
+    #####:  454:int SSL_CTX_use_certificate_file(SSL_CTX *ctx, const char *file, int type)
+        -:  455:	{
+        -:  456:	int j;
+        -:  457:	BIO *in;
+        -:  458:	int ret=0;
+        -:  459:	X509 *x=NULL;
+        -:  460:
+    #####:  461:	in=BIO_new(BIO_s_file_internal());
+    #####:  462:	if (in == NULL)
+        -:  463:		{
+    #####:  464:		SSLerr(SSL_F_SSL_CTX_USE_CERTIFICATE_FILE,ERR_R_BUF_LIB);
+    #####:  465:		goto end;
+        -:  466:		}
+        -:  467:
+    #####:  468:	if (BIO_read_filename(in,file) <= 0)
+        -:  469:		{
+    #####:  470:		SSLerr(SSL_F_SSL_CTX_USE_CERTIFICATE_FILE,ERR_R_SYS_LIB);
+    #####:  471:		goto end;
+        -:  472:		}
+    #####:  473:	if (type == SSL_FILETYPE_ASN1)
+        -:  474:		{
+        -:  475:		j=ERR_R_ASN1_LIB;
+    #####:  476:		x=d2i_X509_bio(in,NULL);
+        -:  477:		}
+    #####:  478:	else if (type == SSL_FILETYPE_PEM)
+        -:  479:		{
+        -:  480:		j=ERR_R_PEM_LIB;
+    #####:  481:		x=PEM_read_bio_X509(in,NULL,ctx->default_passwd_callback,ctx->default_passwd_callback_userdata);
+        -:  482:		}
+        -:  483:	else
+        -:  484:		{
+    #####:  485:		SSLerr(SSL_F_SSL_CTX_USE_CERTIFICATE_FILE,SSL_R_BAD_SSL_FILETYPE);
+    #####:  486:		goto end;
+        -:  487:		}
+        -:  488:
+    #####:  489:	if (x == NULL)
+        -:  490:		{
+    #####:  491:		SSLerr(SSL_F_SSL_CTX_USE_CERTIFICATE_FILE,j);
+    #####:  492:		goto end;
+        -:  493:		}
+        -:  494:
+    #####:  495:	ret=SSL_CTX_use_certificate(ctx,x);
+        -:  496:end:
+    #####:  497:	if (x != NULL) X509_free(x);
+    #####:  498:	if (in != NULL) BIO_free(in);
+    #####:  499:	return(ret);
+        -:  500:	}
+        -:  501:#endif
+        -:  502:
+    #####:  503:int SSL_CTX_use_certificate_ASN1(SSL_CTX *ctx, int len, const unsigned char *d)
+        -:  504:	{
+        -:  505:	X509 *x;
+        -:  506:	int ret;
+        -:  507:
+    #####:  508:	x=d2i_X509(NULL,&d,(long)len);
+    #####:  509:	if (x == NULL)
+        -:  510:		{
+    #####:  511:		SSLerr(SSL_F_SSL_CTX_USE_CERTIFICATE_ASN1,ERR_R_ASN1_LIB);
+    #####:  512:		return(0);
+        -:  513:		}
+        -:  514:
+    #####:  515:	ret=SSL_CTX_use_certificate(ctx,x);
+    #####:  516:	X509_free(x);
+    #####:  517:	return(ret);
+        -:  518:	}
+        -:  519:
+        -:  520:#ifndef OPENSSL_NO_RSA
+    #####:  521:int SSL_CTX_use_RSAPrivateKey(SSL_CTX *ctx, RSA *rsa)
+        -:  522:	{
+        -:  523:	int ret;
+        -:  524:	EVP_PKEY *pkey;
+        -:  525:
+    #####:  526:	if (rsa == NULL)
+        -:  527:		{
+    #####:  528:		SSLerr(SSL_F_SSL_CTX_USE_RSAPRIVATEKEY,ERR_R_PASSED_NULL_PARAMETER);
+    #####:  529:		return(0);
+        -:  530:		}
+    #####:  531:	if (!ssl_cert_inst(&ctx->cert))
+        -:  532:		{
+    #####:  533:		SSLerr(SSL_F_SSL_CTX_USE_RSAPRIVATEKEY,ERR_R_MALLOC_FAILURE);
+    #####:  534:		return(0);
+        -:  535:		}
+    #####:  536:	if ((pkey=EVP_PKEY_new()) == NULL)
+        -:  537:		{
+    #####:  538:		SSLerr(SSL_F_SSL_CTX_USE_RSAPRIVATEKEY,ERR_R_EVP_LIB);
+    #####:  539:		return(0);
+        -:  540:		}
+        -:  541:
+    #####:  542:	RSA_up_ref(rsa);
+    #####:  543:	EVP_PKEY_assign_RSA(pkey,rsa);
+        -:  544:
+    #####:  545:	ret=ssl_set_pkey(ctx->cert, pkey);
+    #####:  546:	EVP_PKEY_free(pkey);
+    #####:  547:	return(ret);
+        -:  548:	}
+        -:  549:
+        -:  550:#ifndef OPENSSL_NO_STDIO
+    #####:  551:int SSL_CTX_use_RSAPrivateKey_file(SSL_CTX *ctx, const char *file, int type)
+        -:  552:	{
+        -:  553:	int j,ret=0;
+        -:  554:	BIO *in;
+        -:  555:	RSA *rsa=NULL;
+        -:  556:
+    #####:  557:	in=BIO_new(BIO_s_file_internal());
+    #####:  558:	if (in == NULL)
+        -:  559:		{
+    #####:  560:		SSLerr(SSL_F_SSL_CTX_USE_RSAPRIVATEKEY_FILE,ERR_R_BUF_LIB);
+    #####:  561:		goto end;
+        -:  562:		}
+        -:  563:
+    #####:  564:	if (BIO_read_filename(in,file) <= 0)
+        -:  565:		{
+    #####:  566:		SSLerr(SSL_F_SSL_CTX_USE_RSAPRIVATEKEY_FILE,ERR_R_SYS_LIB);
+    #####:  567:		goto end;
+        -:  568:		}
+    #####:  569:	if	(type == SSL_FILETYPE_ASN1)
+        -:  570:		{
+        -:  571:		j=ERR_R_ASN1_LIB;
+    #####:  572:		rsa=d2i_RSAPrivateKey_bio(in,NULL);
+        -:  573:		}
+    #####:  574:	else if (type == SSL_FILETYPE_PEM)
+        -:  575:		{
+        -:  576:		j=ERR_R_PEM_LIB;
+    #####:  577:		rsa=PEM_read_bio_RSAPrivateKey(in,NULL,
+        -:  578:			ctx->default_passwd_callback,ctx->default_passwd_callback_userdata);
+        -:  579:		}
+        -:  580:	else
+        -:  581:		{
+    #####:  582:		SSLerr(SSL_F_SSL_CTX_USE_RSAPRIVATEKEY_FILE,SSL_R_BAD_SSL_FILETYPE);
+    #####:  583:		goto end;
+        -:  584:		}
+    #####:  585:	if (rsa == NULL)
+        -:  586:		{
+    #####:  587:		SSLerr(SSL_F_SSL_CTX_USE_RSAPRIVATEKEY_FILE,j);
+    #####:  588:		goto end;
+        -:  589:		}
+    #####:  590:	ret=SSL_CTX_use_RSAPrivateKey(ctx,rsa);
+    #####:  591:	RSA_free(rsa);
+        -:  592:end:
+    #####:  593:	if (in != NULL) BIO_free(in);
+    #####:  594:	return(ret);
+        -:  595:	}
+        -:  596:#endif
+        -:  597:
+    #####:  598:int SSL_CTX_use_RSAPrivateKey_ASN1(SSL_CTX *ctx, const unsigned char *d, long len)
+        -:  599:	{
+        -:  600:	int ret;
+        -:  601:	const unsigned char *p;
+        -:  602:	RSA *rsa;
+        -:  603:
+    #####:  604:	p=d;
+    #####:  605:	if ((rsa=d2i_RSAPrivateKey(NULL,&p,(long)len)) == NULL)
+        -:  606:		{
+    #####:  607:		SSLerr(SSL_F_SSL_CTX_USE_RSAPRIVATEKEY_ASN1,ERR_R_ASN1_LIB);
+    #####:  608:		return(0);
+        -:  609:		}
+        -:  610:
+    #####:  611:	ret=SSL_CTX_use_RSAPrivateKey(ctx,rsa);
+    #####:  612:	RSA_free(rsa);
+    #####:  613:	return(ret);
+        -:  614:	}
+        -:  615:#endif /* !OPENSSL_NO_RSA */
+        -:  616:
+    #####:  617:int SSL_CTX_use_PrivateKey(SSL_CTX *ctx, EVP_PKEY *pkey)
+        -:  618:	{
+    #####:  619:	if (pkey == NULL)
+        -:  620:		{
+    #####:  621:		SSLerr(SSL_F_SSL_CTX_USE_PRIVATEKEY,ERR_R_PASSED_NULL_PARAMETER);
+    #####:  622:		return(0);
+        -:  623:		}
+    #####:  624:	if (!ssl_cert_inst(&ctx->cert))
+        -:  625:		{
+    #####:  626:		SSLerr(SSL_F_SSL_CTX_USE_PRIVATEKEY,ERR_R_MALLOC_FAILURE);
+    #####:  627:		return(0);
+        -:  628:		}
+    #####:  629:	return(ssl_set_pkey(ctx->cert,pkey));
+        -:  630:	}
+        -:  631:
+        -:  632:#ifndef OPENSSL_NO_STDIO
+    #####:  633:int SSL_CTX_use_PrivateKey_file(SSL_CTX *ctx, const char *file, int type)
+        -:  634:	{
+        -:  635:	int j,ret=0;
+        -:  636:	BIO *in;
+        -:  637:	EVP_PKEY *pkey=NULL;
+        -:  638:
+    #####:  639:	in=BIO_new(BIO_s_file_internal());
+    #####:  640:	if (in == NULL)
+        -:  641:		{
+    #####:  642:		SSLerr(SSL_F_SSL_CTX_USE_PRIVATEKEY_FILE,ERR_R_BUF_LIB);
+    #####:  643:		goto end;
+        -:  644:		}
+        -:  645:
+    #####:  646:	if (BIO_read_filename(in,file) <= 0)
+        -:  647:		{
+    #####:  648:		SSLerr(SSL_F_SSL_CTX_USE_PRIVATEKEY_FILE,ERR_R_SYS_LIB);
+    #####:  649:		goto end;
+        -:  650:		}
+    #####:  651:	if (type == SSL_FILETYPE_PEM)
+        -:  652:		{
+        -:  653:		j=ERR_R_PEM_LIB;
+    #####:  654:		pkey=PEM_read_bio_PrivateKey(in,NULL,
+        -:  655:			ctx->default_passwd_callback,ctx->default_passwd_callback_userdata);
+        -:  656:		}
+    #####:  657:	else if (type == SSL_FILETYPE_ASN1)
+        -:  658:		{
+        -:  659:		j = ERR_R_ASN1_LIB;
+    #####:  660:		pkey = d2i_PrivateKey_bio(in,NULL);
+        -:  661:		}
+        -:  662:	else
+        -:  663:		{
+    #####:  664:		SSLerr(SSL_F_SSL_CTX_USE_PRIVATEKEY_FILE,SSL_R_BAD_SSL_FILETYPE);
+    #####:  665:		goto end;
+        -:  666:		}
+    #####:  667:	if (pkey == NULL)
+        -:  668:		{
+    #####:  669:		SSLerr(SSL_F_SSL_CTX_USE_PRIVATEKEY_FILE,j);
+    #####:  670:		goto end;
+        -:  671:		}
+    #####:  672:	ret=SSL_CTX_use_PrivateKey(ctx,pkey);
+    #####:  673:	EVP_PKEY_free(pkey);
+        -:  674:end:
+    #####:  675:	if (in != NULL) BIO_free(in);
+    #####:  676:	return(ret);
+        -:  677:	}
+        -:  678:#endif
+        -:  679:
+    #####:  680:int SSL_CTX_use_PrivateKey_ASN1(int type, SSL_CTX *ctx, const unsigned char *d,
+        -:  681:	     long len)
+        -:  682:	{
+        -:  683:	int ret;
+        -:  684:	const unsigned char *p;
+        -:  685:	EVP_PKEY *pkey;
+        -:  686:
+    #####:  687:	p=d;
+    #####:  688:	if ((pkey=d2i_PrivateKey(type,NULL,&p,(long)len)) == NULL)
+        -:  689:		{
+    #####:  690:		SSLerr(SSL_F_SSL_CTX_USE_PRIVATEKEY_ASN1,ERR_R_ASN1_LIB);
+    #####:  691:		return(0);
+        -:  692:		}
+        -:  693:
+    #####:  694:	ret=SSL_CTX_use_PrivateKey(ctx,pkey);
+    #####:  695:	EVP_PKEY_free(pkey);
+    #####:  696:	return(ret);
+        -:  697:	}
+        -:  698:
+        -:  699:
+        -:  700:#ifndef OPENSSL_NO_STDIO
+        -:  701:/* Read a file that contains our certificate in "PEM" format,
+        -:  702: * possibly followed by a sequence of CA certificates that should be
+        -:  703: * sent to the peer in the Certificate message.
+        -:  704: */
+    #####:  705:int SSL_CTX_use_certificate_chain_file(SSL_CTX *ctx, const char *file)
+        -:  706:	{
+        -:  707:	BIO *in;
+        -:  708:	int ret=0;
+        -:  709:	X509 *x=NULL;
+        -:  710:
+    #####:  711:	ERR_clear_error(); /* clear error stack for SSL_CTX_use_certificate() */
+        -:  712:
+    #####:  713:	in = BIO_new(BIO_s_file_internal());
+    #####:  714:	if (in == NULL)
+        -:  715:		{
+    #####:  716:		SSLerr(SSL_F_SSL_CTX_USE_CERTIFICATE_CHAIN_FILE,ERR_R_BUF_LIB);
+    #####:  717:		goto end;
+        -:  718:		}
+        -:  719:
+    #####:  720:	if (BIO_read_filename(in,file) <= 0)
+        -:  721:		{
+    #####:  722:		SSLerr(SSL_F_SSL_CTX_USE_CERTIFICATE_CHAIN_FILE,ERR_R_SYS_LIB);
+    #####:  723:		goto end;
+        -:  724:		}
+        -:  725:
+    #####:  726:	x=PEM_read_bio_X509_AUX(in,NULL,ctx->default_passwd_callback,
+        -:  727:				ctx->default_passwd_callback_userdata);
+    #####:  728:	if (x == NULL)
+        -:  729:		{
+    #####:  730:		SSLerr(SSL_F_SSL_CTX_USE_CERTIFICATE_CHAIN_FILE,ERR_R_PEM_LIB);
+    #####:  731:		goto end;
+        -:  732:		}
+        -:  733:
+    #####:  734:	ret = SSL_CTX_use_certificate(ctx, x);
+        -:  735:
+    #####:  736:	if (ERR_peek_error() != 0)
+        -:  737:		ret = 0;  /* Key/certificate mismatch doesn't imply ret==0 ... */
+    #####:  738:	if (ret)
+        -:  739:		{
+        -:  740:		/* If we could set up our certificate, now proceed to
+        -:  741:		 * the CA certificates.
+        -:  742:		 */
+        -:  743:		X509 *ca;
+        -:  744:		int r;
+        -:  745:		unsigned long err;
+        -:  746:		
+    #####:  747:		if (ctx->extra_certs != NULL)
+        -:  748:			{
+    #####:  749:			sk_X509_pop_free(ctx->extra_certs, X509_free);
+    #####:  750:			ctx->extra_certs = NULL;
+        -:  751:			}
+        -:  752:
+    #####:  753:		while ((ca = PEM_read_bio_X509(in, NULL,
+        -:  754:					ctx->default_passwd_callback,
+        -:  755:					ctx->default_passwd_callback_userdata))
+        -:  756:			!= NULL)
+        -:  757:			{
+    #####:  758:			r = SSL_CTX_add_extra_chain_cert(ctx, ca);
+    #####:  759:			if (!r) 
+        -:  760:				{
+    #####:  761:				X509_free(ca);
+        -:  762:				ret = 0;
+    #####:  763:				goto end;
+        -:  764:				}
+        -:  765:			/* Note that we must not free r if it was successfully
+        -:  766:			 * added to the chain (while we must free the main
+        -:  767:			 * certificate, since its reference count is increased
+        -:  768:			 * by SSL_CTX_use_certificate). */
+        -:  769:			}
+        -:  770:		/* When the while loop ends, it's usually just EOF. */
+    #####:  771:		err = ERR_peek_last_error();
+    #####:  772:		if (ERR_GET_LIB(err) == ERR_LIB_PEM && ERR_GET_REASON(err) == PEM_R_NO_START_LINE)
+    #####:  773:			ERR_clear_error();
+        -:  774:		else 
+        -:  775:			ret = 0; /* some real error */
+        -:  776:		}
+        -:  777:
+        -:  778:end:
+    #####:  779:	if (x != NULL) X509_free(x);
+    #####:  780:	if (in != NULL) BIO_free(in);
+    #####:  781:	return(ret);
+        -:  782:	}
+        -:  783:#endif

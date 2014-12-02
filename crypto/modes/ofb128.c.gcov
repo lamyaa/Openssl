@@ -1,0 +1,126 @@
+        -:    0:Source:ofb128.c
+        -:    0:Graph:ofb128.gcno
+        -:    0:Data:ofb128.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* ====================================================================
+        -:    2: * Copyright (c) 2008 The OpenSSL Project.  All rights reserved.
+        -:    3: *
+        -:    4: * Redistribution and use in source and binary forms, with or without
+        -:    5: * modification, are permitted provided that the following conditions
+        -:    6: * are met:
+        -:    7: *
+        -:    8: * 1. Redistributions of source code must retain the above copyright
+        -:    9: *    notice, this list of conditions and the following disclaimer. 
+        -:   10: *
+        -:   11: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   12: *    notice, this list of conditions and the following disclaimer in
+        -:   13: *    the documentation and/or other materials provided with the
+        -:   14: *    distribution.
+        -:   15: *
+        -:   16: * 3. All advertising materials mentioning features or use of this
+        -:   17: *    software must display the following acknowledgment:
+        -:   18: *    "This product includes software developed by the OpenSSL Project
+        -:   19: *    for use in the OpenSSL Toolkit. (http://www.openssl.org/)"
+        -:   20: *
+        -:   21: * 4. The names "OpenSSL Toolkit" and "OpenSSL Project" must not be used to
+        -:   22: *    endorse or promote products derived from this software without
+        -:   23: *    prior written permission. For written permission, please contact
+        -:   24: *    openssl-core@openssl.org.
+        -:   25: *
+        -:   26: * 5. Products derived from this software may not be called "OpenSSL"
+        -:   27: *    nor may "OpenSSL" appear in their names without prior written
+        -:   28: *    permission of the OpenSSL Project.
+        -:   29: *
+        -:   30: * 6. Redistributions of any form whatsoever must retain the following
+        -:   31: *    acknowledgment:
+        -:   32: *    "This product includes software developed by the OpenSSL Project
+        -:   33: *    for use in the OpenSSL Toolkit (http://www.openssl.org/)"
+        -:   34: *
+        -:   35: * THIS SOFTWARE IS PROVIDED BY THE OpenSSL PROJECT ``AS IS'' AND ANY
+        -:   36: * EXPRESSED OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   37: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+        -:   38: * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE OpenSSL PROJECT OR
+        -:   39: * ITS CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+        -:   40: * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+        -:   41: * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+        -:   42: * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   43: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+        -:   44: * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+        -:   45: * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+        -:   46: * OF THE POSSIBILITY OF SUCH DAMAGE.
+        -:   47: * ====================================================================
+        -:   48: *
+        -:   49: */
+        -:   50:
+        -:   51:#include <openssl/crypto.h>
+        -:   52:#include "modes_lcl.h"
+        -:   53:#include <string.h>
+        -:   54:
+        -:   55:#ifndef MODES_DEBUG
+        -:   56:# ifndef NDEBUG
+        -:   57:#  define NDEBUG
+        -:   58:# endif
+        -:   59:#endif
+        -:   60:#include <assert.h>
+        -:   61:
+        -:   62:/* The input and output encrypted as though 128bit ofb mode is being
+        -:   63: * used.  The extra state information to record how much of the
+        -:   64: * 128bit block we have used is contained in *num;
+        -:   65: */
+    #####:   66:void CRYPTO_ofb128_encrypt(const unsigned char *in, unsigned char *out,
+        -:   67:			size_t len, const void *key,
+        -:   68:			unsigned char ivec[16], int *num,
+        -:   69:			block128_f block)
+        -:   70:{
+        -:   71:	unsigned int n;
+        -:   72:	size_t l=0;
+        -:   73:
+        -:   74:	assert(in && out && key && ivec && num);
+        -:   75:
+    #####:   76:	n = *num;
+        -:   77:
+        -:   78:#if !defined(OPENSSL_SMALL_FOOTPRINT)
+        -:   79:	if (16%sizeof(size_t) == 0) do { /* always true actually */
+    #####:   80:		while (n && len) {
+    #####:   81:			*(out++) = *(in++) ^ ivec[n];
+    #####:   82:			--len;
+    #####:   83:			n = (n+1) % 16;
+        -:   84:		}
+        -:   85:#if defined(STRICT_ALIGNMENT)
+        -:   86:		if (((size_t)in|(size_t)out|(size_t)ivec)%sizeof(size_t) != 0)
+        -:   87:			break;
+        -:   88:#endif
+    #####:   89:		while (len>=16) {
+    #####:   90:			(*block)(ivec, ivec, key);
+    #####:   91:			for (; n<16; n+=sizeof(size_t))
+    #####:   92:				*(size_t*)(out+n) =
+    #####:   93:				*(size_t*)(in+n) ^ *(size_t*)(ivec+n);
+    #####:   94:			len -= 16;
+    #####:   95:			out += 16;
+    #####:   96:			in  += 16;
+        -:   97:			n = 0;
+        -:   98:		}
+    #####:   99:		if (len) {
+    #####:  100:			(*block)(ivec, ivec, key);
+    #####:  101:			while (len--) {
+    #####:  102:				out[n] = in[n] ^ ivec[n];
+    #####:  103:				++n;
+        -:  104:			}
+        -:  105:		}
+    #####:  106:		*num = n;
+    #####:  107:		return;
+        -:  108:	} while(0);
+        -:  109:	/* the rest would be commonly eliminated by x86* compiler */
+        -:  110:#endif
+        -:  111:	while (l<len) {
+        -:  112:		if (n==0) {
+        -:  113:			(*block)(ivec, ivec, key);
+        -:  114:		}
+        -:  115:		out[l] = in[l] ^ ivec[n];
+        -:  116:		++l;
+        -:  117:		n = (n+1) % 16;
+        -:  118:	}
+        -:  119:
+        -:  120:	*num=n;
+        -:  121:}

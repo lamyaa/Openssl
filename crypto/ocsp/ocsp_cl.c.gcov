@@ -1,0 +1,376 @@
+        -:    0:Source:ocsp_cl.c
+        -:    0:Graph:ocsp_cl.gcno
+        -:    0:Data:ocsp_cl.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* ocsp_cl.c */
+        -:    2:/* Written by Tom Titchener <Tom_Titchener@groove.net> for the OpenSSL
+        -:    3: * project. */
+        -:    4:
+        -:    5:/* History:
+        -:    6:   This file was transfered to Richard Levitte from CertCo by Kathy
+        -:    7:   Weinhold in mid-spring 2000 to be included in OpenSSL or released
+        -:    8:   as a patch kit. */
+        -:    9:
+        -:   10:/* ====================================================================
+        -:   11: * Copyright (c) 1998-2000 The OpenSSL Project.  All rights reserved.
+        -:   12: *
+        -:   13: * Redistribution and use in source and binary forms, with or without
+        -:   14: * modification, are permitted provided that the following conditions
+        -:   15: * are met:
+        -:   16: *
+        -:   17: * 1. Redistributions of source code must retain the above copyright
+        -:   18: *    notice, this list of conditions and the following disclaimer. 
+        -:   19: *
+        -:   20: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   21: *    notice, this list of conditions and the following disclaimer in
+        -:   22: *    the documentation and/or other materials provided with the
+        -:   23: *    distribution.
+        -:   24: *
+        -:   25: * 3. All advertising materials mentioning features or use of this
+        -:   26: *    software must display the following acknowledgment:
+        -:   27: *    "This product includes software developed by the OpenSSL Project
+        -:   28: *    for use in the OpenSSL Toolkit. (http://www.openssl.org/)"
+        -:   29: *
+        -:   30: * 4. The names "OpenSSL Toolkit" and "OpenSSL Project" must not be used to
+        -:   31: *    endorse or promote products derived from this software without
+        -:   32: *    prior written permission. For written permission, please contact
+        -:   33: *    openssl-core@openssl.org.
+        -:   34: *
+        -:   35: * 5. Products derived from this software may not be called "OpenSSL"
+        -:   36: *    nor may "OpenSSL" appear in their names without prior written
+        -:   37: *    permission of the OpenSSL Project.
+        -:   38: *
+        -:   39: * 6. Redistributions of any form whatsoever must retain the following
+        -:   40: *    acknowledgment:
+        -:   41: *    "This product includes software developed by the OpenSSL Project
+        -:   42: *    for use in the OpenSSL Toolkit (http://www.openssl.org/)"
+        -:   43: *
+        -:   44: * THIS SOFTWARE IS PROVIDED BY THE OpenSSL PROJECT ``AS IS'' AND ANY
+        -:   45: * EXPRESSED OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   46: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+        -:   47: * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE OpenSSL PROJECT OR
+        -:   48: * ITS CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+        -:   49: * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+        -:   50: * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+        -:   51: * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   52: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+        -:   53: * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+        -:   54: * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+        -:   55: * OF THE POSSIBILITY OF SUCH DAMAGE.
+        -:   56: * ====================================================================
+        -:   57: *
+        -:   58: * This product includes cryptographic software written by Eric Young
+        -:   59: * (eay@cryptsoft.com).  This product includes software written by Tim
+        -:   60: * Hudson (tjh@cryptsoft.com).
+        -:   61: *
+        -:   62: */
+        -:   63:
+        -:   64:#include <stdio.h>
+        -:   65:#include <time.h>
+        -:   66:#include <cryptlib.h>
+        -:   67:#include <openssl/objects.h>
+        -:   68:#include <openssl/rand.h>
+        -:   69:#include <openssl/x509.h>
+        -:   70:#include <openssl/pem.h>
+        -:   71:#include <openssl/x509v3.h>
+        -:   72:#include <openssl/ocsp.h>
+        -:   73:
+        -:   74:/* Utility functions related to sending OCSP requests and extracting
+        -:   75: * relevant information from the response.
+        -:   76: */
+        -:   77:
+        -:   78:/* Add an OCSP_CERTID to an OCSP request. Return new OCSP_ONEREQ 
+        -:   79: * pointer: useful if we want to add extensions.
+        -:   80: */
+        -:   81:
+    #####:   82:OCSP_ONEREQ *OCSP_request_add0_id(OCSP_REQUEST *req, OCSP_CERTID *cid)
+        -:   83:        {
+        -:   84:	OCSP_ONEREQ *one = NULL;
+        -:   85:
+    #####:   86:	if (!(one = OCSP_ONEREQ_new())) goto err;
+    #####:   87:	if (one->reqCert) OCSP_CERTID_free(one->reqCert);
+    #####:   88:	one->reqCert = cid;
+    #####:   89:	if (req &&
+    #####:   90:		!sk_OCSP_ONEREQ_push(req->tbsRequest->requestList, one))
+        -:   91:				goto err;
+    #####:   92:	return one;
+        -:   93:err:
+    #####:   94:	OCSP_ONEREQ_free(one);
+    #####:   95:	return NULL;
+        -:   96:        }
+        -:   97:
+        -:   98:/* Set requestorName from an X509_NAME structure */
+        -:   99:
+    #####:  100:int OCSP_request_set1_name(OCSP_REQUEST *req, X509_NAME *nm)
+        -:  101:	{
+        -:  102:	GENERAL_NAME *gen;
+    #####:  103:	gen = GENERAL_NAME_new();
+    #####:  104:	if (gen == NULL)
+        -:  105:		return 0;
+    #####:  106:	if (!X509_NAME_set(&gen->d.directoryName, nm))
+        -:  107:		{
+    #####:  108:		GENERAL_NAME_free(gen);
+    #####:  109:		return 0;
+        -:  110:		}
+    #####:  111:	gen->type = GEN_DIRNAME;
+    #####:  112:	if (req->tbsRequest->requestorName)
+    #####:  113:		GENERAL_NAME_free(req->tbsRequest->requestorName);
+    #####:  114:	req->tbsRequest->requestorName = gen;
+    #####:  115:	return 1;
+        -:  116:	}
+        -:  117:	
+        -:  118:
+        -:  119:/* Add a certificate to an OCSP request */
+        -:  120:
+    #####:  121:int OCSP_request_add1_cert(OCSP_REQUEST *req, X509 *cert)
+        -:  122:	{
+        -:  123:	OCSP_SIGNATURE *sig;
+    #####:  124:	if (!req->optionalSignature)
+    #####:  125:		req->optionalSignature = OCSP_SIGNATURE_new();
+    #####:  126:	sig = req->optionalSignature;
+    #####:  127:	if (!sig) return 0;
+    #####:  128:	if (!cert) return 1;
+    #####:  129:	if (!sig->certs && !(sig->certs = sk_X509_new_null()))
+        -:  130:		return 0;
+        -:  131:
+    #####:  132:	if(!sk_X509_push(sig->certs, cert)) return 0;
+    #####:  133:	CRYPTO_add(&cert->references, 1, CRYPTO_LOCK_X509);
+    #####:  134:	return 1;
+        -:  135:	}
+        -:  136:
+        -:  137:/* Sign an OCSP request set the requestorName to the subjec
+        -:  138: * name of an optional signers certificate and include one
+        -:  139: * or more optional certificates in the request. Behaves
+        -:  140: * like PKCS7_sign().
+        -:  141: */
+        -:  142:
+    #####:  143:int OCSP_request_sign(OCSP_REQUEST   *req,
+        -:  144:		      X509           *signer,
+        -:  145:		      EVP_PKEY       *key,
+        -:  146:		      const EVP_MD   *dgst,
+        -:  147:		      STACK_OF(X509) *certs,
+        -:  148:		      unsigned long flags)
+        -:  149:        {
+        -:  150:	int i;
+        -:  151:	OCSP_SIGNATURE *sig;
+        -:  152:	X509 *x;
+        -:  153:
+    #####:  154:	if (!OCSP_request_set1_name(req, X509_get_subject_name(signer)))
+        -:  155:			goto err;
+        -:  156:
+    #####:  157:	if (!(req->optionalSignature = sig = OCSP_SIGNATURE_new())) goto err;
+    #####:  158:	if (key)
+        -:  159:		{
+    #####:  160:		if (!X509_check_private_key(signer, key))
+        -:  161:			{
+    #####:  162:			OCSPerr(OCSP_F_OCSP_REQUEST_SIGN, OCSP_R_PRIVATE_KEY_DOES_NOT_MATCH_CERTIFICATE);
+    #####:  163:			goto err;
+        -:  164:			}
+    #####:  165:		if (!OCSP_REQUEST_sign(req, key, dgst)) goto err;
+        -:  166:		}
+        -:  167:
+    #####:  168:	if (!(flags & OCSP_NOCERTS))
+        -:  169:		{
+    #####:  170:		if(!OCSP_request_add1_cert(req, signer)) goto err;
+    #####:  171:		for (i = 0; i < sk_X509_num(certs); i++)
+        -:  172:			{
+    #####:  173:			x = sk_X509_value(certs, i);
+    #####:  174:			if (!OCSP_request_add1_cert(req, x)) goto err;
+        -:  175:			}
+        -:  176:		}
+        -:  177:
+        -:  178:	return 1;
+        -:  179:err:
+    #####:  180:	OCSP_SIGNATURE_free(req->optionalSignature);
+    #####:  181:	req->optionalSignature = NULL;
+    #####:  182:	return 0;
+        -:  183:	}
+        -:  184:
+        -:  185:/* Get response status */
+        -:  186:
+    #####:  187:int OCSP_response_status(OCSP_RESPONSE *resp)
+        -:  188:	{
+    #####:  189:	return ASN1_ENUMERATED_get(resp->responseStatus);
+        -:  190:	}
+        -:  191:
+        -:  192:/* Extract basic response from OCSP_RESPONSE or NULL if
+        -:  193: * no basic response present.
+        -:  194: */
+        -:  195: 
+        -:  196:
+    #####:  197:OCSP_BASICRESP *OCSP_response_get1_basic(OCSP_RESPONSE *resp)
+        -:  198:	{
+        -:  199:	OCSP_RESPBYTES *rb;
+    #####:  200:	rb = resp->responseBytes;
+    #####:  201:	if (!rb)
+        -:  202:		{
+    #####:  203:		OCSPerr(OCSP_F_OCSP_RESPONSE_GET1_BASIC, OCSP_R_NO_RESPONSE_DATA);
+    #####:  204:		return NULL;
+        -:  205:		}
+    #####:  206:	if (OBJ_obj2nid(rb->responseType) != NID_id_pkix_OCSP_basic)
+        -:  207:		{
+    #####:  208:		OCSPerr(OCSP_F_OCSP_RESPONSE_GET1_BASIC, OCSP_R_NOT_BASIC_RESPONSE);
+    #####:  209:		return NULL;
+        -:  210:		}
+        -:  211:
+    #####:  212:	return ASN1_item_unpack(rb->response, ASN1_ITEM_rptr(OCSP_BASICRESP));
+        -:  213:	}
+        -:  214:
+        -:  215:/* Return number of OCSP_SINGLERESP reponses present in
+        -:  216: * a basic response.
+        -:  217: */
+        -:  218:
+    #####:  219:int OCSP_resp_count(OCSP_BASICRESP *bs)
+        -:  220:	{
+    #####:  221:	if (!bs) return -1;
+    #####:  222:	return sk_OCSP_SINGLERESP_num(bs->tbsResponseData->responses);
+        -:  223:	}
+        -:  224:
+        -:  225:/* Extract an OCSP_SINGLERESP response with a given index */
+        -:  226:
+    #####:  227:OCSP_SINGLERESP *OCSP_resp_get0(OCSP_BASICRESP *bs, int idx)
+        -:  228:	{
+    #####:  229:	if (!bs) return NULL;
+    #####:  230:	return sk_OCSP_SINGLERESP_value(bs->tbsResponseData->responses, idx);
+        -:  231:	}
+        -:  232:
+        -:  233:/* Look single response matching a given certificate ID */
+        -:  234:
+    #####:  235:int OCSP_resp_find(OCSP_BASICRESP *bs, OCSP_CERTID *id, int last)
+        -:  236:	{
+        -:  237:	int i;
+        -:  238:	STACK_OF(OCSP_SINGLERESP) *sresp;
+        -:  239:	OCSP_SINGLERESP *single;
+    #####:  240:	if (!bs) return -1;
+    #####:  241:	if (last < 0) last = 0;
+    #####:  242:	else last++;
+    #####:  243:	sresp = bs->tbsResponseData->responses;
+    #####:  244:	for (i = last; i < sk_OCSP_SINGLERESP_num(sresp); i++)
+        -:  245:		{
+    #####:  246:		single = sk_OCSP_SINGLERESP_value(sresp, i);
+    #####:  247:		if (!OCSP_id_cmp(id, single->certId)) return i;
+        -:  248:		}
+        -:  249:	return -1;
+        -:  250:	}
+        -:  251:
+        -:  252:/* Extract status information from an OCSP_SINGLERESP structure.
+        -:  253: * Note: the revtime and reason values are only set if the 
+        -:  254: * certificate status is revoked. Returns numerical value of
+        -:  255: * status.
+        -:  256: */
+        -:  257:
+    #####:  258:int OCSP_single_get0_status(OCSP_SINGLERESP *single, int *reason,
+        -:  259:				ASN1_GENERALIZEDTIME **revtime,
+        -:  260:				ASN1_GENERALIZEDTIME **thisupd,
+        -:  261:				ASN1_GENERALIZEDTIME **nextupd)
+        -:  262:	{
+        -:  263:	int ret;
+        -:  264:	OCSP_CERTSTATUS *cst;
+    #####:  265:	if(!single) return -1;
+    #####:  266:	cst = single->certStatus;
+    #####:  267:	ret = cst->type;
+    #####:  268:	if (ret == V_OCSP_CERTSTATUS_REVOKED)
+        -:  269:		{
+    #####:  270:		OCSP_REVOKEDINFO *rev = cst->value.revoked;
+    #####:  271:		if (revtime) *revtime = rev->revocationTime;
+    #####:  272:		if (reason) 
+        -:  273:			{
+    #####:  274:			if(rev->revocationReason)
+    #####:  275:				*reason = ASN1_ENUMERATED_get(rev->revocationReason);
+    #####:  276:			else *reason = -1;
+        -:  277:			}
+        -:  278:		}
+    #####:  279:	if(thisupd) *thisupd = single->thisUpdate;
+    #####:  280:	if(nextupd) *nextupd = single->nextUpdate;
+    #####:  281:	return ret;
+        -:  282:	}
+        -:  283:
+        -:  284:/* This function combines the previous ones: look up a certificate ID and
+        -:  285: * if found extract status information. Return 0 is successful.
+        -:  286: */
+        -:  287:
+    #####:  288:int OCSP_resp_find_status(OCSP_BASICRESP *bs, OCSP_CERTID *id, int *status,
+        -:  289:				int *reason,
+        -:  290:				ASN1_GENERALIZEDTIME **revtime,
+        -:  291:				ASN1_GENERALIZEDTIME **thisupd,
+        -:  292:				ASN1_GENERALIZEDTIME **nextupd)
+        -:  293:	{
+        -:  294:	int i;
+        -:  295:	OCSP_SINGLERESP *single;
+    #####:  296:	i = OCSP_resp_find(bs, id, -1);
+        -:  297:	/* Maybe check for multiple responses and give an error? */
+    #####:  298:	if(i < 0) return 0;
+        -:  299:	single = OCSP_resp_get0(bs, i);
+    #####:  300:	i = OCSP_single_get0_status(single, reason, revtime, thisupd, nextupd);
+    #####:  301:	if(status) *status = i;
+        -:  302:	return 1;
+        -:  303:	}
+        -:  304:
+        -:  305:/* Check validity of thisUpdate and nextUpdate fields. It is possible that the request will
+        -:  306: * take a few seconds to process and/or the time wont be totally accurate. Therefore to avoid
+        -:  307: * rejecting otherwise valid time we allow the times to be within 'nsec' of the current time.
+        -:  308: * Also to avoid accepting very old responses without a nextUpdate field an optional maxage
+        -:  309: * parameter specifies the maximum age the thisUpdate field can be.
+        -:  310: */
+        -:  311:
+    #####:  312:int OCSP_check_validity(ASN1_GENERALIZEDTIME *thisupd, ASN1_GENERALIZEDTIME *nextupd, long nsec, long maxsec)
+        -:  313:	{
+        -:  314:	int ret = 1;
+        -:  315:	time_t t_now, t_tmp;
+    #####:  316:	time(&t_now);
+        -:  317:	/* Check thisUpdate is valid and not more than nsec in the future */
+    #####:  318:	if (!ASN1_GENERALIZEDTIME_check(thisupd))
+        -:  319:		{
+    #####:  320:		OCSPerr(OCSP_F_OCSP_CHECK_VALIDITY, OCSP_R_ERROR_IN_THISUPDATE_FIELD);
+        -:  321:		ret = 0;
+        -:  322:		}
+        -:  323:	else 
+        -:  324:		{
+    #####:  325:			t_tmp = t_now + nsec;
+    #####:  326:			if (X509_cmp_time(thisupd, &t_tmp) > 0)
+        -:  327:			{
+    #####:  328:			OCSPerr(OCSP_F_OCSP_CHECK_VALIDITY, OCSP_R_STATUS_NOT_YET_VALID);
+        -:  329:			ret = 0;
+        -:  330:			}
+        -:  331:
+        -:  332:		/* If maxsec specified check thisUpdate is not more than maxsec in the past */
+    #####:  333:		if (maxsec >= 0)
+        -:  334:			{
+    #####:  335:			t_tmp = t_now - maxsec;
+    #####:  336:			if (X509_cmp_time(thisupd, &t_tmp) < 0)
+        -:  337:				{
+    #####:  338:				OCSPerr(OCSP_F_OCSP_CHECK_VALIDITY, OCSP_R_STATUS_TOO_OLD);
+        -:  339:				ret = 0;
+        -:  340:				}
+        -:  341:			}
+        -:  342:		}
+        -:  343:		
+        -:  344:
+    #####:  345:	if (!nextupd) return ret;
+        -:  346:
+        -:  347:	/* Check nextUpdate is valid and not more than nsec in the past */
+    #####:  348:	if (!ASN1_GENERALIZEDTIME_check(nextupd))
+        -:  349:		{
+    #####:  350:		OCSPerr(OCSP_F_OCSP_CHECK_VALIDITY, OCSP_R_ERROR_IN_NEXTUPDATE_FIELD);
+        -:  351:		ret = 0;
+        -:  352:		}
+        -:  353:	else 
+        -:  354:		{
+    #####:  355:		t_tmp = t_now - nsec;
+    #####:  356:		if (X509_cmp_time(nextupd, &t_tmp) < 0)
+        -:  357:			{
+    #####:  358:			OCSPerr(OCSP_F_OCSP_CHECK_VALIDITY, OCSP_R_STATUS_EXPIRED);
+        -:  359:			ret = 0;
+        -:  360:			}
+        -:  361:		}
+        -:  362:
+        -:  363:	/* Also don't allow nextUpdate to precede thisUpdate */
+    #####:  364:	if (ASN1_STRING_cmp(nextupd, thisupd) < 0)
+        -:  365:		{
+    #####:  366:		OCSPerr(OCSP_F_OCSP_CHECK_VALIDITY, OCSP_R_NEXTUPDATE_BEFORE_THISUPDATE);
+        -:  367:		ret = 0;
+        -:  368:		}
+        -:  369:
+    #####:  370:	return ret;
+        -:  371:	}

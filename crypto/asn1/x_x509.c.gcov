@@ -1,0 +1,199 @@
+        -:    0:Source:x_x509.c
+        -:    0:Graph:x_x509.gcno
+        -:    0:Data:x_x509.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* crypto/asn1/x_x509.c */
+        -:    2:/* Copyright (C) 1995-1998 Eric Young (eay@cryptsoft.com)
+        -:    3: * All rights reserved.
+        -:    4: *
+        -:    5: * This package is an SSL implementation written
+        -:    6: * by Eric Young (eay@cryptsoft.com).
+        -:    7: * The implementation was written so as to conform with Netscapes SSL.
+        -:    8: * 
+        -:    9: * This library is free for commercial and non-commercial use as long as
+        -:   10: * the following conditions are aheared to.  The following conditions
+        -:   11: * apply to all code found in this distribution, be it the RC4, RSA,
+        -:   12: * lhash, DES, etc., code; not just the SSL code.  The SSL documentation
+        -:   13: * included with this distribution is covered by the same copyright terms
+        -:   14: * except that the holder is Tim Hudson (tjh@cryptsoft.com).
+        -:   15: * 
+        -:   16: * Copyright remains Eric Young's, and as such any Copyright notices in
+        -:   17: * the code are not to be removed.
+        -:   18: * If this package is used in a product, Eric Young should be given attribution
+        -:   19: * as the author of the parts of the library used.
+        -:   20: * This can be in the form of a textual message at program startup or
+        -:   21: * in documentation (online or textual) provided with the package.
+        -:   22: * 
+        -:   23: * Redistribution and use in source and binary forms, with or without
+        -:   24: * modification, are permitted provided that the following conditions
+        -:   25: * are met:
+        -:   26: * 1. Redistributions of source code must retain the copyright
+        -:   27: *    notice, this list of conditions and the following disclaimer.
+        -:   28: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   29: *    notice, this list of conditions and the following disclaimer in the
+        -:   30: *    documentation and/or other materials provided with the distribution.
+        -:   31: * 3. All advertising materials mentioning features or use of this software
+        -:   32: *    must display the following acknowledgement:
+        -:   33: *    "This product includes cryptographic software written by
+        -:   34: *     Eric Young (eay@cryptsoft.com)"
+        -:   35: *    The word 'cryptographic' can be left out if the rouines from the library
+        -:   36: *    being used are not cryptographic related :-).
+        -:   37: * 4. If you include any Windows specific code (or a derivative thereof) from 
+        -:   38: *    the apps directory (application code) you must include an acknowledgement:
+        -:   39: *    "This product includes software written by Tim Hudson (tjh@cryptsoft.com)"
+        -:   40: * 
+        -:   41: * THIS SOFTWARE IS PROVIDED BY ERIC YOUNG ``AS IS'' AND
+        -:   42: * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   43: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+        -:   44: * ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+        -:   45: * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+        -:   46: * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+        -:   47: * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   48: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+        -:   49: * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+        -:   50: * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+        -:   51: * SUCH DAMAGE.
+        -:   52: * 
+        -:   53: * The licence and distribution terms for any publically available version or
+        -:   54: * derivative of this code cannot be changed.  i.e. this code cannot simply be
+        -:   55: * copied and put under another distribution licence
+        -:   56: * [including the GNU Public Licence.]
+        -:   57: */
+        -:   58:
+        -:   59:#include <stdio.h>
+        -:   60:#include "cryptlib.h"
+        -:   61:#include <openssl/evp.h>
+        -:   62:#include <openssl/asn1t.h>
+        -:   63:#include <openssl/x509.h>
+        -:   64:#include <openssl/x509v3.h>
+        -:   65:
+        -:   66:ASN1_SEQUENCE_enc(X509_CINF, enc, 0) = {
+        -:   67:	ASN1_EXP_OPT(X509_CINF, version, ASN1_INTEGER, 0),
+        -:   68:	ASN1_SIMPLE(X509_CINF, serialNumber, ASN1_INTEGER),
+        -:   69:	ASN1_SIMPLE(X509_CINF, signature, X509_ALGOR),
+        -:   70:	ASN1_SIMPLE(X509_CINF, issuer, X509_NAME),
+        -:   71:	ASN1_SIMPLE(X509_CINF, validity, X509_VAL),
+        -:   72:	ASN1_SIMPLE(X509_CINF, subject, X509_NAME),
+        -:   73:	ASN1_SIMPLE(X509_CINF, key, X509_PUBKEY),
+        -:   74:	ASN1_IMP_OPT(X509_CINF, issuerUID, ASN1_BIT_STRING, 1),
+        -:   75:	ASN1_IMP_OPT(X509_CINF, subjectUID, ASN1_BIT_STRING, 2),
+        -:   76:	ASN1_EXP_SEQUENCE_OF_OPT(X509_CINF, extensions, X509_EXTENSION, 3)
+        -:   77:} ASN1_SEQUENCE_END_enc(X509_CINF, X509_CINF)
+        -:   78:
+    #####:   79:IMPLEMENT_ASN1_FUNCTIONS(X509_CINF)
+        -:   80:/* X509 top level structure needs a bit of customisation */
+        -:   81:
+        -:   82:extern void policy_cache_free(X509_POLICY_CACHE *cache);
+        -:   83:
+   291282:   84:static int x509_cb(int operation, ASN1_VALUE **pval, const ASN1_ITEM *it,
+        -:   85:								void *exarg)
+        -:   86:{
+   291282:   87:	X509 *ret = (X509 *)*pval;
+        -:   88:
+   291282:   89:	switch(operation) {
+        -:   90:
+        -:   91:		case ASN1_OP_NEW_POST:
+    29975:   92:		ret->valid=0;
+    29975:   93:		ret->name = NULL;
+    29975:   94:		ret->ex_flags = 0;
+    29975:   95:		ret->ex_pathlen = -1;
+    29975:   96:		ret->skid = NULL;
+    29975:   97:		ret->akid = NULL;
+        -:   98:#ifndef OPENSSL_NO_RFC3779
+        -:   99:		ret->rfc3779_addr = NULL;
+        -:  100:		ret->rfc3779_asid = NULL;
+        -:  101:#endif
+    29975:  102:		ret->aux = NULL;
+    29975:  103:		ret->crldp = NULL;
+    29975:  104:		CRYPTO_new_ex_data(CRYPTO_EX_INDEX_X509, ret, &ret->ex_data);
+    29975:  105:		break;
+        -:  106:
+        -:  107:		case ASN1_OP_D2I_POST:
+    29975:  108:		if (ret->name != NULL) OPENSSL_free(ret->name);
+    29975:  109:		ret->name=X509_NAME_oneline(ret->cert_info->subject,NULL,0);
+    29975:  110:		break;
+        -:  111:
+        -:  112:		case ASN1_OP_FREE_POST:
+    29975:  113:		CRYPTO_free_ex_data(CRYPTO_EX_INDEX_X509, ret, &ret->ex_data);
+    29975:  114:		X509_CERT_AUX_free(ret->aux);
+    29975:  115:		ASN1_OCTET_STRING_free(ret->skid);
+    29975:  116:		AUTHORITY_KEYID_free(ret->akid);
+    29975:  117:		CRL_DIST_POINTS_free(ret->crldp);
+    29975:  118:		policy_cache_free(ret->policy_cache);
+    29975:  119:		GENERAL_NAMES_free(ret->altname);
+    29975:  120:		NAME_CONSTRAINTS_free(ret->nc);
+        -:  121:#ifndef OPENSSL_NO_RFC3779
+        -:  122:		sk_IPAddressFamily_pop_free(ret->rfc3779_addr, IPAddressFamily_free);
+        -:  123:		ASIdentifiers_free(ret->rfc3779_asid);
+        -:  124:#endif
+        -:  125:
+    29975:  126:		if (ret->name != NULL) OPENSSL_free(ret->name);
+        -:  127:		break;
+        -:  128:
+        -:  129:	}
+        -:  130:
+   291282:  131:	return 1;
+        -:  132:
+        -:  133:}
+        -:  134:
+        -:  135:ASN1_SEQUENCE_ref(X509, x509_cb, CRYPTO_LOCK_X509) = {
+        -:  136:	ASN1_SIMPLE(X509, cert_info, X509_CINF),
+        -:  137:	ASN1_SIMPLE(X509, sig_alg, X509_ALGOR),
+        -:  138:	ASN1_SIMPLE(X509, signature, ASN1_BIT_STRING)
+        -:  139:} ASN1_SEQUENCE_END_ref(X509, X509)
+        -:  140:
+   155615:  141:IMPLEMENT_ASN1_FUNCTIONS(X509)
+    #####:  142:IMPLEMENT_ASN1_DUP_FUNCTION(X509)
+        -:  143:
+    #####:  144:int X509_get_ex_new_index(long argl, void *argp, CRYPTO_EX_new *new_func,
+        -:  145:	     CRYPTO_EX_dup *dup_func, CRYPTO_EX_free *free_func)
+        -:  146:        {
+    #####:  147:	return CRYPTO_get_ex_new_index(CRYPTO_EX_INDEX_X509, argl, argp,
+        -:  148:				new_func, dup_func, free_func);
+        -:  149:        }
+        -:  150:
+    #####:  151:int X509_set_ex_data(X509 *r, int idx, void *arg)
+        -:  152:	{
+    #####:  153:	return(CRYPTO_set_ex_data(&r->ex_data,idx,arg));
+        -:  154:	}
+        -:  155:
+    #####:  156:void *X509_get_ex_data(X509 *r, int idx)
+        -:  157:	{
+    #####:  158:	return(CRYPTO_get_ex_data(&r->ex_data,idx));
+        -:  159:	}
+        -:  160:
+        -:  161:/* X509_AUX ASN1 routines. X509_AUX is the name given to
+        -:  162: * a certificate with extra info tagged on the end. Since these
+        -:  163: * functions set how a certificate is trusted they should only
+        -:  164: * be used when the certificate comes from a reliable source
+        -:  165: * such as local storage.
+        -:  166: *
+        -:  167: */
+        -:  168:
+    #####:  169:X509 *d2i_X509_AUX(X509 **a, const unsigned char **pp, long length)
+        -:  170:{
+        -:  171:	const unsigned char *q;
+        -:  172:	X509 *ret;
+        -:  173:	/* Save start position */
+    #####:  174:	q = *pp;
+        -:  175:	ret = d2i_X509(a, pp, length);
+        -:  176:	/* If certificate unreadable then forget it */
+    #####:  177:	if(!ret) return NULL;
+        -:  178:	/* update length */
+    #####:  179:	length -= *pp - q;
+    #####:  180:	if(!length) return ret;
+    #####:  181:	if(!d2i_X509_CERT_AUX(&ret->aux, pp, length)) goto err;
+        -:  182:	return ret;
+        -:  183:	err:
+        -:  184:	X509_free(ret);
+    #####:  185:	return NULL;
+        -:  186:}
+        -:  187:
+    #####:  188:int i2d_X509_AUX(X509 *a, unsigned char **pp)
+        -:  189:{
+        -:  190:	int length;
+        -:  191:	length = i2d_X509(a, pp);
+    #####:  192:	if(a) length += i2d_X509_CERT_AUX(a->aux, pp);
+    #####:  193:	return length;
+        -:  194:}

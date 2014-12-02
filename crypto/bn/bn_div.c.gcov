@@ -1,0 +1,453 @@
+        -:    0:Source:bn_div.c
+        -:    0:Graph:bn_div.gcno
+        -:    0:Data:bn_div.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* crypto/bn/bn_div.c */
+        -:    2:/* Copyright (C) 1995-1998 Eric Young (eay@cryptsoft.com)
+        -:    3: * All rights reserved.
+        -:    4: *
+        -:    5: * This package is an SSL implementation written
+        -:    6: * by Eric Young (eay@cryptsoft.com).
+        -:    7: * The implementation was written so as to conform with Netscapes SSL.
+        -:    8: * 
+        -:    9: * This library is free for commercial and non-commercial use as long as
+        -:   10: * the following conditions are aheared to.  The following conditions
+        -:   11: * apply to all code found in this distribution, be it the RC4, RSA,
+        -:   12: * lhash, DES, etc., code; not just the SSL code.  The SSL documentation
+        -:   13: * included with this distribution is covered by the same copyright terms
+        -:   14: * except that the holder is Tim Hudson (tjh@cryptsoft.com).
+        -:   15: * 
+        -:   16: * Copyright remains Eric Young's, and as such any Copyright notices in
+        -:   17: * the code are not to be removed.
+        -:   18: * If this package is used in a product, Eric Young should be given attribution
+        -:   19: * as the author of the parts of the library used.
+        -:   20: * This can be in the form of a textual message at program startup or
+        -:   21: * in documentation (online or textual) provided with the package.
+        -:   22: * 
+        -:   23: * Redistribution and use in source and binary forms, with or without
+        -:   24: * modification, are permitted provided that the following conditions
+        -:   25: * are met:
+        -:   26: * 1. Redistributions of source code must retain the copyright
+        -:   27: *    notice, this list of conditions and the following disclaimer.
+        -:   28: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   29: *    notice, this list of conditions and the following disclaimer in the
+        -:   30: *    documentation and/or other materials provided with the distribution.
+        -:   31: * 3. All advertising materials mentioning features or use of this software
+        -:   32: *    must display the following acknowledgement:
+        -:   33: *    "This product includes cryptographic software written by
+        -:   34: *     Eric Young (eay@cryptsoft.com)"
+        -:   35: *    The word 'cryptographic' can be left out if the rouines from the library
+        -:   36: *    being used are not cryptographic related :-).
+        -:   37: * 4. If you include any Windows specific code (or a derivative thereof) from 
+        -:   38: *    the apps directory (application code) you must include an acknowledgement:
+        -:   39: *    "This product includes software written by Tim Hudson (tjh@cryptsoft.com)"
+        -:   40: * 
+        -:   41: * THIS SOFTWARE IS PROVIDED BY ERIC YOUNG ``AS IS'' AND
+        -:   42: * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   43: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+        -:   44: * ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+        -:   45: * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+        -:   46: * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+        -:   47: * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   48: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+        -:   49: * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+        -:   50: * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+        -:   51: * SUCH DAMAGE.
+        -:   52: * 
+        -:   53: * The licence and distribution terms for any publically available version or
+        -:   54: * derivative of this code cannot be changed.  i.e. this code cannot simply be
+        -:   55: * copied and put under another distribution licence
+        -:   56: * [including the GNU Public Licence.]
+        -:   57: */
+        -:   58:
+        -:   59:#include <stdio.h>
+        -:   60:#include <openssl/bn.h>
+        -:   61:#include "cryptlib.h"
+        -:   62:#include "bn_lcl.h"
+        -:   63:
+        -:   64:
+        -:   65:/* The old slow way */
+        -:   66:#if 0
+        -:   67:int BN_div(BIGNUM *dv, BIGNUM *rem, const BIGNUM *m, const BIGNUM *d,
+        -:   68:	   BN_CTX *ctx)
+        -:   69:	{
+        -:   70:	int i,nm,nd;
+        -:   71:	int ret = 0;
+        -:   72:	BIGNUM *D;
+        -:   73:
+        -:   74:	bn_check_top(m);
+        -:   75:	bn_check_top(d);
+        -:   76:	if (BN_is_zero(d))
+        -:   77:		{
+        -:   78:		BNerr(BN_F_BN_DIV,BN_R_DIV_BY_ZERO);
+        -:   79:		return(0);
+        -:   80:		}
+        -:   81:
+        -:   82:	if (BN_ucmp(m,d) < 0)
+        -:   83:		{
+        -:   84:		if (rem != NULL)
+        -:   85:			{ if (BN_copy(rem,m) == NULL) return(0); }
+        -:   86:		if (dv != NULL) BN_zero(dv);
+        -:   87:		return(1);
+        -:   88:		}
+        -:   89:
+        -:   90:	BN_CTX_start(ctx);
+        -:   91:	D = BN_CTX_get(ctx);
+        -:   92:	if (dv == NULL) dv = BN_CTX_get(ctx);
+        -:   93:	if (rem == NULL) rem = BN_CTX_get(ctx);
+        -:   94:	if (D == NULL || dv == NULL || rem == NULL)
+        -:   95:		goto end;
+        -:   96:
+        -:   97:	nd=BN_num_bits(d);
+        -:   98:	nm=BN_num_bits(m);
+        -:   99:	if (BN_copy(D,d) == NULL) goto end;
+        -:  100:	if (BN_copy(rem,m) == NULL) goto end;
+        -:  101:
+        -:  102:	/* The next 2 are needed so we can do a dv->d[0]|=1 later
+        -:  103:	 * since BN_lshift1 will only work once there is a value :-) */
+        -:  104:	BN_zero(dv);
+        -:  105:	if(bn_wexpand(dv,1) == NULL) goto end;
+        -:  106:	dv->top=1;
+        -:  107:
+        -:  108:	if (!BN_lshift(D,D,nm-nd)) goto end;
+        -:  109:	for (i=nm-nd; i>=0; i--)
+        -:  110:		{
+        -:  111:		if (!BN_lshift1(dv,dv)) goto end;
+        -:  112:		if (BN_ucmp(rem,D) >= 0)
+        -:  113:			{
+        -:  114:			dv->d[0]|=1;
+        -:  115:			if (!BN_usub(rem,rem,D)) goto end;
+        -:  116:			}
+        -:  117:/* CAN IMPROVE (and have now :=) */
+        -:  118:		if (!BN_rshift1(D,D)) goto end;
+        -:  119:		}
+        -:  120:	rem->neg=BN_is_zero(rem)?0:m->neg;
+        -:  121:	dv->neg=m->neg^d->neg;
+        -:  122:	ret = 1;
+        -:  123: end:
+        -:  124:	BN_CTX_end(ctx);
+        -:  125:	return(ret);
+        -:  126:	}
+        -:  127:
+        -:  128:#else
+        -:  129:
+        -:  130:#if !defined(OPENSSL_NO_ASM) && !defined(OPENSSL_NO_INLINE_ASM) \
+        -:  131:    && !defined(PEDANTIC) && !defined(BN_DIV3W)
+        -:  132:# if defined(__GNUC__) && __GNUC__>=2
+        -:  133:#  if defined(__i386) || defined (__i386__)
+        -:  134:   /*
+        -:  135:    * There were two reasons for implementing this template:
+        -:  136:    * - GNU C generates a call to a function (__udivdi3 to be exact)
+        -:  137:    *   in reply to ((((BN_ULLONG)n0)<<BN_BITS2)|n1)/d0 (I fail to
+        -:  138:    *   understand why...);
+        -:  139:    * - divl doesn't only calculate quotient, but also leaves
+        -:  140:    *   remainder in %edx which we can definitely use here:-)
+        -:  141:    *
+        -:  142:    *					<appro@fy.chalmers.se>
+        -:  143:    */
+        -:  144:#undef bn_div_words
+        -:  145:#  define bn_div_words(n0,n1,d0)		\
+        -:  146:	({  asm volatile (			\
+        -:  147:		"divl	%4"			\
+        -:  148:		: "=a"(q), "=d"(rem)		\
+        -:  149:		: "a"(n1), "d"(n0), "g"(d0)	\
+        -:  150:		: "cc");			\
+        -:  151:	    q;					\
+        -:  152:	})
+        -:  153:#  define REMAINDER_IS_ALREADY_CALCULATED
+        -:  154:#  elif defined(__x86_64) && defined(SIXTY_FOUR_BIT_LONG)
+        -:  155:   /*
+        -:  156:    * Same story here, but it's 128-bit by 64-bit division. Wow!
+        -:  157:    *					<appro@fy.chalmers.se>
+        -:  158:    */
+        -:  159:#  undef bn_div_words
+        -:  160:#  define bn_div_words(n0,n1,d0)		\
+        -:  161:	({  asm volatile (			\
+        -:  162:		"divq	%4"			\
+        -:  163:		: "=a"(q), "=d"(rem)		\
+        -:  164:		: "a"(n1), "d"(n0), "g"(d0)	\
+        -:  165:		: "cc");			\
+        -:  166:	    q;					\
+        -:  167:	})
+        -:  168:#  define REMAINDER_IS_ALREADY_CALCULATED
+        -:  169:#  endif /* __<cpu> */
+        -:  170:# endif /* __GNUC__ */
+        -:  171:#endif /* OPENSSL_NO_ASM */
+        -:  172:
+        -:  173:
+        -:  174:/* BN_div computes  dv := num / divisor,  rounding towards
+        -:  175: * zero, and sets up rm  such that  dv*divisor + rm = num  holds.
+        -:  176: * Thus:
+        -:  177: *     dv->neg == num->neg ^ divisor->neg  (unless the result is zero)
+        -:  178: *     rm->neg == num->neg                 (unless the remainder is zero)
+        -:  179: * If 'dv' or 'rm' is NULL, the respective value is not returned.
+        -:  180: */
+    47768:  181:int BN_div(BIGNUM *dv, BIGNUM *rm, const BIGNUM *num, const BIGNUM *divisor,
+        -:  182:	   BN_CTX *ctx)
+        -:  183:	{
+        -:  184:	int norm_shift,i,loop;
+        -:  185:	BIGNUM *tmp,wnum,*snum,*sdiv,*res;
+        -:  186:	BN_ULONG *resp,*wnump;
+        -:  187:	BN_ULONG d0,d1;
+        -:  188:	int num_n,div_n;
+        -:  189:	int no_branch=0;
+        -:  190:
+        -:  191:	/* Invalid zero-padding would have particularly bad consequences
+        -:  192:	 * in the case of 'num', so don't just rely on bn_check_top() for this one
+        -:  193:	 * (bn_check_top() works only for BN_DEBUG builds) */
+    47768:  194:	if (num->top > 0 && num->d[num->top - 1] == 0)
+        -:  195:		{
+    #####:  196:		BNerr(BN_F_BN_DIV,BN_R_NOT_INITIALIZED);
+    #####:  197:		return 0;
+        -:  198:		}
+        -:  199:
+        -:  200:	bn_check_top(num);
+        -:  201:
+    47768:  202:	if ((BN_get_flags(num, BN_FLG_CONSTTIME) != 0) || (BN_get_flags(divisor, BN_FLG_CONSTTIME) != 0))
+        -:  203:		{
+        -:  204:		no_branch=1;
+        -:  205:		}
+        -:  206:
+        -:  207:	bn_check_top(dv);
+        -:  208:	bn_check_top(rm);
+        -:  209:	/* bn_check_top(num); */ /* 'num' has been checked already */
+        -:  210:	bn_check_top(divisor);
+        -:  211:
+    47768:  212:	if (BN_is_zero(divisor))
+        -:  213:		{
+    #####:  214:		BNerr(BN_F_BN_DIV,BN_R_DIV_BY_ZERO);
+    #####:  215:		return(0);
+        -:  216:		}
+        -:  217:
+    47768:  218:	if (!no_branch && BN_ucmp(num,divisor) < 0)
+        -:  219:		{
+    #####:  220:		if (rm != NULL)
+    #####:  221:			{ if (BN_copy(rm,num) == NULL) return(0); }
+    #####:  222:		if (dv != NULL) BN_zero(dv);
+        -:  223:		return(1);
+        -:  224:		}
+        -:  225:
+    47768:  226:	BN_CTX_start(ctx);
+    47768:  227:	tmp=BN_CTX_get(ctx);
+    47768:  228:	snum=BN_CTX_get(ctx);
+    47768:  229:	sdiv=BN_CTX_get(ctx);
+    47768:  230:	if (dv == NULL)
+    35826:  231:		res=BN_CTX_get(ctx);
+        -:  232:	else	res=dv;
+    47768:  233:	if (sdiv == NULL || res == NULL || tmp == NULL || snum == NULL)
+        -:  234:		goto err;
+        -:  235:
+        -:  236:	/* First we normalise the numbers */
+    47768:  237:	norm_shift=BN_BITS2-((BN_num_bits(divisor))%BN_BITS2);
+    47768:  238:	if (!(BN_lshift(sdiv,divisor,norm_shift))) goto err;
+    47768:  239:	sdiv->neg=0;
+    47768:  240:	norm_shift+=BN_BITS2;
+    47768:  241:	if (!(BN_lshift(snum,num,norm_shift))) goto err;
+    47768:  242:	snum->neg=0;
+        -:  243:
+    47768:  244:	if (no_branch)
+        -:  245:		{
+        -:  246:		/* Since we don't know whether snum is larger than sdiv,
+        -:  247:		 * we pad snum with enough zeroes without changing its
+        -:  248:		 * value. 
+        -:  249:		 */
+    #####:  250:		if (snum->top <= sdiv->top+1) 
+        -:  251:			{
+    #####:  252:			if (bn_wexpand(snum, sdiv->top + 2) == NULL) goto err;
+    #####:  253:			for (i = snum->top; i < sdiv->top + 2; i++) snum->d[i] = 0;
+    #####:  254:			snum->top = sdiv->top + 2;
+        -:  255:			}
+        -:  256:		else
+        -:  257:			{
+    #####:  258:			if (bn_wexpand(snum, snum->top + 1) == NULL) goto err;
+    #####:  259:			snum->d[snum->top] = 0;
+    #####:  260:			snum->top ++;
+        -:  261:			}
+        -:  262:		}
+        -:  263:
+    47768:  264:	div_n=sdiv->top;
+    47768:  265:	num_n=snum->top;
+    47768:  266:	loop=num_n-div_n;
+        -:  267:	/* Lets setup a 'window' into snum
+        -:  268:	 * This is the part that corresponds to the current
+        -:  269:	 * 'area' being divided */
+    47768:  270:	wnum.neg   = 0;
+    47768:  271:	wnum.d     = &(snum->d[loop]);
+    47768:  272:	wnum.top   = div_n;
+        -:  273:	/* only needed when BN_ucmp messes up the values between top and max */
+    47768:  274:	wnum.dmax  = snum->dmax - loop; /* so we don't step out of bounds */
+        -:  275:
+        -:  276:	/* Get the top 2 words of sdiv */
+        -:  277:	/* div_n=sdiv->top; */
+    47768:  278:	d0=sdiv->d[div_n-1];
+    47768:  279:	d1=(div_n == 1)?0:sdiv->d[div_n-2];
+        -:  280:
+        -:  281:	/* pointer to the 'top' of snum */
+    47768:  282:	wnump= &(snum->d[num_n-1]);
+        -:  283:
+        -:  284:	/* Setup to 'res' */
+    47768:  285:	res->neg= (num->neg^divisor->neg);
+    47768:  286:	if (!bn_wexpand(res,(loop+1))) goto err;
+    47768:  287:	res->top=loop-no_branch;
+    47768:  288:	resp= &(res->d[loop-1]);
+        -:  289:
+        -:  290:	/* space for temp */
+    47768:  291:	if (!bn_wexpand(tmp,(div_n+1))) goto err;
+        -:  292:
+    47768:  293:	if (!no_branch)
+        -:  294:		{
+    47768:  295:		if (BN_ucmp(&wnum,sdiv) >= 0)
+        -:  296:			{
+        -:  297:			/* If BN_DEBUG_RAND is defined BN_ucmp changes (via
+        -:  298:			 * bn_pollute) the const bignum arguments =>
+        -:  299:			 * clean the values between top and max again */
+        -:  300:			bn_clear_top2max(&wnum);
+    #####:  301:			bn_sub_words(wnum.d, wnum.d, sdiv->d, div_n);
+    #####:  302:			*resp=1;
+        -:  303:			}
+        -:  304:		else
+    47768:  305:			res->top--;
+        -:  306:		}
+        -:  307:
+        -:  308:	/* if res->top == 0 then clear the neg value otherwise decrease
+        -:  309:	 * the resp pointer */
+    47768:  310:	if (res->top == 0)
+    #####:  311:		res->neg = 0;
+        -:  312:	else
+    47768:  313:		resp--;
+        -:  314:
+   238840:  315:	for (i=0; i<loop-1; i++, wnump--, resp--)
+        -:  316:		{
+        -:  317:		BN_ULONG q,l0;
+        -:  318:		/* the first part of the loop uses the top two words of
+        -:  319:		 * snum and sdiv to calculate a BN_ULONG q such that
+        -:  320:		 * | wnum - sdiv * q | < sdiv */
+        -:  321:#if defined(BN_DIV3W) && !defined(OPENSSL_NO_ASM)
+        -:  322:		BN_ULONG bn_div_3_words(BN_ULONG*,BN_ULONG,BN_ULONG);
+        -:  323:		q=bn_div_3_words(wnump,d1,d0);
+        -:  324:#else
+        -:  325:		BN_ULONG n0,n1,rem=0;
+        -:  326:
+   238840:  327:		n0=wnump[0];
+   238840:  328:		n1=wnump[-1];
+   238840:  329:		if (n0 == d0)
+        -:  330:			q=BN_MASK2;
+        -:  331:		else 			/* n0 < d0 */
+        -:  332:			{
+        -:  333:#ifdef BN_LLONG
+        -:  334:			BN_ULLONG t2;
+        -:  335:
+        -:  336:#if defined(BN_LLONG) && defined(BN_DIV2W) && !defined(bn_div_words)
+        -:  337:			q=(BN_ULONG)(((((BN_ULLONG)n0)<<BN_BITS2)|n1)/d0);
+        -:  338:#else
+        -:  339:			q=bn_div_words(n0,n1,d0);
+        -:  340:#ifdef BN_DEBUG_LEVITTE
+        -:  341:			fprintf(stderr,"DEBUG: bn_div_words(0x%08X,0x%08X,0x%08\
+        -:  342:X) -> 0x%08X\n",
+        -:  343:				n0, n1, d0, q);
+        -:  344:#endif
+        -:  345:#endif
+        -:  346:
+        -:  347:#ifndef REMAINDER_IS_ALREADY_CALCULATED
+        -:  348:			/*
+        -:  349:			 * rem doesn't have to be BN_ULLONG. The least we
+        -:  350:			 * know it's less that d0, isn't it?
+        -:  351:			 */
+        -:  352:			rem=(n1-q*d0)&BN_MASK2;
+        -:  353:#endif
+        -:  354:			t2=(BN_ULLONG)d1*q;
+        -:  355:
+        -:  356:			for (;;)
+        -:  357:				{
+        -:  358:				if (t2 <= ((((BN_ULLONG)rem)<<BN_BITS2)|wnump[-2]))
+        -:  359:					break;
+        -:  360:				q--;
+        -:  361:				rem += d0;
+        -:  362:				if (rem < d0) break; /* don't let rem overflow */
+        -:  363:				t2 -= d1;
+        -:  364:				}
+        -:  365:#else /* !BN_LLONG */
+        -:  366:			BN_ULONG t2l,t2h;
+        -:  367:
+   238840:  368:			q=bn_div_words(n0,n1,d0);
+        -:  369:#ifdef BN_DEBUG_LEVITTE
+        -:  370:			fprintf(stderr,"DEBUG: bn_div_words(0x%08X,0x%08X,0x%08\
+        -:  371:X) -> 0x%08X\n",
+        -:  372:				n0, n1, d0, q);
+        -:  373:#endif
+        -:  374:#ifndef REMAINDER_IS_ALREADY_CALCULATED
+        -:  375:			rem=(n1-q*d0)&BN_MASK2;
+        -:  376:#endif
+        -:  377:
+        -:  378:#if defined(BN_UMULT_LOHI)
+   238840:  379:			BN_UMULT_LOHI(t2l,t2h,d1,q);
+        -:  380:#elif defined(BN_UMULT_HIGH)
+        -:  381:			t2l = d1 * q;
+        -:  382:			t2h = BN_UMULT_HIGH(d1,q);
+        -:  383:#else
+        -:  384:			{
+        -:  385:			BN_ULONG ql, qh;
+        -:  386:			t2l=LBITS(d1); t2h=HBITS(d1);
+        -:  387:			ql =LBITS(q);  qh =HBITS(q);
+        -:  388:			mul64(t2l,t2h,ql,qh); /* t2=(BN_ULLONG)d1*q; */
+        -:  389:			}
+        -:  390:#endif
+        -:  391:
+        -:  392:			for (;;)
+        -:  393:				{
+   272508:  394:				if ((t2h < rem) ||
+    11942:  395:					((t2h == rem) && (t2l <= wnump[-2])))
+        -:  396:					break;
+    55920:  397:				q--;
+    55920:  398:				rem += d0;
+    55920:  399:				if (rem < d0) break; /* don't let rem overflow */
+    33668:  400:				if (t2l < d1) t2h--; t2l -= d1;
+    33668:  401:				}
+        -:  402:#endif /* !BN_LLONG */
+        -:  403:			}
+        -:  404:#endif /* !BN_DIV3W */
+        -:  405:
+   238840:  406:		l0=bn_mul_words(tmp->d,sdiv->d,div_n,q);
+   238840:  407:		tmp->d[div_n]=l0;
+   238840:  408:		wnum.d--;
+        -:  409:		/* ingore top values of the bignums just sub the two 
+        -:  410:		 * BN_ULONG arrays with bn_sub_words */
+   238840:  411:		if (bn_sub_words(wnum.d, wnum.d, tmp->d, div_n+1))
+        -:  412:			{
+        -:  413:			/* Note: As we have considered only the leading
+        -:  414:			 * two BN_ULONGs in the calculation of q, sdiv * q
+        -:  415:			 * might be greater than wnum (but then (q-1) * sdiv
+        -:  416:			 * is less or equal than wnum)
+        -:  417:			 */
+    #####:  418:			q--;
+    #####:  419:			if (bn_add_words(wnum.d, wnum.d, sdiv->d, div_n))
+        -:  420:				/* we can't have an overflow here (assuming
+        -:  421:				 * that q != 0, but if q == 0 then tmp is
+        -:  422:				 * zero anyway) */
+    #####:  423:				(*wnump)++;
+        -:  424:			}
+        -:  425:		/* store part of the result */
+   238840:  426:		*resp = q;
+        -:  427:		}
+    47768:  428:	bn_correct_top(snum);
+    47768:  429:	if (rm != NULL)
+        -:  430:		{
+        -:  431:		/* Keep a copy of the neg flag in num because if rm==num
+        -:  432:		 * BN_rshift() will overwrite it.
+        -:  433:		 */
+    35826:  434:		int neg = num->neg;
+    35826:  435:		BN_rshift(rm,snum,norm_shift);
+    35826:  436:		if (!BN_is_zero(rm))
+    35826:  437:			rm->neg = neg;
+        -:  438:		bn_check_top(rm);
+        -:  439:		}
+    47768:  440:	if (no_branch)	bn_correct_top(res);
+    47768:  441:	BN_CTX_end(ctx);
+    47768:  442:	return(1);
+        -:  443:err:
+        -:  444:	bn_check_top(rm);
+    #####:  445:	BN_CTX_end(ctx);
+    #####:  446:	return(0);
+        -:  447:	}
+        -:  448:#endif

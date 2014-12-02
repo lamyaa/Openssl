@@ -1,0 +1,657 @@
+        -:    0:Source:bss_conn.c
+        -:    0:Graph:bss_conn.gcno
+        -:    0:Data:bss_conn.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* crypto/bio/bss_conn.c */
+        -:    2:/* Copyright (C) 1995-1998 Eric Young (eay@cryptsoft.com)
+        -:    3: * All rights reserved.
+        -:    4: *
+        -:    5: * This package is an SSL implementation written
+        -:    6: * by Eric Young (eay@cryptsoft.com).
+        -:    7: * The implementation was written so as to conform with Netscapes SSL.
+        -:    8: * 
+        -:    9: * This library is free for commercial and non-commercial use as long as
+        -:   10: * the following conditions are aheared to.  The following conditions
+        -:   11: * apply to all code found in this distribution, be it the RC4, RSA,
+        -:   12: * lhash, DES, etc., code; not just the SSL code.  The SSL documentation
+        -:   13: * included with this distribution is covered by the same copyright terms
+        -:   14: * except that the holder is Tim Hudson (tjh@cryptsoft.com).
+        -:   15: * 
+        -:   16: * Copyright remains Eric Young's, and as such any Copyright notices in
+        -:   17: * the code are not to be removed.
+        -:   18: * If this package is used in a product, Eric Young should be given attribution
+        -:   19: * as the author of the parts of the library used.
+        -:   20: * This can be in the form of a textual message at program startup or
+        -:   21: * in documentation (online or textual) provided with the package.
+        -:   22: * 
+        -:   23: * Redistribution and use in source and binary forms, with or without
+        -:   24: * modification, are permitted provided that the following conditions
+        -:   25: * are met:
+        -:   26: * 1. Redistributions of source code must retain the copyright
+        -:   27: *    notice, this list of conditions and the following disclaimer.
+        -:   28: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   29: *    notice, this list of conditions and the following disclaimer in the
+        -:   30: *    documentation and/or other materials provided with the distribution.
+        -:   31: * 3. All advertising materials mentioning features or use of this software
+        -:   32: *    must display the following acknowledgement:
+        -:   33: *    "This product includes cryptographic software written by
+        -:   34: *     Eric Young (eay@cryptsoft.com)"
+        -:   35: *    The word 'cryptographic' can be left out if the rouines from the library
+        -:   36: *    being used are not cryptographic related :-).
+        -:   37: * 4. If you include any Windows specific code (or a derivative thereof) from 
+        -:   38: *    the apps directory (application code) you must include an acknowledgement:
+        -:   39: *    "This product includes software written by Tim Hudson (tjh@cryptsoft.com)"
+        -:   40: * 
+        -:   41: * THIS SOFTWARE IS PROVIDED BY ERIC YOUNG ``AS IS'' AND
+        -:   42: * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   43: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+        -:   44: * ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+        -:   45: * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+        -:   46: * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+        -:   47: * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   48: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+        -:   49: * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+        -:   50: * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+        -:   51: * SUCH DAMAGE.
+        -:   52: * 
+        -:   53: * The licence and distribution terms for any publically available version or
+        -:   54: * derivative of this code cannot be changed.  i.e. this code cannot simply be
+        -:   55: * copied and put under another distribution licence
+        -:   56: * [including the GNU Public Licence.]
+        -:   57: */
+        -:   58:
+        -:   59:#include <stdio.h>
+        -:   60:#include <errno.h>
+        -:   61:#define USE_SOCKETS
+        -:   62:#include "cryptlib.h"
+        -:   63:#include <openssl/bio.h>
+        -:   64:
+        -:   65:#ifndef OPENSSL_NO_SOCK
+        -:   66:
+        -:   67:#ifdef OPENSSL_SYS_WIN16
+        -:   68:#define SOCKET_PROTOCOL 0 /* more microsoft stupidity */
+        -:   69:#else
+        -:   70:#define SOCKET_PROTOCOL IPPROTO_TCP
+        -:   71:#endif
+        -:   72:
+        -:   73:#if (defined(OPENSSL_SYS_VMS) && __VMS_VER < 70000000)
+        -:   74:/* FIONBIO used as a switch to enable ioctl, and that isn't in VMS < 7.0 */
+        -:   75:#undef FIONBIO
+        -:   76:#endif
+        -:   77:
+        -:   78:
+        -:   79:typedef struct bio_connect_st
+        -:   80:	{
+        -:   81:	int state;
+        -:   82:
+        -:   83:	char *param_hostname;
+        -:   84:	char *param_port;
+        -:   85:	int nbio;
+        -:   86:
+        -:   87:	unsigned char ip[4];
+        -:   88:	unsigned short port;
+        -:   89:
+        -:   90:	struct sockaddr_in them;
+        -:   91:
+        -:   92:	/* int socket; this will be kept in bio->num so that it is
+        -:   93:	 * compatible with the bss_sock bio */ 
+        -:   94:
+        -:   95:	/* called when the connection is initially made
+        -:   96:	 *  callback(BIO,state,ret);  The callback should return
+        -:   97:	 * 'ret'.  state is for compatibility with the ssl info_callback */
+        -:   98:	int (*info_callback)(const BIO *bio,int state,int ret);
+        -:   99:	} BIO_CONNECT;
+        -:  100:
+        -:  101:static int conn_write(BIO *h, const char *buf, int num);
+        -:  102:static int conn_read(BIO *h, char *buf, int size);
+        -:  103:static int conn_puts(BIO *h, const char *str);
+        -:  104:static long conn_ctrl(BIO *h, int cmd, long arg1, void *arg2);
+        -:  105:static int conn_new(BIO *h);
+        -:  106:static int conn_free(BIO *data);
+        -:  107:static long conn_callback_ctrl(BIO *h, int cmd, bio_info_cb *);
+        -:  108:
+        -:  109:static int conn_state(BIO *b, BIO_CONNECT *c);
+        -:  110:static void conn_close_socket(BIO *data);
+        -:  111:BIO_CONNECT *BIO_CONNECT_new(void );
+        -:  112:void BIO_CONNECT_free(BIO_CONNECT *a);
+        -:  113:
+        -:  114:static BIO_METHOD methods_connectp=
+        -:  115:	{
+        -:  116:	BIO_TYPE_CONNECT,
+        -:  117:	"socket connect",
+        -:  118:	conn_write,
+        -:  119:	conn_read,
+        -:  120:	conn_puts,
+        -:  121:	NULL, /* connect_gets, */
+        -:  122:	conn_ctrl,
+        -:  123:	conn_new,
+        -:  124:	conn_free,
+        -:  125:	conn_callback_ctrl,
+        -:  126:	};
+        -:  127:
+    #####:  128:static int conn_state(BIO *b, BIO_CONNECT *c)
+        -:  129:	{
+        -:  130:	int ret= -1,i;
+        -:  131:	unsigned long l;
+        -:  132:	char *p,*q;
+        -:  133:	int (*cb)(const BIO *,int,int)=NULL;
+        -:  134:
+    #####:  135:	if (c->info_callback != NULL)
+        -:  136:		cb=c->info_callback;
+        -:  137:
+        -:  138:	for (;;)
+        -:  139:		{
+    #####:  140:		switch (c->state)
+        -:  141:			{
+        -:  142:		case BIO_CONN_S_BEFORE:
+    #####:  143:			p=c->param_hostname;
+    #####:  144:			if (p == NULL)
+        -:  145:				{
+    #####:  146:				BIOerr(BIO_F_CONN_STATE,BIO_R_NO_HOSTNAME_SPECIFIED);
+    #####:  147:				goto exit_loop;
+        -:  148:				}
+    #####:  149:			for ( ; *p != '\0'; p++)
+        -:  150:				{
+    #####:  151:				if ((*p == ':') || (*p == '/')) break;
+        -:  152:				}
+        -:  153:
+    #####:  154:			i= *p;
+    #####:  155:			if ((i == ':') || (i == '/'))
+        -:  156:				{
+        -:  157:
+    #####:  158:				*(p++)='\0';
+    #####:  159:				if (i == ':')
+        -:  160:					{
+    #####:  161:					for (q=p; *q; q++)
+    #####:  162:						if (*q == '/')
+        -:  163:							{
+    #####:  164:							*q='\0';
+    #####:  165:							break;
+        -:  166:							}
+    #####:  167:					if (c->param_port != NULL)
+    #####:  168:						OPENSSL_free(c->param_port);
+    #####:  169:					c->param_port=BUF_strdup(p);
+        -:  170:					}
+        -:  171:				}
+        -:  172:
+    #####:  173:			if (c->param_port == NULL)
+        -:  174:				{
+    #####:  175:				BIOerr(BIO_F_CONN_STATE,BIO_R_NO_PORT_SPECIFIED);
+    #####:  176:				ERR_add_error_data(2,"host=",c->param_hostname);
+    #####:  177:				goto exit_loop;
+        -:  178:				}
+    #####:  179:			c->state=BIO_CONN_S_GET_IP;
+    #####:  180:			break;
+        -:  181:
+        -:  182:		case BIO_CONN_S_GET_IP:
+    #####:  183:			if (BIO_get_host_ip(c->param_hostname,&(c->ip[0])) <= 0)
+        -:  184:				goto exit_loop;
+    #####:  185:			c->state=BIO_CONN_S_GET_PORT;
+    #####:  186:			break;
+        -:  187:
+        -:  188:		case BIO_CONN_S_GET_PORT:
+    #####:  189:			if (c->param_port == NULL)
+        -:  190:				{
+        -:  191:				/* abort(); */
+        -:  192:				goto exit_loop;
+        -:  193:				}
+    #####:  194:			else if (BIO_get_port(c->param_port,&c->port) <= 0)
+        -:  195:				goto exit_loop;
+    #####:  196:			c->state=BIO_CONN_S_CREATE_SOCKET;
+    #####:  197:			break;
+        -:  198:
+        -:  199:		case BIO_CONN_S_CREATE_SOCKET:
+        -:  200:			/* now setup address */
+    #####:  201:			memset((char *)&c->them,0,sizeof(c->them));
+    #####:  202:			c->them.sin_family=AF_INET;
+    #####:  203:			c->them.sin_port=htons((unsigned short)c->port);
+    #####:  204:			l=(unsigned long)
+    #####:  205:				((unsigned long)c->ip[0]<<24L)|
+    #####:  206:				((unsigned long)c->ip[1]<<16L)|
+    #####:  207:				((unsigned long)c->ip[2]<< 8L)|
+    #####:  208:				((unsigned long)c->ip[3]);
+    #####:  209:			c->them.sin_addr.s_addr=htonl(l);
+    #####:  210:			c->state=BIO_CONN_S_CREATE_SOCKET;
+        -:  211:
+    #####:  212:			ret=socket(AF_INET,SOCK_STREAM,SOCKET_PROTOCOL);
+    #####:  213:			if (ret == INVALID_SOCKET)
+        -:  214:				{
+    #####:  215:				SYSerr(SYS_F_SOCKET,get_last_socket_error());
+    #####:  216:				ERR_add_error_data(4,"host=",c->param_hostname,
+        -:  217:					":",c->param_port);
+    #####:  218:				BIOerr(BIO_F_CONN_STATE,BIO_R_UNABLE_TO_CREATE_SOCKET);
+    #####:  219:				goto exit_loop;
+        -:  220:				}
+    #####:  221:			b->num=ret;
+    #####:  222:			c->state=BIO_CONN_S_NBIO;
+    #####:  223:			break;
+        -:  224:
+        -:  225:		case BIO_CONN_S_NBIO:
+    #####:  226:			if (c->nbio)
+        -:  227:				{
+    #####:  228:				if (!BIO_socket_nbio(b->num,1))
+        -:  229:					{
+    #####:  230:					BIOerr(BIO_F_CONN_STATE,BIO_R_ERROR_SETTING_NBIO);
+    #####:  231:					ERR_add_error_data(4,"host=",
+        -:  232:						c->param_hostname,
+        -:  233:						":",c->param_port);
+    #####:  234:					goto exit_loop;
+        -:  235:					}
+        -:  236:				}
+    #####:  237:			c->state=BIO_CONN_S_CONNECT;
+        -:  238:
+        -:  239:#if defined(SO_KEEPALIVE) && !defined(OPENSSL_SYS_MPE)
+    #####:  240:			i=1;
+    #####:  241:			i=setsockopt(b->num,SOL_SOCKET,SO_KEEPALIVE,(char *)&i,sizeof(i));
+    #####:  242:			if (i < 0)
+        -:  243:				{
+    #####:  244:				SYSerr(SYS_F_SOCKET,get_last_socket_error());
+    #####:  245:				ERR_add_error_data(4,"host=",c->param_hostname,
+        -:  246:					":",c->param_port);
+    #####:  247:				BIOerr(BIO_F_CONN_STATE,BIO_R_KEEPALIVE);
+    #####:  248:				goto exit_loop;
+        -:  249:				}
+        -:  250:#endif
+        -:  251:			break;
+        -:  252:
+        -:  253:		case BIO_CONN_S_CONNECT:
+    #####:  254:			BIO_clear_retry_flags(b);
+    #####:  255:			ret=connect(b->num,
+    #####:  256:				(struct sockaddr *)&c->them,
+        -:  257:				sizeof(c->them));
+    #####:  258:			b->retry_reason=0;
+    #####:  259:			if (ret < 0)
+        -:  260:				{
+    #####:  261:				if (BIO_sock_should_retry(ret))
+        -:  262:					{
+    #####:  263:					BIO_set_retry_special(b);
+    #####:  264:					c->state=BIO_CONN_S_BLOCKED_CONNECT;
+    #####:  265:					b->retry_reason=BIO_RR_CONNECT;
+        -:  266:					}
+        -:  267:				else
+        -:  268:					{
+    #####:  269:					SYSerr(SYS_F_CONNECT,get_last_socket_error());
+    #####:  270:					ERR_add_error_data(4,"host=",
+        -:  271:						c->param_hostname,
+        -:  272:						":",c->param_port);
+    #####:  273:					BIOerr(BIO_F_CONN_STATE,BIO_R_CONNECT_ERROR);
+        -:  274:					}
+        -:  275:				goto exit_loop;
+        -:  276:				}
+        -:  277:			else
+    #####:  278:				c->state=BIO_CONN_S_OK;
+    #####:  279:			break;
+        -:  280:
+        -:  281:		case BIO_CONN_S_BLOCKED_CONNECT:
+    #####:  282:			i=BIO_sock_error(b->num);
+    #####:  283:			if (i)
+        -:  284:				{
+    #####:  285:				BIO_clear_retry_flags(b);
+    #####:  286:				SYSerr(SYS_F_CONNECT,i);
+    #####:  287:				ERR_add_error_data(4,"host=",
+        -:  288:					c->param_hostname,
+        -:  289:					":",c->param_port);
+    #####:  290:				BIOerr(BIO_F_CONN_STATE,BIO_R_NBIO_CONNECT_ERROR);
+        -:  291:				ret=0;
+    #####:  292:				goto exit_loop;
+        -:  293:				}
+        -:  294:			else
+    #####:  295:				c->state=BIO_CONN_S_OK;
+    #####:  296:			break;
+        -:  297:
+        -:  298:		case BIO_CONN_S_OK:
+        -:  299:			ret=1;
+    #####:  300:			goto exit_loop;
+        -:  301:		default:
+        -:  302:			/* abort(); */
+        -:  303:			goto exit_loop;
+        -:  304:			}
+        -:  305:
+    #####:  306:		if (cb != NULL)
+        -:  307:			{
+    #####:  308:			if (!(ret=cb((BIO *)b,c->state,ret)))
+        -:  309:				goto end;
+        -:  310:			}
+        -:  311:		}
+        -:  312:
+        -:  313:	/* Loop does not exit */
+        -:  314:exit_loop:
+    #####:  315:	if (cb != NULL)
+    #####:  316:		ret=cb((BIO *)b,c->state,ret);
+        -:  317:end:
+    #####:  318:	return(ret);
+        -:  319:	}
+        -:  320:
+    #####:  321:BIO_CONNECT *BIO_CONNECT_new(void)
+        -:  322:	{
+        -:  323:	BIO_CONNECT *ret;
+        -:  324:
+    #####:  325:	if ((ret=(BIO_CONNECT *)OPENSSL_malloc(sizeof(BIO_CONNECT))) == NULL)
+        -:  326:		return(NULL);
+    #####:  327:	ret->state=BIO_CONN_S_BEFORE;
+    #####:  328:	ret->param_hostname=NULL;
+    #####:  329:	ret->param_port=NULL;
+    #####:  330:	ret->info_callback=NULL;
+    #####:  331:	ret->nbio=0;
+    #####:  332:	ret->ip[0]=0;
+    #####:  333:	ret->ip[1]=0;
+    #####:  334:	ret->ip[2]=0;
+    #####:  335:	ret->ip[3]=0;
+    #####:  336:	ret->port=0;
+    #####:  337:	memset((char *)&ret->them,0,sizeof(ret->them));
+    #####:  338:	return(ret);
+        -:  339:	}
+        -:  340:
+    #####:  341:void BIO_CONNECT_free(BIO_CONNECT *a)
+        -:  342:	{
+    #####:  343:	if(a == NULL)
+    #####:  344:	    return;
+        -:  345:
+    #####:  346:	if (a->param_hostname != NULL)
+    #####:  347:		OPENSSL_free(a->param_hostname);
+    #####:  348:	if (a->param_port != NULL)
+    #####:  349:		OPENSSL_free(a->param_port);
+    #####:  350:	OPENSSL_free(a);
+        -:  351:	}
+        -:  352:
+    #####:  353:BIO_METHOD *BIO_s_connect(void)
+        -:  354:	{
+    #####:  355:	return(&methods_connectp);
+        -:  356:	}
+        -:  357:
+    #####:  358:static int conn_new(BIO *bi)
+        -:  359:	{
+    #####:  360:	bi->init=0;
+    #####:  361:	bi->num=INVALID_SOCKET;
+    #####:  362:	bi->flags=0;
+    #####:  363:	if ((bi->ptr=(char *)BIO_CONNECT_new()) == NULL)
+        -:  364:		return(0);
+        -:  365:	else
+    #####:  366:		return(1);
+        -:  367:	}
+        -:  368:
+    #####:  369:static void conn_close_socket(BIO *bio)
+        -:  370:	{
+        -:  371:	BIO_CONNECT *c;
+        -:  372:
+    #####:  373:	c=(BIO_CONNECT *)bio->ptr;
+    #####:  374:	if (bio->num != INVALID_SOCKET)
+        -:  375:		{
+        -:  376:		/* Only do a shutdown if things were established */
+    #####:  377:		if (c->state == BIO_CONN_S_OK)
+    #####:  378:			shutdown(bio->num,2);
+    #####:  379:		closesocket(bio->num);
+    #####:  380:		bio->num=INVALID_SOCKET;
+        -:  381:		}
+    #####:  382:	}
+        -:  383:
+    #####:  384:static int conn_free(BIO *a)
+        -:  385:	{
+        -:  386:	BIO_CONNECT *data;
+        -:  387:
+    #####:  388:	if (a == NULL) return(0);
+    #####:  389:	data=(BIO_CONNECT *)a->ptr;
+        -:  390:	 
+    #####:  391:	if (a->shutdown)
+        -:  392:		{
+    #####:  393:		conn_close_socket(a);
+    #####:  394:		BIO_CONNECT_free(data);
+    #####:  395:		a->ptr=NULL;
+    #####:  396:		a->flags=0;
+    #####:  397:		a->init=0;
+        -:  398:		}
+        -:  399:	return(1);
+        -:  400:	}
+        -:  401:	
+    #####:  402:static int conn_read(BIO *b, char *out, int outl)
+        -:  403:	{
+        -:  404:	int ret=0;
+        -:  405:	BIO_CONNECT *data;
+        -:  406:
+    #####:  407:	data=(BIO_CONNECT *)b->ptr;
+    #####:  408:	if (data->state != BIO_CONN_S_OK)
+        -:  409:		{
+    #####:  410:		ret=conn_state(b,data);
+    #####:  411:		if (ret <= 0)
+        -:  412:				return(ret);
+        -:  413:		}
+        -:  414:
+    #####:  415:	if (out != NULL)
+        -:  416:		{
+    #####:  417:		clear_socket_error();
+    #####:  418:		ret=readsocket(b->num,out,outl);
+    #####:  419:		BIO_clear_retry_flags(b);
+    #####:  420:		if (ret <= 0)
+        -:  421:			{
+    #####:  422:			if (BIO_sock_should_retry(ret))
+    #####:  423:				BIO_set_retry_read(b);
+        -:  424:			}
+        -:  425:		}
+    #####:  426:	return(ret);
+        -:  427:	}
+        -:  428:
+    #####:  429:static int conn_write(BIO *b, const char *in, int inl)
+        -:  430:	{
+        -:  431:	int ret;
+        -:  432:	BIO_CONNECT *data;
+        -:  433:
+    #####:  434:	data=(BIO_CONNECT *)b->ptr;
+    #####:  435:	if (data->state != BIO_CONN_S_OK)
+        -:  436:		{
+    #####:  437:		ret=conn_state(b,data);
+    #####:  438:		if (ret <= 0) return(ret);
+        -:  439:		}
+        -:  440:
+    #####:  441:	clear_socket_error();
+    #####:  442:	ret=writesocket(b->num,in,inl);
+    #####:  443:	BIO_clear_retry_flags(b);
+    #####:  444:	if (ret <= 0)
+        -:  445:		{
+    #####:  446:		if (BIO_sock_should_retry(ret))
+    #####:  447:			BIO_set_retry_write(b);
+        -:  448:		}
+    #####:  449:	return(ret);
+        -:  450:	}
+        -:  451:
+    #####:  452:static long conn_ctrl(BIO *b, int cmd, long num, void *ptr)
+        -:  453:	{
+        -:  454:	BIO *dbio;
+        -:  455:	int *ip;
+        -:  456:	const char **pptr;
+        -:  457:	long ret=1;
+        -:  458:	BIO_CONNECT *data;
+        -:  459:
+    #####:  460:	data=(BIO_CONNECT *)b->ptr;
+        -:  461:
+    #####:  462:	switch (cmd)
+        -:  463:		{
+        -:  464:	case BIO_CTRL_RESET:
+        -:  465:		ret=0;
+    #####:  466:		data->state=BIO_CONN_S_BEFORE;
+    #####:  467:		conn_close_socket(b);
+    #####:  468:		b->flags=0;
+    #####:  469:		break;
+        -:  470:	case BIO_C_DO_STATE_MACHINE:
+        -:  471:		/* use this one to start the connection */
+    #####:  472:		if (data->state != BIO_CONN_S_OK)
+    #####:  473:			ret=(long)conn_state(b,data);
+        -:  474:		else
+        -:  475:			ret=1;
+        -:  476:		break;
+        -:  477:	case BIO_C_GET_CONNECT:
+    #####:  478:		if (ptr != NULL)
+        -:  479:			{
+        -:  480:			pptr=(const char **)ptr;
+    #####:  481:			if (num == 0)
+        -:  482:				{
+    #####:  483:				*pptr=data->param_hostname;
+        -:  484:
+        -:  485:				}
+    #####:  486:			else if (num == 1)
+        -:  487:				{
+    #####:  488:				*pptr=data->param_port;
+        -:  489:				}
+    #####:  490:			else if (num == 2)
+        -:  491:				{
+    #####:  492:				*pptr= (char *)&(data->ip[0]);
+        -:  493:				}
+    #####:  494:			else if (num == 3)
+        -:  495:				{
+    #####:  496:				*((int *)ptr)=data->port;
+        -:  497:				}
+    #####:  498:			if ((!b->init) || (ptr == NULL))
+    #####:  499:				*pptr="not initialized";
+        -:  500:			ret=1;
+        -:  501:			}
+        -:  502:		break;
+        -:  503:	case BIO_C_SET_CONNECT:
+    #####:  504:		if (ptr != NULL)
+        -:  505:			{
+    #####:  506:			b->init=1;
+    #####:  507:			if (num == 0)
+        -:  508:				{
+    #####:  509:				if (data->param_hostname != NULL)
+    #####:  510:					OPENSSL_free(data->param_hostname);
+    #####:  511:				data->param_hostname=BUF_strdup(ptr);
+        -:  512:				}
+    #####:  513:			else if (num == 1)
+        -:  514:				{
+    #####:  515:				if (data->param_port != NULL)
+    #####:  516:					OPENSSL_free(data->param_port);
+    #####:  517:				data->param_port=BUF_strdup(ptr);
+        -:  518:				}
+    #####:  519:			else if (num == 2)
+        -:  520:				{
+        -:  521:				char buf[16];
+        -:  522:				unsigned char *p = ptr;
+        -:  523:
+    #####:  524:				BIO_snprintf(buf,sizeof buf,"%d.%d.%d.%d",
+    #####:  525:					     p[0],p[1],p[2],p[3]);
+    #####:  526:				if (data->param_hostname != NULL)
+    #####:  527:					OPENSSL_free(data->param_hostname);
+    #####:  528:				data->param_hostname=BUF_strdup(buf);
+    #####:  529:				memcpy(&(data->ip[0]),ptr,4);
+        -:  530:				}
+    #####:  531:			else if (num == 3)
+        -:  532:				{
+        -:  533:				char buf[DECIMAL_SIZE(int)+1];
+        -:  534:
+    #####:  535:				BIO_snprintf(buf,sizeof buf,"%d",*(int *)ptr);
+    #####:  536:				if (data->param_port != NULL)
+    #####:  537:					OPENSSL_free(data->param_port);
+    #####:  538:				data->param_port=BUF_strdup(buf);
+    #####:  539:				data->port= *(int *)ptr;
+        -:  540:				}
+        -:  541:			}
+        -:  542:		break;
+        -:  543:	case BIO_C_SET_NBIO:
+    #####:  544:		data->nbio=(int)num;
+    #####:  545:		break;
+        -:  546:	case BIO_C_GET_FD:
+    #####:  547:		if (b->init)
+        -:  548:			{
+        -:  549:			ip=(int *)ptr;
+    #####:  550:			if (ip != NULL)
+    #####:  551:				*ip=b->num;
+    #####:  552:			ret=b->num;
+        -:  553:			}
+        -:  554:		else
+        -:  555:			ret= -1;
+        -:  556:		break;
+        -:  557:	case BIO_CTRL_GET_CLOSE:
+    #####:  558:		ret=b->shutdown;
+    #####:  559:		break;
+        -:  560:	case BIO_CTRL_SET_CLOSE:
+    #####:  561:		b->shutdown=(int)num;
+    #####:  562:		break;
+        -:  563:	case BIO_CTRL_PENDING:
+        -:  564:	case BIO_CTRL_WPENDING:
+        -:  565:		ret=0;
+    #####:  566:		break;
+        -:  567:	case BIO_CTRL_FLUSH:
+        -:  568:		break;
+        -:  569:	case BIO_CTRL_DUP:
+        -:  570:		{
+        -:  571:		dbio=(BIO *)ptr;
+    #####:  572:		if (data->param_port)
+    #####:  573:			BIO_set_conn_port(dbio,data->param_port);
+    #####:  574:		if (data->param_hostname)
+    #####:  575:			BIO_set_conn_hostname(dbio,data->param_hostname);
+    #####:  576:		BIO_set_nbio(dbio,data->nbio);
+        -:  577:		/* FIXME: the cast of the function seems unlikely to be a good idea */
+    #####:  578:                (void)BIO_set_info_callback(dbio,(bio_info_cb *)data->info_callback);
+        -:  579:		}
+    #####:  580:		break;
+        -:  581:	case BIO_CTRL_SET_CALLBACK:
+        -:  582:		{
+        -:  583:#if 0 /* FIXME: Should this be used?  -- Richard Levitte */
+        -:  584:		BIOerr(BIO_F_CONN_CTRL, ERR_R_SHOULD_NOT_HAVE_BEEN_CALLED);
+        -:  585:		ret = -1;
+        -:  586:#else
+        -:  587:		ret=0;
+        -:  588:#endif
+        -:  589:		}
+    #####:  590:		break;
+        -:  591:	case BIO_CTRL_GET_CALLBACK:
+        -:  592:		{
+        -:  593:		int (**fptr)(const BIO *bio,int state,int xret);
+        -:  594:
+        -:  595:		fptr=(int (**)(const BIO *bio,int state,int xret))ptr;
+    #####:  596:		*fptr=data->info_callback;
+        -:  597:		}
+    #####:  598:		break;
+        -:  599:	default:
+        -:  600:		ret=0;
+    #####:  601:		break;
+        -:  602:		}
+    #####:  603:	return(ret);
+        -:  604:	}
+        -:  605:
+    #####:  606:static long conn_callback_ctrl(BIO *b, int cmd, bio_info_cb *fp)
+        -:  607:	{
+        -:  608:	long ret=1;
+        -:  609:	BIO_CONNECT *data;
+        -:  610:
+    #####:  611:	data=(BIO_CONNECT *)b->ptr;
+        -:  612:
+    #####:  613:	switch (cmd)
+        -:  614:		{
+        -:  615:	case BIO_CTRL_SET_CALLBACK:
+        -:  616:		{
+    #####:  617:		data->info_callback=(int (*)(const struct bio_st *, int, int))fp;
+        -:  618:		}
+    #####:  619:		break;
+        -:  620:	default:
+        -:  621:		ret=0;
+        -:  622:		break;
+        -:  623:		}
+    #####:  624:	return(ret);
+        -:  625:	}
+        -:  626:
+    #####:  627:static int conn_puts(BIO *bp, const char *str)
+        -:  628:	{
+        -:  629:	int n,ret;
+        -:  630:
+    #####:  631:	n=strlen(str);
+    #####:  632:	ret=conn_write(bp,str,n);
+    #####:  633:	return(ret);
+        -:  634:	}
+        -:  635:
+    #####:  636:BIO *BIO_new_connect(char *str)
+        -:  637:	{
+        -:  638:	BIO *ret;
+        -:  639:
+    #####:  640:	ret=BIO_new(BIO_s_connect());
+    #####:  641:	if (ret == NULL) return(NULL);
+    #####:  642:	if (BIO_set_conn_hostname(ret,str))
+        -:  643:		return(ret);
+        -:  644:	else
+        -:  645:		{
+    #####:  646:		BIO_free(ret);
+    #####:  647:		return(NULL);
+        -:  648:		}
+        -:  649:	}
+        -:  650:
+        -:  651:#endif
+        -:  652:

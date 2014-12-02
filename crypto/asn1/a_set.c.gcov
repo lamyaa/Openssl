@@ -1,0 +1,246 @@
+        -:    0:Source:a_set.c
+        -:    0:Graph:a_set.gcno
+        -:    0:Data:a_set.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* crypto/asn1/a_set.c */
+        -:    2:/* Copyright (C) 1995-1998 Eric Young (eay@cryptsoft.com)
+        -:    3: * All rights reserved.
+        -:    4: *
+        -:    5: * This package is an SSL implementation written
+        -:    6: * by Eric Young (eay@cryptsoft.com).
+        -:    7: * The implementation was written so as to conform with Netscapes SSL.
+        -:    8: * 
+        -:    9: * This library is free for commercial and non-commercial use as long as
+        -:   10: * the following conditions are aheared to.  The following conditions
+        -:   11: * apply to all code found in this distribution, be it the RC4, RSA,
+        -:   12: * lhash, DES, etc., code; not just the SSL code.  The SSL documentation
+        -:   13: * included with this distribution is covered by the same copyright terms
+        -:   14: * except that the holder is Tim Hudson (tjh@cryptsoft.com).
+        -:   15: * 
+        -:   16: * Copyright remains Eric Young's, and as such any Copyright notices in
+        -:   17: * the code are not to be removed.
+        -:   18: * If this package is used in a product, Eric Young should be given attribution
+        -:   19: * as the author of the parts of the library used.
+        -:   20: * This can be in the form of a textual message at program startup or
+        -:   21: * in documentation (online or textual) provided with the package.
+        -:   22: * 
+        -:   23: * Redistribution and use in source and binary forms, with or without
+        -:   24: * modification, are permitted provided that the following conditions
+        -:   25: * are met:
+        -:   26: * 1. Redistributions of source code must retain the copyright
+        -:   27: *    notice, this list of conditions and the following disclaimer.
+        -:   28: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   29: *    notice, this list of conditions and the following disclaimer in the
+        -:   30: *    documentation and/or other materials provided with the distribution.
+        -:   31: * 3. All advertising materials mentioning features or use of this software
+        -:   32: *    must display the following acknowledgement:
+        -:   33: *    "This product includes cryptographic software written by
+        -:   34: *     Eric Young (eay@cryptsoft.com)"
+        -:   35: *    The word 'cryptographic' can be left out if the rouines from the library
+        -:   36: *    being used are not cryptographic related :-).
+        -:   37: * 4. If you include any Windows specific code (or a derivative thereof) from 
+        -:   38: *    the apps directory (application code) you must include an acknowledgement:
+        -:   39: *    "This product includes software written by Tim Hudson (tjh@cryptsoft.com)"
+        -:   40: * 
+        -:   41: * THIS SOFTWARE IS PROVIDED BY ERIC YOUNG ``AS IS'' AND
+        -:   42: * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   43: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+        -:   44: * ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+        -:   45: * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+        -:   46: * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+        -:   47: * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   48: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+        -:   49: * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+        -:   50: * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+        -:   51: * SUCH DAMAGE.
+        -:   52: * 
+        -:   53: * The licence and distribution terms for any publically available version or
+        -:   54: * derivative of this code cannot be changed.  i.e. this code cannot simply be
+        -:   55: * copied and put under another distribution licence
+        -:   56: * [including the GNU Public Licence.]
+        -:   57: */
+        -:   58:
+        -:   59:#include <stdio.h>
+        -:   60:#include "cryptlib.h"
+        -:   61:#include <openssl/asn1_mac.h>
+        -:   62:
+        -:   63:#ifndef NO_ASN1_OLD
+        -:   64:
+        -:   65:typedef struct
+        -:   66:    {
+        -:   67:    unsigned char *pbData;
+        -:   68:    int cbData;
+        -:   69:    } MYBLOB;
+        -:   70:
+        -:   71:/* SetBlobCmp
+        -:   72: * This function compares two elements of SET_OF block
+        -:   73: */
+    #####:   74:static int SetBlobCmp(const void *elem1, const void *elem2 )
+        -:   75:    {
+        -:   76:    const MYBLOB *b1 = (const MYBLOB *)elem1;
+        -:   77:    const MYBLOB *b2 = (const MYBLOB *)elem2;
+        -:   78:    int r;
+        -:   79:
+    #####:   80:    r = memcmp(b1->pbData, b2->pbData,
+    #####:   81:	       b1->cbData < b2->cbData ? b1->cbData : b2->cbData);
+    #####:   82:    if(r != 0)
+        -:   83:	return r;
+    #####:   84:    return b1->cbData-b2->cbData;
+        -:   85:    }
+        -:   86:
+        -:   87:/* int is_set:  if TRUE, then sort the contents (i.e. it isn't a SEQUENCE)    */
+    #####:   88:int i2d_ASN1_SET(STACK_OF(OPENSSL_BLOCK) *a, unsigned char **pp,
+        -:   89:		 i2d_of_void *i2d, int ex_tag, int ex_class,
+        -:   90:		 int is_set)
+        -:   91:	{
+        -:   92:	int ret=0,r;
+        -:   93:	int i;
+        -:   94:	unsigned char *p;
+        -:   95:        unsigned char *pStart, *pTempMem;
+        -:   96:        MYBLOB *rgSetBlob;
+        -:   97:        int totSize;
+        -:   98:
+    #####:   99:	if (a == NULL) return(0);
+    #####:  100:	for (i=sk_OPENSSL_BLOCK_num(a)-1; i>=0; i--)
+    #####:  101:		ret+=i2d(sk_OPENSSL_BLOCK_value(a,i),NULL);
+    #####:  102:	r=ASN1_object_size(1,ret,ex_tag);
+    #####:  103:	if (pp == NULL) return(r);
+        -:  104:
+    #####:  105:	p= *pp;
+    #####:  106:	ASN1_put_object(&p,1,ret,ex_tag,ex_class);
+        -:  107:
+        -:  108:/* Modified by gp@nsj.co.jp */
+        -:  109:	/* And then again by Ben */
+        -:  110:	/* And again by Steve */
+        -:  111:
+    #####:  112:	if(!is_set || (sk_OPENSSL_BLOCK_num(a) < 2))
+        -:  113:		{
+    #####:  114:		for (i=0; i<sk_OPENSSL_BLOCK_num(a); i++)
+    #####:  115:                	i2d(sk_OPENSSL_BLOCK_value(a,i),&p);
+        -:  116:
+    #####:  117:		*pp=p;
+    #####:  118:		return(r);
+        -:  119:		}
+        -:  120:
+    #####:  121:        pStart  = p; /* Catch the beg of Setblobs*/
+        -:  122:		/* In this array we will store the SET blobs */
+    #####:  123:		rgSetBlob = OPENSSL_malloc(sk_OPENSSL_BLOCK_num(a) * sizeof(MYBLOB));
+    #####:  124:		if (rgSetBlob == NULL)
+        -:  125:			{
+    #####:  126:			ASN1err(ASN1_F_I2D_ASN1_SET,ERR_R_MALLOC_FAILURE);
+    #####:  127:			return(0);
+        -:  128:			}
+        -:  129:
+    #####:  130:        for (i=0; i<sk_OPENSSL_BLOCK_num(a); i++)
+        -:  131:	        {
+    #####:  132:                rgSetBlob[i].pbData = p;  /* catch each set encode blob */
+    #####:  133:                i2d(sk_OPENSSL_BLOCK_value(a,i),&p);
+    #####:  134:                rgSetBlob[i].cbData = p - rgSetBlob[i].pbData; /* Length of this
+        -:  135:SetBlob
+        -:  136:*/
+        -:  137:		}
+    #####:  138:        *pp=p;
+    #####:  139:        totSize = p - pStart; /* This is the total size of all set blobs */
+        -:  140:
+        -:  141: /* Now we have to sort the blobs. I am using a simple algo.
+        -:  142:    *Sort ptrs *Copy to temp-mem *Copy from temp-mem to user-mem*/
+    #####:  143:        qsort( rgSetBlob, sk_OPENSSL_BLOCK_num(a), sizeof(MYBLOB), SetBlobCmp);
+    #####:  144:		if (!(pTempMem = OPENSSL_malloc(totSize)))
+        -:  145:			{
+    #####:  146:			ASN1err(ASN1_F_I2D_ASN1_SET,ERR_R_MALLOC_FAILURE);
+    #####:  147:			return(0);
+        -:  148:			}
+        -:  149:
+        -:  150:/* Copy to temp mem */
+    #####:  151:        p = pTempMem;
+    #####:  152:        for(i=0; i<sk_OPENSSL_BLOCK_num(a); ++i)
+        -:  153:		{
+    #####:  154:                memcpy(p, rgSetBlob[i].pbData, rgSetBlob[i].cbData);
+    #####:  155:                p += rgSetBlob[i].cbData;
+        -:  156:		}
+        -:  157:
+        -:  158:/* Copy back to user mem*/
+    #####:  159:        memcpy(pStart, pTempMem, totSize);
+    #####:  160:        OPENSSL_free(pTempMem);
+    #####:  161:        OPENSSL_free(rgSetBlob);
+        -:  162:
+    #####:  163:        return(r);
+        -:  164:        }
+        -:  165:
+    #####:  166:STACK_OF(OPENSSL_BLOCK) *d2i_ASN1_SET(STACK_OF(OPENSSL_BLOCK) **a,
+        -:  167:			      const unsigned char **pp,
+        -:  168:			      long length, d2i_of_void *d2i,
+        -:  169:			      void (*free_func)(OPENSSL_BLOCK), int ex_tag,
+        -:  170:			      int ex_class)
+        -:  171:	{
+        -:  172:	ASN1_const_CTX c;
+        -:  173:	STACK_OF(OPENSSL_BLOCK) *ret=NULL;
+        -:  174:
+    #####:  175:	if ((a == NULL) || ((*a) == NULL))
+        -:  176:		{
+    #####:  177:		if ((ret=sk_OPENSSL_BLOCK_new_null()) == NULL)
+        -:  178:			{
+    #####:  179:			ASN1err(ASN1_F_D2I_ASN1_SET,ERR_R_MALLOC_FAILURE);
+    #####:  180:			goto err;
+        -:  181:			}
+        -:  182:		}
+        -:  183:	else
+        -:  184:		ret=(*a);
+        -:  185:
+    #####:  186:	c.p= *pp;
+    #####:  187:	c.max=(length == 0)?0:(c.p+length);
+        -:  188:
+    #####:  189:	c.inf=ASN1_get_object(&c.p,&c.slen,&c.tag,&c.xclass,c.max-c.p);
+    #####:  190:	if (c.inf & 0x80) goto err;
+    #####:  191:	if (ex_class != c.xclass)
+        -:  192:		{
+    #####:  193:		ASN1err(ASN1_F_D2I_ASN1_SET,ASN1_R_BAD_CLASS);
+    #####:  194:		goto err;
+        -:  195:		}
+    #####:  196:	if (ex_tag != c.tag)
+        -:  197:		{
+    #####:  198:		ASN1err(ASN1_F_D2I_ASN1_SET,ASN1_R_BAD_TAG);
+    #####:  199:		goto err;
+        -:  200:		}
+    #####:  201:	if ((c.slen+c.p) > c.max)
+        -:  202:		{
+    #####:  203:		ASN1err(ASN1_F_D2I_ASN1_SET,ASN1_R_LENGTH_ERROR);
+    #####:  204:		goto err;
+        -:  205:		}
+        -:  206:	/* check for infinite constructed - it can be as long
+        -:  207:	 * as the amount of data passed to us */
+    #####:  208:	if (c.inf == (V_ASN1_CONSTRUCTED+1))
+    #####:  209:		c.slen=length+ *pp-c.p;
+    #####:  210:	c.max=c.p+c.slen;
+        -:  211:
+    #####:  212:	while (c.p < c.max)
+        -:  213:		{
+        -:  214:		char *s;
+        -:  215:
+    #####:  216:		if (M_ASN1_D2I_end_sequence()) break;
+        -:  217:		/* XXX: This was called with 4 arguments, incorrectly, it seems
+        -:  218:		   if ((s=func(NULL,&c.p,c.slen,c.max-c.p)) == NULL) */
+    #####:  219:		if ((s=d2i(NULL,&c.p,c.slen)) == NULL)
+        -:  220:			{
+    #####:  221:			ASN1err(ASN1_F_D2I_ASN1_SET,ASN1_R_ERROR_PARSING_SET_ELEMENT);
+    #####:  222:			asn1_add_error(*pp,(int)(c.p- *pp));
+    #####:  223:			goto err;
+        -:  224:			}
+    #####:  225:		if (!sk_OPENSSL_BLOCK_push(ret,s)) goto err;
+        -:  226:		}
+    #####:  227:	if (a != NULL) (*a)=ret;
+    #####:  228:	*pp=c.p;
+    #####:  229:	return(ret);
+        -:  230:err:
+    #####:  231:	if ((ret != NULL) && ((a == NULL) || (*a != ret)))
+        -:  232:		{
+    #####:  233:		if (free_func != NULL)
+    #####:  234:			sk_OPENSSL_BLOCK_pop_free(ret,free_func);
+        -:  235:		else
+    #####:  236:			sk_OPENSSL_BLOCK_free(ret);
+        -:  237:		}
+        -:  238:	return(NULL);
+        -:  239:	}
+        -:  240:
+        -:  241:#endif

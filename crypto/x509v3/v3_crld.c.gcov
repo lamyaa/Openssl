@@ -1,0 +1,621 @@
+        -:    0:Source:v3_crld.c
+        -:    0:Graph:v3_crld.gcno
+        -:    0:Data:v3_crld.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* v3_crld.c */
+        -:    2:/* Written by Dr Stephen N Henson (steve@openssl.org) for the OpenSSL
+        -:    3: * project 1999.
+        -:    4: */
+        -:    5:/* ====================================================================
+        -:    6: * Copyright (c) 1999-2008 The OpenSSL Project.  All rights reserved.
+        -:    7: *
+        -:    8: * Redistribution and use in source and binary forms, with or without
+        -:    9: * modification, are permitted provided that the following conditions
+        -:   10: * are met:
+        -:   11: *
+        -:   12: * 1. Redistributions of source code must retain the above copyright
+        -:   13: *    notice, this list of conditions and the following disclaimer. 
+        -:   14: *
+        -:   15: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   16: *    notice, this list of conditions and the following disclaimer in
+        -:   17: *    the documentation and/or other materials provided with the
+        -:   18: *    distribution.
+        -:   19: *
+        -:   20: * 3. All advertising materials mentioning features or use of this
+        -:   21: *    software must display the following acknowledgment:
+        -:   22: *    "This product includes software developed by the OpenSSL Project
+        -:   23: *    for use in the OpenSSL Toolkit. (http://www.OpenSSL.org/)"
+        -:   24: *
+        -:   25: * 4. The names "OpenSSL Toolkit" and "OpenSSL Project" must not be used to
+        -:   26: *    endorse or promote products derived from this software without
+        -:   27: *    prior written permission. For written permission, please contact
+        -:   28: *    licensing@OpenSSL.org.
+        -:   29: *
+        -:   30: * 5. Products derived from this software may not be called "OpenSSL"
+        -:   31: *    nor may "OpenSSL" appear in their names without prior written
+        -:   32: *    permission of the OpenSSL Project.
+        -:   33: *
+        -:   34: * 6. Redistributions of any form whatsoever must retain the following
+        -:   35: *    acknowledgment:
+        -:   36: *    "This product includes software developed by the OpenSSL Project
+        -:   37: *    for use in the OpenSSL Toolkit (http://www.OpenSSL.org/)"
+        -:   38: *
+        -:   39: * THIS SOFTWARE IS PROVIDED BY THE OpenSSL PROJECT ``AS IS'' AND ANY
+        -:   40: * EXPRESSED OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   41: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+        -:   42: * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE OpenSSL PROJECT OR
+        -:   43: * ITS CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+        -:   44: * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+        -:   45: * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+        -:   46: * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   47: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+        -:   48: * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+        -:   49: * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+        -:   50: * OF THE POSSIBILITY OF SUCH DAMAGE.
+        -:   51: * ====================================================================
+        -:   52: *
+        -:   53: * This product includes cryptographic software written by Eric Young
+        -:   54: * (eay@cryptsoft.com).  This product includes software written by Tim
+        -:   55: * Hudson (tjh@cryptsoft.com).
+        -:   56: *
+        -:   57: */
+        -:   58:
+        -:   59:#include <stdio.h>
+        -:   60:#include "cryptlib.h"
+        -:   61:#include <openssl/conf.h>
+        -:   62:#include <openssl/asn1.h>
+        -:   63:#include <openssl/asn1t.h>
+        -:   64:#include <openssl/x509v3.h>
+        -:   65:
+        -:   66:static void *v2i_crld(const X509V3_EXT_METHOD *method,
+        -:   67:		      X509V3_CTX *ctx, STACK_OF(CONF_VALUE) *nval);
+        -:   68:static int i2r_crldp(const X509V3_EXT_METHOD *method, void *pcrldp, BIO *out,
+        -:   69:		     int indent);
+        -:   70:
+        -:   71:const X509V3_EXT_METHOD v3_crld =
+        -:   72:	{
+        -:   73:	NID_crl_distribution_points, 0, ASN1_ITEM_ref(CRL_DIST_POINTS),
+        -:   74:	0,0,0,0,
+        -:   75:	0,0,
+        -:   76:	0,
+        -:   77:	v2i_crld,
+        -:   78:	i2r_crldp,0,
+        -:   79:	NULL
+        -:   80:	};
+        -:   81:
+        -:   82:const X509V3_EXT_METHOD v3_freshest_crl =
+        -:   83:	{
+        -:   84:	NID_freshest_crl, 0, ASN1_ITEM_ref(CRL_DIST_POINTS),
+        -:   85:	0,0,0,0,
+        -:   86:	0,0,
+        -:   87:	0,
+        -:   88:	v2i_crld,
+        -:   89:	i2r_crldp,0,
+        -:   90:	NULL
+        -:   91:	};
+        -:   92:
+    #####:   93:static STACK_OF(GENERAL_NAME) *gnames_from_sectname(X509V3_CTX *ctx, char *sect)
+        -:   94:	{
+        -:   95:	STACK_OF(CONF_VALUE) *gnsect;
+        -:   96:	STACK_OF(GENERAL_NAME) *gens;
+    #####:   97:	if (*sect == '@')
+    #####:   98:		gnsect = X509V3_get_section(ctx, sect + 1);
+        -:   99:	else
+    #####:  100:		gnsect = X509V3_parse_list(sect);
+    #####:  101:	if (!gnsect)
+        -:  102:		{
+    #####:  103:		X509V3err(X509V3_F_GNAMES_FROM_SECTNAME,
+        -:  104:						X509V3_R_SECTION_NOT_FOUND);
+    #####:  105:		return NULL;
+        -:  106:		}
+    #####:  107:	gens = v2i_GENERAL_NAMES(NULL, ctx, gnsect);
+    #####:  108:	if (*sect == '@')
+    #####:  109:		X509V3_section_free(ctx, gnsect);
+        -:  110:	else
+    #####:  111:		sk_CONF_VALUE_pop_free(gnsect, X509V3_conf_free);
+    #####:  112:	return gens;
+        -:  113:	}
+        -:  114:
+    #####:  115:static int set_dist_point_name(DIST_POINT_NAME **pdp, X509V3_CTX *ctx,
+        -:  116:							CONF_VALUE *cnf)
+        -:  117:	{
+        -:  118:	STACK_OF(GENERAL_NAME) *fnm = NULL;
+        -:  119:	STACK_OF(X509_NAME_ENTRY) *rnm = NULL;
+    #####:  120:	if (!strncmp(cnf->name, "fullname", 9))
+        -:  121:		{
+    #####:  122:		fnm = gnames_from_sectname(ctx, cnf->value);
+    #####:  123:		if (!fnm)
+        -:  124:			goto err;
+        -:  125:		}
+    #####:  126:	else if (!strcmp(cnf->name, "relativename"))
+        -:  127:		{
+        -:  128:		int ret;
+        -:  129:		STACK_OF(CONF_VALUE) *dnsect;
+        -:  130:		X509_NAME *nm;
+    #####:  131:		nm = X509_NAME_new();
+    #####:  132:		if (!nm)
+        -:  133:			return -1;
+    #####:  134:		dnsect = X509V3_get_section(ctx, cnf->value);
+    #####:  135:		if (!dnsect)
+        -:  136:			{
+    #####:  137:			X509V3err(X509V3_F_SET_DIST_POINT_NAME,
+        -:  138:						X509V3_R_SECTION_NOT_FOUND);
+        -:  139:			return -1;
+        -:  140:			}
+    #####:  141:		ret = X509V3_NAME_from_section(nm, dnsect, MBSTRING_ASC);
+    #####:  142:		X509V3_section_free(ctx, dnsect);
+    #####:  143:		rnm = nm->entries;
+    #####:  144:		nm->entries = NULL;
+    #####:  145:		X509_NAME_free(nm);
+    #####:  146:		if (!ret || sk_X509_NAME_ENTRY_num(rnm) <= 0)
+        -:  147:			goto err;
+        -:  148:		/* Since its a name fragment can't have more than one
+        -:  149:		 * RDNSequence
+        -:  150:		 */
+    #####:  151:		if (sk_X509_NAME_ENTRY_value(rnm,
+    #####:  152:				sk_X509_NAME_ENTRY_num(rnm) - 1)->set)
+        -:  153:			{
+    #####:  154:			X509V3err(X509V3_F_SET_DIST_POINT_NAME,
+        -:  155:						X509V3_R_INVALID_MULTIPLE_RDNS);
+        -:  156:			goto err;
+        -:  157:			}
+        -:  158:		}
+        -:  159:	else
+        -:  160:		return 0;
+        -:  161:
+    #####:  162:	if (*pdp)
+        -:  163:		{
+    #####:  164:		X509V3err(X509V3_F_SET_DIST_POINT_NAME,
+        -:  165:						X509V3_R_DISTPOINT_ALREADY_SET);
+        -:  166:		goto err;
+        -:  167:		}
+        -:  168:
+    #####:  169:	*pdp = DIST_POINT_NAME_new();
+    #####:  170:	if (!*pdp)
+        -:  171:		goto err;
+    #####:  172:	if (fnm)
+        -:  173:		{
+    #####:  174:		(*pdp)->type = 0;
+    #####:  175:		(*pdp)->name.fullname = fnm;
+        -:  176:		}
+        -:  177:	else
+        -:  178:		{
+    #####:  179:		(*pdp)->type = 1;
+    #####:  180:		(*pdp)->name.relativename = rnm;
+        -:  181:		}
+        -:  182:
+        -:  183:	return 1;
+        -:  184:		
+        -:  185:	err:
+    #####:  186:	if (fnm)
+    #####:  187:		sk_GENERAL_NAME_pop_free(fnm, GENERAL_NAME_free);
+    #####:  188:	if (rnm)
+    #####:  189:		sk_X509_NAME_ENTRY_pop_free(rnm, X509_NAME_ENTRY_free);
+        -:  190:	return -1;
+        -:  191:	}
+        -:  192:
+        -:  193:static const BIT_STRING_BITNAME reason_flags[] = {
+        -:  194:{0, "Unused", "unused"},
+        -:  195:{1, "Key Compromise", "keyCompromise"},
+        -:  196:{2, "CA Compromise", "CACompromise"},
+        -:  197:{3, "Affiliation Changed", "affiliationChanged"},
+        -:  198:{4, "Superseded", "superseded"},
+        -:  199:{5, "Cessation Of Operation", "cessationOfOperation"},
+        -:  200:{6, "Certificate Hold", "certificateHold"},
+        -:  201:{7, "Privilege Withdrawn", "privilegeWithdrawn"},
+        -:  202:{8, "AA Compromise", "AACompromise"},
+        -:  203:{-1, NULL, NULL}
+        -:  204:};
+        -:  205:
+    #####:  206:static int set_reasons(ASN1_BIT_STRING **preas, char *value)
+        -:  207:	{
+        -:  208:	STACK_OF(CONF_VALUE) *rsk = NULL;
+        -:  209:	const BIT_STRING_BITNAME *pbn;
+        -:  210:	const char *bnam;
+        -:  211:	int i, ret = 0;
+    #####:  212:	rsk = X509V3_parse_list(value);
+    #####:  213:	if (!rsk)
+        -:  214:		return 0;
+    #####:  215:	if (*preas)
+        -:  216:		return 0;
+    #####:  217:	for (i = 0; i < sk_CONF_VALUE_num(rsk); i++)
+        -:  218:		{
+    #####:  219:		bnam = sk_CONF_VALUE_value(rsk, i)->name;
+    #####:  220:		if (!*preas)
+        -:  221:			{
+    #####:  222:			*preas = ASN1_BIT_STRING_new();
+    #####:  223:			if (!*preas)
+        -:  224:				goto err;
+        -:  225:			}
+    #####:  226:		for (pbn = reason_flags; pbn->lname; pbn++)
+        -:  227:			{
+    #####:  228:			if (!strcmp(pbn->sname, bnam))
+        -:  229:				{
+    #####:  230:				if (!ASN1_BIT_STRING_set_bit(*preas,
+        -:  231:							pbn->bitnum, 1))
+        -:  232:					goto err;
+        -:  233:				break;
+        -:  234:				}
+        -:  235:			}
+    #####:  236:		if (!pbn->lname)
+        -:  237:			goto err;
+        -:  238:		}
+        -:  239:	ret = 1;
+        -:  240:
+        -:  241:	err:
+    #####:  242:	sk_CONF_VALUE_pop_free(rsk, X509V3_conf_free);
+    #####:  243:	return ret;
+        -:  244:	}
+        -:  245:
+    #####:  246:static int print_reasons(BIO *out, const char *rname,
+        -:  247:			ASN1_BIT_STRING *rflags, int indent)
+        -:  248:	{
+        -:  249:	int first = 1;
+        -:  250:	const BIT_STRING_BITNAME *pbn;
+    #####:  251:	BIO_printf(out, "%*s%s:\n%*s", indent, "", rname, indent + 2, "");
+    #####:  252:	for (pbn = reason_flags; pbn->lname; pbn++)
+        -:  253:		{
+    #####:  254:		if (ASN1_BIT_STRING_get_bit(rflags, pbn->bitnum))
+        -:  255:			{
+    #####:  256:			if (first)
+        -:  257:				first = 0;
+        -:  258:			else
+    #####:  259:				BIO_puts(out, ", ");
+    #####:  260:			BIO_puts(out, pbn->lname);
+        -:  261:			}
+        -:  262:		}
+    #####:  263:	if (first)
+    #####:  264:		BIO_puts(out, "<EMPTY>\n");
+        -:  265:	else
+    #####:  266:		BIO_puts(out, "\n");
+    #####:  267:	return 1;
+        -:  268:	}
+        -:  269:
+    #####:  270:static DIST_POINT *crldp_from_section(X509V3_CTX *ctx,
+        -:  271:						STACK_OF(CONF_VALUE) *nval)
+        -:  272:	{
+        -:  273:	int i;
+    #####:  274:	CONF_VALUE *cnf;
+        -:  275:	DIST_POINT *point = NULL;
+        -:  276:	point = DIST_POINT_new();
+    #####:  277:	if (!point)
+        -:  278:		goto err;
+    #####:  279:	for(i = 0; i < sk_CONF_VALUE_num(nval); i++)
+        -:  280:		{
+        -:  281:		int ret;
+    #####:  282:		cnf = sk_CONF_VALUE_value(nval, i);
+    #####:  283:		ret = set_dist_point_name(&point->distpoint, ctx, cnf);
+    #####:  284:		if (ret > 0)
+    #####:  285:			continue;
+    #####:  286:		if (ret < 0)
+        -:  287:			goto err;
+    #####:  288:		if (!strcmp(cnf->name, "reasons"))
+        -:  289:			{
+    #####:  290:			if (!set_reasons(&point->reasons, cnf->value))
+        -:  291:				goto err;
+        -:  292:			}
+    #####:  293:		else if (!strcmp(cnf->name, "CRLissuer"))
+        -:  294:			{
+    #####:  295:			point->CRLissuer =
+    #####:  296:				gnames_from_sectname(ctx, cnf->value);
+    #####:  297:			if (!point->CRLissuer)
+        -:  298:				goto err;
+        -:  299:			}
+        -:  300:		}
+        -:  301:
+        -:  302:	return point;
+        -:  303:			
+        -:  304:
+        -:  305:	err:
+    #####:  306:	if (point)
+        -:  307:		DIST_POINT_free(point);
+        -:  308:	return NULL;
+        -:  309:	}
+        -:  310:
+    #####:  311:static void *v2i_crld(const X509V3_EXT_METHOD *method,
+        -:  312:		      X509V3_CTX *ctx, STACK_OF(CONF_VALUE) *nval)
+        -:  313:	{
+        -:  314:	STACK_OF(DIST_POINT) *crld = NULL;
+        -:  315:	GENERAL_NAMES *gens = NULL;
+        -:  316:	GENERAL_NAME *gen = NULL;
+        -:  317:	CONF_VALUE *cnf;
+        -:  318:	int i;
+    #####:  319:	if(!(crld = sk_DIST_POINT_new_null())) goto merr;
+    #####:  320:	for(i = 0; i < sk_CONF_VALUE_num(nval); i++) {
+        -:  321:		DIST_POINT *point;
+    #####:  322:		cnf = sk_CONF_VALUE_value(nval, i);
+    #####:  323:		if (!cnf->value)
+        -:  324:			{
+        -:  325:			STACK_OF(CONF_VALUE) *dpsect;
+    #####:  326:			dpsect = X509V3_get_section(ctx, cnf->name);
+    #####:  327:			if (!dpsect)
+        -:  328:				goto err;
+    #####:  329:			point = crldp_from_section(ctx, dpsect);
+    #####:  330:			X509V3_section_free(ctx, dpsect);
+    #####:  331:			if (!point)
+        -:  332:				goto err;
+    #####:  333:			if(!sk_DIST_POINT_push(crld, point))
+        -:  334:				{
+        -:  335:				DIST_POINT_free(point);
+        -:  336:				goto merr;
+        -:  337:				}
+        -:  338:			}
+        -:  339:		else
+        -:  340:			{
+    #####:  341:			if(!(gen = v2i_GENERAL_NAME(method, ctx, cnf)))
+        -:  342:				goto err; 
+    #####:  343:			if(!(gens = GENERAL_NAMES_new()))
+        -:  344:				goto merr;
+    #####:  345:			if(!sk_GENERAL_NAME_push(gens, gen))
+        -:  346:				goto merr;
+        -:  347:			gen = NULL;
+    #####:  348:			if(!(point = DIST_POINT_new()))
+        -:  349:				goto merr;
+    #####:  350:			if(!sk_DIST_POINT_push(crld, point))
+        -:  351:				{
+        -:  352:				DIST_POINT_free(point);
+        -:  353:				goto merr;
+        -:  354:				}
+    #####:  355:			if(!(point->distpoint = DIST_POINT_NAME_new()))
+        -:  356:				goto merr;
+    #####:  357:			point->distpoint->name.fullname = gens;
+    #####:  358:			point->distpoint->type = 0;
+        -:  359:			gens = NULL;
+        -:  360:			}
+        -:  361:	}
+        -:  362:	return crld;
+        -:  363:
+        -:  364:	merr:
+    #####:  365:	X509V3err(X509V3_F_V2I_CRLD,ERR_R_MALLOC_FAILURE);
+        -:  366:	err:
+    #####:  367:	GENERAL_NAME_free(gen);
+    #####:  368:	GENERAL_NAMES_free(gens);
+    #####:  369:	sk_DIST_POINT_pop_free(crld, DIST_POINT_free);
+    #####:  370:	return NULL;
+        -:  371:}
+        -:  372:
+        -:  373:IMPLEMENT_STACK_OF(DIST_POINT)
+        -:  374:IMPLEMENT_ASN1_SET_OF(DIST_POINT)
+        -:  375:
+    39612:  376:static int dpn_cb(int operation, ASN1_VALUE **pval, const ASN1_ITEM *it,
+        -:  377:								void *exarg)
+        -:  378:	{
+    39612:  379:	DIST_POINT_NAME *dpn = (DIST_POINT_NAME *)*pval;
+        -:  380:
+    39612:  381:	switch(operation)
+        -:  382:		{
+        -:  383:		case ASN1_OP_NEW_POST:
+     6602:  384:		dpn->dpname = NULL;
+     6602:  385:		break;
+        -:  386:
+        -:  387:		case ASN1_OP_FREE_POST:
+     6602:  388:		if (dpn->dpname)
+    #####:  389:			X509_NAME_free(dpn->dpname);
+        -:  390:		break;
+        -:  391:		}
+    39612:  392:	return 1;
+        -:  393:	}
+        -:  394:
+        -:  395:
+        -:  396:ASN1_CHOICE_cb(DIST_POINT_NAME, dpn_cb) = {
+        -:  397:	ASN1_IMP_SEQUENCE_OF(DIST_POINT_NAME, name.fullname, GENERAL_NAME, 0),
+        -:  398:	ASN1_IMP_SET_OF(DIST_POINT_NAME, name.relativename, X509_NAME_ENTRY, 1)
+        -:  399:} ASN1_CHOICE_END_cb(DIST_POINT_NAME, DIST_POINT_NAME, type)
+        -:  400:
+        -:  401:
+    #####:  402:IMPLEMENT_ASN1_FUNCTIONS(DIST_POINT_NAME)
+        -:  403:
+        -:  404:ASN1_SEQUENCE(DIST_POINT) = {
+        -:  405:	ASN1_EXP_OPT(DIST_POINT, distpoint, DIST_POINT_NAME, 0),
+        -:  406:	ASN1_IMP_OPT(DIST_POINT, reasons, ASN1_BIT_STRING, 1),
+        -:  407:	ASN1_IMP_SEQUENCE_OF_OPT(DIST_POINT, CRLissuer, GENERAL_NAME, 2)
+        -:  408:} ASN1_SEQUENCE_END(DIST_POINT)
+        -:  409:
+    #####:  410:IMPLEMENT_ASN1_FUNCTIONS(DIST_POINT)
+        -:  411:
+        -:  412:ASN1_ITEM_TEMPLATE(CRL_DIST_POINTS) = 
+        -:  413:	ASN1_EX_TEMPLATE_TYPE(ASN1_TFLG_SEQUENCE_OF, 0, CRLDistributionPoints, DIST_POINT)
+        -:  414:ASN1_ITEM_TEMPLATE_END(CRL_DIST_POINTS)
+        -:  415:
+    29975:  416:IMPLEMENT_ASN1_FUNCTIONS(CRL_DIST_POINTS)
+        -:  417:
+        -:  418:ASN1_SEQUENCE(ISSUING_DIST_POINT) = {
+        -:  419:	ASN1_EXP_OPT(ISSUING_DIST_POINT, distpoint, DIST_POINT_NAME, 0),
+        -:  420:	ASN1_IMP_OPT(ISSUING_DIST_POINT, onlyuser, ASN1_FBOOLEAN, 1),
+        -:  421:	ASN1_IMP_OPT(ISSUING_DIST_POINT, onlyCA, ASN1_FBOOLEAN, 2),
+        -:  422:	ASN1_IMP_OPT(ISSUING_DIST_POINT, onlysomereasons, ASN1_BIT_STRING, 3),
+        -:  423:	ASN1_IMP_OPT(ISSUING_DIST_POINT, indirectCRL, ASN1_FBOOLEAN, 4),
+        -:  424:	ASN1_IMP_OPT(ISSUING_DIST_POINT, onlyattr, ASN1_FBOOLEAN, 5)
+        -:  425:} ASN1_SEQUENCE_END(ISSUING_DIST_POINT)
+        -:  426:
+    #####:  427:IMPLEMENT_ASN1_FUNCTIONS(ISSUING_DIST_POINT)
+        -:  428:
+        -:  429:static int i2r_idp(const X509V3_EXT_METHOD *method, void *pidp, BIO *out,
+        -:  430:		   int indent);
+        -:  431:static void *v2i_idp(const X509V3_EXT_METHOD *method, X509V3_CTX *ctx,
+        -:  432:		     STACK_OF(CONF_VALUE) *nval);
+        -:  433:
+        -:  434:const X509V3_EXT_METHOD v3_idp =
+        -:  435:	{
+        -:  436:	NID_issuing_distribution_point, X509V3_EXT_MULTILINE,
+        -:  437:	ASN1_ITEM_ref(ISSUING_DIST_POINT),
+        -:  438:	0,0,0,0,
+        -:  439:	0,0,
+        -:  440:	0,
+        -:  441:	v2i_idp,
+        -:  442:	i2r_idp,0,
+        -:  443:	NULL
+        -:  444:	};
+        -:  445:
+    #####:  446:static void *v2i_idp(const X509V3_EXT_METHOD *method, X509V3_CTX *ctx,
+        -:  447:		     STACK_OF(CONF_VALUE) *nval)
+        -:  448:	{
+        -:  449:	ISSUING_DIST_POINT *idp = NULL;
+        -:  450:	CONF_VALUE *cnf;
+        -:  451:	char *name, *val;
+        -:  452:	int i, ret;
+        -:  453:	idp = ISSUING_DIST_POINT_new();
+    #####:  454:	if (!idp)
+        -:  455:		goto merr;
+    #####:  456:	for(i = 0; i < sk_CONF_VALUE_num(nval); i++)
+        -:  457:		{
+    #####:  458:		cnf = sk_CONF_VALUE_value(nval, i);
+    #####:  459:		name = cnf->name;
+    #####:  460:		val = cnf->value;
+    #####:  461:		ret = set_dist_point_name(&idp->distpoint, ctx, cnf);
+    #####:  462:		if (ret > 0)
+    #####:  463:			continue;
+    #####:  464:		if (ret < 0)
+        -:  465:			goto err;
+    #####:  466:		if (!strcmp(name, "onlyuser"))
+        -:  467:			{
+    #####:  468:			if (!X509V3_get_value_bool(cnf, &idp->onlyuser))
+        -:  469:				goto err;
+        -:  470:			}
+    #####:  471:		else if (!strcmp(name, "onlyCA"))
+        -:  472:			{
+    #####:  473:			if (!X509V3_get_value_bool(cnf, &idp->onlyCA))
+        -:  474:				goto err;
+        -:  475:			}
+    #####:  476:		else if (!strcmp(name, "onlyAA"))
+        -:  477:			{
+    #####:  478:			if (!X509V3_get_value_bool(cnf, &idp->onlyattr))
+        -:  479:				goto err;
+        -:  480:			}
+    #####:  481:		else if (!strcmp(name, "indirectCRL"))
+        -:  482:			{
+    #####:  483:			if (!X509V3_get_value_bool(cnf, &idp->indirectCRL))
+        -:  484:				goto err;
+        -:  485:			}
+    #####:  486:		else if (!strcmp(name, "onlysomereasons"))
+        -:  487:			{
+    #####:  488:			if (!set_reasons(&idp->onlysomereasons, val))
+        -:  489:				goto err;
+        -:  490:			}
+        -:  491:		else
+        -:  492:			{
+    #####:  493:                        X509V3err(X509V3_F_V2I_IDP, X509V3_R_INVALID_NAME);
+    #####:  494:                        X509V3_conf_err(cnf);
+    #####:  495:                        goto err;
+        -:  496:			}
+        -:  497:		}
+        -:  498:	return idp;
+        -:  499:
+        -:  500:	merr:
+    #####:  501:	X509V3err(X509V3_F_V2I_IDP,ERR_R_MALLOC_FAILURE);
+        -:  502:	err:
+        -:  503:	ISSUING_DIST_POINT_free(idp);
+    #####:  504:	return NULL;
+        -:  505:	}
+        -:  506:
+    #####:  507:static int print_gens(BIO *out, STACK_OF(GENERAL_NAME) *gens, int indent)
+        -:  508:	{
+        -:  509:	int i;
+    #####:  510:	for (i = 0; i < sk_GENERAL_NAME_num(gens); i++)
+        -:  511:		{
+    #####:  512:		BIO_printf(out, "%*s", indent + 2, "");
+    #####:  513:		GENERAL_NAME_print(out, sk_GENERAL_NAME_value(gens, i));
+    #####:  514:		BIO_puts(out, "\n");
+        -:  515:		}
+    #####:  516:	return 1;
+        -:  517:	}
+        -:  518:
+    #####:  519:static int print_distpoint(BIO *out, DIST_POINT_NAME *dpn, int indent)
+        -:  520:	{
+    #####:  521:	if (dpn->type == 0)
+        -:  522:		{
+    #####:  523:		BIO_printf(out, "%*sFull Name:\n", indent, "");
+    #####:  524:		print_gens(out, dpn->name.fullname, indent);
+        -:  525:		}
+        -:  526:	else
+        -:  527:		{
+        -:  528:		X509_NAME ntmp;
+    #####:  529:		ntmp.entries = dpn->name.relativename;
+    #####:  530:		BIO_printf(out, "%*sRelative Name:\n%*s",
+        -:  531:						indent, "", indent + 2, "");
+    #####:  532:		X509_NAME_print_ex(out, &ntmp, 0, XN_FLAG_ONELINE);
+    #####:  533:		BIO_puts(out, "\n");
+        -:  534:		}
+    #####:  535:	return 1;
+        -:  536:	}
+        -:  537:
+    #####:  538:static int i2r_idp(const X509V3_EXT_METHOD *method, void *pidp, BIO *out,
+        -:  539:		   int indent)
+        -:  540:	{
+        -:  541:	ISSUING_DIST_POINT *idp = pidp;
+    #####:  542:	if (idp->distpoint)
+    #####:  543:		print_distpoint(out, idp->distpoint, indent);
+    #####:  544:	if (idp->onlyuser > 0)
+    #####:  545:		BIO_printf(out, "%*sOnly User Certificates\n", indent, "");
+    #####:  546:	if (idp->onlyCA > 0)
+    #####:  547:		BIO_printf(out, "%*sOnly CA Certificates\n", indent, "");
+    #####:  548:	if (idp->indirectCRL > 0)
+    #####:  549:		BIO_printf(out, "%*sIndirect CRL\n", indent, "");
+    #####:  550:	if (idp->onlysomereasons)
+    #####:  551:		print_reasons(out, "Only Some Reasons", 
+        -:  552:				idp->onlysomereasons, indent);
+    #####:  553:	if (idp->onlyattr > 0)
+    #####:  554:		BIO_printf(out, "%*sOnly Attribute Certificates\n", indent, "");
+    #####:  555:	if (!idp->distpoint && (idp->onlyuser <= 0) && (idp->onlyCA <= 0)
+    #####:  556:		&& (idp->indirectCRL <= 0) && !idp->onlysomereasons
+    #####:  557:		&& (idp->onlyattr <= 0))
+    #####:  558:		BIO_printf(out, "%*s<EMPTY>\n", indent, "");
+        -:  559:		
+    #####:  560:	return 1;
+        -:  561:	}
+        -:  562:
+    #####:  563:static int i2r_crldp(const X509V3_EXT_METHOD *method, void *pcrldp, BIO *out,
+        -:  564:		     int indent)
+        -:  565:	{
+        -:  566:	STACK_OF(DIST_POINT) *crld = pcrldp;
+        -:  567:	DIST_POINT *point;
+        -:  568:	int i;
+    #####:  569:	for(i = 0; i < sk_DIST_POINT_num(crld); i++)
+        -:  570:		{
+    #####:  571:		BIO_puts(out, "\n");
+    #####:  572:		point = sk_DIST_POINT_value(crld, i);
+    #####:  573:		if(point->distpoint)
+    #####:  574:			print_distpoint(out, point->distpoint, indent);
+    #####:  575:		if(point->reasons) 
+    #####:  576:			print_reasons(out, "Reasons", point->reasons,
+        -:  577:								indent);
+    #####:  578:		if(point->CRLissuer)
+        -:  579:			{
+    #####:  580:			BIO_printf(out, "%*sCRL Issuer:\n", indent, "");
+    #####:  581:			print_gens(out, point->CRLissuer, indent);
+        -:  582:			}
+        -:  583:		}
+    #####:  584:	return 1;
+        -:  585:	}
+        -:  586:
+    #####:  587:int DIST_POINT_set_dpname(DIST_POINT_NAME *dpn, X509_NAME *iname)
+        -:  588:	{
+        -:  589:	int i;
+        -:  590:	STACK_OF(X509_NAME_ENTRY) *frag;
+        -:  591:	X509_NAME_ENTRY *ne;
+    #####:  592:	if (!dpn || (dpn->type != 1))
+        -:  593:		return 1;
+    #####:  594:	frag = dpn->name.relativename;
+    #####:  595:	dpn->dpname = X509_NAME_dup(iname);
+    #####:  596:	if (!dpn->dpname)
+        -:  597:		return 0;
+    #####:  598:	for (i = 0; i < sk_X509_NAME_ENTRY_num(frag); i++)
+        -:  599:		{
+    #####:  600:		ne = sk_X509_NAME_ENTRY_value(frag, i);
+    #####:  601:		if (!X509_NAME_add_entry(dpn->dpname, ne, -1, i ? 0 : 1))
+        -:  602:			{
+    #####:  603:			X509_NAME_free(dpn->dpname);
+    #####:  604:			dpn->dpname = NULL;
+    #####:  605:			return 0;
+        -:  606:			}
+        -:  607:		}
+        -:  608:	/* generate cached encoding of name */
+    #####:  609:	if (i2d_X509_NAME(dpn->dpname, NULL) < 0)
+        -:  610:		{
+    #####:  611:		X509_NAME_free(dpn->dpname);
+    #####:  612:		dpn->dpname = NULL;
+    #####:  613:		return 0;
+        -:  614:		}
+        -:  615:	return 1;
+        -:  616:	}

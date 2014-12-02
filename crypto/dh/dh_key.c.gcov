@@ -1,0 +1,297 @@
+        -:    0:Source:dh_key.c
+        -:    0:Graph:dh_key.gcno
+        -:    0:Data:dh_key.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* crypto/dh/dh_key.c */
+        -:    2:/* Copyright (C) 1995-1998 Eric Young (eay@cryptsoft.com)
+        -:    3: * All rights reserved.
+        -:    4: *
+        -:    5: * This package is an SSL implementation written
+        -:    6: * by Eric Young (eay@cryptsoft.com).
+        -:    7: * The implementation was written so as to conform with Netscapes SSL.
+        -:    8: * 
+        -:    9: * This library is free for commercial and non-commercial use as long as
+        -:   10: * the following conditions are aheared to.  The following conditions
+        -:   11: * apply to all code found in this distribution, be it the RC4, RSA,
+        -:   12: * lhash, DES, etc., code; not just the SSL code.  The SSL documentation
+        -:   13: * included with this distribution is covered by the same copyright terms
+        -:   14: * except that the holder is Tim Hudson (tjh@cryptsoft.com).
+        -:   15: * 
+        -:   16: * Copyright remains Eric Young's, and as such any Copyright notices in
+        -:   17: * the code are not to be removed.
+        -:   18: * If this package is used in a product, Eric Young should be given attribution
+        -:   19: * as the author of the parts of the library used.
+        -:   20: * This can be in the form of a textual message at program startup or
+        -:   21: * in documentation (online or textual) provided with the package.
+        -:   22: * 
+        -:   23: * Redistribution and use in source and binary forms, with or without
+        -:   24: * modification, are permitted provided that the following conditions
+        -:   25: * are met:
+        -:   26: * 1. Redistributions of source code must retain the copyright
+        -:   27: *    notice, this list of conditions and the following disclaimer.
+        -:   28: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   29: *    notice, this list of conditions and the following disclaimer in the
+        -:   30: *    documentation and/or other materials provided with the distribution.
+        -:   31: * 3. All advertising materials mentioning features or use of this software
+        -:   32: *    must display the following acknowledgement:
+        -:   33: *    "This product includes cryptographic software written by
+        -:   34: *     Eric Young (eay@cryptsoft.com)"
+        -:   35: *    The word 'cryptographic' can be left out if the rouines from the library
+        -:   36: *    being used are not cryptographic related :-).
+        -:   37: * 4. If you include any Windows specific code (or a derivative thereof) from 
+        -:   38: *    the apps directory (application code) you must include an acknowledgement:
+        -:   39: *    "This product includes software written by Tim Hudson (tjh@cryptsoft.com)"
+        -:   40: * 
+        -:   41: * THIS SOFTWARE IS PROVIDED BY ERIC YOUNG ``AS IS'' AND
+        -:   42: * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   43: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+        -:   44: * ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+        -:   45: * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+        -:   46: * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+        -:   47: * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   48: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+        -:   49: * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+        -:   50: * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+        -:   51: * SUCH DAMAGE.
+        -:   52: * 
+        -:   53: * The licence and distribution terms for any publically available version or
+        -:   54: * derivative of this code cannot be changed.  i.e. this code cannot simply be
+        -:   55: * copied and put under another distribution licence
+        -:   56: * [including the GNU Public Licence.]
+        -:   57: */
+        -:   58:
+        -:   59:#include <stdio.h>
+        -:   60:#include "cryptlib.h"
+        -:   61:#include <openssl/bn.h>
+        -:   62:#include <openssl/rand.h>
+        -:   63:#include <openssl/dh.h>
+        -:   64:
+        -:   65:static int generate_key(DH *dh);
+        -:   66:static int compute_key(unsigned char *key, const BIGNUM *pub_key, DH *dh);
+        -:   67:static int dh_bn_mod_exp(const DH *dh, BIGNUM *r,
+        -:   68:			const BIGNUM *a, const BIGNUM *p,
+        -:   69:			const BIGNUM *m, BN_CTX *ctx,
+        -:   70:			BN_MONT_CTX *m_ctx);
+        -:   71:static int dh_init(DH *dh);
+        -:   72:static int dh_finish(DH *dh);
+        -:   73:
+    #####:   74:int DH_generate_key(DH *dh)
+        -:   75:	{
+        -:   76:#ifdef OPENSSL_FIPS
+        -:   77:	if (FIPS_mode() && !(dh->meth->flags & DH_FLAG_FIPS_METHOD)
+        -:   78:			&& !(dh->flags & DH_FLAG_NON_FIPS_ALLOW))
+        -:   79:		{
+        -:   80:		DHerr(DH_F_DH_GENERATE_KEY, DH_R_NON_FIPS_METHOD);
+        -:   81:		return 0;
+        -:   82:		}
+        -:   83:#endif
+    #####:   84:	return dh->meth->generate_key(dh);
+        -:   85:	}
+        -:   86:
+    #####:   87:int DH_compute_key(unsigned char *key, const BIGNUM *pub_key, DH *dh)
+        -:   88:	{
+        -:   89:#ifdef OPENSSL_FIPS
+        -:   90:	if (FIPS_mode() && !(dh->meth->flags & DH_FLAG_FIPS_METHOD)
+        -:   91:			&& !(dh->flags & DH_FLAG_NON_FIPS_ALLOW))
+        -:   92:		{
+        -:   93:		DHerr(DH_F_DH_COMPUTE_KEY, DH_R_NON_FIPS_METHOD);
+        -:   94:		return 0;
+        -:   95:		}
+        -:   96:#endif
+    #####:   97:	return dh->meth->compute_key(key, pub_key, dh);
+        -:   98:	}
+        -:   99:
+        -:  100:static DH_METHOD dh_ossl = {
+        -:  101:"OpenSSL DH Method",
+        -:  102:generate_key,
+        -:  103:compute_key,
+        -:  104:dh_bn_mod_exp,
+        -:  105:dh_init,
+        -:  106:dh_finish,
+        -:  107:0,
+        -:  108:NULL,
+        -:  109:NULL
+        -:  110:};
+        -:  111:
+    70000:  112:const DH_METHOD *DH_OpenSSL(void)
+        -:  113:{
+    70000:  114:	return &dh_ossl;
+        -:  115:}
+        -:  116:
+    #####:  117:static int generate_key(DH *dh)
+        -:  118:	{
+        -:  119:	int ok=0;
+        -:  120:	int generate_new_key=0;
+        -:  121:	unsigned l;
+        -:  122:	BN_CTX *ctx;
+        -:  123:	BN_MONT_CTX *mont=NULL;
+        -:  124:	BIGNUM *pub_key=NULL,*priv_key=NULL;
+        -:  125:
+    #####:  126:	ctx = BN_CTX_new();
+    #####:  127:	if (ctx == NULL) goto err;
+        -:  128:
+    #####:  129:	if (dh->priv_key == NULL)
+        -:  130:		{
+    #####:  131:		priv_key=BN_new();
+    #####:  132:		if (priv_key == NULL) goto err;
+        -:  133:		generate_new_key=1;
+        -:  134:		}
+        -:  135:	else
+        -:  136:		priv_key=dh->priv_key;
+        -:  137:
+    #####:  138:	if (dh->pub_key == NULL)
+        -:  139:		{
+    #####:  140:		pub_key=BN_new();
+    #####:  141:		if (pub_key == NULL) goto err;
+        -:  142:		}
+        -:  143:	else
+        -:  144:		pub_key=dh->pub_key;
+        -:  145:
+        -:  146:
+    #####:  147:	if (dh->flags & DH_FLAG_CACHE_MONT_P)
+        -:  148:		{
+    #####:  149:		mont = BN_MONT_CTX_set_locked(&dh->method_mont_p,
+    #####:  150:				CRYPTO_LOCK_DH, dh->p, ctx);
+    #####:  151:		if (!mont)
+        -:  152:			goto err;
+        -:  153:		}
+        -:  154:
+    #####:  155:	if (generate_new_key)
+        -:  156:		{
+    #####:  157:		if (dh->q)
+        -:  158:			{
+        -:  159:			do
+        -:  160:				{
+    #####:  161:				if (!BN_rand_range(priv_key, dh->q))
+        -:  162:					goto err;
+        -:  163:				}
+    #####:  164:			while (BN_is_zero(priv_key) || BN_is_one(priv_key));
+        -:  165:			}
+        -:  166:		else
+        -:  167:			{
+        -:  168:			/* secret exponent length */
+    #####:  169:			l = dh->length ? dh->length : BN_num_bits(dh->p)-1;
+    #####:  170:			if (!BN_rand(priv_key, l, 0, 0)) goto err;
+        -:  171:			}
+        -:  172:		}
+        -:  173:
+        -:  174:	{
+        -:  175:		BIGNUM local_prk;
+        -:  176:		BIGNUM *prk;
+        -:  177:
+    #####:  178:		if ((dh->flags & DH_FLAG_NO_EXP_CONSTTIME) == 0)
+        -:  179:			{
+    #####:  180:			BN_init(&local_prk);
+        -:  181:			prk = &local_prk;
+    #####:  182:			BN_with_flags(prk, priv_key, BN_FLG_CONSTTIME);
+        -:  183:			}
+        -:  184:		else
+        -:  185:			prk = priv_key;
+        -:  186:
+    #####:  187:		if (!dh->meth->bn_mod_exp(dh, pub_key, dh->g, prk, dh->p, ctx, mont)) goto err;
+        -:  188:	}
+        -:  189:		
+    #####:  190:	dh->pub_key=pub_key;
+    #####:  191:	dh->priv_key=priv_key;
+        -:  192:	ok=1;
+        -:  193:err:
+    #####:  194:	if (ok != 1)
+    #####:  195:		DHerr(DH_F_GENERATE_KEY,ERR_R_BN_LIB);
+        -:  196:
+    #####:  197:	if ((pub_key != NULL)  && (dh->pub_key == NULL))  BN_free(pub_key);
+    #####:  198:	if ((priv_key != NULL) && (dh->priv_key == NULL)) BN_free(priv_key);
+    #####:  199:	BN_CTX_free(ctx);
+    #####:  200:	return(ok);
+        -:  201:	}
+        -:  202:
+    #####:  203:static int compute_key(unsigned char *key, const BIGNUM *pub_key, DH *dh)
+        -:  204:	{
+        -:  205:	BN_CTX *ctx=NULL;
+        -:  206:	BN_MONT_CTX *mont=NULL;
+        -:  207:	BIGNUM *tmp;
+        -:  208:	int ret= -1;
+        -:  209:        int check_result;
+        -:  210:
+    #####:  211:	if (BN_num_bits(dh->p) > OPENSSL_DH_MAX_MODULUS_BITS)
+        -:  212:		{
+    #####:  213:		DHerr(DH_F_COMPUTE_KEY,DH_R_MODULUS_TOO_LARGE);
+    #####:  214:		goto err;
+        -:  215:		}
+        -:  216:
+    #####:  217:	ctx = BN_CTX_new();
+    #####:  218:	if (ctx == NULL) goto err;
+    #####:  219:	BN_CTX_start(ctx);
+    #####:  220:	tmp = BN_CTX_get(ctx);
+        -:  221:	
+    #####:  222:	if (dh->priv_key == NULL)
+        -:  223:		{
+    #####:  224:		DHerr(DH_F_COMPUTE_KEY,DH_R_NO_PRIVATE_VALUE);
+    #####:  225:		goto err;
+        -:  226:		}
+        -:  227:
+    #####:  228:	if (dh->flags & DH_FLAG_CACHE_MONT_P)
+        -:  229:		{
+    #####:  230:		mont = BN_MONT_CTX_set_locked(&dh->method_mont_p,
+    #####:  231:				CRYPTO_LOCK_DH, dh->p, ctx);
+    #####:  232:		if ((dh->flags & DH_FLAG_NO_EXP_CONSTTIME) == 0)
+        -:  233:			{
+        -:  234:			/* XXX */
+    #####:  235:			BN_set_flags(dh->priv_key, BN_FLG_CONSTTIME);
+        -:  236:			}
+    #####:  237:		if (!mont)
+        -:  238:			goto err;
+        -:  239:		}
+        -:  240:
+    #####:  241:        if (!DH_check_pub_key(dh, pub_key, &check_result) || check_result)
+        -:  242:		{
+    #####:  243:		DHerr(DH_F_COMPUTE_KEY,DH_R_INVALID_PUBKEY);
+    #####:  244:		goto err;
+        -:  245:		}
+        -:  246:
+    #####:  247:	if (!dh->meth->bn_mod_exp(dh, tmp, pub_key, dh->priv_key,dh->p,ctx,mont))
+        -:  248:		{
+    #####:  249:		DHerr(DH_F_COMPUTE_KEY,ERR_R_BN_LIB);
+    #####:  250:		goto err;
+        -:  251:		}
+        -:  252:
+    #####:  253:	ret=BN_bn2bin(tmp,key);
+        -:  254:err:
+    #####:  255:	if (ctx != NULL)
+        -:  256:		{
+    #####:  257:		BN_CTX_end(ctx);
+    #####:  258:		BN_CTX_free(ctx);
+        -:  259:		}
+    #####:  260:	return(ret);
+        -:  261:	}
+        -:  262:
+    #####:  263:static int dh_bn_mod_exp(const DH *dh, BIGNUM *r,
+        -:  264:			const BIGNUM *a, const BIGNUM *p,
+        -:  265:			const BIGNUM *m, BN_CTX *ctx,
+        -:  266:			BN_MONT_CTX *m_ctx)
+        -:  267:	{
+        -:  268:	/* If a is only one word long and constant time is false, use the faster
+        -:  269:	 * exponenentiation function.
+        -:  270:	 */
+    #####:  271:	if (a->top == 1 && ((dh->flags & DH_FLAG_NO_EXP_CONSTTIME) != 0))
+        -:  272:		{
+    #####:  273:		BN_ULONG A = a->d[0];
+    #####:  274:		return BN_mod_exp_mont_word(r,A,p,m,ctx,m_ctx);
+        -:  275:		}
+        -:  276:	else
+    #####:  277:		return BN_mod_exp_mont(r,a,p,m,ctx,m_ctx);
+        -:  278:	}
+        -:  279:
+        -:  280:
+    #####:  281:static int dh_init(DH *dh)
+        -:  282:	{
+    #####:  283:	dh->flags |= DH_FLAG_CACHE_MONT_P;
+    #####:  284:	return(1);
+        -:  285:	}
+        -:  286:
+    #####:  287:static int dh_finish(DH *dh)
+        -:  288:	{
+    #####:  289:	if(dh->method_mont_p)
+    #####:  290:		BN_MONT_CTX_free(dh->method_mont_p);
+    #####:  291:	return(1);
+        -:  292:	}

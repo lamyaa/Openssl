@@ -1,0 +1,394 @@
+        -:    0:Source:eng_ctrl.c
+        -:    0:Graph:eng_ctrl.gcno
+        -:    0:Data:eng_ctrl.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* crypto/engine/eng_ctrl.c */
+        -:    2:/* ====================================================================
+        -:    3: * Copyright (c) 1999-2001 The OpenSSL Project.  All rights reserved.
+        -:    4: *
+        -:    5: * Redistribution and use in source and binary forms, with or without
+        -:    6: * modification, are permitted provided that the following conditions
+        -:    7: * are met:
+        -:    8: *
+        -:    9: * 1. Redistributions of source code must retain the above copyright
+        -:   10: *    notice, this list of conditions and the following disclaimer. 
+        -:   11: *
+        -:   12: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   13: *    notice, this list of conditions and the following disclaimer in
+        -:   14: *    the documentation and/or other materials provided with the
+        -:   15: *    distribution.
+        -:   16: *
+        -:   17: * 3. All advertising materials mentioning features or use of this
+        -:   18: *    software must display the following acknowledgment:
+        -:   19: *    "This product includes software developed by the OpenSSL Project
+        -:   20: *    for use in the OpenSSL Toolkit. (http://www.OpenSSL.org/)"
+        -:   21: *
+        -:   22: * 4. The names "OpenSSL Toolkit" and "OpenSSL Project" must not be used to
+        -:   23: *    endorse or promote products derived from this software without
+        -:   24: *    prior written permission. For written permission, please contact
+        -:   25: *    licensing@OpenSSL.org.
+        -:   26: *
+        -:   27: * 5. Products derived from this software may not be called "OpenSSL"
+        -:   28: *    nor may "OpenSSL" appear in their names without prior written
+        -:   29: *    permission of the OpenSSL Project.
+        -:   30: *
+        -:   31: * 6. Redistributions of any form whatsoever must retain the following
+        -:   32: *    acknowledgment:
+        -:   33: *    "This product includes software developed by the OpenSSL Project
+        -:   34: *    for use in the OpenSSL Toolkit (http://www.OpenSSL.org/)"
+        -:   35: *
+        -:   36: * THIS SOFTWARE IS PROVIDED BY THE OpenSSL PROJECT ``AS IS'' AND ANY
+        -:   37: * EXPRESSED OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   38: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+        -:   39: * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE OpenSSL PROJECT OR
+        -:   40: * ITS CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+        -:   41: * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+        -:   42: * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+        -:   43: * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   44: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+        -:   45: * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+        -:   46: * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+        -:   47: * OF THE POSSIBILITY OF SUCH DAMAGE.
+        -:   48: * ====================================================================
+        -:   49: *
+        -:   50: * This product includes cryptographic software written by Eric Young
+        -:   51: * (eay@cryptsoft.com).  This product includes software written by Tim
+        -:   52: * Hudson (tjh@cryptsoft.com).
+        -:   53: *
+        -:   54: */
+        -:   55:
+        -:   56:#include "eng_int.h"
+        -:   57:
+        -:   58:/* When querying a ENGINE-specific control command's 'description', this string
+        -:   59: * is used if the ENGINE_CMD_DEFN has cmd_desc set to NULL. */
+        -:   60:static const char *int_no_description = "";
+        -:   61:
+        -:   62:/* These internal functions handle 'CMD'-related control commands when the
+        -:   63: * ENGINE in question has asked us to take care of it (ie. the ENGINE did not
+        -:   64: * set the ENGINE_FLAGS_MANUAL_CMD_CTRL flag. */
+        -:   65:
+        -:   66:static int int_ctrl_cmd_is_null(const ENGINE_CMD_DEFN *defn)
+        -:   67:	{
+    #####:   68:	if((defn->cmd_num == 0) || (defn->cmd_name == NULL))
+        -:   69:		return 1;
+        -:   70:	return 0;
+        -:   71:	}
+        -:   72:
+    #####:   73:static int int_ctrl_cmd_by_name(const ENGINE_CMD_DEFN *defn, const char *s)
+        -:   74:	{
+        -:   75:	int idx = 0;
+    #####:   76:	while(!int_ctrl_cmd_is_null(defn) && (strcmp(defn->cmd_name, s) != 0))
+        -:   77:		{
+    #####:   78:		idx++;
+    #####:   79:		defn++;
+        -:   80:		}
+    #####:   81:	if(int_ctrl_cmd_is_null(defn))
+        -:   82:		/* The given name wasn't found */
+        -:   83:		return -1;
+    #####:   84:	return idx;
+        -:   85:	}
+        -:   86:
+    #####:   87:static int int_ctrl_cmd_by_num(const ENGINE_CMD_DEFN *defn, unsigned int num)
+        -:   88:	{
+        -:   89:	int idx = 0;
+        -:   90:	/* NB: It is stipulated that 'cmd_defn' lists are ordered by cmd_num. So
+        -:   91:	 * our searches don't need to take any longer than necessary. */
+    #####:   92:	while(!int_ctrl_cmd_is_null(defn) && (defn->cmd_num < num))
+        -:   93:		{
+    #####:   94:		idx++;
+    #####:   95:		defn++;
+        -:   96:		}
+    #####:   97:	if(defn->cmd_num == num)
+        -:   98:		return idx;
+        -:   99:	/* The given cmd_num wasn't found */
+        -:  100:	return -1;
+        -:  101:	}
+        -:  102:
+    #####:  103:static int int_ctrl_helper(ENGINE *e, int cmd, long i, void *p,
+        -:  104:			   void (*f)(void))
+        -:  105:	{
+        -:  106:	int idx;
+        -:  107:	char *s = (char *)p;
+        -:  108:	/* Take care of the easy one first (eg. it requires no searches) */
+    #####:  109:	if(cmd == ENGINE_CTRL_GET_FIRST_CMD_TYPE)
+        -:  110:		{
+    #####:  111:		if((e->cmd_defns == NULL) || int_ctrl_cmd_is_null(e->cmd_defns))
+        -:  112:			return 0;
+    #####:  113:		return e->cmd_defns->cmd_num;
+        -:  114:		}
+        -:  115:	/* One or two commands require that "p" be a valid string buffer */
+    #####:  116:	if((cmd == ENGINE_CTRL_GET_CMD_FROM_NAME) ||
+    #####:  117:			(cmd == ENGINE_CTRL_GET_NAME_FROM_CMD) ||
+        -:  118:			(cmd == ENGINE_CTRL_GET_DESC_FROM_CMD))
+        -:  119:		{
+    #####:  120:		if(s == NULL)
+        -:  121:			{
+    #####:  122:			ENGINEerr(ENGINE_F_INT_CTRL_HELPER,
+        -:  123:				ERR_R_PASSED_NULL_PARAMETER);
+        -:  124:			return -1;
+        -:  125:			}
+        -:  126:		}
+        -:  127:	/* Now handle cmd_name -> cmd_num conversion */
+    #####:  128:	if(cmd == ENGINE_CTRL_GET_CMD_FROM_NAME)
+        -:  129:		{
+    #####:  130:		if((e->cmd_defns == NULL) || ((idx = int_ctrl_cmd_by_name(
+        -:  131:						e->cmd_defns, s)) < 0))
+        -:  132:			{
+    #####:  133:			ENGINEerr(ENGINE_F_INT_CTRL_HELPER,
+        -:  134:				ENGINE_R_INVALID_CMD_NAME);
+        -:  135:			return -1;
+        -:  136:			}
+    #####:  137:		return e->cmd_defns[idx].cmd_num;
+        -:  138:		}
+        -:  139:	/* For the rest of the commands, the 'long' argument must specify a
+        -:  140:	 * valie command number - so we need to conduct a search. */
+    #####:  141:	if((e->cmd_defns == NULL) || ((idx = int_ctrl_cmd_by_num(e->cmd_defns,
+        -:  142:					(unsigned int)i)) < 0))
+        -:  143:		{
+    #####:  144:		ENGINEerr(ENGINE_F_INT_CTRL_HELPER,
+        -:  145:			ENGINE_R_INVALID_CMD_NUMBER);
+        -:  146:		return -1;
+        -:  147:		}
+        -:  148:	/* Now the logic splits depending on command type */
+    #####:  149:	switch(cmd)
+        -:  150:		{
+        -:  151:	case ENGINE_CTRL_GET_NEXT_CMD_TYPE:
+    #####:  152:		idx++;
+    #####:  153:		if(int_ctrl_cmd_is_null(e->cmd_defns + idx))
+        -:  154:			/* end-of-list */
+        -:  155:			return 0;
+        -:  156:		else
+    #####:  157:			return e->cmd_defns[idx].cmd_num;
+        -:  158:	case ENGINE_CTRL_GET_NAME_LEN_FROM_CMD:
+    #####:  159:		return strlen(e->cmd_defns[idx].cmd_name);
+        -:  160:	case ENGINE_CTRL_GET_NAME_FROM_CMD:
+    #####:  161:		return BIO_snprintf(s,strlen(e->cmd_defns[idx].cmd_name) + 1,
+        -:  162:				    "%s", e->cmd_defns[idx].cmd_name);
+        -:  163:	case ENGINE_CTRL_GET_DESC_LEN_FROM_CMD:
+    #####:  164:		if(e->cmd_defns[idx].cmd_desc)
+    #####:  165:			return strlen(e->cmd_defns[idx].cmd_desc);
+    #####:  166:		return strlen(int_no_description);
+        -:  167:	case ENGINE_CTRL_GET_DESC_FROM_CMD:
+    #####:  168:		if(e->cmd_defns[idx].cmd_desc)
+    #####:  169:			return BIO_snprintf(s,
+    #####:  170:					    strlen(e->cmd_defns[idx].cmd_desc) + 1,
+        -:  171:					    "%s", e->cmd_defns[idx].cmd_desc);
+    #####:  172:		return BIO_snprintf(s, strlen(int_no_description) + 1,"%s",
+        -:  173:				    int_no_description);
+        -:  174:	case ENGINE_CTRL_GET_CMD_FLAGS:
+    #####:  175:		return e->cmd_defns[idx].cmd_flags;
+        -:  176:		}
+        -:  177:	/* Shouldn't really be here ... */
+    #####:  178:	ENGINEerr(ENGINE_F_INT_CTRL_HELPER,ENGINE_R_INTERNAL_LIST_ERROR);
+        -:  179:	return -1;
+        -:  180:	}
+        -:  181:
+    #####:  182:int ENGINE_ctrl(ENGINE *e, int cmd, long i, void *p, void (*f)(void))
+        -:  183:	{
+        -:  184:	int ctrl_exists, ref_exists;
+    #####:  185:	if(e == NULL)
+        -:  186:		{
+    #####:  187:		ENGINEerr(ENGINE_F_ENGINE_CTRL,ERR_R_PASSED_NULL_PARAMETER);
+    #####:  188:		return 0;
+        -:  189:		}
+    #####:  190:	CRYPTO_w_lock(CRYPTO_LOCK_ENGINE);
+    #####:  191:	ref_exists = ((e->struct_ref > 0) ? 1 : 0);
+    #####:  192:	CRYPTO_w_unlock(CRYPTO_LOCK_ENGINE);
+    #####:  193:	ctrl_exists = ((e->ctrl == NULL) ? 0 : 1);
+    #####:  194:	if(!ref_exists)
+        -:  195:		{
+    #####:  196:		ENGINEerr(ENGINE_F_ENGINE_CTRL,ENGINE_R_NO_REFERENCE);
+    #####:  197:		return 0;
+        -:  198:		}
+        -:  199:	/* Intercept any "root-level" commands before trying to hand them on to
+        -:  200:	 * ctrl() handlers. */
+    #####:  201:	switch(cmd)
+        -:  202:		{
+        -:  203:	case ENGINE_CTRL_HAS_CTRL_FUNCTION:
+        -:  204:		return ctrl_exists;
+        -:  205:	case ENGINE_CTRL_GET_FIRST_CMD_TYPE:
+        -:  206:	case ENGINE_CTRL_GET_NEXT_CMD_TYPE:
+        -:  207:	case ENGINE_CTRL_GET_CMD_FROM_NAME:
+        -:  208:	case ENGINE_CTRL_GET_NAME_LEN_FROM_CMD:
+        -:  209:	case ENGINE_CTRL_GET_NAME_FROM_CMD:
+        -:  210:	case ENGINE_CTRL_GET_DESC_LEN_FROM_CMD:
+        -:  211:	case ENGINE_CTRL_GET_DESC_FROM_CMD:
+        -:  212:	case ENGINE_CTRL_GET_CMD_FLAGS:
+    #####:  213:		if(ctrl_exists && !(e->flags & ENGINE_FLAGS_MANUAL_CMD_CTRL))
+    #####:  214:			return int_ctrl_helper(e,cmd,i,p,f);
+    #####:  215:		if(!ctrl_exists)
+        -:  216:			{
+    #####:  217:			ENGINEerr(ENGINE_F_ENGINE_CTRL,ENGINE_R_NO_CONTROL_FUNCTION);
+        -:  218:			/* For these cmd-related functions, failure is indicated
+        -:  219:			 * by a -1 return value (because 0 is used as a valid
+        -:  220:			 * return in some places). */
+    #####:  221:			return -1;
+        -:  222:			}
+        -:  223:	default:
+        -:  224:		break;
+        -:  225:		}
+        -:  226:	/* Anything else requires a ctrl() handler to exist. */
+    #####:  227:	if(!ctrl_exists)
+        -:  228:		{
+    #####:  229:		ENGINEerr(ENGINE_F_ENGINE_CTRL,ENGINE_R_NO_CONTROL_FUNCTION);
+    #####:  230:		return 0;
+        -:  231:		}
+    #####:  232:	return e->ctrl(e, cmd, i, p, f);
+        -:  233:	}
+        -:  234:
+    #####:  235:int ENGINE_cmd_is_executable(ENGINE *e, int cmd)
+        -:  236:	{
+        -:  237:	int flags;
+    #####:  238:	if((flags = ENGINE_ctrl(e, ENGINE_CTRL_GET_CMD_FLAGS, cmd, NULL, NULL)) < 0)
+        -:  239:		{
+    #####:  240:		ENGINEerr(ENGINE_F_ENGINE_CMD_IS_EXECUTABLE,
+        -:  241:			ENGINE_R_INVALID_CMD_NUMBER);
+    #####:  242:		return 0;
+        -:  243:		}
+    #####:  244:	if(!(flags & ENGINE_CMD_FLAG_NO_INPUT) &&
+    #####:  245:			!(flags & ENGINE_CMD_FLAG_NUMERIC) &&
+        -:  246:			!(flags & ENGINE_CMD_FLAG_STRING))
+        -:  247:		return 0;
+    #####:  248:	return 1;
+        -:  249:	}
+        -:  250:
+    #####:  251:int ENGINE_ctrl_cmd(ENGINE *e, const char *cmd_name,
+        -:  252:        long i, void *p, void (*f)(void), int cmd_optional)
+        -:  253:        {
+        -:  254:	int num;
+        -:  255:
+    #####:  256:	if((e == NULL) || (cmd_name == NULL))
+        -:  257:		{
+    #####:  258:		ENGINEerr(ENGINE_F_ENGINE_CTRL_CMD,
+        -:  259:			ERR_R_PASSED_NULL_PARAMETER);
+    #####:  260:		return 0;
+        -:  261:		}
+    #####:  262:	if((e->ctrl == NULL) || ((num = ENGINE_ctrl(e,
+        -:  263:					ENGINE_CTRL_GET_CMD_FROM_NAME,
+        -:  264:					0, (void *)cmd_name, NULL)) <= 0))
+        -:  265:		{
+        -:  266:		/* If the command didn't *have* to be supported, we fake
+        -:  267:		 * success. This allows certain settings to be specified for
+        -:  268:		 * multiple ENGINEs and only require a change of ENGINE id
+        -:  269:		 * (without having to selectively apply settings). Eg. changing
+        -:  270:		 * from a hardware device back to the regular software ENGINE
+        -:  271:		 * without editing the config file, etc. */
+    #####:  272:		if(cmd_optional)
+        -:  273:			{
+    #####:  274:			ERR_clear_error();
+    #####:  275:			return 1;
+        -:  276:			}
+    #####:  277:		ENGINEerr(ENGINE_F_ENGINE_CTRL_CMD,
+        -:  278:			ENGINE_R_INVALID_CMD_NAME);
+    #####:  279:		return 0;
+        -:  280:		}
+        -:  281:	/* Force the result of the control command to 0 or 1, for the reasons
+        -:  282:	 * mentioned before. */
+    #####:  283:        if (ENGINE_ctrl(e, num, i, p, f) > 0)
+        -:  284:                return 1;
+    #####:  285:        return 0;
+        -:  286:        }
+        -:  287:
+    #####:  288:int ENGINE_ctrl_cmd_string(ENGINE *e, const char *cmd_name, const char *arg,
+        -:  289:				int cmd_optional)
+        -:  290:	{
+        -:  291:	int num, flags;
+        -:  292:	long l;
+        -:  293:	char *ptr;
+    #####:  294:	if((e == NULL) || (cmd_name == NULL))
+        -:  295:		{
+    #####:  296:		ENGINEerr(ENGINE_F_ENGINE_CTRL_CMD_STRING,
+        -:  297:			ERR_R_PASSED_NULL_PARAMETER);
+    #####:  298:		return 0;
+        -:  299:		}
+    #####:  300:	if((e->ctrl == NULL) || ((num = ENGINE_ctrl(e,
+        -:  301:					ENGINE_CTRL_GET_CMD_FROM_NAME,
+        -:  302:					0, (void *)cmd_name, NULL)) <= 0))
+        -:  303:		{
+        -:  304:		/* If the command didn't *have* to be supported, we fake
+        -:  305:		 * success. This allows certain settings to be specified for
+        -:  306:		 * multiple ENGINEs and only require a change of ENGINE id
+        -:  307:		 * (without having to selectively apply settings). Eg. changing
+        -:  308:		 * from a hardware device back to the regular software ENGINE
+        -:  309:		 * without editing the config file, etc. */
+    #####:  310:		if(cmd_optional)
+        -:  311:			{
+    #####:  312:			ERR_clear_error();
+    #####:  313:			return 1;
+        -:  314:			}
+    #####:  315:		ENGINEerr(ENGINE_F_ENGINE_CTRL_CMD_STRING,
+        -:  316:			ENGINE_R_INVALID_CMD_NAME);
+    #####:  317:		return 0;
+        -:  318:		}
+    #####:  319:	if(!ENGINE_cmd_is_executable(e, num))
+        -:  320:		{
+    #####:  321:		ENGINEerr(ENGINE_F_ENGINE_CTRL_CMD_STRING,
+        -:  322:			ENGINE_R_CMD_NOT_EXECUTABLE);
+    #####:  323:		return 0;
+        -:  324:		}
+    #####:  325:	if((flags = ENGINE_ctrl(e, ENGINE_CTRL_GET_CMD_FLAGS, num, NULL, NULL)) < 0)
+        -:  326:		{
+        -:  327:		/* Shouldn't happen, given that ENGINE_cmd_is_executable()
+        -:  328:		 * returned success. */
+    #####:  329:		ENGINEerr(ENGINE_F_ENGINE_CTRL_CMD_STRING,
+        -:  330:			ENGINE_R_INTERNAL_LIST_ERROR);
+    #####:  331:		return 0;
+        -:  332:		}
+        -:  333:	/* If the command takes no input, there must be no input. And vice
+        -:  334:	 * versa. */
+    #####:  335:	if(flags & ENGINE_CMD_FLAG_NO_INPUT)
+        -:  336:		{
+    #####:  337:		if(arg != NULL)
+        -:  338:			{
+    #####:  339:			ENGINEerr(ENGINE_F_ENGINE_CTRL_CMD_STRING,
+        -:  340:				ENGINE_R_COMMAND_TAKES_NO_INPUT);
+    #####:  341:			return 0;
+        -:  342:			}
+        -:  343:		/* We deliberately force the result of ENGINE_ctrl() to 0 or 1
+        -:  344:		 * rather than returning it as "return data". This is to ensure
+        -:  345:		 * usage of these commands is consistent across applications and
+        -:  346:		 * that certain applications don't understand it one way, and
+        -:  347:		 * others another. */
+    #####:  348:		if(ENGINE_ctrl(e, num, 0, (void *)arg, NULL) > 0)
+        -:  349:			return 1;
+    #####:  350:		return 0;
+        -:  351:		}
+        -:  352:	/* So, we require input */
+    #####:  353:	if(arg == NULL)
+        -:  354:		{
+    #####:  355:		ENGINEerr(ENGINE_F_ENGINE_CTRL_CMD_STRING,
+        -:  356:			ENGINE_R_COMMAND_TAKES_INPUT);
+    #####:  357:		return 0;
+        -:  358:		}
+        -:  359:	/* If it takes string input, that's easy */
+    #####:  360:	if(flags & ENGINE_CMD_FLAG_STRING)
+        -:  361:		{
+        -:  362:		/* Same explanation as above */
+    #####:  363:		if(ENGINE_ctrl(e, num, 0, (void *)arg, NULL) > 0)
+        -:  364:			return 1;
+    #####:  365:		return 0;
+        -:  366:		}
+        -:  367:	/* If it doesn't take numeric either, then it is unsupported for use in
+        -:  368:	 * a config-setting situation, which is what this function is for. This
+        -:  369:	 * should never happen though, because ENGINE_cmd_is_executable() was
+        -:  370:	 * used. */
+    #####:  371:	if(!(flags & ENGINE_CMD_FLAG_NUMERIC))
+        -:  372:		{
+    #####:  373:		ENGINEerr(ENGINE_F_ENGINE_CTRL_CMD_STRING,
+        -:  374:			ENGINE_R_INTERNAL_LIST_ERROR);
+    #####:  375:		return 0;
+        -:  376:		}
+    #####:  377:	l = strtol(arg, &ptr, 10);
+    #####:  378:	if((arg == ptr) || (*ptr != '\0'))
+        -:  379:		{
+    #####:  380:		ENGINEerr(ENGINE_F_ENGINE_CTRL_CMD_STRING,
+        -:  381:			ENGINE_R_ARGUMENT_IS_NOT_A_NUMBER);
+    #####:  382:		return 0;
+        -:  383:		}
+        -:  384:	/* Force the result of the control command to 0 or 1, for the reasons
+        -:  385:	 * mentioned before. */
+    #####:  386:	if(ENGINE_ctrl(e, num, l, NULL, NULL) > 0)
+        -:  387:		return 1;
+    #####:  388:	return 0;
+        -:  389:	}

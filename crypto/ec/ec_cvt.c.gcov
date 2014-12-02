@@ -1,0 +1,175 @@
+        -:    0:Source:ec_cvt.c
+        -:    0:Graph:ec_cvt.gcno
+        -:    0:Data:ec_cvt.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* crypto/ec/ec_cvt.c */
+        -:    2:/*
+        -:    3: * Originally written by Bodo Moeller for the OpenSSL project.
+        -:    4: */
+        -:    5:/* ====================================================================
+        -:    6: * Copyright (c) 1998-2002 The OpenSSL Project.  All rights reserved.
+        -:    7: *
+        -:    8: * Redistribution and use in source and binary forms, with or without
+        -:    9: * modification, are permitted provided that the following conditions
+        -:   10: * are met:
+        -:   11: *
+        -:   12: * 1. Redistributions of source code must retain the above copyright
+        -:   13: *    notice, this list of conditions and the following disclaimer. 
+        -:   14: *
+        -:   15: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   16: *    notice, this list of conditions and the following disclaimer in
+        -:   17: *    the documentation and/or other materials provided with the
+        -:   18: *    distribution.
+        -:   19: *
+        -:   20: * 3. All advertising materials mentioning features or use of this
+        -:   21: *    software must display the following acknowledgment:
+        -:   22: *    "This product includes software developed by the OpenSSL Project
+        -:   23: *    for use in the OpenSSL Toolkit. (http://www.openssl.org/)"
+        -:   24: *
+        -:   25: * 4. The names "OpenSSL Toolkit" and "OpenSSL Project" must not be used to
+        -:   26: *    endorse or promote products derived from this software without
+        -:   27: *    prior written permission. For written permission, please contact
+        -:   28: *    openssl-core@openssl.org.
+        -:   29: *
+        -:   30: * 5. Products derived from this software may not be called "OpenSSL"
+        -:   31: *    nor may "OpenSSL" appear in their names without prior written
+        -:   32: *    permission of the OpenSSL Project.
+        -:   33: *
+        -:   34: * 6. Redistributions of any form whatsoever must retain the following
+        -:   35: *    acknowledgment:
+        -:   36: *    "This product includes software developed by the OpenSSL Project
+        -:   37: *    for use in the OpenSSL Toolkit (http://www.openssl.org/)"
+        -:   38: *
+        -:   39: * THIS SOFTWARE IS PROVIDED BY THE OpenSSL PROJECT ``AS IS'' AND ANY
+        -:   40: * EXPRESSED OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   41: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+        -:   42: * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE OpenSSL PROJECT OR
+        -:   43: * ITS CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+        -:   44: * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+        -:   45: * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+        -:   46: * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   47: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+        -:   48: * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+        -:   49: * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+        -:   50: * OF THE POSSIBILITY OF SUCH DAMAGE.
+        -:   51: * ====================================================================
+        -:   52: *
+        -:   53: * This product includes cryptographic software written by Eric Young
+        -:   54: * (eay@cryptsoft.com).  This product includes software written by Tim
+        -:   55: * Hudson (tjh@cryptsoft.com).
+        -:   56: *
+        -:   57: */
+        -:   58:/* ====================================================================
+        -:   59: * Copyright 2002 Sun Microsystems, Inc. ALL RIGHTS RESERVED.
+        -:   60: *
+        -:   61: * Portions of the attached software ("Contribution") are developed by 
+        -:   62: * SUN MICROSYSTEMS, INC., and are contributed to the OpenSSL project.
+        -:   63: *
+        -:   64: * The Contribution is licensed pursuant to the OpenSSL open source
+        -:   65: * license provided above.
+        -:   66: *
+        -:   67: * The elliptic curve binary polynomial software is originally written by
+        -:   68: * Sheueling Chang Shantz and Douglas Stebila of Sun Microsystems Laboratories.
+        -:   69: *
+        -:   70: */
+        -:   71:
+        -:   72:#include <openssl/err.h>
+        -:   73:#include "ec_lcl.h"
+        -:   74:
+        -:   75:
+    #####:   76:EC_GROUP *EC_GROUP_new_curve_GFp(const BIGNUM *p, const BIGNUM *a, const BIGNUM *b, BN_CTX *ctx)
+        -:   77:	{
+        -:   78:	const EC_METHOD *meth;
+        -:   79:	EC_GROUP *ret;
+        -:   80:
+        -:   81:#if defined(OPENSSL_BN_ASM_MONT)
+        -:   82:	/*
+        -:   83:	 * This might appear controversial, but the fact is that generic
+        -:   84:	 * prime method was observed to deliver better performance even
+        -:   85:	 * for NIST primes on a range of platforms, e.g.: 60%-15%
+        -:   86:	 * improvement on IA-64, ~25% on ARM, 30%-90% on P4, 20%-25%
+        -:   87:	 * in 32-bit build and 35%--12% in 64-bit build on Core2...
+        -:   88:	 * Coefficients are relative to optimized bn_nist.c for most
+        -:   89:	 * intensive ECDSA verify and ECDH operations for 192- and 521-
+        -:   90:	 * bit keys respectively. Choice of these boundary values is
+        -:   91:	 * arguable, because the dependency of improvement coefficient
+        -:   92:	 * from key length is not a "monotone" curve. For example while
+        -:   93:	 * 571-bit result is 23% on ARM, 384-bit one is -1%. But it's
+        -:   94:	 * generally faster, sometimes "respectfully" faster, sometimes
+        -:   95:	 * "tolerably" slower... What effectively happens is that loop
+        -:   96:	 * with bn_mul_add_words is put against bn_mul_mont, and the
+        -:   97:	 * latter "wins" on short vectors. Correct solution should be
+        -:   98:	 * implementing dedicated NxN multiplication subroutines for
+        -:   99:	 * small N. But till it materializes, let's stick to generic
+        -:  100:	 * prime method...
+        -:  101:	 *						<appro>
+        -:  102:	 */
+    #####:  103:	meth = EC_GFp_mont_method();
+        -:  104:#else
+        -:  105:	meth = EC_GFp_nist_method();
+        -:  106:#endif
+        -:  107:	
+    #####:  108:	ret = EC_GROUP_new(meth);
+    #####:  109:	if (ret == NULL)
+        -:  110:		return NULL;
+        -:  111:
+    #####:  112:	if (!EC_GROUP_set_curve_GFp(ret, p, a, b, ctx))
+        -:  113:		{
+        -:  114:		unsigned long err;
+        -:  115:		  
+    #####:  116:		err = ERR_peek_last_error();
+        -:  117:
+    #####:  118:		if (!(ERR_GET_LIB(err) == ERR_LIB_EC &&
+    #####:  119:			((ERR_GET_REASON(err) == EC_R_NOT_A_NIST_PRIME) ||
+        -:  120:			 (ERR_GET_REASON(err) == EC_R_NOT_A_SUPPORTED_NIST_PRIME))))
+        -:  121:			{
+        -:  122:			/* real error */
+        -:  123:			
+    #####:  124:			EC_GROUP_clear_free(ret);
+    #####:  125:			return NULL;
+        -:  126:			}
+        -:  127:			
+        -:  128:		
+        -:  129:		/* not an actual error, we just cannot use EC_GFp_nist_method */
+        -:  130:
+    #####:  131:		ERR_clear_error();
+        -:  132:
+    #####:  133:		EC_GROUP_clear_free(ret);
+    #####:  134:		meth = EC_GFp_mont_method();
+        -:  135:
+    #####:  136:		ret = EC_GROUP_new(meth);
+    #####:  137:		if (ret == NULL)
+        -:  138:			return NULL;
+        -:  139:
+    #####:  140:		if (!EC_GROUP_set_curve_GFp(ret, p, a, b, ctx))
+        -:  141:			{
+    #####:  142:			EC_GROUP_clear_free(ret);
+    #####:  143:			return NULL;
+        -:  144:			}
+        -:  145:		}
+        -:  146:
+    #####:  147:	return ret;
+        -:  148:	}
+        -:  149:
+        -:  150:#ifndef OPENSSL_NO_EC2M
+    #####:  151:EC_GROUP *EC_GROUP_new_curve_GF2m(const BIGNUM *p, const BIGNUM *a, const BIGNUM *b, BN_CTX *ctx)
+        -:  152:	{
+        -:  153:	const EC_METHOD *meth;
+        -:  154:	EC_GROUP *ret;
+        -:  155:	
+    #####:  156:	meth = EC_GF2m_simple_method();
+        -:  157:	
+    #####:  158:	ret = EC_GROUP_new(meth);
+    #####:  159:	if (ret == NULL)
+        -:  160:		return NULL;
+        -:  161:
+    #####:  162:	if (!EC_GROUP_set_curve_GF2m(ret, p, a, b, ctx))
+        -:  163:		{
+    #####:  164:		EC_GROUP_clear_free(ret);
+    #####:  165:		return NULL;
+        -:  166:		}
+        -:  167:
+        -:  168:	return ret;
+        -:  169:	}
+        -:  170:#endif

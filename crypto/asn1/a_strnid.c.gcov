@@ -1,0 +1,295 @@
+        -:    0:Source:a_strnid.c
+        -:    0:Graph:a_strnid.gcno
+        -:    0:Data:a_strnid.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* a_strnid.c */
+        -:    2:/* Written by Dr Stephen N Henson (steve@openssl.org) for the OpenSSL
+        -:    3: * project 1999.
+        -:    4: */
+        -:    5:/* ====================================================================
+        -:    6: * Copyright (c) 1999 The OpenSSL Project.  All rights reserved.
+        -:    7: *
+        -:    8: * Redistribution and use in source and binary forms, with or without
+        -:    9: * modification, are permitted provided that the following conditions
+        -:   10: * are met:
+        -:   11: *
+        -:   12: * 1. Redistributions of source code must retain the above copyright
+        -:   13: *    notice, this list of conditions and the following disclaimer. 
+        -:   14: *
+        -:   15: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   16: *    notice, this list of conditions and the following disclaimer in
+        -:   17: *    the documentation and/or other materials provided with the
+        -:   18: *    distribution.
+        -:   19: *
+        -:   20: * 3. All advertising materials mentioning features or use of this
+        -:   21: *    software must display the following acknowledgment:
+        -:   22: *    "This product includes software developed by the OpenSSL Project
+        -:   23: *    for use in the OpenSSL Toolkit. (http://www.OpenSSL.org/)"
+        -:   24: *
+        -:   25: * 4. The names "OpenSSL Toolkit" and "OpenSSL Project" must not be used to
+        -:   26: *    endorse or promote products derived from this software without
+        -:   27: *    prior written permission. For written permission, please contact
+        -:   28: *    licensing@OpenSSL.org.
+        -:   29: *
+        -:   30: * 5. Products derived from this software may not be called "OpenSSL"
+        -:   31: *    nor may "OpenSSL" appear in their names without prior written
+        -:   32: *    permission of the OpenSSL Project.
+        -:   33: *
+        -:   34: * 6. Redistributions of any form whatsoever must retain the following
+        -:   35: *    acknowledgment:
+        -:   36: *    "This product includes software developed by the OpenSSL Project
+        -:   37: *    for use in the OpenSSL Toolkit (http://www.OpenSSL.org/)"
+        -:   38: *
+        -:   39: * THIS SOFTWARE IS PROVIDED BY THE OpenSSL PROJECT ``AS IS'' AND ANY
+        -:   40: * EXPRESSED OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   41: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+        -:   42: * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE OpenSSL PROJECT OR
+        -:   43: * ITS CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+        -:   44: * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+        -:   45: * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+        -:   46: * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   47: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+        -:   48: * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+        -:   49: * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+        -:   50: * OF THE POSSIBILITY OF SUCH DAMAGE.
+        -:   51: * ====================================================================
+        -:   52: *
+        -:   53: * This product includes cryptographic software written by Eric Young
+        -:   54: * (eay@cryptsoft.com).  This product includes software written by Tim
+        -:   55: * Hudson (tjh@cryptsoft.com).
+        -:   56: *
+        -:   57: */
+        -:   58:
+        -:   59:#include <stdio.h>
+        -:   60:#include <ctype.h>
+        -:   61:#include "cryptlib.h"
+        -:   62:#include <openssl/asn1.h>
+        -:   63:#include <openssl/objects.h>
+        -:   64:
+        -:   65:
+        -:   66:static STACK_OF(ASN1_STRING_TABLE) *stable = NULL;
+        -:   67:static void st_free(ASN1_STRING_TABLE *tbl);
+        -:   68:static int sk_table_cmp(const ASN1_STRING_TABLE * const *a,
+        -:   69:			const ASN1_STRING_TABLE * const *b);
+        -:   70:
+        -:   71:
+        -:   72:/* This is the global mask for the mbstring functions: this is use to
+        -:   73: * mask out certain types (such as BMPString and UTF8String) because
+        -:   74: * certain software (e.g. Netscape) has problems with them.
+        -:   75: */
+        -:   76:
+        -:   77:static unsigned long global_mask = 0xFFFFFFFFL;
+        -:   78:
+    #####:   79:void ASN1_STRING_set_default_mask(unsigned long mask)
+        -:   80:{
+    #####:   81:	global_mask = mask;
+    #####:   82:}
+        -:   83:
+    #####:   84:unsigned long ASN1_STRING_get_default_mask(void)
+        -:   85:{
+    #####:   86:	return global_mask;
+        -:   87:}
+        -:   88:
+        -:   89:/* This function sets the default to various "flavours" of configuration.
+        -:   90: * based on an ASCII string. Currently this is:
+        -:   91: * MASK:XXXX : a numerical mask value.
+        -:   92: * nobmp : Don't use BMPStrings (just Printable, T61).
+        -:   93: * pkix : PKIX recommendation in RFC2459.
+        -:   94: * utf8only : only use UTF8Strings (RFC2459 recommendation for 2004).
+        -:   95: * default:   the default value, Printable, T61, BMP.
+        -:   96: */
+        -:   97:
+    #####:   98:int ASN1_STRING_set_default_mask_asc(const char *p)
+        -:   99:{
+        -:  100:	unsigned long mask;
+        -:  101:	char *end;
+    #####:  102:	if(!strncmp(p, "MASK:", 5)) {
+    #####:  103:		if(!p[5]) return 0;
+    #####:  104:		mask = strtoul(p + 5, &end, 0);
+    #####:  105:		if(*end) return 0;
+    #####:  106:	} else if(!strcmp(p, "nombstr"))
+        -:  107:			 mask = ~((unsigned long)(B_ASN1_BMPSTRING|B_ASN1_UTF8STRING));
+    #####:  108:	else if(!strcmp(p, "pkix"))
+        -:  109:			mask = ~((unsigned long)B_ASN1_T61STRING);
+    #####:  110:	else if(!strcmp(p, "utf8only")) mask = B_ASN1_UTF8STRING;
+    #####:  111:	else if(!strcmp(p, "default"))
+        -:  112:	    mask = 0xFFFFFFFFL;
+        -:  113:	else return 0;
+        -:  114:	ASN1_STRING_set_default_mask(mask);
+    #####:  115:	return 1;
+        -:  116:}
+        -:  117:
+        -:  118:/* The following function generates an ASN1_STRING based on limits in a table.
+        -:  119: * Frequently the types and length of an ASN1_STRING are restricted by a 
+        -:  120: * corresponding OID. For example certificates and certificate requests.
+        -:  121: */
+        -:  122:
+    #####:  123:ASN1_STRING *ASN1_STRING_set_by_NID(ASN1_STRING **out, const unsigned char *in,
+        -:  124:					int inlen, int inform, int nid)
+        -:  125:{
+        -:  126:	ASN1_STRING_TABLE *tbl;
+    #####:  127:	ASN1_STRING *str = NULL;
+        -:  128:	unsigned long mask;
+        -:  129:	int ret;
+    #####:  130:	if(!out) out = &str;
+    #####:  131:	tbl = ASN1_STRING_TABLE_get(nid);
+    #####:  132:	if(tbl) {
+    #####:  133:		mask = tbl->mask;
+    #####:  134:		if(!(tbl->flags & STABLE_NO_MASK)) mask &= global_mask;
+    #####:  135:		ret = ASN1_mbstring_ncopy(out, in, inlen, inform, mask,
+        -:  136:					tbl->minsize, tbl->maxsize);
+    #####:  137:	} else ret = ASN1_mbstring_copy(out, in, inlen, inform, DIRSTRING_TYPE & global_mask);
+    #####:  138:	if(ret <= 0) return NULL;
+    #####:  139:	return *out;
+        -:  140:}
+        -:  141:
+        -:  142:/* Now the tables and helper functions for the string table:
+        -:  143: */
+        -:  144:
+        -:  145:/* size limits: this stuff is taken straight from RFC3280 */
+        -:  146:
+        -:  147:#define ub_name				32768
+        -:  148:#define ub_common_name			64
+        -:  149:#define ub_locality_name		128
+        -:  150:#define ub_state_name			128
+        -:  151:#define ub_organization_name		64
+        -:  152:#define ub_organization_unit_name	64
+        -:  153:#define ub_title			64
+        -:  154:#define ub_email_address		128
+        -:  155:#define ub_serial_number		64
+        -:  156:
+        -:  157:
+        -:  158:/* This table must be kept in NID order */
+        -:  159:
+        -:  160:static const ASN1_STRING_TABLE tbl_standard[] = {
+        -:  161:{NID_commonName,		1, ub_common_name, DIRSTRING_TYPE, 0},
+        -:  162:{NID_countryName,		2, 2, B_ASN1_PRINTABLESTRING, STABLE_NO_MASK},
+        -:  163:{NID_localityName,		1, ub_locality_name, DIRSTRING_TYPE, 0},
+        -:  164:{NID_stateOrProvinceName,	1, ub_state_name, DIRSTRING_TYPE, 0},
+        -:  165:{NID_organizationName,		1, ub_organization_name, DIRSTRING_TYPE, 0},
+        -:  166:{NID_organizationalUnitName,	1, ub_organization_unit_name, DIRSTRING_TYPE, 0},
+        -:  167:{NID_pkcs9_emailAddress,	1, ub_email_address, B_ASN1_IA5STRING, STABLE_NO_MASK},
+        -:  168:{NID_pkcs9_unstructuredName,	1, -1, PKCS9STRING_TYPE, 0},
+        -:  169:{NID_pkcs9_challengePassword,	1, -1, PKCS9STRING_TYPE, 0},
+        -:  170:{NID_pkcs9_unstructuredAddress,	1, -1, DIRSTRING_TYPE, 0},
+        -:  171:{NID_givenName,			1, ub_name, DIRSTRING_TYPE, 0},
+        -:  172:{NID_surname,			1, ub_name, DIRSTRING_TYPE, 0},
+        -:  173:{NID_initials,			1, ub_name, DIRSTRING_TYPE, 0},
+        -:  174:{NID_serialNumber,		1, ub_serial_number, B_ASN1_PRINTABLESTRING, STABLE_NO_MASK},
+        -:  175:{NID_friendlyName,		-1, -1, B_ASN1_BMPSTRING, STABLE_NO_MASK},
+        -:  176:{NID_name,			1, ub_name, DIRSTRING_TYPE, 0},
+        -:  177:{NID_dnQualifier,		-1, -1, B_ASN1_PRINTABLESTRING, STABLE_NO_MASK},
+        -:  178:{NID_domainComponent,		1, -1, B_ASN1_IA5STRING, STABLE_NO_MASK},
+        -:  179:{NID_ms_csp_name,		-1, -1, B_ASN1_BMPSTRING, STABLE_NO_MASK}
+        -:  180:};
+        -:  181:
+    #####:  182:static int sk_table_cmp(const ASN1_STRING_TABLE * const *a,
+        -:  183:			const ASN1_STRING_TABLE * const *b)
+        -:  184:{
+    #####:  185:	return (*a)->nid - (*b)->nid;
+        -:  186:}
+        -:  187:
+        -:  188:DECLARE_OBJ_BSEARCH_CMP_FN(ASN1_STRING_TABLE, ASN1_STRING_TABLE, table);
+        -:  189:
+        -:  190:static int table_cmp(const ASN1_STRING_TABLE *a, const ASN1_STRING_TABLE *b)
+        -:  191:{
+    #####:  192:	return a->nid - b->nid;
+        -:  193:}
+        -:  194:
+    #####:  195:IMPLEMENT_OBJ_BSEARCH_CMP_FN(ASN1_STRING_TABLE, ASN1_STRING_TABLE, table);
+        -:  196:
+    #####:  197:ASN1_STRING_TABLE *ASN1_STRING_TABLE_get(int nid)
+        -:  198:{
+        -:  199:	int idx;
+        -:  200:	ASN1_STRING_TABLE *ttmp;
+        -:  201:	ASN1_STRING_TABLE fnd;
+    #####:  202:	fnd.nid = nid;
+        -:  203:	ttmp = OBJ_bsearch_table(&fnd, tbl_standard, 
+        -:  204:			   sizeof(tbl_standard)/sizeof(ASN1_STRING_TABLE));
+    #####:  205:	if(ttmp) return ttmp;
+    #####:  206:	if(!stable) return NULL;
+    #####:  207:	idx = sk_ASN1_STRING_TABLE_find(stable, &fnd);
+    #####:  208:	if(idx < 0) return NULL;
+    #####:  209:	return sk_ASN1_STRING_TABLE_value(stable, idx);
+        -:  210:}
+        -:  211:	
+    #####:  212:int ASN1_STRING_TABLE_add(int nid,
+        -:  213:		 long minsize, long maxsize, unsigned long mask,
+        -:  214:				unsigned long flags)
+        -:  215:{
+        -:  216:	ASN1_STRING_TABLE *tmp;
+        -:  217:	char new_nid = 0;
+    #####:  218:	flags &= ~STABLE_FLAGS_MALLOC;
+    #####:  219:	if(!stable) stable = sk_ASN1_STRING_TABLE_new(sk_table_cmp);
+    #####:  220:	if(!stable) {
+    #####:  221:		ASN1err(ASN1_F_ASN1_STRING_TABLE_ADD, ERR_R_MALLOC_FAILURE);
+    #####:  222:		return 0;
+        -:  223:	}
+    #####:  224:	if(!(tmp = ASN1_STRING_TABLE_get(nid))) {
+    #####:  225:		tmp = OPENSSL_malloc(sizeof(ASN1_STRING_TABLE));
+    #####:  226:		if(!tmp) {
+    #####:  227:			ASN1err(ASN1_F_ASN1_STRING_TABLE_ADD,
+        -:  228:							ERR_R_MALLOC_FAILURE);
+    #####:  229:			return 0;
+        -:  230:		}
+    #####:  231:		tmp->flags = flags | STABLE_FLAGS_MALLOC;
+    #####:  232:		tmp->nid = nid;
+        -:  233:		new_nid = 1;
+    #####:  234:	} else tmp->flags = (tmp->flags & STABLE_FLAGS_MALLOC) | flags;
+    #####:  235:	if(minsize != -1) tmp->minsize = minsize;
+    #####:  236:	if(maxsize != -1) tmp->maxsize = maxsize;
+    #####:  237:	tmp->mask = mask;
+    #####:  238:	if(new_nid) sk_ASN1_STRING_TABLE_push(stable, tmp);
+        -:  239:	return 1;
+        -:  240:}
+        -:  241:
+    #####:  242:void ASN1_STRING_TABLE_cleanup(void)
+        -:  243:{
+        -:  244:	STACK_OF(ASN1_STRING_TABLE) *tmp;
+    #####:  245:	tmp = stable;
+    #####:  246:	if(!tmp) return;
+    #####:  247:	stable = NULL;
+    #####:  248:	sk_ASN1_STRING_TABLE_pop_free(tmp, st_free);
+        -:  249:}
+        -:  250:
+    #####:  251:static void st_free(ASN1_STRING_TABLE *tbl)
+        -:  252:{
+    #####:  253:	if(tbl->flags & STABLE_FLAGS_MALLOC) OPENSSL_free(tbl);
+    #####:  254:}
+        -:  255:
+        -:  256:
+        -:  257:IMPLEMENT_STACK_OF(ASN1_STRING_TABLE)
+        -:  258:
+        -:  259:#ifdef STRING_TABLE_TEST
+        -:  260:
+        -:  261:main()
+        -:  262:{
+        -:  263:	ASN1_STRING_TABLE *tmp;
+        -:  264:	int i, last_nid = -1;
+        -:  265:
+        -:  266:	for (tmp = tbl_standard, i = 0;
+        -:  267:		i < sizeof(tbl_standard)/sizeof(ASN1_STRING_TABLE); i++, tmp++)
+        -:  268:		{
+        -:  269:			if (tmp->nid < last_nid)
+        -:  270:				{
+        -:  271:				last_nid = 0;
+        -:  272:				break;
+        -:  273:				}
+        -:  274:			last_nid = tmp->nid;
+        -:  275:		}
+        -:  276:
+        -:  277:	if (last_nid != 0)
+        -:  278:		{
+        -:  279:		printf("Table order OK\n");
+        -:  280:		exit(0);
+        -:  281:		}
+        -:  282:
+        -:  283:	for (tmp = tbl_standard, i = 0;
+        -:  284:		i < sizeof(tbl_standard)/sizeof(ASN1_STRING_TABLE); i++, tmp++)
+        -:  285:			printf("Index %d, NID %d, Name=%s\n", i, tmp->nid,
+        -:  286:							OBJ_nid2ln(tmp->nid));
+        -:  287:
+        -:  288:}
+        -:  289:
+        -:  290:#endif

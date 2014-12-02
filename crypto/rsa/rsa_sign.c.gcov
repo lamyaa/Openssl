@@ -1,0 +1,323 @@
+        -:    0:Source:rsa_sign.c
+        -:    0:Graph:rsa_sign.gcno
+        -:    0:Data:rsa_sign.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* crypto/rsa/rsa_sign.c */
+        -:    2:/* Copyright (C) 1995-1998 Eric Young (eay@cryptsoft.com)
+        -:    3: * All rights reserved.
+        -:    4: *
+        -:    5: * This package is an SSL implementation written
+        -:    6: * by Eric Young (eay@cryptsoft.com).
+        -:    7: * The implementation was written so as to conform with Netscapes SSL.
+        -:    8: * 
+        -:    9: * This library is free for commercial and non-commercial use as long as
+        -:   10: * the following conditions are aheared to.  The following conditions
+        -:   11: * apply to all code found in this distribution, be it the RC4, RSA,
+        -:   12: * lhash, DES, etc., code; not just the SSL code.  The SSL documentation
+        -:   13: * included with this distribution is covered by the same copyright terms
+        -:   14: * except that the holder is Tim Hudson (tjh@cryptsoft.com).
+        -:   15: * 
+        -:   16: * Copyright remains Eric Young's, and as such any Copyright notices in
+        -:   17: * the code are not to be removed.
+        -:   18: * If this package is used in a product, Eric Young should be given attribution
+        -:   19: * as the author of the parts of the library used.
+        -:   20: * This can be in the form of a textual message at program startup or
+        -:   21: * in documentation (online or textual) provided with the package.
+        -:   22: * 
+        -:   23: * Redistribution and use in source and binary forms, with or without
+        -:   24: * modification, are permitted provided that the following conditions
+        -:   25: * are met:
+        -:   26: * 1. Redistributions of source code must retain the copyright
+        -:   27: *    notice, this list of conditions and the following disclaimer.
+        -:   28: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   29: *    notice, this list of conditions and the following disclaimer in the
+        -:   30: *    documentation and/or other materials provided with the distribution.
+        -:   31: * 3. All advertising materials mentioning features or use of this software
+        -:   32: *    must display the following acknowledgement:
+        -:   33: *    "This product includes cryptographic software written by
+        -:   34: *     Eric Young (eay@cryptsoft.com)"
+        -:   35: *    The word 'cryptographic' can be left out if the rouines from the library
+        -:   36: *    being used are not cryptographic related :-).
+        -:   37: * 4. If you include any Windows specific code (or a derivative thereof) from 
+        -:   38: *    the apps directory (application code) you must include an acknowledgement:
+        -:   39: *    "This product includes software written by Tim Hudson (tjh@cryptsoft.com)"
+        -:   40: * 
+        -:   41: * THIS SOFTWARE IS PROVIDED BY ERIC YOUNG ``AS IS'' AND
+        -:   42: * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   43: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+        -:   44: * ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+        -:   45: * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+        -:   46: * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+        -:   47: * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   48: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+        -:   49: * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+        -:   50: * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+        -:   51: * SUCH DAMAGE.
+        -:   52: * 
+        -:   53: * The licence and distribution terms for any publically available version or
+        -:   54: * derivative of this code cannot be changed.  i.e. this code cannot simply be
+        -:   55: * copied and put under another distribution licence
+        -:   56: * [including the GNU Public Licence.]
+        -:   57: */
+        -:   58:
+        -:   59:#include <stdio.h>
+        -:   60:#include "cryptlib.h"
+        -:   61:#include <openssl/bn.h>
+        -:   62:#include <openssl/rsa.h>
+        -:   63:#include <openssl/objects.h>
+        -:   64:#include <openssl/x509.h>
+        -:   65:#include "rsa_locl.h"
+        -:   66:
+        -:   67:/* Size of an SSL signature: MD5+SHA1 */
+        -:   68:#define SSL_SIG_LENGTH	36
+        -:   69:
+    #####:   70:int RSA_sign(int type, const unsigned char *m, unsigned int m_len,
+        -:   71:	     unsigned char *sigret, unsigned int *siglen, RSA *rsa)
+        -:   72:	{
+        -:   73:	X509_SIG sig;
+        -:   74:	ASN1_TYPE parameter;
+        -:   75:	int i,j,ret=1;
+        -:   76:	unsigned char *p, *tmps = NULL;
+        -:   77:	const unsigned char *s = NULL;
+        -:   78:	X509_ALGOR algor;
+        -:   79:	ASN1_OCTET_STRING digest;
+        -:   80:#ifdef OPENSSL_FIPS
+        -:   81:	if (FIPS_mode() && !(rsa->meth->flags & RSA_FLAG_FIPS_METHOD)
+        -:   82:			&& !(rsa->flags & RSA_FLAG_NON_FIPS_ALLOW))
+        -:   83:		{
+        -:   84:		RSAerr(RSA_F_RSA_SIGN, RSA_R_NON_FIPS_RSA_METHOD);
+        -:   85:		return 0;
+        -:   86:		}
+        -:   87:#endif
+    #####:   88:	if((rsa->flags & RSA_FLAG_SIGN_VER) && rsa->meth->rsa_sign)
+        -:   89:		{
+    #####:   90:		return rsa->meth->rsa_sign(type, m, m_len,
+        -:   91:			sigret, siglen, rsa);
+        -:   92:		}
+        -:   93:	/* Special case: SSL signature, just check the length */
+    #####:   94:	if(type == NID_md5_sha1) {
+    #####:   95:		if(m_len != SSL_SIG_LENGTH) {
+    #####:   96:			RSAerr(RSA_F_RSA_SIGN,RSA_R_INVALID_MESSAGE_LENGTH);
+    #####:   97:			return(0);
+        -:   98:		}
+        -:   99:		i = SSL_SIG_LENGTH;
+        -:  100:		s = m;
+        -:  101:	} else {
+    #####:  102:		sig.algor= &algor;
+    #####:  103:		sig.algor->algorithm=OBJ_nid2obj(type);
+    #####:  104:		if (sig.algor->algorithm == NULL)
+        -:  105:			{
+    #####:  106:			RSAerr(RSA_F_RSA_SIGN,RSA_R_UNKNOWN_ALGORITHM_TYPE);
+    #####:  107:			return(0);
+        -:  108:			}
+    #####:  109:		if (sig.algor->algorithm->length == 0)
+        -:  110:			{
+    #####:  111:			RSAerr(RSA_F_RSA_SIGN,RSA_R_THE_ASN1_OBJECT_IDENTIFIER_IS_NOT_KNOWN_FOR_THIS_MD);
+    #####:  112:			return(0);
+        -:  113:			}
+    #####:  114:		parameter.type=V_ASN1_NULL;
+    #####:  115:		parameter.value.ptr=NULL;
+    #####:  116:		sig.algor->parameter= &parameter;
+        -:  117:
+    #####:  118:		sig.digest= &digest;
+    #####:  119:		sig.digest->data=(unsigned char *)m; /* TMP UGLY CAST */
+    #####:  120:		sig.digest->length=m_len;
+        -:  121:
+    #####:  122:		i=i2d_X509_SIG(&sig,NULL);
+        -:  123:	}
+    #####:  124:	j=RSA_size(rsa);
+    #####:  125:	if (i > (j-RSA_PKCS1_PADDING_SIZE))
+        -:  126:		{
+    #####:  127:		RSAerr(RSA_F_RSA_SIGN,RSA_R_DIGEST_TOO_BIG_FOR_RSA_KEY);
+    #####:  128:		return(0);
+        -:  129:		}
+    #####:  130:	if(type != NID_md5_sha1) {
+    #####:  131:		tmps=(unsigned char *)OPENSSL_malloc((unsigned int)j+1);
+    #####:  132:		if (tmps == NULL)
+        -:  133:			{
+    #####:  134:			RSAerr(RSA_F_RSA_SIGN,ERR_R_MALLOC_FAILURE);
+    #####:  135:			return(0);
+        -:  136:			}
+    #####:  137:		p=tmps;
+    #####:  138:		i2d_X509_SIG(&sig,&p);
+        -:  139:		s=tmps;
+        -:  140:	}
+    #####:  141:	i=RSA_private_encrypt(i,s,sigret,rsa,RSA_PKCS1_PADDING);
+    #####:  142:	if (i <= 0)
+        -:  143:		ret=0;
+        -:  144:	else
+    #####:  145:		*siglen=i;
+        -:  146:
+    #####:  147:	if(type != NID_md5_sha1) {
+    #####:  148:		OPENSSL_cleanse(tmps,(unsigned int)j+1);
+    #####:  149:		OPENSSL_free(tmps);
+        -:  150:	}
+    #####:  151:	return(ret);
+        -:  152:	}
+        -:  153:
+     1942:  154:int int_rsa_verify(int dtype, const unsigned char *m,
+        -:  155:			  unsigned int m_len,
+        -:  156:			  unsigned char *rm, size_t *prm_len,
+        -:  157:			  const unsigned char *sigbuf, size_t siglen,
+        -:  158:			  RSA *rsa)
+        -:  159:	{
+        -:  160:	int i,ret=0,sigtype;
+        -:  161:	unsigned char *s;
+        -:  162:	X509_SIG *sig=NULL;
+        -:  163:
+        -:  164:#ifdef OPENSSL_FIPS
+        -:  165:	if (FIPS_mode() && !(rsa->meth->flags & RSA_FLAG_FIPS_METHOD)
+        -:  166:			&& !(rsa->flags & RSA_FLAG_NON_FIPS_ALLOW))
+        -:  167:		{
+        -:  168:		RSAerr(RSA_F_INT_RSA_VERIFY, RSA_R_NON_FIPS_RSA_METHOD);
+        -:  169:		return 0;
+        -:  170:		}
+        -:  171:#endif
+        -:  172:
+     1942:  173:	if (siglen != (unsigned int)RSA_size(rsa))
+        -:  174:		{
+    #####:  175:		RSAerr(RSA_F_INT_RSA_VERIFY,RSA_R_WRONG_SIGNATURE_LENGTH);
+    #####:  176:		return(0);
+        -:  177:		}
+        -:  178:
+     1942:  179:	if((dtype == NID_md5_sha1) && rm)
+        -:  180:		{
+    #####:  181:		i = RSA_public_decrypt((int)siglen,
+        -:  182:					sigbuf,rm,rsa,RSA_PKCS1_PADDING);
+    #####:  183:		if (i <= 0)
+        -:  184:			return 0;
+    #####:  185:		*prm_len = i;
+    #####:  186:		return 1;
+        -:  187:		}
+        -:  188:
+     1942:  189:	s=(unsigned char *)OPENSSL_malloc((unsigned int)siglen);
+     1942:  190:	if (s == NULL)
+        -:  191:		{
+    #####:  192:		RSAerr(RSA_F_INT_RSA_VERIFY,ERR_R_MALLOC_FAILURE);
+    #####:  193:		goto err;
+        -:  194:		}
+     1942:  195:	if((dtype == NID_md5_sha1) && (m_len != SSL_SIG_LENGTH) ) {
+    #####:  196:			RSAerr(RSA_F_INT_RSA_VERIFY,RSA_R_INVALID_MESSAGE_LENGTH);
+    #####:  197:			goto err;
+        -:  198:	}
+     1942:  199:	i=RSA_public_decrypt((int)siglen,sigbuf,s,rsa,RSA_PKCS1_PADDING);
+        -:  200:
+     1942:  201:	if (i <= 0) goto err;
+        -:  202:	/* Oddball MDC2 case: signature can be OCTET STRING.
+        -:  203:	 * check for correct tag and length octets.
+        -:  204:	 */
+     1942:  205:	if (dtype == NID_mdc2 && i == 18 && s[0] == 0x04 && s[1] == 0x10)
+        -:  206:		{
+    #####:  207:		if (rm)
+        -:  208:			{
+    #####:  209:			memcpy(rm, s + 2, 16);
+    #####:  210:			*prm_len = 16;
+        -:  211:			ret = 1;
+        -:  212:			}
+    #####:  213:		else if(memcmp(m, s + 2, 16))
+    #####:  214:			RSAerr(RSA_F_INT_RSA_VERIFY,RSA_R_BAD_SIGNATURE);
+        -:  215:		else
+        -:  216:			ret = 1;
+        -:  217:		}
+        -:  218:
+        -:  219:	/* Special case: SSL signature */
+     1942:  220:	if(dtype == NID_md5_sha1) {
+    #####:  221:		if((i != SSL_SIG_LENGTH) || memcmp(s, m, SSL_SIG_LENGTH))
+    #####:  222:				RSAerr(RSA_F_INT_RSA_VERIFY,RSA_R_BAD_SIGNATURE);
+        -:  223:		else ret = 1;
+        -:  224:	} else {
+     1942:  225:		const unsigned char *p=s;
+     1942:  226:		sig=d2i_X509_SIG(NULL,&p,(long)i);
+        -:  227:
+     1942:  228:		if (sig == NULL) goto err;
+        -:  229:
+        -:  230:		/* Excess data can be used to create forgeries */
+     1942:  231:		if(p != s+i)
+        -:  232:			{
+    #####:  233:			RSAerr(RSA_F_INT_RSA_VERIFY,RSA_R_BAD_SIGNATURE);
+    #####:  234:			goto err;
+        -:  235:			}
+        -:  236:
+        -:  237:		/* Parameters to the signature algorithm can also be used to
+        -:  238:		   create forgeries */
+     1942:  239:		if(sig->algor->parameter
+     1942:  240:		   && ASN1_TYPE_get(sig->algor->parameter) != V_ASN1_NULL)
+        -:  241:			{
+    #####:  242:			RSAerr(RSA_F_INT_RSA_VERIFY,RSA_R_BAD_SIGNATURE);
+    #####:  243:			goto err;
+        -:  244:			}
+        -:  245:
+     1942:  246:		sigtype=OBJ_obj2nid(sig->algor->algorithm);
+        -:  247:
+        -:  248:
+        -:  249:	#ifdef RSA_DEBUG
+        -:  250:		/* put a backward compatibility flag in EAY */
+        -:  251:		fprintf(stderr,"in(%s) expect(%s)\n",OBJ_nid2ln(sigtype),
+        -:  252:			OBJ_nid2ln(dtype));
+        -:  253:	#endif
+     1942:  254:		if (sigtype != dtype)
+        -:  255:			{
+    #####:  256:			if (((dtype == NID_md5) &&
+    #####:  257:				(sigtype == NID_md5WithRSAEncryption)) ||
+    #####:  258:				((dtype == NID_md2) &&
+    #####:  259:				(sigtype == NID_md2WithRSAEncryption)))
+        -:  260:				{
+        -:  261:				/* ok, we will let it through */
+        -:  262:#if !defined(OPENSSL_NO_STDIO) && !defined(OPENSSL_SYS_WIN16)
+    #####:  263:				fprintf(stderr,"signature has problems, re-make with post SSLeay045\n");
+        -:  264:#endif
+        -:  265:				}
+        -:  266:			else
+        -:  267:				{
+    #####:  268:				RSAerr(RSA_F_INT_RSA_VERIFY,
+        -:  269:						RSA_R_ALGORITHM_MISMATCH);
+    #####:  270:				goto err;
+        -:  271:				}
+        -:  272:			}
+     1942:  273:		if (rm)
+        -:  274:			{
+        -:  275:			const EVP_MD *md;
+    #####:  276:			md = EVP_get_digestbynid(dtype);
+    #####:  277:			if (md && (EVP_MD_size(md) != sig->digest->length))
+    #####:  278:				RSAerr(RSA_F_INT_RSA_VERIFY,
+        -:  279:						RSA_R_INVALID_DIGEST_LENGTH);
+        -:  280:			else
+        -:  281:				{
+    #####:  282:				memcpy(rm, sig->digest->data,
+    #####:  283:							sig->digest->length);
+    #####:  284:				*prm_len = sig->digest->length;
+        -:  285:				ret = 1;
+        -:  286:				}
+        -:  287:			}
+     3884:  288:		else if (((unsigned int)sig->digest->length != m_len) ||
+     1942:  289:			(memcmp(m,sig->digest->data,m_len) != 0))
+        -:  290:			{
+    #####:  291:			RSAerr(RSA_F_INT_RSA_VERIFY,RSA_R_BAD_SIGNATURE);
+        -:  292:			}
+        -:  293:		else
+        -:  294:			ret=1;
+        -:  295:	}
+        -:  296:err:
+     1942:  297:	if (sig != NULL) X509_SIG_free(sig);
+     1942:  298:	if (s != NULL)
+        -:  299:		{
+     1942:  300:		OPENSSL_cleanse(s,(unsigned int)siglen);
+     1942:  301:		OPENSSL_free(s);
+        -:  302:		}
+     1942:  303:	return(ret);
+        -:  304:	}
+        -:  305:
+     1942:  306:int RSA_verify(int dtype, const unsigned char *m, unsigned int m_len,
+        -:  307:		const unsigned char *sigbuf, unsigned int siglen,
+        -:  308:		RSA *rsa)
+        -:  309:	{
+        -:  310:
+     1942:  311:	if((rsa->flags & RSA_FLAG_SIGN_VER) && rsa->meth->rsa_verify)
+        -:  312:		{
+    #####:  313:		return rsa->meth->rsa_verify(dtype, m, m_len,
+        -:  314:			sigbuf, siglen, rsa);
+        -:  315:		}
+        -:  316:
+     1942:  317:	return int_rsa_verify(dtype, m, m_len, NULL, NULL, sigbuf, siglen, rsa);
+        -:  318:	}

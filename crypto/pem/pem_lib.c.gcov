@@ -1,0 +1,864 @@
+        -:    0:Source:pem_lib.c
+        -:    0:Graph:pem_lib.gcno
+        -:    0:Data:pem_lib.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* crypto/pem/pem_lib.c */
+        -:    2:/* Copyright (C) 1995-1998 Eric Young (eay@cryptsoft.com)
+        -:    3: * All rights reserved.
+        -:    4: *
+        -:    5: * This package is an SSL implementation written
+        -:    6: * by Eric Young (eay@cryptsoft.com).
+        -:    7: * The implementation was written so as to conform with Netscapes SSL.
+        -:    8: * 
+        -:    9: * This library is free for commercial and non-commercial use as long as
+        -:   10: * the following conditions are aheared to.  The following conditions
+        -:   11: * apply to all code found in this distribution, be it the RC4, RSA,
+        -:   12: * lhash, DES, etc., code; not just the SSL code.  The SSL documentation
+        -:   13: * included with this distribution is covered by the same copyright terms
+        -:   14: * except that the holder is Tim Hudson (tjh@cryptsoft.com).
+        -:   15: * 
+        -:   16: * Copyright remains Eric Young's, and as such any Copyright notices in
+        -:   17: * the code are not to be removed.
+        -:   18: * If this package is used in a product, Eric Young should be given attribution
+        -:   19: * as the author of the parts of the library used.
+        -:   20: * This can be in the form of a textual message at program startup or
+        -:   21: * in documentation (online or textual) provided with the package.
+        -:   22: * 
+        -:   23: * Redistribution and use in source and binary forms, with or without
+        -:   24: * modification, are permitted provided that the following conditions
+        -:   25: * are met:
+        -:   26: * 1. Redistributions of source code must retain the copyright
+        -:   27: *    notice, this list of conditions and the following disclaimer.
+        -:   28: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   29: *    notice, this list of conditions and the following disclaimer in the
+        -:   30: *    documentation and/or other materials provided with the distribution.
+        -:   31: * 3. All advertising materials mentioning features or use of this software
+        -:   32: *    must display the following acknowledgement:
+        -:   33: *    "This product includes cryptographic software written by
+        -:   34: *     Eric Young (eay@cryptsoft.com)"
+        -:   35: *    The word 'cryptographic' can be left out if the rouines from the library
+        -:   36: *    being used are not cryptographic related :-).
+        -:   37: * 4. If you include any Windows specific code (or a derivative thereof) from 
+        -:   38: *    the apps directory (application code) you must include an acknowledgement:
+        -:   39: *    "This product includes software written by Tim Hudson (tjh@cryptsoft.com)"
+        -:   40: * 
+        -:   41: * THIS SOFTWARE IS PROVIDED BY ERIC YOUNG ``AS IS'' AND
+        -:   42: * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   43: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+        -:   44: * ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+        -:   45: * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+        -:   46: * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+        -:   47: * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   48: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+        -:   49: * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+        -:   50: * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+        -:   51: * SUCH DAMAGE.
+        -:   52: * 
+        -:   53: * The licence and distribution terms for any publically available version or
+        -:   54: * derivative of this code cannot be changed.  i.e. this code cannot simply be
+        -:   55: * copied and put under another distribution licence
+        -:   56: * [including the GNU Public Licence.]
+        -:   57: */
+        -:   58:
+        -:   59:#include <stdio.h>
+        -:   60:#include <ctype.h>
+        -:   61:#include "cryptlib.h"
+        -:   62:#include <openssl/buffer.h>
+        -:   63:#include <openssl/objects.h>
+        -:   64:#include <openssl/evp.h>
+        -:   65:#include <openssl/rand.h>
+        -:   66:#include <openssl/x509.h>
+        -:   67:#include <openssl/pem.h>
+        -:   68:#include <openssl/pkcs12.h>
+        -:   69:#include "asn1_locl.h"
+        -:   70:#ifndef OPENSSL_NO_DES
+        -:   71:#include <openssl/des.h>
+        -:   72:#endif
+        -:   73:#ifndef OPENSSL_NO_ENGINE
+        -:   74:#include <openssl/engine.h>
+        -:   75:#endif
+        -:   76:
+        -:   77:const char PEM_version[]="PEM" OPENSSL_VERSION_PTEXT;
+        -:   78:
+        -:   79:#define MIN_LENGTH	4
+        -:   80:
+        -:   81:static int load_iv(char **fromp,unsigned char *to, int num);
+        -:   82:static int check_pem(const char *nm, const char *name);
+        -:   83:int pem_check_suffix(const char *pem_str, const char *suffix);
+        -:   84:
+    #####:   85:int PEM_def_callback(char *buf, int num, int w, void *key)
+        -:   86:	{
+        -:   87:#ifdef OPENSSL_NO_FP_API
+        -:   88:	/* We should not ever call the default callback routine from
+        -:   89:	 * windows. */
+        -:   90:	PEMerr(PEM_F_PEM_DEF_CALLBACK,ERR_R_SHOULD_NOT_HAVE_BEEN_CALLED);
+        -:   91:	return(-1);
+        -:   92:#else
+        -:   93:	int i,j;
+        -:   94:	const char *prompt;
+    #####:   95:	if(key) {
+    #####:   96:		i=strlen(key);
+    #####:   97:		i=(i > num)?num:i;
+    #####:   98:		memcpy(buf,key,i);
+    #####:   99:		return(i);
+        -:  100:	}
+        -:  101:
+    #####:  102:	prompt=EVP_get_pw_prompt();
+    #####:  103:	if (prompt == NULL)
+        -:  104:		prompt="Enter PEM pass phrase:";
+        -:  105:
+        -:  106:	for (;;)
+        -:  107:		{
+    #####:  108:		i=EVP_read_pw_string_min(buf,MIN_LENGTH,num,prompt,w);
+    #####:  109:		if (i != 0)
+        -:  110:			{
+    #####:  111:			PEMerr(PEM_F_PEM_DEF_CALLBACK,PEM_R_PROBLEMS_GETTING_PASSWORD);
+    #####:  112:			memset(buf,0,(unsigned int)num);
+    #####:  113:			return(-1);
+        -:  114:			}
+    #####:  115:		j=strlen(buf);
+    #####:  116:		if (j < MIN_LENGTH)
+        -:  117:			{
+    #####:  118:			fprintf(stderr,"phrase is too short, needs to be at least %d chars\n",MIN_LENGTH);
+        -:  119:			}
+        -:  120:		else
+        -:  121:			break;
+        -:  122:		}
+        -:  123:	return(j);
+        -:  124:#endif
+        -:  125:	}
+        -:  126:
+    #####:  127:void PEM_proc_type(char *buf, int type)
+        -:  128:	{
+        -:  129:	const char *str;
+        -:  130:
+    #####:  131:	if (type == PEM_TYPE_ENCRYPTED)
+        -:  132:		str="ENCRYPTED";
+    #####:  133:	else if (type == PEM_TYPE_MIC_CLEAR)
+        -:  134:		str="MIC-CLEAR";
+    #####:  135:	else if (type == PEM_TYPE_MIC_ONLY)
+        -:  136:		str="MIC-ONLY";
+        -:  137:	else
+        -:  138:		str="BAD-TYPE";
+        -:  139:		
+    #####:  140:	BUF_strlcat(buf,"Proc-Type: 4,",PEM_BUFSIZE);
+    #####:  141:	BUF_strlcat(buf,str,PEM_BUFSIZE);
+    #####:  142:	BUF_strlcat(buf,"\n",PEM_BUFSIZE);
+    #####:  143:	}
+        -:  144:
+    #####:  145:void PEM_dek_info(char *buf, const char *type, int len, char *str)
+        -:  146:	{
+        -:  147:	static const unsigned char map[17]="0123456789ABCDEF";
+        -:  148:	long i;
+        -:  149:	int j;
+        -:  150:
+    #####:  151:	BUF_strlcat(buf,"DEK-Info: ",PEM_BUFSIZE);
+    #####:  152:	BUF_strlcat(buf,type,PEM_BUFSIZE);
+    #####:  153:	BUF_strlcat(buf,",",PEM_BUFSIZE);
+    #####:  154:	j=strlen(buf);
+    #####:  155:	if (j + (len * 2) + 1 > PEM_BUFSIZE)
+    #####:  156:        	return;
+    #####:  157:	for (i=0; i<len; i++)
+        -:  158:		{
+    #####:  159:		buf[j+i*2]  =map[(str[i]>>4)&0x0f];
+    #####:  160:		buf[j+i*2+1]=map[(str[i]   )&0x0f];
+        -:  161:		}
+    #####:  162:	buf[j+i*2]='\n';
+    #####:  163:	buf[j+i*2+1]='\0';
+        -:  164:	}
+        -:  165:
+        -:  166:#ifndef OPENSSL_NO_FP_API
+    #####:  167:void *PEM_ASN1_read(d2i_of_void *d2i, const char *name, FILE *fp, void **x,
+        -:  168:		    pem_password_cb *cb, void *u)
+        -:  169:	{
+        -:  170:        BIO *b;
+        -:  171:        void *ret;
+        -:  172:
+    #####:  173:        if ((b=BIO_new(BIO_s_file())) == NULL)
+        -:  174:		{
+    #####:  175:		PEMerr(PEM_F_PEM_ASN1_READ,ERR_R_BUF_LIB);
+    #####:  176:                return(0);
+        -:  177:		}
+    #####:  178:        BIO_set_fp(b,fp,BIO_NOCLOSE);
+    #####:  179:        ret=PEM_ASN1_read_bio(d2i,name,b,x,cb,u);
+    #####:  180:        BIO_free(b);
+    #####:  181:        return(ret);
+        -:  182:	}
+        -:  183:#endif
+        -:  184:
+    #####:  185:static int check_pem(const char *nm, const char *name)
+        -:  186:{
+        -:  187:	/* Normal matching nm and name */
+    #####:  188:	if (!strcmp(nm,name)) return 1;
+        -:  189:
+        -:  190:	/* Make PEM_STRING_EVP_PKEY match any private key */
+        -:  191:
+    #####:  192:	if(!strcmp(name,PEM_STRING_EVP_PKEY))
+        -:  193:		{
+        -:  194:		int slen;
+        -:  195:		const EVP_PKEY_ASN1_METHOD *ameth;
+    #####:  196:		if(!strcmp(nm,PEM_STRING_PKCS8))
+        -:  197:			return 1;
+    #####:  198:		if(!strcmp(nm,PEM_STRING_PKCS8INF))
+        -:  199:			return 1;
+    #####:  200:		slen = pem_check_suffix(nm, "PRIVATE KEY"); 
+    #####:  201:		if (slen > 0)
+        -:  202:			{
+        -:  203:			/* NB: ENGINE implementations wont contain
+        -:  204:			 * a deprecated old private key decode function
+        -:  205:			 * so don't look for them.
+        -:  206:			 */
+    #####:  207:			ameth = EVP_PKEY_asn1_find_str(NULL, nm, slen);
+    #####:  208:			if (ameth && ameth->old_priv_decode)
+        -:  209:				return 1;
+        -:  210:			}
+        -:  211:		return 0;
+        -:  212:		}
+        -:  213:
+    #####:  214:	if(!strcmp(name,PEM_STRING_PARAMETERS))
+        -:  215:		{
+        -:  216:		int slen;
+        -:  217:		const EVP_PKEY_ASN1_METHOD *ameth;
+    #####:  218:		slen = pem_check_suffix(nm, "PARAMETERS"); 
+    #####:  219:		if (slen > 0)
+        -:  220:			{
+        -:  221:			ENGINE *e;
+    #####:  222:			ameth = EVP_PKEY_asn1_find_str(&e, nm, slen);
+    #####:  223:			if (ameth)
+        -:  224:				{
+        -:  225:				int r;
+    #####:  226:				if (ameth->param_decode)
+        -:  227:					r = 1;
+        -:  228:				else
+        -:  229:					r = 0;
+        -:  230:#ifndef OPENSSL_NO_ENGINE
+    #####:  231:				if (e)
+    #####:  232:					ENGINE_finish(e);
+        -:  233:#endif
+    #####:  234:				return r;
+        -:  235:				}
+        -:  236:			}
+        -:  237:		return 0;
+        -:  238:		}
+        -:  239:
+        -:  240:	/* Permit older strings */
+        -:  241:
+    #####:  242:	if(!strcmp(nm,PEM_STRING_X509_OLD) &&
+    #####:  243:		!strcmp(name,PEM_STRING_X509)) return 1;
+        -:  244:
+    #####:  245:	if(!strcmp(nm,PEM_STRING_X509_REQ_OLD) &&
+    #####:  246:		!strcmp(name,PEM_STRING_X509_REQ)) return 1;
+        -:  247:
+        -:  248:	/* Allow normal certs to be read as trusted certs */
+    #####:  249:	if(!strcmp(nm,PEM_STRING_X509) &&
+    #####:  250:		!strcmp(name,PEM_STRING_X509_TRUSTED)) return 1;
+        -:  251:
+    #####:  252:	if(!strcmp(nm,PEM_STRING_X509_OLD) &&
+    #####:  253:		!strcmp(name,PEM_STRING_X509_TRUSTED)) return 1;
+        -:  254:
+        -:  255:	/* Some CAs use PKCS#7 with CERTIFICATE headers */
+    #####:  256:	if(!strcmp(nm, PEM_STRING_X509) &&
+    #####:  257:		!strcmp(name, PEM_STRING_PKCS7)) return 1;
+        -:  258:
+    #####:  259:	if(!strcmp(nm, PEM_STRING_PKCS7_SIGNED) &&
+    #####:  260:		!strcmp(name, PEM_STRING_PKCS7)) return 1;
+        -:  261:
+        -:  262:#ifndef OPENSSL_NO_CMS
+    #####:  263:	if(!strcmp(nm, PEM_STRING_X509) &&
+    #####:  264:		!strcmp(name, PEM_STRING_CMS)) return 1;
+        -:  265:	/* Allow CMS to be read from PKCS#7 headers */
+    #####:  266:	if(!strcmp(nm, PEM_STRING_PKCS7) &&
+    #####:  267:		!strcmp(name, PEM_STRING_CMS)) return 1;
+        -:  268:#endif
+        -:  269:
+    #####:  270:	return 0;
+        -:  271:}
+        -:  272:
+    #####:  273:int PEM_bytes_read_bio(unsigned char **pdata, long *plen, char **pnm, const char *name, BIO *bp,
+        -:  274:	     pem_password_cb *cb, void *u)
+        -:  275:	{
+        -:  276:	EVP_CIPHER_INFO cipher;
+    #####:  277:	char *nm=NULL,*header=NULL;
+    #####:  278:	unsigned char *data=NULL;
+        -:  279:	long len;
+        -:  280:	int ret = 0;
+        -:  281:
+        -:  282:	for (;;)
+        -:  283:		{
+    #####:  284:		if (!PEM_read_bio(bp,&nm,&header,&data,&len)) {
+    #####:  285:			if(ERR_GET_REASON(ERR_peek_error()) ==
+        -:  286:				PEM_R_NO_START_LINE)
+    #####:  287:				ERR_add_error_data(2, "Expecting: ", name);
+        -:  288:			return 0;
+        -:  289:		}
+    #####:  290:		if(check_pem(nm, name)) break;
+    #####:  291:		OPENSSL_free(nm);
+    #####:  292:		OPENSSL_free(header);
+    #####:  293:		OPENSSL_free(data);
+    #####:  294:		}
+    #####:  295:	if (!PEM_get_EVP_CIPHER_INFO(header,&cipher)) goto err;
+    #####:  296:	if (!PEM_do_header(&cipher,data,&len,cb,u)) goto err;
+        -:  297:
+    #####:  298:	*pdata = data;
+    #####:  299:	*plen = len;
+        -:  300:
+    #####:  301:	if (pnm)
+    #####:  302:		*pnm = nm;
+        -:  303:
+        -:  304:	ret = 1;
+        -:  305:
+        -:  306:err:
+    #####:  307:	if (!ret || !pnm) OPENSSL_free(nm);
+    #####:  308:	OPENSSL_free(header);
+    #####:  309:	if (!ret) OPENSSL_free(data);
+    #####:  310:	return ret;
+        -:  311:	}
+        -:  312:
+        -:  313:#ifndef OPENSSL_NO_FP_API
+    #####:  314:int PEM_ASN1_write(i2d_of_void *i2d, const char *name, FILE *fp,
+        -:  315:		   void *x, const EVP_CIPHER *enc, unsigned char *kstr,
+        -:  316:		   int klen, pem_password_cb *callback, void *u)
+        -:  317:        {
+        -:  318:        BIO *b;
+        -:  319:        int ret;
+        -:  320:
+    #####:  321:        if ((b=BIO_new(BIO_s_file())) == NULL)
+        -:  322:		{
+    #####:  323:		PEMerr(PEM_F_PEM_ASN1_WRITE,ERR_R_BUF_LIB);
+    #####:  324:                return(0);
+        -:  325:		}
+    #####:  326:        BIO_set_fp(b,fp,BIO_NOCLOSE);
+    #####:  327:        ret=PEM_ASN1_write_bio(i2d,name,b,x,enc,kstr,klen,callback,u);
+    #####:  328:        BIO_free(b);
+    #####:  329:        return(ret);
+        -:  330:        }
+        -:  331:#endif
+        -:  332:
+    10000:  333:int PEM_ASN1_write_bio(i2d_of_void *i2d, const char *name, BIO *bp,
+        -:  334:		       void *x, const EVP_CIPHER *enc, unsigned char *kstr,
+        -:  335:		       int klen, pem_password_cb *callback, void *u)
+        -:  336:	{
+        -:  337:	EVP_CIPHER_CTX ctx;
+        -:  338:	int dsize=0,i,j,ret=0;
+        -:  339:	unsigned char *p,*data=NULL;
+        -:  340:	const char *objstr=NULL;
+        -:  341:	char buf[PEM_BUFSIZE];
+        -:  342:	unsigned char key[EVP_MAX_KEY_LENGTH];
+        -:  343:	unsigned char iv[EVP_MAX_IV_LENGTH];
+        -:  344:	
+    10000:  345:	if (enc != NULL)
+        -:  346:		{
+    #####:  347:		objstr=OBJ_nid2sn(EVP_CIPHER_nid(enc));
+    #####:  348:		if (objstr == NULL)
+        -:  349:			{
+    #####:  350:			PEMerr(PEM_F_PEM_ASN1_WRITE_BIO,PEM_R_UNSUPPORTED_CIPHER);
+    #####:  351:			goto err;
+        -:  352:			}
+        -:  353:		}
+        -:  354:
+    10000:  355:	if ((dsize=i2d(x,NULL)) < 0)
+        -:  356:		{
+    #####:  357:		PEMerr(PEM_F_PEM_ASN1_WRITE_BIO,ERR_R_ASN1_LIB);
+        -:  358:		dsize=0;
+    #####:  359:		goto err;
+        -:  360:		}
+        -:  361:	/* dzise + 8 bytes are needed */
+        -:  362:	/* actually it needs the cipher block size extra... */
+    10000:  363:	data=(unsigned char *)OPENSSL_malloc((unsigned int)dsize+20);
+    10000:  364:	if (data == NULL)
+        -:  365:		{
+    #####:  366:		PEMerr(PEM_F_PEM_ASN1_WRITE_BIO,ERR_R_MALLOC_FAILURE);
+    #####:  367:		goto err;
+        -:  368:		}
+    10000:  369:	p=data;
+    10000:  370:	i=i2d(x,&p);
+        -:  371:
+    10000:  372:	if (enc != NULL)
+        -:  373:		{
+    #####:  374:		if (kstr == NULL)
+        -:  375:			{
+    #####:  376:			if (callback == NULL)
+    #####:  377:				klen=PEM_def_callback(buf,PEM_BUFSIZE,1,u);
+        -:  378:			else
+    #####:  379:				klen=(*callback)(buf,PEM_BUFSIZE,1,u);
+    #####:  380:			if (klen <= 0)
+        -:  381:				{
+    #####:  382:				PEMerr(PEM_F_PEM_ASN1_WRITE_BIO,PEM_R_READ_KEY);
+    #####:  383:				goto err;
+        -:  384:				}
+        -:  385:#ifdef CHARSET_EBCDIC
+        -:  386:			/* Convert the pass phrase from EBCDIC */
+        -:  387:			ebcdic2ascii(buf, buf, klen);
+        -:  388:#endif
+        -:  389:			kstr=(unsigned char *)buf;
+        -:  390:			}
+    #####:  391:		RAND_add(data,i,0);/* put in the RSA key. */
+    #####:  392:		OPENSSL_assert(enc->iv_len <= (int)sizeof(iv));
+    #####:  393:		if (RAND_pseudo_bytes(iv,enc->iv_len) < 0) /* Generate a salt */
+        -:  394:			goto err;
+        -:  395:		/* The 'iv' is used as the iv and as a salt.  It is
+        -:  396:		 * NOT taken from the BytesToKey function */
+    #####:  397:		if (!EVP_BytesToKey(enc,EVP_md5(),iv,kstr,klen,1,key,NULL))
+        -:  398:			goto err;
+        -:  399:
+    #####:  400:		if (kstr == (unsigned char *)buf) OPENSSL_cleanse(buf,PEM_BUFSIZE);
+        -:  401:
+    #####:  402:		OPENSSL_assert(strlen(objstr)+23+2*enc->iv_len+13 <= sizeof buf);
+        -:  403:
+    #####:  404:		buf[0]='\0';
+    #####:  405:		PEM_proc_type(buf,PEM_TYPE_ENCRYPTED);
+    #####:  406:		PEM_dek_info(buf,objstr,enc->iv_len,(char *)iv);
+        -:  407:		/* k=strlen(buf); */
+        -:  408:
+    #####:  409:		EVP_CIPHER_CTX_init(&ctx);
+        -:  410:		ret = 1;
+    #####:  411:		if (!EVP_EncryptInit_ex(&ctx,enc,NULL,key,iv)
+    #####:  412:			|| !EVP_EncryptUpdate(&ctx,data,&j,data,i)
+    #####:  413:			|| !EVP_EncryptFinal_ex(&ctx,&(data[j]),&i))
+        -:  414:			ret = 0;
+    #####:  415:		EVP_CIPHER_CTX_cleanup(&ctx);
+    #####:  416:		if (ret == 0)
+        -:  417:			goto err;
+    #####:  418:		i+=j;
+        -:  419:		}
+        -:  420:	else
+        -:  421:		{
+        -:  422:		ret=1;
+    10000:  423:		buf[0]='\0';
+        -:  424:		}
+    10000:  425:	i=PEM_write_bio(bp,name,buf,data,i);
+    10000:  426:	if (i <= 0) ret=0;
+        -:  427:err:
+    10000:  428:	OPENSSL_cleanse(key,sizeof(key));
+    10000:  429:	OPENSSL_cleanse(iv,sizeof(iv));
+    10000:  430:	OPENSSL_cleanse((char *)&ctx,sizeof(ctx));
+    10000:  431:	OPENSSL_cleanse(buf,PEM_BUFSIZE);
+    10000:  432:	if (data != NULL)
+        -:  433:		{
+    10000:  434:		OPENSSL_cleanse(data,(unsigned int)dsize);
+    10000:  435:		OPENSSL_free(data);
+        -:  436:		}
+    10000:  437:	return(ret);
+        -:  438:	}
+        -:  439:
+    10000:  440:int PEM_do_header(EVP_CIPHER_INFO *cipher, unsigned char *data, long *plen,
+        -:  441:	     pem_password_cb *callback,void *u)
+        -:  442:	{
+        -:  443:	int i,j,o,klen;
+        -:  444:	long len;
+        -:  445:	EVP_CIPHER_CTX ctx;
+        -:  446:	unsigned char key[EVP_MAX_KEY_LENGTH];
+        -:  447:	char buf[PEM_BUFSIZE];
+        -:  448:
+    10000:  449:	len= *plen;
+        -:  450:
+    10000:  451:	if (cipher->cipher == NULL) return(1);
+    #####:  452:	if (callback == NULL)
+    #####:  453:		klen=PEM_def_callback(buf,PEM_BUFSIZE,0,u);
+        -:  454:	else
+    #####:  455:		klen=callback(buf,PEM_BUFSIZE,0,u);
+    #####:  456:	if (klen <= 0)
+        -:  457:		{
+    #####:  458:		PEMerr(PEM_F_PEM_DO_HEADER,PEM_R_BAD_PASSWORD_READ);
+    #####:  459:		return(0);
+        -:  460:		}
+        -:  461:#ifdef CHARSET_EBCDIC
+        -:  462:	/* Convert the pass phrase from EBCDIC */
+        -:  463:	ebcdic2ascii(buf, buf, klen);
+        -:  464:#endif
+        -:  465:
+    #####:  466:	if (!EVP_BytesToKey(cipher->cipher,EVP_md5(),&(cipher->iv[0]),
+        -:  467:		(unsigned char *)buf,klen,1,key,NULL))
+        -:  468:		return 0;
+        -:  469:
+    #####:  470:	j=(int)len;
+    #####:  471:	EVP_CIPHER_CTX_init(&ctx);
+    #####:  472:	o = EVP_DecryptInit_ex(&ctx,cipher->cipher,NULL, key,&(cipher->iv[0]));
+    #####:  473:	if (o)
+    #####:  474:		o = EVP_DecryptUpdate(&ctx,data,&i,data,j);
+    #####:  475:	if (o)
+    #####:  476:		o = EVP_DecryptFinal_ex(&ctx,&(data[i]),&j);
+    #####:  477:	EVP_CIPHER_CTX_cleanup(&ctx);
+    #####:  478:	OPENSSL_cleanse((char *)buf,sizeof(buf));
+    #####:  479:	OPENSSL_cleanse((char *)key,sizeof(key));
+    #####:  480:	j+=i;
+    #####:  481:	if (!o)
+        -:  482:		{
+    #####:  483:		PEMerr(PEM_F_PEM_DO_HEADER,PEM_R_BAD_DECRYPT);
+    #####:  484:		return(0);
+        -:  485:		}
+    #####:  486:	*plen=j;
+    #####:  487:	return(1);
+        -:  488:	}
+        -:  489:
+    10000:  490:int PEM_get_EVP_CIPHER_INFO(char *header, EVP_CIPHER_INFO *cipher)
+        -:  491:	{
+        -:  492:	const EVP_CIPHER *enc=NULL;
+        -:  493:	char *p,c;
+        -:  494:	char **header_pp = &header;
+        -:  495:
+    10000:  496:	cipher->cipher=NULL;
+    10000:  497:	if ((header == NULL) || (*header == '\0') || (*header == '\n'))
+        -:  498:		return(1);
+    #####:  499:	if (strncmp(header,"Proc-Type: ",11) != 0)
+    #####:  500:		{ PEMerr(PEM_F_PEM_GET_EVP_CIPHER_INFO,PEM_R_NOT_PROC_TYPE); return(0); }
+    #####:  501:	header+=11;
+    #####:  502:	if (*header != '4') return(0); header++;
+    #####:  503:	if (*header != ',') return(0); header++;
+    #####:  504:	if (strncmp(header,"ENCRYPTED",9) != 0)
+    #####:  505:		{ PEMerr(PEM_F_PEM_GET_EVP_CIPHER_INFO,PEM_R_NOT_ENCRYPTED); return(0); }
+    #####:  506:	for (; (*header != '\n') && (*header != '\0'); header++)
+        -:  507:		;
+    #####:  508:	if (*header == '\0')
+    #####:  509:		{ PEMerr(PEM_F_PEM_GET_EVP_CIPHER_INFO,PEM_R_SHORT_HEADER); return(0); }
+    #####:  510:	header++;
+    #####:  511:	if (strncmp(header,"DEK-Info: ",10) != 0)
+    #####:  512:		{ PEMerr(PEM_F_PEM_GET_EVP_CIPHER_INFO,PEM_R_NOT_DEK_INFO); return(0); }
+    #####:  513:	header+=10;
+        -:  514:
+        -:  515:	p=header;
+        -:  516:	for (;;)
+        -:  517:		{
+    #####:  518:		c= *header;
+        -:  519:#ifndef CHARSET_EBCDIC
+    #####:  520:		if (!(	((c >= 'A') && (c <= 'Z')) || (c == '-') ||
+    #####:  521:			((c >= '0') && (c <= '9'))))
+        -:  522:			break;
+        -:  523:#else
+        -:  524:		if (!(	isupper(c) || (c == '-') ||
+        -:  525:			isdigit(c)))
+        -:  526:			break;
+        -:  527:#endif
+    #####:  528:		header++;
+    #####:  529:		}
+    #####:  530:	*header='\0';
+    #####:  531:	cipher->cipher=enc=EVP_get_cipherbyname(p);
+    #####:  532:	*header=c;
+    #####:  533:	header++;
+        -:  534:
+    #####:  535:	if (enc == NULL)
+        -:  536:		{
+    #####:  537:		PEMerr(PEM_F_PEM_GET_EVP_CIPHER_INFO,PEM_R_UNSUPPORTED_ENCRYPTION);
+    #####:  538:		return(0);
+        -:  539:		}
+    #####:  540:	if (!load_iv(header_pp,&(cipher->iv[0]),enc->iv_len))
+        -:  541:		return(0);
+        -:  542:
+    #####:  543:	return(1);
+        -:  544:	}
+        -:  545:
+    #####:  546:static int load_iv(char **fromp, unsigned char *to, int num)
+        -:  547:	{
+        -:  548:	int v,i;
+        -:  549:	char *from;
+        -:  550:
+    #####:  551:	from= *fromp;
+    #####:  552:	for (i=0; i<num; i++) to[i]=0;
+    #####:  553:	num*=2;
+    #####:  554:	for (i=0; i<num; i++)
+        -:  555:		{
+    #####:  556:		if ((*from >= '0') && (*from <= '9'))
+    #####:  557:			v= *from-'0';
+    #####:  558:		else if ((*from >= 'A') && (*from <= 'F'))
+    #####:  559:			v= *from-'A'+10;
+    #####:  560:		else if ((*from >= 'a') && (*from <= 'f'))
+    #####:  561:			v= *from-'a'+10;
+        -:  562:		else
+        -:  563:			{
+    #####:  564:			PEMerr(PEM_F_LOAD_IV,PEM_R_BAD_IV_CHARS);
+    #####:  565:			return(0);
+        -:  566:			}
+    #####:  567:		from++;
+    #####:  568:		to[i/2]|=v<<(long)((!(i&1))*4);
+        -:  569:		}
+        -:  570:
+    #####:  571:	*fromp=from;
+    #####:  572:	return(1);
+        -:  573:	}
+        -:  574:
+        -:  575:#ifndef OPENSSL_NO_FP_API
+    #####:  576:int PEM_write(FILE *fp, char *name, char *header, unsigned char *data,
+        -:  577:	     long len)
+        -:  578:        {
+        -:  579:        BIO *b;
+        -:  580:        int ret;
+        -:  581:
+    #####:  582:        if ((b=BIO_new(BIO_s_file())) == NULL)
+        -:  583:		{
+    #####:  584:		PEMerr(PEM_F_PEM_WRITE,ERR_R_BUF_LIB);
+    #####:  585:                return(0);
+        -:  586:		}
+    #####:  587:        BIO_set_fp(b,fp,BIO_NOCLOSE);
+    #####:  588:        ret=PEM_write_bio(b, name, header, data,len);
+    #####:  589:        BIO_free(b);
+    #####:  590:        return(ret);
+        -:  591:        }
+        -:  592:#endif
+        -:  593:
+    10000:  594:int PEM_write_bio(BIO *bp, const char *name, char *header, unsigned char *data,
+        -:  595:	     long len)
+        -:  596:	{
+        -:  597:	int nlen,n,i,j,outl;
+        -:  598:	unsigned char *buf = NULL;
+        -:  599:	EVP_ENCODE_CTX ctx;
+        -:  600:	int reason=ERR_R_BUF_LIB;
+        -:  601:	
+    10000:  602:	EVP_EncodeInit(&ctx);
+    10000:  603:	nlen=strlen(name);
+        -:  604:
+    20000:  605:	if (	(BIO_write(bp,"-----BEGIN ",11) != 11) ||
+    20000:  606:		(BIO_write(bp,name,nlen) != nlen) ||
+    10000:  607:		(BIO_write(bp,"-----\n",6) != 6))
+        -:  608:		goto err;
+        -:  609:		
+    10000:  610:	i=strlen(header);
+    10000:  611:	if (i > 0)
+        -:  612:		{
+    #####:  613:		if (	(BIO_write(bp,header,i) != i) ||
+    #####:  614:			(BIO_write(bp,"\n",1) != 1))
+        -:  615:			goto err;
+        -:  616:		}
+        -:  617:
+    10000:  618:	buf = OPENSSL_malloc(PEM_BUFSIZE*8);
+    10000:  619:	if (buf == NULL)
+        -:  620:		{
+        -:  621:		reason=ERR_R_MALLOC_FAILURE;
+        -:  622:		goto err;
+        -:  623:		}
+        -:  624:
+        -:  625:	i=j=0;
+    20009:  626:	while (len > 0)
+        -:  627:		{
+    10009:  628:		n=(int)((len>(PEM_BUFSIZE*5))?(PEM_BUFSIZE*5):len);
+    10009:  629:		EVP_EncodeUpdate(&ctx,buf,&outl,&(data[j]),n);
+    10009:  630:		if ((outl) && (BIO_write(bp,(char *)buf,outl) != outl))
+        -:  631:			goto err;
+    10009:  632:		i+=outl;
+    10009:  633:		len-=n;
+    10009:  634:		j+=n;
+        -:  635:		}
+    10000:  636:	EVP_EncodeFinal(&ctx,buf,&outl);
+    10000:  637:	if ((outl > 0) && (BIO_write(bp,(char *)buf,outl) != outl)) goto err;
+    10000:  638:	OPENSSL_cleanse(buf, PEM_BUFSIZE*8);
+    10000:  639:	OPENSSL_free(buf);
+        -:  640:	buf = NULL;
+    20000:  641:	if (	(BIO_write(bp,"-----END ",9) != 9) ||
+    20000:  642:		(BIO_write(bp,name,nlen) != nlen) ||
+    10000:  643:		(BIO_write(bp,"-----\n",6) != 6))
+        -:  644:		goto err;
+    10000:  645:	return(i+outl);
+        -:  646:err:
+    #####:  647:	if (buf) {
+    #####:  648:		OPENSSL_cleanse(buf, PEM_BUFSIZE*8);
+    #####:  649:		OPENSSL_free(buf);
+        -:  650:	}
+    #####:  651:	PEMerr(PEM_F_PEM_WRITE_BIO,reason);
+    #####:  652:	return(0);
+        -:  653:	}
+        -:  654:
+        -:  655:#ifndef OPENSSL_NO_FP_API
+    #####:  656:int PEM_read(FILE *fp, char **name, char **header, unsigned char **data,
+        -:  657:	     long *len)
+        -:  658:        {
+        -:  659:        BIO *b;
+        -:  660:        int ret;
+        -:  661:
+    #####:  662:        if ((b=BIO_new(BIO_s_file())) == NULL)
+        -:  663:		{
+    #####:  664:		PEMerr(PEM_F_PEM_READ,ERR_R_BUF_LIB);
+    #####:  665:                return(0);
+        -:  666:		}
+    #####:  667:        BIO_set_fp(b,fp,BIO_NOCLOSE);
+    #####:  668:        ret=PEM_read_bio(b, name, header, data,len);
+    #####:  669:        BIO_free(b);
+    #####:  670:        return(ret);
+        -:  671:        }
+        -:  672:#endif
+        -:  673:
+    30000:  674:int PEM_read_bio(BIO *bp, char **name, char **header, unsigned char **data,
+        -:  675:	     long *len)
+        -:  676:	{
+        -:  677:	EVP_ENCODE_CTX ctx;
+    30000:  678:	int end=0,i,k,bl=0,hl=0,nohead=0;
+        -:  679:	char buf[256];
+        -:  680:	BUF_MEM *nameB;
+        -:  681:	BUF_MEM *headerB;
+        -:  682:	BUF_MEM *dataB,*tmpB;
+        -:  683:	
+    30000:  684:	nameB=BUF_MEM_new();
+    30000:  685:	headerB=BUF_MEM_new();
+    30000:  686:	dataB=BUF_MEM_new();
+    30000:  687:	if ((nameB == NULL) || (headerB == NULL) || (dataB == NULL))
+        -:  688:		{
+    #####:  689:		BUF_MEM_free(nameB);
+    #####:  690:		BUF_MEM_free(headerB);
+    #####:  691:		BUF_MEM_free(dataB);
+    #####:  692:		PEMerr(PEM_F_PEM_READ_BIO,ERR_R_MALLOC_FAILURE);
+    #####:  693:		return(0);
+        -:  694:		}
+        -:  695:
+    30000:  696:	buf[254]='\0';
+        -:  697:	for (;;)
+        -:  698:		{
+    30000:  699:		i=BIO_gets(bp,buf,254);
+        -:  700:
+    30000:  701:		if (i <= 0)
+        -:  702:			{
+    10000:  703:			PEMerr(PEM_F_PEM_READ_BIO,PEM_R_NO_START_LINE);
+    10000:  704:			goto err;
+        -:  705:			}
+        -:  706:
+    40000:  707:		while ((i >= 0) && (buf[i] <= ' ')) i--;
+    20000:  708:		buf[++i]='\n'; buf[++i]='\0';
+        -:  709:
+    20000:  710:		if (strncmp(buf,"-----BEGIN ",11) == 0)
+        -:  711:			{
+    20000:  712:			i=strlen(&(buf[11]));
+        -:  713:
+    20000:  714:			if (strncmp(&(buf[11+i-6]),"-----\n",6) != 0)
+    #####:  715:				continue;
+    20000:  716:			if (!BUF_MEM_grow(nameB,i+9))
+        -:  717:				{
+    #####:  718:				PEMerr(PEM_F_PEM_READ_BIO,ERR_R_MALLOC_FAILURE);
+    #####:  719:				goto err;
+        -:  720:				}
+    20000:  721:			memcpy(nameB->data,&(buf[11]),i-6);
+    20000:  722:			nameB->data[i-6]='\0';
+        -:  723:			break;
+        -:  724:			}
+        -:  725:		}
+        -:  726:	hl=0;
+    20000:  727:	if (!BUF_MEM_grow(headerB,256))
+    #####:  728:		{ PEMerr(PEM_F_PEM_READ_BIO,ERR_R_MALLOC_FAILURE); goto err; }
+    20000:  729:	headerB->data[0]='\0';
+        -:  730:	for (;;)
+        -:  731:		{
+   290000:  732:		i=BIO_gets(bp,buf,254);
+   290000:  733:		if (i <= 0) break;
+        -:  734:
+   580000:  735:		while ((i >= 0) && (buf[i] <= ' ')) i--;
+   290000:  736:		buf[++i]='\n'; buf[++i]='\0';
+        -:  737:
+   290000:  738:		if (buf[0] == '\n') break;
+   290000:  739:		if (!BUF_MEM_grow(headerB,hl+i+9))
+    #####:  740:			{ PEMerr(PEM_F_PEM_READ_BIO,ERR_R_MALLOC_FAILURE); goto err; }
+   290000:  741:		if (strncmp(buf,"-----END ",9) == 0)
+        -:  742:			{
+        -:  743:			nohead=1;
+        -:  744:			break;
+        -:  745:			}
+   270000:  746:		memcpy(&(headerB->data[hl]),buf,i);
+   270000:  747:		headerB->data[hl+i]='\0';
+        -:  748:		hl+=i;
+   270000:  749:		}
+        -:  750:
+    20000:  751:	bl=0;
+    20000:  752:	if (!BUF_MEM_grow(dataB,1024))
+    #####:  753:		{ PEMerr(PEM_F_PEM_READ_BIO,ERR_R_MALLOC_FAILURE); goto err; }
+    20000:  754:	dataB->data[0]='\0';
+    20000:  755:	if (!nohead)
+        -:  756:		{
+        -:  757:		for (;;)
+        -:  758:			{
+    #####:  759:			i=BIO_gets(bp,buf,254);
+    #####:  760:			if (i <= 0) break;
+        -:  761:
+    #####:  762:			while ((i >= 0) && (buf[i] <= ' ')) i--;
+    #####:  763:			buf[++i]='\n'; buf[++i]='\0';
+        -:  764:
+    #####:  765:			if (i != 65) end=1;
+    #####:  766:			if (strncmp(buf,"-----END ",9) == 0)
+        -:  767:				break;
+    #####:  768:			if (i > 65) break;
+    #####:  769:			if (!BUF_MEM_grow_clean(dataB,i+bl+9))
+        -:  770:				{
+    #####:  771:				PEMerr(PEM_F_PEM_READ_BIO,ERR_R_MALLOC_FAILURE);
+    #####:  772:				goto err;
+        -:  773:				}
+    #####:  774:			memcpy(&(dataB->data[bl]),buf,i);
+    #####:  775:			dataB->data[bl+i]='\0';
+    #####:  776:			bl+=i;
+    #####:  777:			if (end)
+        -:  778:				{
+    #####:  779:				buf[0]='\0';
+    #####:  780:				i=BIO_gets(bp,buf,254);
+    #####:  781:				if (i <= 0) break;
+        -:  782:
+    #####:  783:				while ((i >= 0) && (buf[i] <= ' ')) i--;
+    #####:  784:				buf[++i]='\n'; buf[++i]='\0';
+        -:  785:
+    #####:  786:				break;
+        -:  787:				}
+        -:  788:			}
+        -:  789:		}
+        -:  790:	else
+        -:  791:		{
+        -:  792:		tmpB=headerB;
+        -:  793:		headerB=dataB;
+        -:  794:		dataB=tmpB;
+    20000:  795:		bl=hl;
+        -:  796:		}
+    20000:  797:	i=strlen(nameB->data);
+    40000:  798:	if (	(strncmp(buf,"-----END ",9) != 0) ||
+    40000:  799:		(strncmp(nameB->data,&(buf[9]),i) != 0) ||
+    20000:  800:		(strncmp(&(buf[9+i]),"-----\n",6) != 0))
+        -:  801:		{
+    #####:  802:		PEMerr(PEM_F_PEM_READ_BIO,PEM_R_BAD_END_LINE);
+    #####:  803:		goto err;
+        -:  804:		}
+        -:  805:
+    20000:  806:	EVP_DecodeInit(&ctx);
+    40000:  807:	i=EVP_DecodeUpdate(&ctx,
+    20000:  808:		(unsigned char *)dataB->data,&bl,
+        -:  809:		(unsigned char *)dataB->data,bl);
+    20000:  810:	if (i < 0)
+        -:  811:		{
+    #####:  812:		PEMerr(PEM_F_PEM_READ_BIO,PEM_R_BAD_BASE64_DECODE);
+    #####:  813:		goto err;
+        -:  814:		}
+    20000:  815:	i=EVP_DecodeFinal(&ctx,(unsigned char *)&(dataB->data[bl]),&k);
+    20000:  816:	if (i < 0)
+        -:  817:		{
+    #####:  818:		PEMerr(PEM_F_PEM_READ_BIO,PEM_R_BAD_BASE64_DECODE);
+    #####:  819:		goto err;
+        -:  820:		}
+    20000:  821:	bl+=k;
+        -:  822:
+    20000:  823:	if (bl == 0) goto err;
+    20000:  824:	*name=nameB->data;
+    20000:  825:	*header=headerB->data;
+    20000:  826:	*data=(unsigned char *)dataB->data;
+    20000:  827:	*len=bl;
+    20000:  828:	OPENSSL_free(nameB);
+    20000:  829:	OPENSSL_free(headerB);
+    20000:  830:	OPENSSL_free(dataB);
+    20000:  831:	return(1);
+        -:  832:err:
+    10000:  833:	BUF_MEM_free(nameB);
+    10000:  834:	BUF_MEM_free(headerB);
+    10000:  835:	BUF_MEM_free(dataB);
+    10000:  836:	return(0);
+        -:  837:	}
+        -:  838:
+        -:  839:/* Check pem string and return prefix length.
+        -:  840: * If for example the pem_str == "RSA PRIVATE KEY" and suffix = "PRIVATE KEY"
+        -:  841: * the return value is 3 for the string "RSA".
+        -:  842: */
+        -:  843:
+    #####:  844:int pem_check_suffix(const char *pem_str, const char *suffix)
+        -:  845:	{
+    #####:  846:	int pem_len = strlen(pem_str);
+    #####:  847:	int suffix_len = strlen(suffix);
+        -:  848:	const char *p;
+    #####:  849:	if (suffix_len + 1 >= pem_len)
+        -:  850:		return 0;
+    #####:  851:	p = pem_str + pem_len - suffix_len;
+    #####:  852:	if (strcmp(p, suffix))
+        -:  853:		return 0;
+    #####:  854:	p--;
+    #####:  855:	if (*p != ' ')
+        -:  856:		return 0;
+    #####:  857:	return p - pem_str;
+        -:  858:	}
+        -:  859:

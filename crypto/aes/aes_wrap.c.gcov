@@ -1,0 +1,264 @@
+        -:    0:Source:aes_wrap.c
+        -:    0:Graph:aes_wrap.gcno
+        -:    0:Data:aes_wrap.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* crypto/aes/aes_wrap.c */
+        -:    2:/* Written by Dr Stephen N Henson (steve@openssl.org) for the OpenSSL
+        -:    3: * project.
+        -:    4: */
+        -:    5:/* ====================================================================
+        -:    6: * Copyright (c) 2008 The OpenSSL Project.  All rights reserved.
+        -:    7: *
+        -:    8: * Redistribution and use in source and binary forms, with or without
+        -:    9: * modification, are permitted provided that the following conditions
+        -:   10: * are met:
+        -:   11: *
+        -:   12: * 1. Redistributions of source code must retain the above copyright
+        -:   13: *    notice, this list of conditions and the following disclaimer. 
+        -:   14: *
+        -:   15: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   16: *    notice, this list of conditions and the following disclaimer in
+        -:   17: *    the documentation and/or other materials provided with the
+        -:   18: *    distribution.
+        -:   19: *
+        -:   20: * 3. All advertising materials mentioning features or use of this
+        -:   21: *    software must display the following acknowledgment:
+        -:   22: *    "This product includes software developed by the OpenSSL Project
+        -:   23: *    for use in the OpenSSL Toolkit. (http://www.OpenSSL.org/)"
+        -:   24: *
+        -:   25: * 4. The names "OpenSSL Toolkit" and "OpenSSL Project" must not be used to
+        -:   26: *    endorse or promote products derived from this software without
+        -:   27: *    prior written permission. For written permission, please contact
+        -:   28: *    licensing@OpenSSL.org.
+        -:   29: *
+        -:   30: * 5. Products derived from this software may not be called "OpenSSL"
+        -:   31: *    nor may "OpenSSL" appear in their names without prior written
+        -:   32: *    permission of the OpenSSL Project.
+        -:   33: *
+        -:   34: * 6. Redistributions of any form whatsoever must retain the following
+        -:   35: *    acknowledgment:
+        -:   36: *    "This product includes software developed by the OpenSSL Project
+        -:   37: *    for use in the OpenSSL Toolkit (http://www.OpenSSL.org/)"
+        -:   38: *
+        -:   39: * THIS SOFTWARE IS PROVIDED BY THE OpenSSL PROJECT ``AS IS'' AND ANY
+        -:   40: * EXPRESSED OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   41: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+        -:   42: * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE OpenSSL PROJECT OR
+        -:   43: * ITS CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+        -:   44: * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+        -:   45: * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+        -:   46: * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   47: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+        -:   48: * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+        -:   49: * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+        -:   50: * OF THE POSSIBILITY OF SUCH DAMAGE.
+        -:   51: * ====================================================================
+        -:   52: */
+        -:   53:
+        -:   54:#include "cryptlib.h"
+        -:   55:#include <openssl/aes.h>
+        -:   56:#include <openssl/bio.h>
+        -:   57:
+        -:   58:static const unsigned char default_iv[] = {
+        -:   59:  0xA6, 0xA6, 0xA6, 0xA6, 0xA6, 0xA6, 0xA6, 0xA6,
+        -:   60:};
+        -:   61:
+    #####:   62:int AES_wrap_key(AES_KEY *key, const unsigned char *iv,
+        -:   63:		unsigned char *out,
+        -:   64:		const unsigned char *in, unsigned int inlen)
+        -:   65:	{
+        -:   66:	unsigned char *A, B[16], *R;
+        -:   67:	unsigned int i, j, t;
+    #####:   68:	if ((inlen & 0x7) || (inlen < 8))
+        -:   69:		return -1;
+        -:   70:	A = B;
+        -:   71:	t = 1;
+    #####:   72:	memcpy(out + 8, in, inlen);
+    #####:   73:	if (!iv)
+        -:   74:		iv = default_iv;
+        -:   75:
+        -:   76:	memcpy(A, iv, 8);
+        -:   77:
+    #####:   78:	for (j = 0; j < 6; j++)
+        -:   79:		{
+        -:   80:		R = out + 8;
+    #####:   81:		for (i = 0; i < inlen; i += 8, t++, R += 8)
+        -:   82:			{
+        -:   83:			memcpy(B + 8, R, 8);
+    #####:   84:			AES_encrypt(B, B, key);
+    #####:   85:			A[7] ^= (unsigned char)(t & 0xff);
+    #####:   86:			if (t > 0xff)	
+        -:   87:				{
+    #####:   88:				A[6] ^= (unsigned char)((t >> 8) & 0xff);
+    #####:   89:				A[5] ^= (unsigned char)((t >> 16) & 0xff);
+    #####:   90:				A[4] ^= (unsigned char)((t >> 24) & 0xff);
+        -:   91:				}
+        -:   92:			memcpy(R, B + 8, 8);
+        -:   93:			}
+        -:   94:		}
+        -:   95:	memcpy(out, A, 8);
+    #####:   96:	return inlen + 8;
+        -:   97:	}
+        -:   98:
+    #####:   99:int AES_unwrap_key(AES_KEY *key, const unsigned char *iv,
+        -:  100:		unsigned char *out,
+        -:  101:		const unsigned char *in, unsigned int inlen)
+        -:  102:	{
+        -:  103:	unsigned char *A, B[16], *R;
+        -:  104:	unsigned int i, j, t;
+    #####:  105:	inlen -= 8;
+    #####:  106:	if (inlen & 0x7)
+        -:  107:		return -1;
+    #####:  108:	if (inlen < 8)
+        -:  109:		return -1;
+        -:  110:	A = B;
+    #####:  111:	t =  6 * (inlen >> 3);
+        -:  112:	memcpy(A, in, 8);
+    #####:  113:	memcpy(out, in + 8, inlen);
+    #####:  114:	for (j = 0; j < 6; j++)
+        -:  115:		{
+    #####:  116:		R = out + inlen - 8;
+    #####:  117:		for (i = 0; i < inlen; i += 8, t--, R -= 8)
+        -:  118:			{
+    #####:  119:			A[7] ^= (unsigned char)(t & 0xff);
+    #####:  120:			if (t > 0xff)	
+        -:  121:				{
+    #####:  122:				A[6] ^= (unsigned char)((t >> 8) & 0xff);
+    #####:  123:				A[5] ^= (unsigned char)((t >> 16) & 0xff);
+    #####:  124:				A[4] ^= (unsigned char)((t >> 24) & 0xff);
+        -:  125:				}
+        -:  126:			memcpy(B + 8, R, 8);
+    #####:  127:			AES_decrypt(B, B, key);
+        -:  128:			memcpy(R, B + 8, 8);
+        -:  129:			}
+        -:  130:		}
+    #####:  131:	if (!iv)
+        -:  132:		iv = default_iv;
+    #####:  133:	if (memcmp(A, iv, 8))
+        -:  134:		{
+    #####:  135:		OPENSSL_cleanse(out, inlen);
+    #####:  136:		return 0;
+        -:  137:		}
+    #####:  138:	return inlen;
+        -:  139:	}
+        -:  140:
+        -:  141:#ifdef AES_WRAP_TEST
+        -:  142:
+        -:  143:int AES_wrap_unwrap_test(const unsigned char *kek, int keybits,
+        -:  144:			 const unsigned char *iv,
+        -:  145:			 const unsigned char *eout,
+        -:  146:			 const unsigned char *key, int keylen)
+        -:  147:	{
+        -:  148:	unsigned char *otmp = NULL, *ptmp = NULL;
+        -:  149:	int r, ret = 0;
+        -:  150:	AES_KEY wctx;
+        -:  151:	otmp = OPENSSL_malloc(keylen + 8);
+        -:  152:	ptmp = OPENSSL_malloc(keylen);
+        -:  153:	if (!otmp || !ptmp)
+        -:  154:		return 0;
+        -:  155:	if (AES_set_encrypt_key(kek, keybits, &wctx))
+        -:  156:		goto err;
+        -:  157:	r = AES_wrap_key(&wctx, iv, otmp, key, keylen);
+        -:  158:	if (r <= 0)
+        -:  159:		goto err;
+        -:  160:
+        -:  161:	if (eout && memcmp(eout, otmp, keylen))
+        -:  162:		goto err;
+        -:  163:		
+        -:  164:	if (AES_set_decrypt_key(kek, keybits, &wctx))
+        -:  165:		goto err;
+        -:  166:	r = AES_unwrap_key(&wctx, iv, ptmp, otmp, r);
+        -:  167:
+        -:  168:	if (memcmp(key, ptmp, keylen))
+        -:  169:		goto err;
+        -:  170:
+        -:  171:	ret = 1;
+        -:  172:
+        -:  173:	err:
+        -:  174:	if (otmp)
+        -:  175:		OPENSSL_free(otmp);
+        -:  176:	if (ptmp)
+        -:  177:		OPENSSL_free(ptmp);
+        -:  178:
+        -:  179:	return ret;
+        -:  180:
+        -:  181:	}
+        -:  182:
+        -:  183:
+        -:  184:
+        -:  185:int main(int argc, char **argv)
+        -:  186:{
+        -:  187:
+        -:  188:static const unsigned char kek[] = {
+        -:  189:  0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
+        -:  190:  0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
+        -:  191:  0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17,
+        -:  192:  0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f
+        -:  193:};
+        -:  194:
+        -:  195:static const unsigned char key[] = {
+        -:  196:  0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77,
+        -:  197:  0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff,
+        -:  198:  0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
+        -:  199:  0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f
+        -:  200:};
+        -:  201:
+        -:  202:static const unsigned char e1[] = {
+        -:  203:  0x1f, 0xa6, 0x8b, 0x0a, 0x81, 0x12, 0xb4, 0x47,
+        -:  204:  0xae, 0xf3, 0x4b, 0xd8, 0xfb, 0x5a, 0x7b, 0x82,
+        -:  205:  0x9d, 0x3e, 0x86, 0x23, 0x71, 0xd2, 0xcf, 0xe5
+        -:  206:};
+        -:  207:
+        -:  208:static const unsigned char e2[] = {
+        -:  209:  0x96, 0x77, 0x8b, 0x25, 0xae, 0x6c, 0xa4, 0x35,
+        -:  210:  0xf9, 0x2b, 0x5b, 0x97, 0xc0, 0x50, 0xae, 0xd2,
+        -:  211:  0x46, 0x8a, 0xb8, 0xa1, 0x7a, 0xd8, 0x4e, 0x5d
+        -:  212:};
+        -:  213:
+        -:  214:static const unsigned char e3[] = {
+        -:  215:  0x64, 0xe8, 0xc3, 0xf9, 0xce, 0x0f, 0x5b, 0xa2,
+        -:  216:  0x63, 0xe9, 0x77, 0x79, 0x05, 0x81, 0x8a, 0x2a,
+        -:  217:  0x93, 0xc8, 0x19, 0x1e, 0x7d, 0x6e, 0x8a, 0xe7
+        -:  218:};
+        -:  219:
+        -:  220:static const unsigned char e4[] = {
+        -:  221:  0x03, 0x1d, 0x33, 0x26, 0x4e, 0x15, 0xd3, 0x32,
+        -:  222:  0x68, 0xf2, 0x4e, 0xc2, 0x60, 0x74, 0x3e, 0xdc,
+        -:  223:  0xe1, 0xc6, 0xc7, 0xdd, 0xee, 0x72, 0x5a, 0x93,
+        -:  224:  0x6b, 0xa8, 0x14, 0x91, 0x5c, 0x67, 0x62, 0xd2
+        -:  225:};
+        -:  226:
+        -:  227:static const unsigned char e5[] = {
+        -:  228:  0xa8, 0xf9, 0xbc, 0x16, 0x12, 0xc6, 0x8b, 0x3f,
+        -:  229:  0xf6, 0xe6, 0xf4, 0xfb, 0xe3, 0x0e, 0x71, 0xe4,
+        -:  230:  0x76, 0x9c, 0x8b, 0x80, 0xa3, 0x2c, 0xb8, 0x95,
+        -:  231:  0x8c, 0xd5, 0xd1, 0x7d, 0x6b, 0x25, 0x4d, 0xa1
+        -:  232:};
+        -:  233:
+        -:  234:static const unsigned char e6[] = {
+        -:  235:  0x28, 0xc9, 0xf4, 0x04, 0xc4, 0xb8, 0x10, 0xf4,
+        -:  236:  0xcb, 0xcc, 0xb3, 0x5c, 0xfb, 0x87, 0xf8, 0x26,
+        -:  237:  0x3f, 0x57, 0x86, 0xe2, 0xd8, 0x0e, 0xd3, 0x26,
+        -:  238:  0xcb, 0xc7, 0xf0, 0xe7, 0x1a, 0x99, 0xf4, 0x3b,
+        -:  239:  0xfb, 0x98, 0x8b, 0x9b, 0x7a, 0x02, 0xdd, 0x21
+        -:  240:};
+        -:  241:
+        -:  242:	AES_KEY wctx, xctx;
+        -:  243:	int ret;
+        -:  244:	ret = AES_wrap_unwrap_test(kek, 128, NULL, e1, key, 16);
+        -:  245:	fprintf(stderr, "Key test result %d\n", ret);
+        -:  246:	ret = AES_wrap_unwrap_test(kek, 192, NULL, e2, key, 16);
+        -:  247:	fprintf(stderr, "Key test result %d\n", ret);
+        -:  248:	ret = AES_wrap_unwrap_test(kek, 256, NULL, e3, key, 16);
+        -:  249:	fprintf(stderr, "Key test result %d\n", ret);
+        -:  250:	ret = AES_wrap_unwrap_test(kek, 192, NULL, e4, key, 24);
+        -:  251:	fprintf(stderr, "Key test result %d\n", ret);
+        -:  252:	ret = AES_wrap_unwrap_test(kek, 256, NULL, e5, key, 24);
+        -:  253:	fprintf(stderr, "Key test result %d\n", ret);
+        -:  254:	ret = AES_wrap_unwrap_test(kek, 256, NULL, e6, key, 32);
+        -:  255:	fprintf(stderr, "Key test result %d\n", ret);
+        -:  256:}
+        -:  257:	
+        -:  258:	
+        -:  259:#endif

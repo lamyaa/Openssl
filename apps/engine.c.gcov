@@ -1,0 +1,554 @@
+        -:    0:Source:engine.c
+        -:    0:Graph:engine.gcno
+        -:    0:Data:engine.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* apps/engine.c -*- mode: C; c-file-style: "eay" -*- */
+        -:    2:/* Written by Richard Levitte <richard@levitte.org> for the OpenSSL
+        -:    3: * project 2000.
+        -:    4: */
+        -:    5:/* ====================================================================
+        -:    6: * Copyright (c) 2000 The OpenSSL Project.  All rights reserved.
+        -:    7: *
+        -:    8: * Redistribution and use in source and binary forms, with or without
+        -:    9: * modification, are permitted provided that the following conditions
+        -:   10: * are met:
+        -:   11: *
+        -:   12: * 1. Redistributions of source code must retain the above copyright
+        -:   13: *    notice, this list of conditions and the following disclaimer. 
+        -:   14: *
+        -:   15: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   16: *    notice, this list of conditions and the following disclaimer in
+        -:   17: *    the documentation and/or other materials provided with the
+        -:   18: *    distribution.
+        -:   19: *
+        -:   20: * 3. All advertising materials mentioning features or use of this
+        -:   21: *    software must display the following acknowledgment:
+        -:   22: *    "This product includes software developed by the OpenSSL Project
+        -:   23: *    for use in the OpenSSL Toolkit. (http://www.OpenSSL.org/)"
+        -:   24: *
+        -:   25: * 4. The names "OpenSSL Toolkit" and "OpenSSL Project" must not be used to
+        -:   26: *    endorse or promote products derived from this software without
+        -:   27: *    prior written permission. For written permission, please contact
+        -:   28: *    licensing@OpenSSL.org.
+        -:   29: *
+        -:   30: * 5. Products derived from this software may not be called "OpenSSL"
+        -:   31: *    nor may "OpenSSL" appear in their names without prior written
+        -:   32: *    permission of the OpenSSL Project.
+        -:   33: *
+        -:   34: * 6. Redistributions of any form whatsoever must retain the following
+        -:   35: *    acknowledgment:
+        -:   36: *    "This product includes software developed by the OpenSSL Project
+        -:   37: *    for use in the OpenSSL Toolkit (http://www.OpenSSL.org/)"
+        -:   38: *
+        -:   39: * THIS SOFTWARE IS PROVIDED BY THE OpenSSL PROJECT ``AS IS'' AND ANY
+        -:   40: * EXPRESSED OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   41: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+        -:   42: * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE OpenSSL PROJECT OR
+        -:   43: * ITS CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+        -:   44: * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+        -:   45: * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+        -:   46: * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   47: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+        -:   48: * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+        -:   49: * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+        -:   50: * OF THE POSSIBILITY OF SUCH DAMAGE.
+        -:   51: * ====================================================================
+        -:   52: *
+        -:   53: * This product includes cryptographic software written by Eric Young
+        -:   54: * (eay@cryptsoft.com).  This product includes software written by Tim
+        -:   55: * Hudson (tjh@cryptsoft.com).
+        -:   56: *
+        -:   57: */
+        -:   58:
+        -:   59:
+        -:   60:#include <stdio.h>
+        -:   61:#include <stdlib.h>
+        -:   62:#include <string.h>
+        -:   63:#ifdef OPENSSL_NO_STDIO
+        -:   64:#define APPS_WIN16
+        -:   65:#endif
+        -:   66:#include "apps.h"
+        -:   67:#include <openssl/err.h>
+        -:   68:#ifndef OPENSSL_NO_ENGINE
+        -:   69:#include <openssl/engine.h>
+        -:   70:#include <openssl/ssl.h>
+        -:   71:
+        -:   72:#undef PROG
+        -:   73:#define PROG	engine_main
+        -:   74:
+        -:   75:static const char *engine_usage[]={
+        -:   76:"usage: engine opts [engine ...]\n",
+        -:   77:" -v[v[v[v]]] - verbose mode, for each engine, list its 'control commands'\n",
+        -:   78:"               -vv will additionally display each command's description\n",
+        -:   79:"               -vvv will also add the input flags for each command\n",
+        -:   80:"               -vvvv will also show internal input flags\n",
+        -:   81:" -c          - for each engine, also list the capabilities\n",
+        -:   82:" -t[t]       - for each engine, check that they are really available\n",
+        -:   83:"               -tt will display error trace for unavailable engines\n",
+        -:   84:" -pre <cmd>  - runs command 'cmd' against the ENGINE before any attempts\n",
+        -:   85:"               to load it (if -t is used)\n",
+        -:   86:" -post <cmd> - runs command 'cmd' against the ENGINE after loading it\n",
+        -:   87:"               (only used if -t is also provided)\n",
+        -:   88:" NB: -pre and -post will be applied to all ENGINEs supplied on the command\n",
+        -:   89:" line, or all supported ENGINEs if none are specified.\n",
+        -:   90:" Eg. '-pre \"SO_PATH:/lib/libdriver.so\"' calls command \"SO_PATH\" with\n",
+        -:   91:" argument \"/lib/libdriver.so\".\n",
+        -:   92:NULL
+        -:   93:};
+        -:   94:
+    #####:   95:static void identity(char *ptr)
+        -:   96:	{
+    #####:   97:	return;
+        -:   98:	}
+        -:   99:
+    #####:  100:static int append_buf(char **buf, const char *s, int *size, int step)
+        -:  101:	{
+        -:  102:	int l = strlen(s);
+        -:  103:
+    #####:  104:	if (*buf == NULL)
+        -:  105:		{
+    #####:  106:		*size = step;
+    #####:  107:		*buf = OPENSSL_malloc(*size);
+    #####:  108:		if (*buf == NULL)
+        -:  109:			return 0;
+    #####:  110:		**buf = '\0';
+        -:  111:		}
+        -:  112:
+    #####:  113:	if (**buf != '\0')
+        -:  114:		l += 2;		/* ", " */
+        -:  115:
+    #####:  116:	if (strlen(*buf) + strlen(s) >= (unsigned int)*size)
+        -:  117:		{
+    #####:  118:		*size += step;
+    #####:  119:		*buf = OPENSSL_realloc(*buf, *size);
+        -:  120:		}
+        -:  121:
+    #####:  122:	if (*buf == NULL)
+        -:  123:		return 0;
+        -:  124:
+    #####:  125:	if (**buf != '\0')
+    #####:  126:		BUF_strlcat(*buf, ", ", *size);
+    #####:  127:	BUF_strlcat(*buf, s, *size);
+        -:  128:
+    #####:  129:	return 1;
+        -:  130:	}
+        -:  131:
+    #####:  132:static int util_flags(BIO *bio_out, unsigned int flags, const char *indent)
+        -:  133:	{
+        -:  134:	int started = 0, err = 0;
+        -:  135:	/* Indent before displaying input flags */
+    #####:  136:	BIO_printf(bio_out, "%s%s(input flags): ", indent, indent);
+    #####:  137:	if(flags == 0)
+        -:  138:		{
+    #####:  139:		BIO_printf(bio_out, "<no flags>\n");
+    #####:  140:		return 1;
+        -:  141:		}
+        -:  142:        /* If the object is internal, mark it in a way that shows instead of
+        -:  143:         * having it part of all the other flags, even if it really is. */
+    #####:  144:	if(flags & ENGINE_CMD_FLAG_INTERNAL)
+        -:  145:		{
+    #####:  146:		BIO_printf(bio_out, "[Internal] ");
+        -:  147:		}
+        -:  148:
+    #####:  149:	if(flags & ENGINE_CMD_FLAG_NUMERIC)
+        -:  150:		{
+    #####:  151:		BIO_printf(bio_out, "NUMERIC");
+        -:  152:		started = 1;
+        -:  153:		}
+        -:  154:	/* Now we check that no combinations of the mutually exclusive NUMERIC,
+        -:  155:	 * STRING, and NO_INPUT flags have been used. Future flags that can be
+        -:  156:	 * OR'd together with these would need to added after these to preserve
+        -:  157:	 * the testing logic. */
+    #####:  158:	if(flags & ENGINE_CMD_FLAG_STRING)
+        -:  159:		{
+    #####:  160:		if(started)
+        -:  161:			{
+    #####:  162:			BIO_printf(bio_out, "|");
+        -:  163:			err = 1;
+        -:  164:			}
+    #####:  165:		BIO_printf(bio_out, "STRING");
+        -:  166:		started = 1;
+        -:  167:		}
+    #####:  168:	if(flags & ENGINE_CMD_FLAG_NO_INPUT)
+        -:  169:		{
+    #####:  170:		if(started)
+        -:  171:			{
+    #####:  172:			BIO_printf(bio_out, "|");
+        -:  173:			err = 1;
+        -:  174:			}
+    #####:  175:		BIO_printf(bio_out, "NO_INPUT");
+        -:  176:		started = 1;
+        -:  177:		}
+        -:  178:	/* Check for unknown flags */
+    #####:  179:	flags = flags & ~ENGINE_CMD_FLAG_NUMERIC &
+        -:  180:			~ENGINE_CMD_FLAG_STRING &
+        -:  181:			~ENGINE_CMD_FLAG_NO_INPUT &
+        -:  182:			~ENGINE_CMD_FLAG_INTERNAL;
+    #####:  183:	if(flags)
+        -:  184:		{
+    #####:  185:		if(started) BIO_printf(bio_out, "|");
+    #####:  186:		BIO_printf(bio_out, "<0x%04X>", flags);
+        -:  187:		}
+    #####:  188:	if(err)
+    #####:  189:		BIO_printf(bio_out, "  <illegal flags!>");
+    #####:  190:	BIO_printf(bio_out, "\n");
+    #####:  191:	return 1;
+        -:  192:	}
+        -:  193:
+    #####:  194:static int util_verbose(ENGINE *e, int verbose, BIO *bio_out, const char *indent)
+        -:  195:	{
+        -:  196:	static const int line_wrap = 78;
+        -:  197:	int num;
+        -:  198:	int ret = 0;
+        -:  199:	char *name = NULL;
+        -:  200:	char *desc = NULL;
+        -:  201:	int flags;
+        -:  202:	int xpos = 0;
+        -:  203:	STACK_OF(OPENSSL_STRING) *cmds = NULL;
+    #####:  204:	if(!ENGINE_ctrl(e, ENGINE_CTRL_HAS_CTRL_FUNCTION, 0, NULL, NULL) ||
+        -:  205:			((num = ENGINE_ctrl(e, ENGINE_CTRL_GET_FIRST_CMD_TYPE,
+        -:  206:					0, NULL, NULL)) <= 0))
+        -:  207:		{
+        -:  208:#if 0
+        -:  209:		BIO_printf(bio_out, "%s<no control commands>\n", indent);
+        -:  210:#endif
+        -:  211:		return 1;
+        -:  212:		}
+        -:  213:
+    #####:  214:	cmds = sk_OPENSSL_STRING_new_null();
+        -:  215:
+    #####:  216:	if(!cmds)
+        -:  217:		goto err;
+        -:  218:	do {
+        -:  219:		int len;
+        -:  220:		/* Get the command input flags */
+    #####:  221:		if((flags = ENGINE_ctrl(e, ENGINE_CTRL_GET_CMD_FLAGS, num,
+        -:  222:					NULL, NULL)) < 0)
+        -:  223:			goto err;
+    #####:  224:                if (!(flags & ENGINE_CMD_FLAG_INTERNAL) || verbose >= 4)
+        -:  225:                        {
+        -:  226:                        /* Get the command name */
+    #####:  227:                        if((len = ENGINE_ctrl(e, ENGINE_CTRL_GET_NAME_LEN_FROM_CMD, num,
+        -:  228:                                NULL, NULL)) <= 0)
+        -:  229:                                goto err;
+    #####:  230:                        if((name = OPENSSL_malloc(len + 1)) == NULL)
+        -:  231:                                goto err;
+    #####:  232:                        if(ENGINE_ctrl(e, ENGINE_CTRL_GET_NAME_FROM_CMD, num, name,
+        -:  233:                                NULL) <= 0)
+        -:  234:                                goto err;
+        -:  235:                        /* Get the command description */
+    #####:  236:                        if((len = ENGINE_ctrl(e, ENGINE_CTRL_GET_DESC_LEN_FROM_CMD, num,
+        -:  237:                                NULL, NULL)) < 0)
+        -:  238:                                goto err;
+    #####:  239:                        if(len > 0)
+        -:  240:                                {
+    #####:  241:                                if((desc = OPENSSL_malloc(len + 1)) == NULL)
+        -:  242:                                        goto err;
+    #####:  243:                                if(ENGINE_ctrl(e, ENGINE_CTRL_GET_DESC_FROM_CMD, num, desc,
+        -:  244:                                        NULL) <= 0)
+        -:  245:                                        goto err;
+        -:  246:                                }
+        -:  247:                        /* Now decide on the output */
+    #####:  248:                        if(xpos == 0)
+        -:  249:                                /* Do an indent */
+    #####:  250:                                xpos = BIO_puts(bio_out, indent);
+        -:  251:                        else
+        -:  252:                                /* Otherwise prepend a ", " */
+    #####:  253:                                xpos += BIO_printf(bio_out, ", ");
+    #####:  254:                        if(verbose == 1)
+        -:  255:                                {
+        -:  256:                                /* We're just listing names, comma-delimited */
+    #####:  257:                                if((xpos > (int)strlen(indent)) &&
+    #####:  258:					(xpos + (int)strlen(name) > line_wrap))
+        -:  259:                                        {
+    #####:  260:                                        BIO_printf(bio_out, "\n");
+    #####:  261:                                        xpos = BIO_puts(bio_out, indent);
+        -:  262:                                        }
+    #####:  263:                                xpos += BIO_printf(bio_out, "%s", name);
+        -:  264:                                }
+        -:  265:                        else
+        -:  266:                                {
+        -:  267:                                /* We're listing names plus descriptions */
+    #####:  268:                                BIO_printf(bio_out, "%s: %s\n", name,
+        -:  269:                                        (desc == NULL) ? "<no description>" : desc);
+        -:  270:                                /* ... and sometimes input flags */
+    #####:  271:                                if((verbose >= 3) && !util_flags(bio_out, flags,
+        -:  272:                                        indent))
+        -:  273:                                        goto err;
+        -:  274:                                xpos = 0;
+        -:  275:                                }
+        -:  276:                        }
+    #####:  277:		OPENSSL_free(name); name = NULL;
+    #####:  278:		if(desc) { OPENSSL_free(desc); desc = NULL; }
+        -:  279:		/* Move to the next command */
+    #####:  280:		num = ENGINE_ctrl(e, ENGINE_CTRL_GET_NEXT_CMD_TYPE,
+        -:  281:					num, NULL, NULL);
+    #####:  282:		} while(num > 0);
+    #####:  283:	if(xpos > 0)
+    #####:  284:		BIO_printf(bio_out, "\n");
+        -:  285:	ret = 1;
+        -:  286:err:
+    #####:  287:	if(cmds) sk_OPENSSL_STRING_pop_free(cmds, identity);
+    #####:  288:	if(name) OPENSSL_free(name);
+    #####:  289:	if(desc) OPENSSL_free(desc);
+    #####:  290:	return ret;
+        -:  291:	}
+        -:  292:
+    #####:  293:static void util_do_cmds(ENGINE *e, STACK_OF(OPENSSL_STRING) *cmds,
+        -:  294:			BIO *bio_out, const char *indent)
+        -:  295:	{
+    #####:  296:	int loop, res, num = sk_OPENSSL_STRING_num(cmds);
+        -:  297:
+    #####:  298:	if(num < 0)
+        -:  299:		{
+    #####:  300:		BIO_printf(bio_out, "[Error]: internal stack error\n");
+        -:  301:		return;
+        -:  302:		}
+    #####:  303:	for(loop = 0; loop < num; loop++)
+        -:  304:		{
+        -:  305:		char buf[256];
+        -:  306:		const char *cmd, *arg;
+    #####:  307:		cmd = sk_OPENSSL_STRING_value(cmds, loop);
+        -:  308:		res = 1; /* assume success */
+        -:  309:		/* Check if this command has no ":arg" */
+    #####:  310:		if((arg = strstr(cmd, ":")) == NULL)
+        -:  311:			{
+    #####:  312:			if(!ENGINE_ctrl_cmd_string(e, cmd, NULL, 0))
+        -:  313:				res = 0;
+        -:  314:			}
+        -:  315:		else
+        -:  316:			{
+    #####:  317:			if((int)(arg - cmd) > 254)
+        -:  318:				{
+    #####:  319:				BIO_printf(bio_out,"[Error]: command name too long\n");
+    #####:  320:				return;
+        -:  321:				}
+    #####:  322:			memcpy(buf, cmd, (int)(arg - cmd));
+    #####:  323:			buf[arg-cmd] = '\0';
+    #####:  324:			arg++; /* Move past the ":" */
+        -:  325:			/* Call the command with the argument */
+    #####:  326:			if(!ENGINE_ctrl_cmd_string(e, buf, arg, 0))
+        -:  327:				res = 0;
+        -:  328:			}
+    #####:  329:		if(res)
+    #####:  330:			BIO_printf(bio_out, "[Success]: %s\n", cmd);
+        -:  331:		else
+        -:  332:			{
+    #####:  333:			BIO_printf(bio_out, "[Failure]: %s\n", cmd);
+    #####:  334:			ERR_print_errors(bio_out);
+        -:  335:			}
+        -:  336:		}
+        -:  337:	}
+        -:  338:
+        -:  339:int MAIN(int, char **);
+        -:  340:
+    #####:  341:int MAIN(int argc, char **argv)
+        -:  342:	{
+        -:  343:	int ret=1,i;
+        -:  344:	const char **pp;
+        -:  345:	int verbose=0, list_cap=0, test_avail=0, test_avail_noise = 0;
+        -:  346:	ENGINE *e;
+    #####:  347:	STACK_OF(OPENSSL_STRING) *engines = sk_OPENSSL_STRING_new_null();
+    #####:  348:	STACK_OF(OPENSSL_STRING) *pre_cmds = sk_OPENSSL_STRING_new_null();
+    #####:  349:	STACK_OF(OPENSSL_STRING) *post_cmds = sk_OPENSSL_STRING_new_null();
+        -:  350:	int badops=1;
+        -:  351:	BIO *bio_out=NULL;
+        -:  352:	const char *indent = "     ";
+        -:  353:
+    #####:  354:	apps_startup();
+    #####:  355:	SSL_load_error_strings();
+        -:  356:
+    #####:  357:	if (bio_err == NULL)
+    #####:  358:		bio_err=BIO_new_fp(stderr,BIO_NOCLOSE);
+        -:  359:
+    #####:  360:	if (!load_config(bio_err, NULL))
+        -:  361:		goto end;
+    #####:  362:	bio_out=BIO_new_fp(stdout,BIO_NOCLOSE);
+        -:  363:#ifdef OPENSSL_SYS_VMS
+        -:  364:	{
+        -:  365:	BIO *tmpbio = BIO_new(BIO_f_linebuffer());
+        -:  366:	bio_out = BIO_push(tmpbio, bio_out);
+        -:  367:	}
+        -:  368:#endif
+        -:  369:
+    #####:  370:	argc--;
+    #####:  371:	argv++;
+    #####:  372:	while (argc >= 1)
+        -:  373:		{
+    #####:  374:		if (strncmp(*argv,"-v",2) == 0)
+        -:  375:			{
+    #####:  376:			if(strspn(*argv + 1, "v") < strlen(*argv + 1))
+        -:  377:				goto skip_arg_loop;
+    #####:  378:			if((verbose=strlen(*argv + 1)) > 4)
+        -:  379:				goto skip_arg_loop;
+        -:  380:			}
+    #####:  381:		else if (strcmp(*argv,"-c") == 0)
+        -:  382:			list_cap=1;
+    #####:  383:		else if (strncmp(*argv,"-t",2) == 0)
+        -:  384:			{
+        -:  385:			test_avail=1;
+    #####:  386:			if(strspn(*argv + 1, "t") < strlen(*argv + 1))
+        -:  387:				goto skip_arg_loop;
+    #####:  388:			if((test_avail_noise = strlen(*argv + 1) - 1) > 1)
+        -:  389:				goto skip_arg_loop;
+        -:  390:			}
+    #####:  391:		else if (strcmp(*argv,"-pre") == 0)
+        -:  392:			{
+    #####:  393:			argc--; argv++;
+    #####:  394:			if (argc == 0)
+        -:  395:				goto skip_arg_loop;
+    #####:  396:			sk_OPENSSL_STRING_push(pre_cmds,*argv);
+        -:  397:			}
+    #####:  398:		else if (strcmp(*argv,"-post") == 0)
+        -:  399:			{
+    #####:  400:			argc--; argv++;
+    #####:  401:			if (argc == 0)
+        -:  402:				goto skip_arg_loop;
+    #####:  403:			sk_OPENSSL_STRING_push(post_cmds,*argv);
+        -:  404:			}
+    #####:  405:		else if ((strncmp(*argv,"-h",2) == 0) ||
+    #####:  406:				(strcmp(*argv,"-?") == 0))
+        -:  407:			goto skip_arg_loop;
+        -:  408:		else
+    #####:  409:			sk_OPENSSL_STRING_push(engines,*argv);
+    #####:  410:		argc--;
+    #####:  411:		argv++;
+        -:  412:		}
+        -:  413:	/* Looks like everything went OK */
+        -:  414:	badops = 0;
+        -:  415:skip_arg_loop:
+        -:  416:
+    #####:  417:	if (badops)
+        -:  418:		{
+    #####:  419:		for (pp=engine_usage; (*pp != NULL); pp++)
+    #####:  420:			BIO_printf(bio_err,"%s",*pp);
+        -:  421:		goto end;
+        -:  422:		}
+        -:  423:
+    #####:  424:	if (sk_OPENSSL_STRING_num(engines) == 0)
+        -:  425:		{
+    #####:  426:		for(e = ENGINE_get_first(); e != NULL; e = ENGINE_get_next(e))
+        -:  427:			{
+    #####:  428:			sk_OPENSSL_STRING_push(engines,(char *)ENGINE_get_id(e));
+        -:  429:			}
+        -:  430:		}
+        -:  431:
+    #####:  432:	for (i=0; i<sk_OPENSSL_STRING_num(engines); i++)
+        -:  433:		{
+    #####:  434:		const char *id = sk_OPENSSL_STRING_value(engines,i);
+    #####:  435:		if ((e = ENGINE_by_id(id)) != NULL)
+        -:  436:			{
+    #####:  437:			const char *name = ENGINE_get_name(e);
+        -:  438:			/* Do "id" first, then "name". Easier to auto-parse. */
+    #####:  439:			BIO_printf(bio_out, "(%s) %s\n", id, name);
+    #####:  440:			util_do_cmds(e, pre_cmds, bio_out, indent);
+    #####:  441:			if (strcmp(ENGINE_get_id(e), id) != 0)
+        -:  442:				{
+    #####:  443:				BIO_printf(bio_out, "Loaded: (%s) %s\n",
+        -:  444:					ENGINE_get_id(e), ENGINE_get_name(e));
+        -:  445:				}
+    #####:  446:			if (list_cap)
+        -:  447:				{
+    #####:  448:				int cap_size = 256;
+    #####:  449:				char *cap_buf = NULL;
+        -:  450:				int k,n;
+        -:  451:				const int *nids;
+        -:  452:				ENGINE_CIPHERS_PTR fn_c;
+        -:  453:				ENGINE_DIGESTS_PTR fn_d;
+        -:  454:				ENGINE_PKEY_METHS_PTR fn_pk;
+        -:  455:
+    #####:  456:				if (ENGINE_get_RSA(e) != NULL
+    #####:  457:					&& !append_buf(&cap_buf, "RSA",
+        -:  458:						&cap_size, 256))
+        -:  459:					goto end;
+    #####:  460:				if (ENGINE_get_DSA(e) != NULL
+    #####:  461:					&& !append_buf(&cap_buf, "DSA",
+        -:  462:						&cap_size, 256))
+        -:  463:					goto end;
+    #####:  464:				if (ENGINE_get_DH(e) != NULL
+    #####:  465:					&& !append_buf(&cap_buf, "DH",
+        -:  466:						&cap_size, 256))
+        -:  467:					goto end;
+    #####:  468:				if (ENGINE_get_RAND(e) != NULL
+    #####:  469:					&& !append_buf(&cap_buf, "RAND",
+        -:  470:						&cap_size, 256))
+        -:  471:					goto end;
+        -:  472:
+    #####:  473:				fn_c = ENGINE_get_ciphers(e);
+    #####:  474:				if(!fn_c) goto skip_ciphers;
+    #####:  475:				n = fn_c(e, NULL, &nids, 0);
+    #####:  476:				for(k=0 ; k < n ; ++k)
+    #####:  477:					if(!append_buf(&cap_buf,
+    #####:  478:						       OBJ_nid2sn(nids[k]),
+        -:  479:						       &cap_size, 256))
+        -:  480:						goto end;
+        -:  481:
+        -:  482:skip_ciphers:
+    #####:  483:				fn_d = ENGINE_get_digests(e);
+    #####:  484:				if(!fn_d) goto skip_digests;
+    #####:  485:				n = fn_d(e, NULL, &nids, 0);
+    #####:  486:				for(k=0 ; k < n ; ++k)
+    #####:  487:					if(!append_buf(&cap_buf,
+    #####:  488:						       OBJ_nid2sn(nids[k]),
+        -:  489:						       &cap_size, 256))
+        -:  490:						goto end;
+        -:  491:
+        -:  492:skip_digests:
+    #####:  493:				fn_pk = ENGINE_get_pkey_meths(e);
+    #####:  494:				if(!fn_pk) goto skip_pmeths;
+    #####:  495:				n = fn_pk(e, NULL, &nids, 0);
+    #####:  496:				for(k=0 ; k < n ; ++k)
+    #####:  497:					if(!append_buf(&cap_buf,
+    #####:  498:						       OBJ_nid2sn(nids[k]),
+        -:  499:						       &cap_size, 256))
+        -:  500:						goto end;
+        -:  501:skip_pmeths:
+    #####:  502:				if (cap_buf && (*cap_buf != '\0'))
+    #####:  503:					BIO_printf(bio_out, " [%s]\n", cap_buf);
+        -:  504:
+    #####:  505:				OPENSSL_free(cap_buf);
+        -:  506:				}
+    #####:  507:			if(test_avail)
+        -:  508:				{
+    #####:  509:				BIO_printf(bio_out, "%s", indent);
+    #####:  510:				if (ENGINE_init(e))
+        -:  511:					{
+    #####:  512:					BIO_printf(bio_out, "[ available ]\n");
+    #####:  513:					util_do_cmds(e, post_cmds, bio_out, indent);
+    #####:  514:					ENGINE_finish(e);
+        -:  515:					}
+        -:  516:				else
+        -:  517:					{
+    #####:  518:					BIO_printf(bio_out, "[ unavailable ]\n");
+    #####:  519:					if(test_avail_noise)
+    #####:  520:						ERR_print_errors_fp(stdout);
+    #####:  521:					ERR_clear_error();
+        -:  522:					}
+        -:  523:				}
+    #####:  524:			if((verbose > 0) && !util_verbose(e, verbose, bio_out, indent))
+        -:  525:				goto end;
+    #####:  526:			ENGINE_free(e);
+        -:  527:			}
+        -:  528:		else
+    #####:  529:			ERR_print_errors(bio_err);
+        -:  530:		}
+        -:  531:
+        -:  532:	ret=0;
+        -:  533:end:
+        -:  534:
+    #####:  535:	ERR_print_errors(bio_err);
+    #####:  536:	sk_OPENSSL_STRING_pop_free(engines, identity);
+    #####:  537:	sk_OPENSSL_STRING_pop_free(pre_cmds, identity);
+    #####:  538:	sk_OPENSSL_STRING_pop_free(post_cmds, identity);
+    #####:  539:	if (bio_out != NULL) BIO_free_all(bio_out);
+        -:  540:	apps_shutdown();
+    #####:  541:	OPENSSL_EXIT(ret);
+        -:  542:	}
+        -:  543:#else
+        -:  544:
+        -:  545:# if PEDANTIC
+        -:  546:static void *dummy=&dummy;
+        -:  547:# endif
+        -:  548:
+        -:  549:#endif

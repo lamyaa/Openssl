@@ -1,0 +1,200 @@
+        -:    0:Source:cfb_enc.c
+        -:    0:Graph:cfb_enc.gcno
+        -:    0:Data:cfb_enc.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* crypto/des/cfb_enc.c */
+        -:    2:/* Copyright (C) 1995-1998 Eric Young (eay@cryptsoft.com)
+        -:    3: * All rights reserved.
+        -:    4: *
+        -:    5: * This package is an SSL implementation written
+        -:    6: * by Eric Young (eay@cryptsoft.com).
+        -:    7: * The implementation was written so as to conform with Netscapes SSL.
+        -:    8: * 
+        -:    9: * This library is free for commercial and non-commercial use as long as
+        -:   10: * the following conditions are aheared to.  The following conditions
+        -:   11: * apply to all code found in this distribution, be it the RC4, RSA,
+        -:   12: * lhash, DES, etc., code; not just the SSL code.  The SSL documentation
+        -:   13: * included with this distribution is covered by the same copyright terms
+        -:   14: * except that the holder is Tim Hudson (tjh@cryptsoft.com).
+        -:   15: * 
+        -:   16: * Copyright remains Eric Young's, and as such any Copyright notices in
+        -:   17: * the code are not to be removed.
+        -:   18: * If this package is used in a product, Eric Young should be given attribution
+        -:   19: * as the author of the parts of the library used.
+        -:   20: * This can be in the form of a textual message at program startup or
+        -:   21: * in documentation (online or textual) provided with the package.
+        -:   22: * 
+        -:   23: * Redistribution and use in source and binary forms, with or without
+        -:   24: * modification, are permitted provided that the following conditions
+        -:   25: * are met:
+        -:   26: * 1. Redistributions of source code must retain the copyright
+        -:   27: *    notice, this list of conditions and the following disclaimer.
+        -:   28: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   29: *    notice, this list of conditions and the following disclaimer in the
+        -:   30: *    documentation and/or other materials provided with the distribution.
+        -:   31: * 3. All advertising materials mentioning features or use of this software
+        -:   32: *    must display the following acknowledgement:
+        -:   33: *    "This product includes cryptographic software written by
+        -:   34: *     Eric Young (eay@cryptsoft.com)"
+        -:   35: *    The word 'cryptographic' can be left out if the rouines from the library
+        -:   36: *    being used are not cryptographic related :-).
+        -:   37: * 4. If you include any Windows specific code (or a derivative thereof) from 
+        -:   38: *    the apps directory (application code) you must include an acknowledgement:
+        -:   39: *    "This product includes software written by Tim Hudson (tjh@cryptsoft.com)"
+        -:   40: * 
+        -:   41: * THIS SOFTWARE IS PROVIDED BY ERIC YOUNG ``AS IS'' AND
+        -:   42: * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   43: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+        -:   44: * ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+        -:   45: * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+        -:   46: * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+        -:   47: * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   48: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+        -:   49: * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+        -:   50: * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+        -:   51: * SUCH DAMAGE.
+        -:   52: * 
+        -:   53: * The licence and distribution terms for any publically available version or
+        -:   54: * derivative of this code cannot be changed.  i.e. this code cannot simply be
+        -:   55: * copied and put under another distribution licence
+        -:   56: * [including the GNU Public Licence.]
+        -:   57: */
+        -:   58:
+        -:   59:#include "e_os.h"
+        -:   60:#include "des_locl.h"
+        -:   61:#include <assert.h>
+        -:   62:
+        -:   63:/* The input and output are loaded in multiples of 8 bits.
+        -:   64: * What this means is that if you hame numbits=12 and length=2
+        -:   65: * the first 12 bits will be retrieved from the first byte and half
+        -:   66: * the second.  The second 12 bits will come from the 3rd and half the 4th
+        -:   67: * byte.
+        -:   68: */
+        -:   69:/* Until Aug 1 2003 this function did not correctly implement CFB-r, so it
+        -:   70: * will not be compatible with any encryption prior to that date. Ben. */
+    #####:   71:void DES_cfb_encrypt(const unsigned char *in, unsigned char *out, int numbits,
+        -:   72:		     long length, DES_key_schedule *schedule, DES_cblock *ivec,
+        -:   73:		     int enc)
+        -:   74:	{
+        -:   75:	register DES_LONG d0,d1,v0,v1;
+    #####:   76:	register unsigned long l=length;
+    #####:   77:	register int num=numbits/8,n=(numbits+7)/8,i,rem=numbits%8;
+        -:   78:	DES_LONG ti[2];
+        -:   79:	unsigned char *iv;
+        -:   80:#ifndef L_ENDIAN
+        -:   81:	unsigned char ovec[16];
+        -:   82:#else
+        -:   83:	unsigned int  sh[4];
+        -:   84:	unsigned char *ovec=(unsigned char *)sh;
+        -:   85:
+        -:   86:	/* I kind of count that compiler optimizes away this assertioni,*/
+        -:   87:	assert (sizeof(sh[0])==4);	/* as this holds true for all,	*/
+        -:   88:					/* but 16-bit platforms...	*/
+        -:   89:					
+        -:   90:#endif
+        -:   91:
+    #####:   92:	if (numbits<=0 || numbits > 64) return;
+        -:   93:	iv = &(*ivec)[0];
+    #####:   94:	c2l(iv,v0);
+    #####:   95:	c2l(iv,v1);
+    #####:   96:	if (enc)
+        -:   97:		{
+    #####:   98:		while (l >= (unsigned long)n)
+        -:   99:			{
+    #####:  100:			l-=n;
+    #####:  101:			ti[0]=v0;
+    #####:  102:			ti[1]=v1;
+    #####:  103:			DES_encrypt1((DES_LONG *)ti,schedule,DES_ENCRYPT);
+    #####:  104:			c2ln(in,d0,d1,n);
+    #####:  105:			in+=n;
+    #####:  106:			d0^=ti[0];
+    #####:  107:			d1^=ti[1];
+    #####:  108:			l2cn(d0,d1,out,n);
+    #####:  109:			out+=n;
+        -:  110:			/* 30-08-94 - eay - changed because l>>32 and
+        -:  111:			 * l<<32 are bad under gcc :-( */
+    #####:  112:			if (numbits == 32)
+        -:  113:				{ v0=v1; v1=d0; }
+    #####:  114:			else if (numbits == 64)
+        -:  115:				{ v0=d0; v1=d1; }
+        -:  116:			else
+        -:  117:				{
+        -:  118:#ifndef L_ENDIAN
+        -:  119:				iv=&ovec[0];
+        -:  120:				l2c(v0,iv);
+        -:  121:				l2c(v1,iv);
+        -:  122:				l2c(d0,iv);
+        -:  123:				l2c(d1,iv);
+        -:  124:#else
+    #####:  125:				sh[0]=v0, sh[1]=v1, sh[2]=d0, sh[3]=d1;
+        -:  126:#endif
+    #####:  127:				if (rem==0)
+    #####:  128:					memmove(ovec,ovec+num,8);
+        -:  129:				else
+    #####:  130:					for(i=0 ; i < 8 ; ++i)
+    #####:  131:						ovec[i]=ovec[i+num]<<rem |
+    #####:  132:							ovec[i+num+1]>>(8-rem);
+        -:  133:#ifdef L_ENDIAN
+    #####:  134:				v0=sh[0], v1=sh[1];
+        -:  135:#else
+        -:  136:				iv=&ovec[0];
+        -:  137:				c2l(iv,v0);
+        -:  138:				c2l(iv,v1);
+        -:  139:#endif
+        -:  140:				}
+        -:  141:			}
+        -:  142:		}
+        -:  143:	else
+        -:  144:		{
+    #####:  145:		while (l >= (unsigned long)n)
+        -:  146:			{
+    #####:  147:			l-=n;
+    #####:  148:			ti[0]=v0;
+    #####:  149:			ti[1]=v1;
+    #####:  150:			DES_encrypt1((DES_LONG *)ti,schedule,DES_ENCRYPT);
+    #####:  151:			c2ln(in,d0,d1,n);
+    #####:  152:			in+=n;
+        -:  153:			/* 30-08-94 - eay - changed because l>>32 and
+        -:  154:			 * l<<32 are bad under gcc :-( */
+    #####:  155:			if (numbits == 32)
+        -:  156:				{ v0=v1; v1=d0; }
+    #####:  157:			else if (numbits == 64)
+        -:  158:				{ v0=d0; v1=d1; }
+        -:  159:			else
+        -:  160:				{
+        -:  161:#ifndef L_ENDIAN
+        -:  162:				iv=&ovec[0];
+        -:  163:				l2c(v0,iv);
+        -:  164:				l2c(v1,iv);
+        -:  165:				l2c(d0,iv);
+        -:  166:				l2c(d1,iv);
+        -:  167:#else
+    #####:  168:				sh[0]=v0, sh[1]=v1, sh[2]=d0, sh[3]=d1;
+        -:  169:#endif
+    #####:  170:				if (rem==0)
+    #####:  171:					memmove(ovec,ovec+num,8);
+        -:  172:				else
+    #####:  173:					for(i=0 ; i < 8 ; ++i)
+    #####:  174:						ovec[i]=ovec[i+num]<<rem |
+    #####:  175:							ovec[i+num+1]>>(8-rem);
+        -:  176:#ifdef L_ENDIAN
+    #####:  177:				v0=sh[0], v1=sh[1];
+        -:  178:#else
+        -:  179:				iv=&ovec[0];
+        -:  180:				c2l(iv,v0);
+        -:  181:				c2l(iv,v1);
+        -:  182:#endif
+        -:  183:				}
+    #####:  184:			d0^=ti[0];
+    #####:  185:			d1^=ti[1];
+    #####:  186:			l2cn(d0,d1,out,n);
+    #####:  187:			out+=n;
+        -:  188:			}
+        -:  189:		}
+        -:  190:	iv = &(*ivec)[0];
+    #####:  191:	l2c(v0,iv);
+    #####:  192:	l2c(v1,iv);
+        -:  193:	v0=v1=d0=d1=ti[0]=ti[1]=0;
+        -:  194:	}
+        -:  195:

@@ -1,0 +1,420 @@
+        -:    0:Source:../md32_common.h
+        -:    0:Graph:sha1dgst.gcno
+        -:    0:Data:sha1dgst.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* crypto/md32_common.h */
+        -:    2:/* ====================================================================
+        -:    3: * Copyright (c) 1999-2007 The OpenSSL Project.  All rights reserved.
+        -:    4: *
+        -:    5: * Redistribution and use in source and binary forms, with or without
+        -:    6: * modification, are permitted provided that the following conditions
+        -:    7: * are met:
+        -:    8: *
+        -:    9: * 1. Redistributions of source code must retain the above copyright
+        -:   10: *    notice, this list of conditions and the following disclaimer. 
+        -:   11: *
+        -:   12: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   13: *    notice, this list of conditions and the following disclaimer in
+        -:   14: *    the documentation and/or other materials provided with the
+        -:   15: *    distribution.
+        -:   16: *
+        -:   17: * 3. All advertising materials mentioning features or use of this
+        -:   18: *    software must display the following acknowledgment:
+        -:   19: *    "This product includes software developed by the OpenSSL Project
+        -:   20: *    for use in the OpenSSL Toolkit. (http://www.OpenSSL.org/)"
+        -:   21: *
+        -:   22: * 4. The names "OpenSSL Toolkit" and "OpenSSL Project" must not be used to
+        -:   23: *    endorse or promote products derived from this software without
+        -:   24: *    prior written permission. For written permission, please contact
+        -:   25: *    licensing@OpenSSL.org.
+        -:   26: *
+        -:   27: * 5. Products derived from this software may not be called "OpenSSL"
+        -:   28: *    nor may "OpenSSL" appear in their names without prior written
+        -:   29: *    permission of the OpenSSL Project.
+        -:   30: *
+        -:   31: * 6. Redistributions of any form whatsoever must retain the following
+        -:   32: *    acknowledgment:
+        -:   33: *    "This product includes software developed by the OpenSSL Project
+        -:   34: *    for use in the OpenSSL Toolkit (http://www.OpenSSL.org/)"
+        -:   35: *
+        -:   36: * THIS SOFTWARE IS PROVIDED BY THE OpenSSL PROJECT ``AS IS'' AND ANY
+        -:   37: * EXPRESSED OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   38: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+        -:   39: * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE OpenSSL PROJECT OR
+        -:   40: * ITS CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+        -:   41: * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+        -:   42: * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+        -:   43: * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   44: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+        -:   45: * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+        -:   46: * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+        -:   47: * OF THE POSSIBILITY OF SUCH DAMAGE.
+        -:   48: * ====================================================================
+        -:   49: *
+        -:   50: */
+        -:   51:
+        -:   52:/*
+        -:   53: * This is a generic 32 bit "collector" for message digest algorithms.
+        -:   54: * Whenever needed it collects input character stream into chunks of
+        -:   55: * 32 bit values and invokes a block function that performs actual hash
+        -:   56: * calculations.
+        -:   57: *
+        -:   58: * Porting guide.
+        -:   59: *
+        -:   60: * Obligatory macros:
+        -:   61: *
+        -:   62: * DATA_ORDER_IS_BIG_ENDIAN or DATA_ORDER_IS_LITTLE_ENDIAN
+        -:   63: *	this macro defines byte order of input stream.
+        -:   64: * HASH_CBLOCK
+        -:   65: *	size of a unit chunk HASH_BLOCK operates on.
+        -:   66: * HASH_LONG
+        -:   67: *	has to be at lest 32 bit wide, if it's wider, then
+        -:   68: *	HASH_LONG_LOG2 *has to* be defined along
+        -:   69: * HASH_CTX
+        -:   70: *	context structure that at least contains following
+        -:   71: *	members:
+        -:   72: *		typedef struct {
+        -:   73: *			...
+        -:   74: *			HASH_LONG	Nl,Nh;
+        -:   75: *			either {
+        -:   76: *			HASH_LONG	data[HASH_LBLOCK];
+        -:   77: *			unsigned char	data[HASH_CBLOCK];
+        -:   78: *			};
+        -:   79: *			unsigned int	num;
+        -:   80: *			...
+        -:   81: *			} HASH_CTX;
+        -:   82: *	data[] vector is expected to be zeroed upon first call to
+        -:   83: *	HASH_UPDATE.
+        -:   84: * HASH_UPDATE
+        -:   85: *	name of "Update" function, implemented here.
+        -:   86: * HASH_TRANSFORM
+        -:   87: *	name of "Transform" function, implemented here.
+        -:   88: * HASH_FINAL
+        -:   89: *	name of "Final" function, implemented here.
+        -:   90: * HASH_BLOCK_DATA_ORDER
+        -:   91: *	name of "block" function capable of treating *unaligned* input
+        -:   92: *	message in original (data) byte order, implemented externally.
+        -:   93: * HASH_MAKE_STRING
+        -:   94: *	macro convering context variables to an ASCII hash string.
+        -:   95: *
+        -:   96: * MD5 example:
+        -:   97: *
+        -:   98: *	#define DATA_ORDER_IS_LITTLE_ENDIAN
+        -:   99: *
+        -:  100: *	#define HASH_LONG		MD5_LONG
+        -:  101: *	#define HASH_LONG_LOG2		MD5_LONG_LOG2
+        -:  102: *	#define HASH_CTX		MD5_CTX
+        -:  103: *	#define HASH_CBLOCK		MD5_CBLOCK
+        -:  104: *	#define HASH_UPDATE		MD5_Update
+        -:  105: *	#define HASH_TRANSFORM		MD5_Transform
+        -:  106: *	#define HASH_FINAL		MD5_Final
+        -:  107: *	#define HASH_BLOCK_DATA_ORDER	md5_block_data_order
+        -:  108: *
+        -:  109: *					<appro@fy.chalmers.se>
+        -:  110: */
+        -:  111:
+        -:  112:#if !defined(DATA_ORDER_IS_BIG_ENDIAN) && !defined(DATA_ORDER_IS_LITTLE_ENDIAN)
+        -:  113:#error "DATA_ORDER must be defined!"
+        -:  114:#endif
+        -:  115:
+        -:  116:#ifndef HASH_CBLOCK
+        -:  117:#error "HASH_CBLOCK must be defined!"
+        -:  118:#endif
+        -:  119:#ifndef HASH_LONG
+        -:  120:#error "HASH_LONG must be defined!"
+        -:  121:#endif
+        -:  122:#ifndef HASH_CTX
+        -:  123:#error "HASH_CTX must be defined!"
+        -:  124:#endif
+        -:  125:
+        -:  126:#ifndef HASH_UPDATE
+        -:  127:#error "HASH_UPDATE must be defined!"
+        -:  128:#endif
+        -:  129:#ifndef HASH_TRANSFORM
+        -:  130:#error "HASH_TRANSFORM must be defined!"
+        -:  131:#endif
+        -:  132:#ifndef HASH_FINAL
+        -:  133:#error "HASH_FINAL must be defined!"
+        -:  134:#endif
+        -:  135:
+        -:  136:#ifndef HASH_BLOCK_DATA_ORDER
+        -:  137:#error "HASH_BLOCK_DATA_ORDER must be defined!"
+        -:  138:#endif
+        -:  139:
+        -:  140:/*
+        -:  141: * Engage compiler specific rotate intrinsic function if available.
+        -:  142: */
+        -:  143:#undef ROTATE
+        -:  144:#ifndef PEDANTIC
+        -:  145:# if defined(_MSC_VER) || defined(__ICC)
+        -:  146:#  define ROTATE(a,n)	_lrotl(a,n)
+        -:  147:# elif defined(__MWERKS__)
+        -:  148:#  if defined(__POWERPC__)
+        -:  149:#   define ROTATE(a,n)	__rlwinm(a,n,0,31)
+        -:  150:#  elif defined(__MC68K__)
+        -:  151:    /* Motorola specific tweak. <appro@fy.chalmers.se> */
+        -:  152:#   define ROTATE(a,n)	( n<24 ? __rol(a,n) : __ror(a,32-n) )
+        -:  153:#  else
+        -:  154:#   define ROTATE(a,n)	__rol(a,n)
+        -:  155:#  endif
+        -:  156:# elif defined(__GNUC__) && __GNUC__>=2 && !defined(OPENSSL_NO_ASM) && !defined(OPENSSL_NO_INLINE_ASM)
+        -:  157:  /*
+        -:  158:   * Some GNU C inline assembler templates. Note that these are
+        -:  159:   * rotates by *constant* number of bits! But that's exactly
+        -:  160:   * what we need here...
+        -:  161:   * 					<appro@fy.chalmers.se>
+        -:  162:   */
+        -:  163:#  if defined(__i386) || defined(__i386__) || defined(__x86_64) || defined(__x86_64__)
+        -:  164:#   define ROTATE(a,n)	({ register unsigned int ret;	\
+        -:  165:				asm (			\
+        -:  166:				"roll %1,%0"		\
+        -:  167:				: "=r"(ret)		\
+        -:  168:				: "I"(n), "0"((unsigned int)(a))	\
+        -:  169:				: "cc");		\
+        -:  170:			   ret;				\
+        -:  171:			})
+        -:  172:#  elif defined(_ARCH_PPC) || defined(_ARCH_PPC64) || \
+        -:  173:	defined(__powerpc) || defined(__ppc__) || defined(__powerpc64__)
+        -:  174:#   define ROTATE(a,n)	({ register unsigned int ret;	\
+        -:  175:				asm (			\
+        -:  176:				"rlwinm %0,%1,%2,0,31"	\
+        -:  177:				: "=r"(ret)		\
+        -:  178:				: "r"(a), "I"(n));	\
+        -:  179:			   ret;				\
+        -:  180:			})
+        -:  181:#  elif defined(__s390x__)
+        -:  182:#   define ROTATE(a,n) ({ register unsigned int ret;	\
+        -:  183:				asm ("rll %0,%1,%2"	\
+        -:  184:				: "=r"(ret)		\
+        -:  185:				: "r"(a), "I"(n));	\
+        -:  186:			  ret;				\
+        -:  187:			})
+        -:  188:#  endif
+        -:  189:# endif
+        -:  190:#endif /* PEDANTIC */
+        -:  191:
+        -:  192:#ifndef ROTATE
+        -:  193:#define ROTATE(a,n)     (((a)<<(n))|(((a)&0xffffffff)>>(32-(n))))
+        -:  194:#endif
+        -:  195:
+        -:  196:#if defined(DATA_ORDER_IS_BIG_ENDIAN)
+        -:  197:
+        -:  198:#ifndef PEDANTIC
+        -:  199:# if defined(__GNUC__) && __GNUC__>=2 && !defined(OPENSSL_NO_ASM) && !defined(OPENSSL_NO_INLINE_ASM)
+        -:  200:#  if ((defined(__i386) || defined(__i386__)) && !defined(I386_ONLY)) || \
+        -:  201:      (defined(__x86_64) || defined(__x86_64__))
+        -:  202:#   if !defined(B_ENDIAN)
+        -:  203:    /*
+        -:  204:     * This gives ~30-40% performance improvement in SHA-256 compiled
+        -:  205:     * with gcc [on P4]. Well, first macro to be frank. We can pull
+        -:  206:     * this trick on x86* platforms only, because these CPUs can fetch
+        -:  207:     * unaligned data without raising an exception.
+        -:  208:     */
+        -:  209:#   define HOST_c2l(c,l)	({ unsigned int r=*((const unsigned int *)(c));	\
+        -:  210:				   asm ("bswapl %0":"=r"(r):"0"(r));	\
+        -:  211:				   (c)+=4; (l)=r;			})
+        -:  212:#   define HOST_l2c(l,c)	({ unsigned int r=(l);			\
+        -:  213:				   asm ("bswapl %0":"=r"(r):"0"(r));	\
+        -:  214:				   *((unsigned int *)(c))=r; (c)+=4; r;	})
+        -:  215:#   endif
+        -:  216:#  endif
+        -:  217:# endif
+        -:  218:#endif
+        -:  219:#if defined(__s390__) || defined(__s390x__)
+        -:  220:# define HOST_c2l(c,l) ((l)=*((const unsigned int *)(c)), (c)+=4, (l))
+        -:  221:# define HOST_l2c(l,c) (*((unsigned int *)(c))=(l), (c)+=4, (l))
+        -:  222:#endif
+        -:  223:
+        -:  224:#ifndef HOST_c2l
+        -:  225:#define HOST_c2l(c,l)	(l =(((unsigned long)(*((c)++)))<<24),		\
+        -:  226:			 l|=(((unsigned long)(*((c)++)))<<16),		\
+        -:  227:			 l|=(((unsigned long)(*((c)++)))<< 8),		\
+        -:  228:			 l|=(((unsigned long)(*((c)++)))    ),		\
+        -:  229:			 l)
+        -:  230:#endif
+        -:  231:#ifndef HOST_l2c
+        -:  232:#define HOST_l2c(l,c)	(*((c)++)=(unsigned char)(((l)>>24)&0xff),	\
+        -:  233:			 *((c)++)=(unsigned char)(((l)>>16)&0xff),	\
+        -:  234:			 *((c)++)=(unsigned char)(((l)>> 8)&0xff),	\
+        -:  235:			 *((c)++)=(unsigned char)(((l)    )&0xff),	\
+        -:  236:			 l)
+        -:  237:#endif
+        -:  238:
+        -:  239:#elif defined(DATA_ORDER_IS_LITTLE_ENDIAN)
+        -:  240:
+        -:  241:#ifndef PEDANTIC
+        -:  242:# if defined(__GNUC__) && __GNUC__>=2 && !defined(OPENSSL_NO_ASM) && !defined(OPENSSL_NO_INLINE_ASM)
+        -:  243:#  if defined(__s390x__)
+        -:  244:#   define HOST_c2l(c,l)	({ asm ("lrv	%0,%1"			\
+        -:  245:				   :"=d"(l) :"m"(*(const unsigned int *)(c)));\
+        -:  246:				   (c)+=4; (l);				})
+        -:  247:#   define HOST_l2c(l,c)	({ asm ("strv	%1,%0"			\
+        -:  248:				   :"=m"(*(unsigned int *)(c)) :"d"(l));\
+        -:  249:				   (c)+=4; (l);				})
+        -:  250:#  endif
+        -:  251:# endif
+        -:  252:#endif
+        -:  253:#if defined(__i386) || defined(__i386__) || defined(__x86_64) || defined(__x86_64__)
+        -:  254:# ifndef B_ENDIAN
+        -:  255:   /* See comment in DATA_ORDER_IS_BIG_ENDIAN section. */
+        -:  256:#  define HOST_c2l(c,l)	((l)=*((const unsigned int *)(c)), (c)+=4, l)
+        -:  257:#  define HOST_l2c(l,c)	(*((unsigned int *)(c))=(l), (c)+=4, l)
+        -:  258:# endif
+        -:  259:#endif
+        -:  260:
+        -:  261:#ifndef HOST_c2l
+        -:  262:#define HOST_c2l(c,l)	(l =(((unsigned long)(*((c)++)))    ),		\
+        -:  263:			 l|=(((unsigned long)(*((c)++)))<< 8),		\
+        -:  264:			 l|=(((unsigned long)(*((c)++)))<<16),		\
+        -:  265:			 l|=(((unsigned long)(*((c)++)))<<24),		\
+        -:  266:			 l)
+        -:  267:#endif
+        -:  268:#ifndef HOST_l2c
+        -:  269:#define HOST_l2c(l,c)	(*((c)++)=(unsigned char)(((l)    )&0xff),	\
+        -:  270:			 *((c)++)=(unsigned char)(((l)>> 8)&0xff),	\
+        -:  271:			 *((c)++)=(unsigned char)(((l)>>16)&0xff),	\
+        -:  272:			 *((c)++)=(unsigned char)(((l)>>24)&0xff),	\
+        -:  273:			 l)
+        -:  274:#endif
+        -:  275:
+        -:  276:#endif
+        -:  277:
+        -:  278:/*
+        -:  279: * Time for some action:-)
+        -:  280: */
+        -:  281:
+    31377:  282:int HASH_UPDATE (HASH_CTX *c, const void *data_, size_t len)
+        -:  283:	{
+        -:  284:	const unsigned char *data=data_;
+        -:  285:	unsigned char *p;
+        -:  286:	HASH_LONG l;
+        -:  287:	size_t n;
+        -:  288:
+    31377:  289:	if (len==0) return 1;
+        -:  290:
+    31377:  291:	l=(c->Nl+(((HASH_LONG)len)<<3))&0xffffffffUL;
+        -:  292:	/* 95-05-24 eay Fixed a bug with the overflow handling, thanks to
+        -:  293:	 * Wei Dai <weidai@eskimo.com> for pointing it out. */
+    31377:  294:	if (l < c->Nl) /* overflow */
+    #####:  295:		c->Nh++;
+    31377:  296:	c->Nh+=(HASH_LONG)(len>>29);	/* might cause compiler warning on 16-bit */
+    31377:  297:	c->Nl=l;
+        -:  298:
+    31377:  299:	n = c->num;
+    31377:  300:	if (n != 0)
+        -:  301:		{
+    #####:  302:		p=(unsigned char *)c->data;
+        -:  303:
+    #####:  304:		if (len >= HASH_CBLOCK || len+n >= HASH_CBLOCK)
+        -:  305:			{
+    #####:  306:			memcpy (p+n,data,HASH_CBLOCK-n);
+    #####:  307:			HASH_BLOCK_DATA_ORDER (c,p,1);
+        -:  308:			n      = HASH_CBLOCK-n;
+    #####:  309:			data  += n;
+    #####:  310:			len   -= n;
+    #####:  311:			c->num = 0;
+        -:  312:			memset (p,0,HASH_CBLOCK);	/* keep it zeroed */
+        -:  313:			}
+        -:  314:		else
+        -:  315:			{
+    #####:  316:			memcpy (p+n,data,len);
+    #####:  317:			c->num += (unsigned int)len;
+    #####:  318:			return 1;
+        -:  319:			}
+        -:  320:		}
+        -:  321:
+    31377:  322:	n = len/HASH_CBLOCK;
+    31377:  323:	if (n > 0)
+        -:  324:		{
+    31186:  325:		HASH_BLOCK_DATA_ORDER (c,data,n);
+    31186:  326:		n    *= HASH_CBLOCK;
+    31186:  327:		data += n;
+    31186:  328:		len  -= n;
+        -:  329:		}
+        -:  330:
+    31377:  331:	if (len != 0)
+        -:  332:		{
+    31019:  333:		p = (unsigned char *)c->data;
+    31019:  334:		c->num = (unsigned int)len;
+        -:  335:		memcpy (p,data,len);
+        -:  336:		}
+        -:  337:	return 1;
+        -:  338:	}
+        -:  339:
+        -:  340:
+    #####:  341:void HASH_TRANSFORM (HASH_CTX *c, const unsigned char *data)
+        -:  342:	{
+    #####:  343:	HASH_BLOCK_DATA_ORDER (c,data,1);
+    #####:  344:	}
+        -:  345:
+        -:  346:
+    31377:  347:int HASH_FINAL (unsigned char *md, HASH_CTX *c)
+        -:  348:	{
+    31377:  349:	unsigned char *p = (unsigned char *)c->data;
+    31377:  350:	size_t n = c->num;
+        -:  351:
+    31377:  352:	p[n] = 0x80; /* there is always room for one */
+    31377:  353:	n++;
+        -:  354:
+    31377:  355:	if (n > (HASH_CBLOCK-8))
+        -:  356:		{
+     3064:  357:		memset (p+n,0,HASH_CBLOCK-n);
+        -:  358:		n=0;
+     3064:  359:		HASH_BLOCK_DATA_ORDER (c,p,1);
+        -:  360:		}
+    31377:  361:	memset (p+n,0,HASH_CBLOCK-8-n);
+        -:  362:
+        -:  363:	p += HASH_CBLOCK-8;
+        -:  364:#if   defined(DATA_ORDER_IS_BIG_ENDIAN)
+    31377:  365:	(void)HOST_l2c(c->Nh,p);
+    31377:  366:	(void)HOST_l2c(c->Nl,p);
+        -:  367:#elif defined(DATA_ORDER_IS_LITTLE_ENDIAN)
+        -:  368:	(void)HOST_l2c(c->Nl,p);
+        -:  369:	(void)HOST_l2c(c->Nh,p);
+        -:  370:#endif
+        -:  371:	p -= HASH_CBLOCK;
+    31377:  372:	HASH_BLOCK_DATA_ORDER (c,p,1);
+    31377:  373:	c->num=0;
+        -:  374:	memset (p,0,HASH_CBLOCK);
+        -:  375:
+        -:  376:#ifndef HASH_MAKE_STRING
+        -:  377:#error "HASH_MAKE_STRING must be defined!"
+        -:  378:#else
+    31377:  379:	HASH_MAKE_STRING(c,md);
+        -:  380:#endif
+        -:  381:
+    31377:  382:	return 1;
+        -:  383:	}
+        -:  384:
+        -:  385:#ifndef MD32_REG_T
+        -:  386:#if defined(__alpha) || defined(__sparcv9) || defined(__mips)
+        -:  387:#define MD32_REG_T long
+        -:  388:/*
+        -:  389: * This comment was originaly written for MD5, which is why it
+        -:  390: * discusses A-D. But it basically applies to all 32-bit digests,
+        -:  391: * which is why it was moved to common header file.
+        -:  392: *
+        -:  393: * In case you wonder why A-D are declared as long and not
+        -:  394: * as MD5_LONG. Doing so results in slight performance
+        -:  395: * boost on LP64 architectures. The catch is we don't
+        -:  396: * really care if 32 MSBs of a 64-bit register get polluted
+        -:  397: * with eventual overflows as we *save* only 32 LSBs in
+        -:  398: * *either* case. Now declaring 'em long excuses the compiler
+        -:  399: * from keeping 32 MSBs zeroed resulting in 13% performance
+        -:  400: * improvement under SPARC Solaris7/64 and 5% under AlphaLinux.
+        -:  401: * Well, to be honest it should say that this *prevents* 
+        -:  402: * performance degradation.
+        -:  403: *				<appro@fy.chalmers.se>
+        -:  404: */
+        -:  405:#else
+        -:  406:/*
+        -:  407: * Above is not absolute and there are LP64 compilers that
+        -:  408: * generate better code if MD32_REG_T is defined int. The above
+        -:  409: * pre-processor condition reflects the circumstances under which
+        -:  410: * the conclusion was made and is subject to further extension.
+        -:  411: *				<appro@fy.chalmers.se>
+        -:  412: */
+        -:  413:#define MD32_REG_T int
+        -:  414:#endif
+        -:  415:#endif

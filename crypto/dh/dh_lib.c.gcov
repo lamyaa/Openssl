@@ -1,0 +1,265 @@
+        -:    0:Source:dh_lib.c
+        -:    0:Graph:dh_lib.gcno
+        -:    0:Data:dh_lib.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* crypto/dh/dh_lib.c */
+        -:    2:/* Copyright (C) 1995-1998 Eric Young (eay@cryptsoft.com)
+        -:    3: * All rights reserved.
+        -:    4: *
+        -:    5: * This package is an SSL implementation written
+        -:    6: * by Eric Young (eay@cryptsoft.com).
+        -:    7: * The implementation was written so as to conform with Netscapes SSL.
+        -:    8: * 
+        -:    9: * This library is free for commercial and non-commercial use as long as
+        -:   10: * the following conditions are aheared to.  The following conditions
+        -:   11: * apply to all code found in this distribution, be it the RC4, RSA,
+        -:   12: * lhash, DES, etc., code; not just the SSL code.  The SSL documentation
+        -:   13: * included with this distribution is covered by the same copyright terms
+        -:   14: * except that the holder is Tim Hudson (tjh@cryptsoft.com).
+        -:   15: * 
+        -:   16: * Copyright remains Eric Young's, and as such any Copyright notices in
+        -:   17: * the code are not to be removed.
+        -:   18: * If this package is used in a product, Eric Young should be given attribution
+        -:   19: * as the author of the parts of the library used.
+        -:   20: * This can be in the form of a textual message at program startup or
+        -:   21: * in documentation (online or textual) provided with the package.
+        -:   22: * 
+        -:   23: * Redistribution and use in source and binary forms, with or without
+        -:   24: * modification, are permitted provided that the following conditions
+        -:   25: * are met:
+        -:   26: * 1. Redistributions of source code must retain the copyright
+        -:   27: *    notice, this list of conditions and the following disclaimer.
+        -:   28: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   29: *    notice, this list of conditions and the following disclaimer in the
+        -:   30: *    documentation and/or other materials provided with the distribution.
+        -:   31: * 3. All advertising materials mentioning features or use of this software
+        -:   32: *    must display the following acknowledgement:
+        -:   33: *    "This product includes cryptographic software written by
+        -:   34: *     Eric Young (eay@cryptsoft.com)"
+        -:   35: *    The word 'cryptographic' can be left out if the rouines from the library
+        -:   36: *    being used are not cryptographic related :-).
+        -:   37: * 4. If you include any Windows specific code (or a derivative thereof) from 
+        -:   38: *    the apps directory (application code) you must include an acknowledgement:
+        -:   39: *    "This product includes software written by Tim Hudson (tjh@cryptsoft.com)"
+        -:   40: * 
+        -:   41: * THIS SOFTWARE IS PROVIDED BY ERIC YOUNG ``AS IS'' AND
+        -:   42: * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   43: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+        -:   44: * ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+        -:   45: * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+        -:   46: * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+        -:   47: * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   48: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+        -:   49: * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+        -:   50: * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+        -:   51: * SUCH DAMAGE.
+        -:   52: * 
+        -:   53: * The licence and distribution terms for any publically available version or
+        -:   54: * derivative of this code cannot be changed.  i.e. this code cannot simply be
+        -:   55: * copied and put under another distribution licence
+        -:   56: * [including the GNU Public Licence.]
+        -:   57: */
+        -:   58:
+        -:   59:#include <stdio.h>
+        -:   60:#include "cryptlib.h"
+        -:   61:#include <openssl/bn.h>
+        -:   62:#include <openssl/dh.h>
+        -:   63:#ifndef OPENSSL_NO_ENGINE
+        -:   64:#include <openssl/engine.h>
+        -:   65:#endif
+        -:   66:
+        -:   67:#ifdef OPENSSL_FIPS
+        -:   68:#include <openssl/fips.h>
+        -:   69:#endif
+        -:   70:
+        -:   71:const char DH_version[]="Diffie-Hellman" OPENSSL_VERSION_PTEXT;
+        -:   72:
+        -:   73:static const DH_METHOD *default_DH_method = NULL;
+        -:   74:
+    #####:   75:void DH_set_default_method(const DH_METHOD *meth)
+        -:   76:	{
+    #####:   77:	default_DH_method = meth;
+    #####:   78:	}
+        -:   79:
+    #####:   80:const DH_METHOD *DH_get_default_method(void)
+        -:   81:	{
+    #####:   82:	if(!default_DH_method)
+        -:   83:		{
+        -:   84:#ifdef OPENSSL_FIPS
+        -:   85:		if (FIPS_mode())
+        -:   86:			return FIPS_dh_openssl();
+        -:   87:		else
+        -:   88:			return DH_OpenSSL();
+        -:   89:#else
+    #####:   90:		default_DH_method = DH_OpenSSL();
+        -:   91:#endif
+        -:   92:		}
+    #####:   93:	return default_DH_method;
+        -:   94:	}
+        -:   95:
+    #####:   96:int DH_set_method(DH *dh, const DH_METHOD *meth)
+        -:   97:	{
+        -:   98:	/* NB: The caller is specifically setting a method, so it's not up to us
+        -:   99:	 * to deal with which ENGINE it comes from. */
+        -:  100:        const DH_METHOD *mtmp;
+    #####:  101:        mtmp = dh->meth;
+    #####:  102:        if (mtmp->finish) mtmp->finish(dh);
+        -:  103:#ifndef OPENSSL_NO_ENGINE
+    #####:  104:	if (dh->engine)
+        -:  105:		{
+    #####:  106:		ENGINE_finish(dh->engine);
+    #####:  107:		dh->engine = NULL;
+        -:  108:		}
+        -:  109:#endif
+    #####:  110:        dh->meth = meth;
+    #####:  111:        if (meth->init) meth->init(dh);
+    #####:  112:        return 1;
+        -:  113:	}
+        -:  114:
+    #####:  115:DH *DH_new(void)
+        -:  116:	{
+    #####:  117:	return DH_new_method(NULL);
+        -:  118:	}
+        -:  119:
+    #####:  120:DH *DH_new_method(ENGINE *engine)
+        -:  121:	{
+        -:  122:	DH *ret;
+        -:  123:
+    #####:  124:	ret=(DH *)OPENSSL_malloc(sizeof(DH));
+    #####:  125:	if (ret == NULL)
+        -:  126:		{
+    #####:  127:		DHerr(DH_F_DH_NEW_METHOD,ERR_R_MALLOC_FAILURE);
+    #####:  128:		return(NULL);
+        -:  129:		}
+        -:  130:
+    #####:  131:	ret->meth = DH_get_default_method();
+        -:  132:#ifndef OPENSSL_NO_ENGINE
+    #####:  133:	if (engine)
+        -:  134:		{
+    #####:  135:		if (!ENGINE_init(engine))
+        -:  136:			{
+    #####:  137:			DHerr(DH_F_DH_NEW_METHOD, ERR_R_ENGINE_LIB);
+    #####:  138:			OPENSSL_free(ret);
+    #####:  139:			return NULL;
+        -:  140:			}
+    #####:  141:		ret->engine = engine;
+        -:  142:		}
+        -:  143:	else
+    #####:  144:		ret->engine = ENGINE_get_default_DH();
+    #####:  145:	if(ret->engine)
+        -:  146:		{
+    #####:  147:		ret->meth = ENGINE_get_DH(ret->engine);
+    #####:  148:		if(!ret->meth)
+        -:  149:			{
+    #####:  150:			DHerr(DH_F_DH_NEW_METHOD,ERR_R_ENGINE_LIB);
+    #####:  151:			ENGINE_finish(ret->engine);
+    #####:  152:			OPENSSL_free(ret);
+    #####:  153:			return NULL;
+        -:  154:			}
+        -:  155:		}
+        -:  156:#endif
+        -:  157:
+    #####:  158:	ret->pad=0;
+    #####:  159:	ret->version=0;
+    #####:  160:	ret->p=NULL;
+    #####:  161:	ret->g=NULL;
+    #####:  162:	ret->length=0;
+    #####:  163:	ret->pub_key=NULL;
+    #####:  164:	ret->priv_key=NULL;
+    #####:  165:	ret->q=NULL;
+    #####:  166:	ret->j=NULL;
+    #####:  167:	ret->seed = NULL;
+    #####:  168:	ret->seedlen = 0;
+    #####:  169:	ret->counter = NULL;
+    #####:  170:	ret->method_mont_p=NULL;
+    #####:  171:	ret->references = 1;
+    #####:  172:	ret->flags=ret->meth->flags & ~DH_FLAG_NON_FIPS_ALLOW;
+    #####:  173:	CRYPTO_new_ex_data(CRYPTO_EX_INDEX_DH, ret, &ret->ex_data);
+    #####:  174:	if ((ret->meth->init != NULL) && !ret->meth->init(ret))
+        -:  175:		{
+        -:  176:#ifndef OPENSSL_NO_ENGINE
+    #####:  177:		if (ret->engine)
+    #####:  178:			ENGINE_finish(ret->engine);
+        -:  179:#endif
+    #####:  180:		CRYPTO_free_ex_data(CRYPTO_EX_INDEX_DH, ret, &ret->ex_data);
+    #####:  181:		OPENSSL_free(ret);
+        -:  182:		ret=NULL;
+        -:  183:		}
+    #####:  184:	return(ret);
+        -:  185:	}
+        -:  186:
+    #####:  187:void DH_free(DH *r)
+        -:  188:	{
+        -:  189:	int i;
+    #####:  190:	if(r == NULL) return;
+    #####:  191:	i = CRYPTO_add(&r->references, -1, CRYPTO_LOCK_DH);
+        -:  192:#ifdef REF_PRINT
+        -:  193:	REF_PRINT("DH",r);
+        -:  194:#endif
+    #####:  195:	if (i > 0) return;
+        -:  196:#ifdef REF_CHECK
+        -:  197:	if (i < 0)
+        -:  198:		{
+        -:  199:		fprintf(stderr,"DH_free, bad reference count\n");
+        -:  200:		abort();
+        -:  201:	}
+        -:  202:#endif
+        -:  203:
+    #####:  204:	if (r->meth->finish)
+    #####:  205:		r->meth->finish(r);
+        -:  206:#ifndef OPENSSL_NO_ENGINE
+    #####:  207:	if (r->engine)
+    #####:  208:		ENGINE_finish(r->engine);
+        -:  209:#endif
+        -:  210:
+    #####:  211:	CRYPTO_free_ex_data(CRYPTO_EX_INDEX_DH, r, &r->ex_data);
+        -:  212:
+    #####:  213:	if (r->p != NULL) BN_clear_free(r->p);
+    #####:  214:	if (r->g != NULL) BN_clear_free(r->g);
+    #####:  215:	if (r->q != NULL) BN_clear_free(r->q);
+    #####:  216:	if (r->j != NULL) BN_clear_free(r->j);
+    #####:  217:	if (r->seed) OPENSSL_free(r->seed);
+    #####:  218:	if (r->counter != NULL) BN_clear_free(r->counter);
+    #####:  219:	if (r->pub_key != NULL) BN_clear_free(r->pub_key);
+    #####:  220:	if (r->priv_key != NULL) BN_clear_free(r->priv_key);
+    #####:  221:	OPENSSL_free(r);
+        -:  222:	}
+        -:  223:
+    #####:  224:int DH_up_ref(DH *r)
+        -:  225:	{
+    #####:  226:	int i = CRYPTO_add(&r->references, 1, CRYPTO_LOCK_DH);
+        -:  227:#ifdef REF_PRINT
+        -:  228:	REF_PRINT("DH",r);
+        -:  229:#endif
+        -:  230:#ifdef REF_CHECK
+        -:  231:	if (i < 2)
+        -:  232:		{
+        -:  233:		fprintf(stderr, "DH_up, bad reference count\n");
+        -:  234:		abort();
+        -:  235:		}
+        -:  236:#endif
+    #####:  237:	return ((i > 1) ? 1 : 0);
+        -:  238:	}
+        -:  239:
+    #####:  240:int DH_get_ex_new_index(long argl, void *argp, CRYPTO_EX_new *new_func,
+        -:  241:	     CRYPTO_EX_dup *dup_func, CRYPTO_EX_free *free_func)
+        -:  242:        {
+    #####:  243:	return CRYPTO_get_ex_new_index(CRYPTO_EX_INDEX_DH, argl, argp,
+        -:  244:				new_func, dup_func, free_func);
+        -:  245:        }
+        -:  246:
+    #####:  247:int DH_set_ex_data(DH *d, int idx, void *arg)
+        -:  248:	{
+    #####:  249:	return(CRYPTO_set_ex_data(&d->ex_data,idx,arg));
+        -:  250:	}
+        -:  251:
+    #####:  252:void *DH_get_ex_data(DH *d, int idx)
+        -:  253:	{
+    #####:  254:	return(CRYPTO_get_ex_data(&d->ex_data,idx));
+        -:  255:	}
+        -:  256:
+    #####:  257:int DH_size(const DH *dh)
+        -:  258:	{
+    #####:  259:	return(BN_num_bytes(dh->p));
+        -:  260:	}

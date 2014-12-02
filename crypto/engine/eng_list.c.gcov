@@ -1,0 +1,438 @@
+        -:    0:Source:eng_list.c
+        -:    0:Graph:eng_list.gcno
+        -:    0:Data:eng_list.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* crypto/engine/eng_list.c */
+        -:    2:/* Written by Geoff Thorpe (geoff@geoffthorpe.net) for the OpenSSL
+        -:    3: * project 2000.
+        -:    4: */
+        -:    5:/* ====================================================================
+        -:    6: * Copyright (c) 1999-2001 The OpenSSL Project.  All rights reserved.
+        -:    7: *
+        -:    8: * Redistribution and use in source and binary forms, with or without
+        -:    9: * modification, are permitted provided that the following conditions
+        -:   10: * are met:
+        -:   11: *
+        -:   12: * 1. Redistributions of source code must retain the above copyright
+        -:   13: *    notice, this list of conditions and the following disclaimer. 
+        -:   14: *
+        -:   15: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   16: *    notice, this list of conditions and the following disclaimer in
+        -:   17: *    the documentation and/or other materials provided with the
+        -:   18: *    distribution.
+        -:   19: *
+        -:   20: * 3. All advertising materials mentioning features or use of this
+        -:   21: *    software must display the following acknowledgment:
+        -:   22: *    "This product includes software developed by the OpenSSL Project
+        -:   23: *    for use in the OpenSSL Toolkit. (http://www.OpenSSL.org/)"
+        -:   24: *
+        -:   25: * 4. The names "OpenSSL Toolkit" and "OpenSSL Project" must not be used to
+        -:   26: *    endorse or promote products derived from this software without
+        -:   27: *    prior written permission. For written permission, please contact
+        -:   28: *    licensing@OpenSSL.org.
+        -:   29: *
+        -:   30: * 5. Products derived from this software may not be called "OpenSSL"
+        -:   31: *    nor may "OpenSSL" appear in their names without prior written
+        -:   32: *    permission of the OpenSSL Project.
+        -:   33: *
+        -:   34: * 6. Redistributions of any form whatsoever must retain the following
+        -:   35: *    acknowledgment:
+        -:   36: *    "This product includes software developed by the OpenSSL Project
+        -:   37: *    for use in the OpenSSL Toolkit (http://www.OpenSSL.org/)"
+        -:   38: *
+        -:   39: * THIS SOFTWARE IS PROVIDED BY THE OpenSSL PROJECT ``AS IS'' AND ANY
+        -:   40: * EXPRESSED OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   41: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+        -:   42: * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE OpenSSL PROJECT OR
+        -:   43: * ITS CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+        -:   44: * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+        -:   45: * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+        -:   46: * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   47: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+        -:   48: * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+        -:   49: * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+        -:   50: * OF THE POSSIBILITY OF SUCH DAMAGE.
+        -:   51: * ====================================================================
+        -:   52: *
+        -:   53: * This product includes cryptographic software written by Eric Young
+        -:   54: * (eay@cryptsoft.com).  This product includes software written by Tim
+        -:   55: * Hudson (tjh@cryptsoft.com).
+        -:   56: *
+        -:   57: */
+        -:   58:/* ====================================================================
+        -:   59: * Copyright 2002 Sun Microsystems, Inc. ALL RIGHTS RESERVED.
+        -:   60: * ECDH support in OpenSSL originally developed by 
+        -:   61: * SUN MICROSYSTEMS, INC., and contributed to the OpenSSL project.
+        -:   62: */
+        -:   63:
+        -:   64:#include "eng_int.h"
+        -:   65:
+        -:   66:/* The linked-list of pointers to engine types. engine_list_head
+        -:   67: * incorporates an implicit structural reference but engine_list_tail
+        -:   68: * does not - the latter is a computational niceity and only points
+        -:   69: * to something that is already pointed to by its predecessor in the
+        -:   70: * list (or engine_list_head itself). In the same way, the use of the
+        -:   71: * "prev" pointer in each ENGINE is to save excessive list iteration,
+        -:   72: * it doesn't correspond to an extra structural reference. Hence,
+        -:   73: * engine_list_head, and each non-null "next" pointer account for
+        -:   74: * the list itself assuming exactly 1 structural reference on each
+        -:   75: * list member. */
+        -:   76:static ENGINE *engine_list_head = NULL;
+        -:   77:static ENGINE *engine_list_tail = NULL;
+        -:   78:
+        -:   79:/* This cleanup function is only needed internally. If it should be called, we
+        -:   80: * register it with the "ENGINE_cleanup()" stack to be called during cleanup. */
+        -:   81:
+    10000:   82:static void engine_list_cleanup(void)
+        -:   83:	{
+    10000:   84:	ENGINE *iterator = engine_list_head;
+        -:   85:
+   140000:   86:	while(iterator != NULL)
+        -:   87:		{
+   120000:   88:		ENGINE_remove(iterator);
+   120000:   89:		iterator = engine_list_head;
+        -:   90:		}
+    10000:   91:	return;
+        -:   92:	}
+        -:   93:
+        -:   94:/* These static functions starting with a lower case "engine_" always
+        -:   95: * take place when CRYPTO_LOCK_ENGINE has been locked up. */
+   120000:   96:static int engine_list_add(ENGINE *e)
+        -:   97:	{
+        -:   98:	int conflict = 0;
+        -:   99:	ENGINE *iterator = NULL;
+        -:  100:
+   120000:  101:	if(e == NULL)
+        -:  102:		{
+    #####:  103:		ENGINEerr(ENGINE_F_ENGINE_LIST_ADD,
+        -:  104:			ERR_R_PASSED_NULL_PARAMETER);
+    #####:  105:		return 0;
+        -:  106:		}
+   120000:  107:	iterator = engine_list_head;
+   900000:  108:	while(iterator && !conflict)
+        -:  109:		{
+   660000:  110:		conflict = (strcmp(iterator->id, e->id) == 0);
+   660000:  111:		iterator = iterator->next;
+        -:  112:		}
+   120000:  113:	if(conflict)
+        -:  114:		{
+    #####:  115:		ENGINEerr(ENGINE_F_ENGINE_LIST_ADD,
+        -:  116:			ENGINE_R_CONFLICTING_ENGINE_ID);
+    #####:  117:		return 0;
+        -:  118:		}
+   120000:  119:	if(engine_list_head == NULL)
+        -:  120:		{
+        -:  121:		/* We are adding to an empty list. */
+    10000:  122:		if(engine_list_tail)
+        -:  123:			{
+    #####:  124:			ENGINEerr(ENGINE_F_ENGINE_LIST_ADD,
+        -:  125:				ENGINE_R_INTERNAL_LIST_ERROR);
+    #####:  126:			return 0;
+        -:  127:			}
+    10000:  128:		engine_list_head = e;
+    10000:  129:		e->prev = NULL;
+        -:  130:		/* The first time the list allocates, we should register the
+        -:  131:		 * cleanup. */
+    10000:  132:		engine_cleanup_add_last(engine_list_cleanup);
+        -:  133:		}
+        -:  134:	else
+        -:  135:		{
+        -:  136:		/* We are adding to the tail of an existing list. */
+   220000:  137:		if((engine_list_tail == NULL) ||
+   110000:  138:				(engine_list_tail->next != NULL))
+        -:  139:			{
+    #####:  140:			ENGINEerr(ENGINE_F_ENGINE_LIST_ADD,
+        -:  141:				ENGINE_R_INTERNAL_LIST_ERROR);
+    #####:  142:			return 0;
+        -:  143:			}
+   110000:  144:		engine_list_tail->next = e;
+   110000:  145:		e->prev = engine_list_tail;
+        -:  146:		}
+        -:  147:	/* Having the engine in the list assumes a structural
+        -:  148:	 * reference. */
+   120000:  149:	e->struct_ref++;
+        -:  150:	engine_ref_debug(e, 0, 1)
+        -:  151:	/* However it came to be, e is the last item in the list. */
+   120000:  152:	engine_list_tail = e;
+   120000:  153:	e->next = NULL;
+   120000:  154:	return 1;
+        -:  155:	}
+        -:  156:
+   120000:  157:static int engine_list_remove(ENGINE *e)
+        -:  158:	{
+        -:  159:	ENGINE *iterator;
+        -:  160:
+   120000:  161:	if(e == NULL)
+        -:  162:		{
+    #####:  163:		ENGINEerr(ENGINE_F_ENGINE_LIST_REMOVE,
+        -:  164:			ERR_R_PASSED_NULL_PARAMETER);
+    #####:  165:		return 0;
+        -:  166:		}
+        -:  167:	/* We need to check that e is in our linked list! */
+   120000:  168:	iterator = engine_list_head;
+   240000:  169:	while(iterator && (iterator != e))
+    #####:  170:		iterator = iterator->next;
+   120000:  171:	if(iterator == NULL)
+        -:  172:		{
+    #####:  173:		ENGINEerr(ENGINE_F_ENGINE_LIST_REMOVE,
+        -:  174:			ENGINE_R_ENGINE_IS_NOT_IN_LIST);
+    #####:  175:		return 0;
+        -:  176:		}
+        -:  177:	/* un-link e from the chain. */
+   120000:  178:	if(e->next)
+   110000:  179:		e->next->prev = e->prev;
+   120000:  180:	if(e->prev)
+    #####:  181:		e->prev->next = e->next;
+        -:  182:	/* Correct our head/tail if necessary. */
+   120000:  183:	if(engine_list_head == e)
+   120000:  184:		engine_list_head = e->next;
+   120000:  185:	if(engine_list_tail == e)
+    10000:  186:		engine_list_tail = e->prev;
+   120000:  187:	engine_free_util(e, 0);
+   120000:  188:	return 1;
+        -:  189:	}
+        -:  190:
+        -:  191:/* Get the first/last "ENGINE" type available. */
+    10000:  192:ENGINE *ENGINE_get_first(void)
+        -:  193:	{
+        -:  194:	ENGINE *ret;
+        -:  195:
+    10000:  196:	CRYPTO_w_lock(CRYPTO_LOCK_ENGINE);
+    10000:  197:	ret = engine_list_head;
+    10000:  198:	if(ret)
+        -:  199:		{
+    10000:  200:		ret->struct_ref++;
+        -:  201:		engine_ref_debug(ret, 0, 1)
+        -:  202:		}
+    10000:  203:	CRYPTO_w_unlock(CRYPTO_LOCK_ENGINE);
+    10000:  204:	return ret;
+        -:  205:	}
+        -:  206:
+    #####:  207:ENGINE *ENGINE_get_last(void)
+        -:  208:	{
+        -:  209:	ENGINE *ret;
+        -:  210:
+    #####:  211:	CRYPTO_w_lock(CRYPTO_LOCK_ENGINE);
+    #####:  212:	ret = engine_list_tail;
+    #####:  213:	if(ret)
+        -:  214:		{
+    #####:  215:		ret->struct_ref++;
+        -:  216:		engine_ref_debug(ret, 0, 1)
+        -:  217:		}
+    #####:  218:	CRYPTO_w_unlock(CRYPTO_LOCK_ENGINE);
+    #####:  219:	return ret;
+        -:  220:	}
+        -:  221:
+        -:  222:/* Iterate to the next/previous "ENGINE" type (NULL = end of the list). */
+   120000:  223:ENGINE *ENGINE_get_next(ENGINE *e)
+        -:  224:	{
+        -:  225:	ENGINE *ret = NULL;
+   120000:  226:	if(e == NULL)
+        -:  227:		{
+    #####:  228:		ENGINEerr(ENGINE_F_ENGINE_GET_NEXT,
+        -:  229:			ERR_R_PASSED_NULL_PARAMETER);
+    #####:  230:		return 0;
+        -:  231:		}
+   120000:  232:	CRYPTO_w_lock(CRYPTO_LOCK_ENGINE);
+   120000:  233:	ret = e->next;
+   120000:  234:	if(ret)
+        -:  235:		{
+        -:  236:		/* Return a valid structural refernce to the next ENGINE */
+   110000:  237:		ret->struct_ref++;
+        -:  238:		engine_ref_debug(ret, 0, 1)
+        -:  239:		}
+   120000:  240:	CRYPTO_w_unlock(CRYPTO_LOCK_ENGINE);
+        -:  241:	/* Release the structural reference to the previous ENGINE */
+   120000:  242:	ENGINE_free(e);
+   120000:  243:	return ret;
+        -:  244:	}
+        -:  245:
+    #####:  246:ENGINE *ENGINE_get_prev(ENGINE *e)
+        -:  247:	{
+        -:  248:	ENGINE *ret = NULL;
+    #####:  249:	if(e == NULL)
+        -:  250:		{
+    #####:  251:		ENGINEerr(ENGINE_F_ENGINE_GET_PREV,
+        -:  252:			ERR_R_PASSED_NULL_PARAMETER);
+    #####:  253:		return 0;
+        -:  254:		}
+    #####:  255:	CRYPTO_w_lock(CRYPTO_LOCK_ENGINE);
+    #####:  256:	ret = e->prev;
+    #####:  257:	if(ret)
+        -:  258:		{
+        -:  259:		/* Return a valid structural reference to the next ENGINE */
+    #####:  260:		ret->struct_ref++;
+        -:  261:		engine_ref_debug(ret, 0, 1)
+        -:  262:		}
+    #####:  263:	CRYPTO_w_unlock(CRYPTO_LOCK_ENGINE);
+        -:  264:	/* Release the structural reference to the previous ENGINE */
+    #####:  265:	ENGINE_free(e);
+    #####:  266:	return ret;
+        -:  267:	}
+        -:  268:
+        -:  269:/* Add another "ENGINE" type into the list. */
+   120000:  270:int ENGINE_add(ENGINE *e)
+        -:  271:	{
+        -:  272:	int to_return = 1;
+   120000:  273:	if(e == NULL)
+        -:  274:		{
+    #####:  275:		ENGINEerr(ENGINE_F_ENGINE_ADD,
+        -:  276:			ERR_R_PASSED_NULL_PARAMETER);
+    #####:  277:		return 0;
+        -:  278:		}
+   120000:  279:	if((e->id == NULL) || (e->name == NULL))
+        -:  280:		{
+    #####:  281:		ENGINEerr(ENGINE_F_ENGINE_ADD,
+        -:  282:			ENGINE_R_ID_OR_NAME_MISSING);
+        -:  283:		}
+   120000:  284:	CRYPTO_w_lock(CRYPTO_LOCK_ENGINE);
+   120000:  285:	if(!engine_list_add(e))
+        -:  286:		{
+    #####:  287:		ENGINEerr(ENGINE_F_ENGINE_ADD,
+        -:  288:			ENGINE_R_INTERNAL_LIST_ERROR);
+        -:  289:		to_return = 0;
+        -:  290:		}
+   120000:  291:	CRYPTO_w_unlock(CRYPTO_LOCK_ENGINE);
+   120000:  292:	return to_return;
+        -:  293:	}
+        -:  294:
+        -:  295:/* Remove an existing "ENGINE" type from the array. */
+   120000:  296:int ENGINE_remove(ENGINE *e)
+        -:  297:	{
+        -:  298:	int to_return = 1;
+   120000:  299:	if(e == NULL)
+        -:  300:		{
+    #####:  301:		ENGINEerr(ENGINE_F_ENGINE_REMOVE,
+        -:  302:			ERR_R_PASSED_NULL_PARAMETER);
+    #####:  303:		return 0;
+        -:  304:		}
+   120000:  305:	CRYPTO_w_lock(CRYPTO_LOCK_ENGINE);
+   120000:  306:	if(!engine_list_remove(e))
+        -:  307:		{
+    #####:  308:		ENGINEerr(ENGINE_F_ENGINE_REMOVE,
+        -:  309:			ENGINE_R_INTERNAL_LIST_ERROR);
+        -:  310:		to_return = 0;
+        -:  311:		}
+   120000:  312:	CRYPTO_w_unlock(CRYPTO_LOCK_ENGINE);
+   120000:  313:	return to_return;
+        -:  314:	}
+        -:  315:
+    #####:  316:static void engine_cpy(ENGINE *dest, const ENGINE *src)
+        -:  317:	{
+    #####:  318:	dest->id = src->id;
+    #####:  319:	dest->name = src->name;
+        -:  320:#ifndef OPENSSL_NO_RSA
+    #####:  321:	dest->rsa_meth = src->rsa_meth;
+        -:  322:#endif
+        -:  323:#ifndef OPENSSL_NO_DSA
+    #####:  324:	dest->dsa_meth = src->dsa_meth;
+        -:  325:#endif
+        -:  326:#ifndef OPENSSL_NO_DH
+    #####:  327:	dest->dh_meth = src->dh_meth;
+        -:  328:#endif
+        -:  329:#ifndef OPENSSL_NO_ECDH
+    #####:  330:	dest->ecdh_meth = src->ecdh_meth;
+        -:  331:#endif
+        -:  332:#ifndef OPENSSL_NO_ECDSA
+    #####:  333:	dest->ecdsa_meth = src->ecdsa_meth;
+        -:  334:#endif
+    #####:  335:	dest->rand_meth = src->rand_meth;
+    #####:  336:	dest->store_meth = src->store_meth;
+    #####:  337:	dest->ciphers = src->ciphers;
+    #####:  338:	dest->digests = src->digests;
+    #####:  339:	dest->pkey_meths = src->pkey_meths;
+    #####:  340:	dest->destroy = src->destroy;
+    #####:  341:	dest->init = src->init;
+    #####:  342:	dest->finish = src->finish;
+    #####:  343:	dest->ctrl = src->ctrl;
+    #####:  344:	dest->load_privkey = src->load_privkey;
+    #####:  345:	dest->load_pubkey = src->load_pubkey;
+    #####:  346:	dest->cmd_defns = src->cmd_defns;
+    #####:  347:	dest->flags = src->flags;
+    #####:  348:	}
+        -:  349:
+    #####:  350:ENGINE *ENGINE_by_id(const char *id)
+        -:  351:	{
+        -:  352:	ENGINE *iterator;
+        -:  353:	char *load_dir = NULL;
+    #####:  354:	if(id == NULL)
+        -:  355:		{
+    #####:  356:		ENGINEerr(ENGINE_F_ENGINE_BY_ID,
+        -:  357:			ERR_R_PASSED_NULL_PARAMETER);
+    #####:  358:		return NULL;
+        -:  359:		}
+    #####:  360:	CRYPTO_w_lock(CRYPTO_LOCK_ENGINE);
+    #####:  361:	iterator = engine_list_head;
+    #####:  362:	while(iterator && (strcmp(id, iterator->id) != 0))
+    #####:  363:		iterator = iterator->next;
+    #####:  364:	if(iterator)
+        -:  365:		{
+        -:  366:		/* We need to return a structural reference. If this is an
+        -:  367:		 * ENGINE type that returns copies, make a duplicate - otherwise
+        -:  368:		 * increment the existing ENGINE's reference count. */
+    #####:  369:		if(iterator->flags & ENGINE_FLAGS_BY_ID_COPY)
+        -:  370:			{
+    #####:  371:			ENGINE *cp = ENGINE_new();
+    #####:  372:			if(!cp)
+        -:  373:				iterator = NULL;
+        -:  374:			else
+        -:  375:				{
+    #####:  376:				engine_cpy(cp, iterator);
+        -:  377:				iterator = cp;
+        -:  378:				}
+        -:  379:			}
+        -:  380:		else
+        -:  381:			{
+    #####:  382:			iterator->struct_ref++;
+        -:  383:			engine_ref_debug(iterator, 0, 1)
+        -:  384:			}
+        -:  385:		}
+    #####:  386:	CRYPTO_w_unlock(CRYPTO_LOCK_ENGINE);
+        -:  387:#if 0
+        -:  388:	if(iterator == NULL)
+        -:  389:		{
+        -:  390:		ENGINEerr(ENGINE_F_ENGINE_BY_ID,
+        -:  391:			ENGINE_R_NO_SUCH_ENGINE);
+        -:  392:		ERR_add_error_data(2, "id=", id);
+        -:  393:		}
+        -:  394:	return iterator;
+        -:  395:#else
+        -:  396:	/* EEK! Experimental code starts */
+    #####:  397:	if(iterator) return iterator;
+        -:  398:	/* Prevent infinite recusrion if we're looking for the dynamic engine. */
+    #####:  399:	if (strcmp(id, "dynamic"))
+        -:  400:		{
+        -:  401:#ifdef OPENSSL_SYS_VMS
+        -:  402:		if((load_dir = getenv("OPENSSL_ENGINES")) == 0) load_dir = "SSLROOT:[ENGINES]";
+        -:  403:#else
+    #####:  404:		if((load_dir = getenv("OPENSSL_ENGINES")) == 0) load_dir = ENGINESDIR;
+        -:  405:#endif
+    #####:  406:		iterator = ENGINE_by_id("dynamic");
+    #####:  407:		if(!iterator || !ENGINE_ctrl_cmd_string(iterator, "ID", id, 0) ||
+    #####:  408:				!ENGINE_ctrl_cmd_string(iterator, "DIR_LOAD", "2", 0) ||
+    #####:  409:				!ENGINE_ctrl_cmd_string(iterator, "DIR_ADD",
+    #####:  410:					load_dir, 0) ||
+    #####:  411:				!ENGINE_ctrl_cmd_string(iterator, "LOAD", NULL, 0))
+        -:  412:				goto notfound;
+        -:  413:		return iterator;
+        -:  414:		}
+        -:  415:notfound:
+    #####:  416:	ENGINE_free(iterator);
+    #####:  417:	ENGINEerr(ENGINE_F_ENGINE_BY_ID,ENGINE_R_NO_SUCH_ENGINE);
+    #####:  418:	ERR_add_error_data(2, "id=", id);
+    #####:  419:	return NULL;
+        -:  420:	/* EEK! Experimental code ends */
+        -:  421:#endif
+        -:  422:	}
+        -:  423:
+    #####:  424:int ENGINE_up_ref(ENGINE *e)
+        -:  425:	{
+    #####:  426:	if (e == NULL)
+        -:  427:		{
+    #####:  428:		ENGINEerr(ENGINE_F_ENGINE_UP_REF,ERR_R_PASSED_NULL_PARAMETER);
+    #####:  429:		return 0;
+        -:  430:		}
+    #####:  431:	CRYPTO_add(&e->struct_ref,1,CRYPTO_LOCK_ENGINE);
+    #####:  432:	return 1;
+        -:  433:	}

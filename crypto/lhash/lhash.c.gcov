@@ -1,0 +1,480 @@
+        -:    0:Source:lhash.c
+        -:    0:Graph:lhash.gcno
+        -:    0:Data:lhash.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* crypto/lhash/lhash.c */
+        -:    2:/* Copyright (C) 1995-1998 Eric Young (eay@cryptsoft.com)
+        -:    3: * All rights reserved.
+        -:    4: *
+        -:    5: * This package is an SSL implementation written
+        -:    6: * by Eric Young (eay@cryptsoft.com).
+        -:    7: * The implementation was written so as to conform with Netscapes SSL.
+        -:    8: * 
+        -:    9: * This library is free for commercial and non-commercial use as long as
+        -:   10: * the following conditions are aheared to.  The following conditions
+        -:   11: * apply to all code found in this distribution, be it the RC4, RSA,
+        -:   12: * lhash, DES, etc., code; not just the SSL code.  The SSL documentation
+        -:   13: * included with this distribution is covered by the same copyright terms
+        -:   14: * except that the holder is Tim Hudson (tjh@cryptsoft.com).
+        -:   15: * 
+        -:   16: * Copyright remains Eric Young's, and as such any Copyright notices in
+        -:   17: * the code are not to be removed.
+        -:   18: * If this package is used in a product, Eric Young should be given attribution
+        -:   19: * as the author of the parts of the library used.
+        -:   20: * This can be in the form of a textual message at program startup or
+        -:   21: * in documentation (online or textual) provided with the package.
+        -:   22: * 
+        -:   23: * Redistribution and use in source and binary forms, with or without
+        -:   24: * modification, are permitted provided that the following conditions
+        -:   25: * are met:
+        -:   26: * 1. Redistributions of source code must retain the copyright
+        -:   27: *    notice, this list of conditions and the following disclaimer.
+        -:   28: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   29: *    notice, this list of conditions and the following disclaimer in the
+        -:   30: *    documentation and/or other materials provided with the distribution.
+        -:   31: * 3. All advertising materials mentioning features or use of this software
+        -:   32: *    must display the following acknowledgement:
+        -:   33: *    "This product includes cryptographic software written by
+        -:   34: *     Eric Young (eay@cryptsoft.com)"
+        -:   35: *    The word 'cryptographic' can be left out if the rouines from the library
+        -:   36: *    being used are not cryptographic related :-).
+        -:   37: * 4. If you include any Windows specific code (or a derivative thereof) from 
+        -:   38: *    the apps directory (application code) you must include an acknowledgement:
+        -:   39: *    "This product includes software written by Tim Hudson (tjh@cryptsoft.com)"
+        -:   40: * 
+        -:   41: * THIS SOFTWARE IS PROVIDED BY ERIC YOUNG ``AS IS'' AND
+        -:   42: * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   43: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+        -:   44: * ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+        -:   45: * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+        -:   46: * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+        -:   47: * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   48: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+        -:   49: * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+        -:   50: * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+        -:   51: * SUCH DAMAGE.
+        -:   52: * 
+        -:   53: * The licence and distribution terms for any publically available version or
+        -:   54: * derivative of this code cannot be changed.  i.e. this code cannot simply be
+        -:   55: * copied and put under another distribution licence
+        -:   56: * [including the GNU Public Licence.]
+        -:   57: */
+        -:   58:
+        -:   59:/* Code for dynamic hash table routines
+        -:   60: * Author - Eric Young v 2.0
+        -:   61: *
+        -:   62: * 2.2 eay - added #include "crypto.h" so the memory leak checking code is
+        -:   63: *	     present. eay 18-Jun-98
+        -:   64: *
+        -:   65: * 2.1 eay - Added an 'error in last operation' flag. eay 6-May-98
+        -:   66: *
+        -:   67: * 2.0 eay - Fixed a bug that occurred when using lh_delete
+        -:   68: *	     from inside lh_doall().  As entries were deleted,
+        -:   69: *	     the 'table' was 'contract()ed', making some entries
+        -:   70: *	     jump from the end of the table to the start, there by
+        -:   71: *	     skipping the lh_doall() processing. eay - 4/12/95
+        -:   72: *
+        -:   73: * 1.9 eay - Fixed a memory leak in lh_free, the LHASH_NODEs
+        -:   74: *	     were not being free()ed. 21/11/95
+        -:   75: *
+        -:   76: * 1.8 eay - Put the stats routines into a separate file, lh_stats.c
+        -:   77: *	     19/09/95
+        -:   78: *
+        -:   79: * 1.7 eay - Removed the fputs() for realloc failures - the code
+        -:   80: *           should silently tolerate them.  I have also fixed things
+        -:   81: *           lint complained about 04/05/95
+        -:   82: *
+        -:   83: * 1.6 eay - Fixed an invalid pointers in contract/expand 27/07/92
+        -:   84: *
+        -:   85: * 1.5 eay - Fixed a misuse of realloc in expand 02/03/1992
+        -:   86: *
+        -:   87: * 1.4 eay - Fixed lh_doall so the function can call lh_delete 28/05/91
+        -:   88: *
+        -:   89: * 1.3 eay - Fixed a few lint problems 19/3/1991
+        -:   90: *
+        -:   91: * 1.2 eay - Fixed lh_doall problem 13/3/1991
+        -:   92: *
+        -:   93: * 1.1 eay - Added lh_doall
+        -:   94: *
+        -:   95: * 1.0 eay - First version
+        -:   96: */
+        -:   97:#include <stdio.h>
+        -:   98:#include <string.h>
+        -:   99:#include <stdlib.h>
+        -:  100:#include <openssl/crypto.h>
+        -:  101:#include <openssl/lhash.h>
+        -:  102:
+        -:  103:const char lh_version[]="lhash" OPENSSL_VERSION_PTEXT;
+        -:  104:
+        -:  105:#undef MIN_NODES 
+        -:  106:#define MIN_NODES	16
+        -:  107:#define UP_LOAD		(2*LH_LOAD_MULT) /* load times 256  (default 2) */
+        -:  108:#define DOWN_LOAD	(LH_LOAD_MULT)   /* load times 256  (default 1) */
+        -:  109:
+        -:  110:static void expand(_LHASH *lh);
+        -:  111:static void contract(_LHASH *lh);
+        -:  112:static LHASH_NODE **getrn(_LHASH *lh, const void *data, unsigned long *rhash);
+        -:  113:
+   160000:  114:_LHASH *lh_new(LHASH_HASH_FN_TYPE h, LHASH_COMP_FN_TYPE c)
+        -:  115:	{
+        -:  116:	_LHASH *ret;
+        -:  117:	int i;
+        -:  118:
+   160000:  119:	if ((ret=OPENSSL_malloc(sizeof(_LHASH))) == NULL)
+        -:  120:		goto err0;
+   160000:  121:	if ((ret->b=OPENSSL_malloc(sizeof(LHASH_NODE *)*MIN_NODES)) == NULL)
+        -:  122:		goto err1;
+  2560000:  123:	for (i=0; i<MIN_NODES; i++)
+  2560000:  124:		ret->b[i]=NULL;
+   160000:  125:	ret->comp=((c == NULL)?(LHASH_COMP_FN_TYPE)strcmp:c);
+   160000:  126:	ret->hash=((h == NULL)?(LHASH_HASH_FN_TYPE)lh_strhash:h);
+   160000:  127:	ret->num_nodes=MIN_NODES/2;
+   160000:  128:	ret->num_alloc_nodes=MIN_NODES;
+   160000:  129:	ret->p=0;
+   160000:  130:	ret->pmax=MIN_NODES/2;
+   160000:  131:	ret->up_load=UP_LOAD;
+   160000:  132:	ret->down_load=DOWN_LOAD;
+   160000:  133:	ret->num_items=0;
+        -:  134:
+   160000:  135:	ret->num_expands=0;
+   160000:  136:	ret->num_expand_reallocs=0;
+   160000:  137:	ret->num_contracts=0;
+   160000:  138:	ret->num_contract_reallocs=0;
+   160000:  139:	ret->num_hash_calls=0;
+   160000:  140:	ret->num_comp_calls=0;
+   160000:  141:	ret->num_insert=0;
+   160000:  142:	ret->num_replace=0;
+   160000:  143:	ret->num_delete=0;
+   160000:  144:	ret->num_no_delete=0;
+   160000:  145:	ret->num_retrieve=0;
+   160000:  146:	ret->num_retrieve_miss=0;
+   160000:  147:	ret->num_hash_comps=0;
+        -:  148:
+   160000:  149:	ret->error=0;
+   160000:  150:	return(ret);
+        -:  151:err1:
+    #####:  152:	OPENSSL_free(ret);
+        -:  153:err0:
+        -:  154:	return(NULL);
+        -:  155:	}
+        -:  156:
+   150000:  157:void lh_free(_LHASH *lh)
+        -:  158:	{
+        -:  159:	unsigned int i;
+        -:  160:	LHASH_NODE *n,*nn;
+        -:  161:
+   150000:  162:	if (lh == NULL)
+   150000:  163:	    return;
+        -:  164:
+ 17270000:  165:	for (i=0; i<lh->num_nodes; i++)
+        -:  166:		{
+ 17270000:  167:		n=lh->b[i];
+ 62320000:  168:		while (n != NULL)
+        -:  169:			{
+ 27780000:  170:			nn=n->next;
+ 27780000:  171:			OPENSSL_free(n);
+        -:  172:			n=nn;
+        -:  173:			}
+        -:  174:		}
+   150000:  175:	OPENSSL_free(lh->b);
+   150000:  176:	OPENSSL_free(lh);
+        -:  177:	}
+        -:  178:
+197733518:  179:void *lh_insert(_LHASH *lh, void *data)
+        -:  180:	{
+        -:  181:	unsigned long hash;
+        -:  182:	LHASH_NODE *nn,**rn;
+        -:  183:	void *ret;
+        -:  184:
+197733518:  185:	lh->error=0;
+197733518:  186:	if (lh->up_load <= (lh->num_items*LH_LOAD_MULT/lh->num_nodes))
+ 16080000:  187:		expand(lh);
+        -:  188:
+197733518:  189:	rn=getrn(lh,data,&hash);
+        -:  190:
+197733518:  191:	if (*rn == NULL)
+        -:  192:		{
+ 34183518:  193:		if ((nn=(LHASH_NODE *)OPENSSL_malloc(sizeof(LHASH_NODE))) == NULL)
+        -:  194:			{
+    #####:  195:			lh->error++;
+    #####:  196:			return(NULL);
+        -:  197:			}
+ 34183518:  198:		nn->data=data;
+ 34183518:  199:		nn->next=NULL;
+        -:  200:#ifndef OPENSSL_NO_HASH_COMP
+ 34183518:  201:		nn->hash=hash;
+        -:  202:#endif
+ 34183518:  203:		*rn=nn;
+        -:  204:		ret=NULL;
+ 34183518:  205:		lh->num_insert++;
+ 34183518:  206:		lh->num_items++;
+        -:  207:		}
+        -:  208:	else /* replace same key */
+        -:  209:		{
+163550000:  210:		ret= (*rn)->data;
+163550000:  211:		(*rn)->data=data;
+163550000:  212:		lh->num_replace++;
+        -:  213:		}
+197733518:  214:	return(ret);
+        -:  215:	}
+        -:  216:
+  6393518:  217:void *lh_delete(_LHASH *lh, const void *data)
+        -:  218:	{
+        -:  219:	unsigned long hash;
+        -:  220:	LHASH_NODE *nn,**rn;
+        -:  221:	void *ret;
+        -:  222:
+  6393518:  223:	lh->error=0;
+  6393518:  224:	rn=getrn(lh,data,&hash);
+        -:  225:
+  6393518:  226:	if (*rn == NULL)
+        -:  227:		{
+    #####:  228:		lh->num_no_delete++;
+    #####:  229:		return(NULL);
+        -:  230:		}
+        -:  231:	else
+        -:  232:		{
+        -:  233:		nn= *rn;
+  6393518:  234:		*rn=nn->next;
+  6393518:  235:		ret=nn->data;
+  6393518:  236:		OPENSSL_free(nn);
+  6393518:  237:		lh->num_delete++;
+        -:  238:		}
+        -:  239:
+  6393518:  240:	lh->num_items--;
+ 11593518:  241:	if ((lh->num_nodes > MIN_NODES) &&
+  5200000:  242:		(lh->down_load >= (lh->num_items*LH_LOAD_MULT/lh->num_nodes)))
+    10000:  243:		contract(lh);
+        -:  244:
+  6393518:  245:	return(ret);
+        -:  246:	}
+        -:  247:
+  5249623:  248:void *lh_retrieve(_LHASH *lh, const void *data)
+        -:  249:	{
+        -:  250:	unsigned long hash;
+        -:  251:	LHASH_NODE **rn;
+        -:  252:	void *ret;
+        -:  253:
+  5249623:  254:	lh->error=0;
+  5249623:  255:	rn=getrn(lh,data,&hash);
+        -:  256:
+  5249623:  257:	if (*rn == NULL)
+        -:  258:		{
+  1553319:  259:		lh->num_retrieve_miss++;
+  1553319:  260:		return(NULL);
+        -:  261:		}
+        -:  262:	else
+        -:  263:		{
+  3696304:  264:		ret= (*rn)->data;
+  3696304:  265:		lh->num_retrieve++;
+        -:  266:		}
+  3696304:  267:	return(ret);
+        -:  268:	}
+        -:  269:
+   170000:  270:static void doall_util_fn(_LHASH *lh, int use_arg, LHASH_DOALL_FN_TYPE func,
+        -:  271:			  LHASH_DOALL_ARG_FN_TYPE func_arg, void *arg)
+        -:  272:	{
+        -:  273:	int i;
+        -:  274:	LHASH_NODE *a,*n;
+        -:  275:
+   170000:  276:	if (lh == NULL)
+   170000:  277:		return;
+        -:  278:
+        -:  279:	/* reverse the order so we search from 'top to bottom'
+        -:  280:	 * We were having memory leaks otherwise */
+  6030000:  281:	for (i=lh->num_nodes-1; i>=0; i--)
+        -:  282:		{
+  5890000:  283:		a=lh->b[i];
+ 16550000:  284:		while (a != NULL)
+        -:  285:			{
+        -:  286:			/* 28/05/91 - eay - n added so items can be deleted
+        -:  287:			 * via lh_doall */
+        -:  288:			/* 22/05/08 - ben - eh? since a is not passed,
+        -:  289:			 * this should not be needed */
+  4770000:  290:			n=a->next;
+  4770000:  291:			if(use_arg)
+  1090000:  292:				func_arg(a->data,arg);
+        -:  293:			else
+  3680000:  294:				func(a->data);
+        -:  295:			a=n;
+        -:  296:			}
+        -:  297:		}
+        -:  298:	}
+        -:  299:
+   120000:  300:void lh_doall(_LHASH *lh, LHASH_DOALL_FN_TYPE func)
+        -:  301:	{
+   120000:  302:	doall_util_fn(lh, 0, func, (LHASH_DOALL_ARG_FN_TYPE)0, NULL);
+   120000:  303:	}
+        -:  304:
+    50000:  305:void lh_doall_arg(_LHASH *lh, LHASH_DOALL_ARG_FN_TYPE func, void *arg)
+        -:  306:	{
+    50000:  307:	doall_util_fn(lh, 1, (LHASH_DOALL_FN_TYPE)0, func, arg);
+    50000:  308:	}
+        -:  309:
+ 16080000:  310:static void expand(_LHASH *lh)
+        -:  311:	{
+        -:  312:	LHASH_NODE **n,**n1,**n2,*np;
+        -:  313:	unsigned int p,i,j;
+        -:  314:	unsigned long hash,nni;
+        -:  315:
+ 16080000:  316:	lh->num_nodes++;
+ 16080000:  317:	lh->num_expands++;
+ 16080000:  318:	p=(int)lh->p++;
+ 16080000:  319:	n1= &(lh->b[p]);
+ 16080000:  320:	n2= &(lh->b[p+(int)lh->pmax]);
+ 16080000:  321:	*n2=NULL;        /* 27/07/92 - eay - undefined pointer bug */
+ 16080000:  322:	nni=lh->num_alloc_nodes;
+        -:  323:	
+ 89760000:  324:	for (np= *n1; np != NULL; )
+        -:  325:		{
+        -:  326:#ifndef OPENSSL_NO_HASH_COMP
+ 57600000:  327:		hash=np->hash;
+        -:  328:#else
+        -:  329:		hash=lh->hash(np->data);
+        -:  330:		lh->num_hash_calls++;
+        -:  331:#endif
+ 57600000:  332:		if ((hash%nni) != p)
+        -:  333:			{ /* move it */
+  6900000:  334:			*n1= (*n1)->next;
+  6900000:  335:			np->next= *n2;
+  6900000:  336:			*n2=np;
+        -:  337:			}
+        -:  338:		else
+ 50700000:  339:			n1= &((*n1)->next);
+ 57600000:  340:		np= *n1;
+        -:  341:		}
+        -:  342:
+ 16080000:  343:	if ((lh->p) >= lh->pmax)
+        -:  344:		{
+   150000:  345:		j=(int)lh->num_alloc_nodes*2;
+   150000:  346:		n=(LHASH_NODE **)OPENSSL_realloc(lh->b,
+        -:  347:			(int)(sizeof(LHASH_NODE *)*j));
+   150000:  348:		if (n == NULL)
+        -:  349:			{
+        -:  350:/*			fputs("realloc error in lhash",stderr); */
+    #####:  351:			lh->error++;
+    #####:  352:			lh->p=0;
+ 16080000:  353:			return;
+        -:  354:			}
+        -:  355:		/* else */
+ 23830000:  356:		for (i=(int)lh->num_alloc_nodes; i<j; i++)/* 26/02/92 eay */
+ 23680000:  357:			n[i]=NULL;			  /* 02/03/92 eay */
+   150000:  358:		lh->pmax=lh->num_alloc_nodes;
+   150000:  359:		lh->num_alloc_nodes=j;
+   150000:  360:		lh->num_expand_reallocs++;
+   150000:  361:		lh->p=0;
+   150000:  362:		lh->b=n;
+        -:  363:		}
+        -:  364:	}
+        -:  365:
+    10000:  366:static void contract(_LHASH *lh)
+        -:  367:	{
+        -:  368:	LHASH_NODE **n,*n1,*np;
+        -:  369:
+    10000:  370:	np=lh->b[lh->p+lh->pmax-1];
+    10000:  371:	lh->b[lh->p+lh->pmax-1]=NULL; /* 24/07-92 - eay - weird but :-( */
+    10000:  372:	if (lh->p == 0)
+        -:  373:		{
+    #####:  374:		n=(LHASH_NODE **)OPENSSL_realloc(lh->b,
+        -:  375:			(unsigned int)(sizeof(LHASH_NODE *)*lh->pmax));
+    #####:  376:		if (n == NULL)
+        -:  377:			{
+        -:  378:/*			fputs("realloc error in lhash",stderr); */
+    #####:  379:			lh->error++;
+    10000:  380:			return;
+        -:  381:			}
+    #####:  382:		lh->num_contract_reallocs++;
+    #####:  383:		lh->num_alloc_nodes/=2;
+    #####:  384:		lh->pmax/=2;
+    #####:  385:		lh->p=lh->pmax-1;
+    #####:  386:		lh->b=n;
+        -:  387:		}
+        -:  388:	else
+    10000:  389:		lh->p--;
+        -:  390:
+    10000:  391:	lh->num_nodes--;
+    10000:  392:	lh->num_contracts++;
+        -:  393:
+    10000:  394:	n1=lh->b[(int)lh->p];
+    10000:  395:	if (n1 == NULL)
+    10000:  396:		lh->b[(int)lh->p]=np;
+        -:  397:	else
+        -:  398:		{
+    #####:  399:		while (n1->next != NULL)
+        -:  400:			n1=n1->next;
+    #####:  401:		n1->next=np;
+        -:  402:		}
+        -:  403:	}
+        -:  404:
+209376659:  405:static LHASH_NODE **getrn(_LHASH *lh, const void *data, unsigned long *rhash)
+        -:  406:	{
+        -:  407:	LHASH_NODE **ret,*n1;
+        -:  408:	unsigned long hash,nn;
+        -:  409:	LHASH_COMP_FN_TYPE cf;
+        -:  410:
+209376659:  411:	hash=(*(lh->hash))(data);
+209376659:  412:	lh->num_hash_calls++;
+209376659:  413:	*rhash=hash;
+        -:  414:
+209376659:  415:	nn=hash%lh->pmax;
+209376659:  416:	if (nn < lh->p)
+ 99910000:  417:		nn=hash%lh->num_alloc_nodes;
+        -:  418:
+209376659:  419:	cf=lh->comp;
+209376659:  420:	ret= &(lh->b[(int)nn]);
+476786609:  421:	for (n1= *ret; n1 != NULL; n1=n1->next)
+        -:  422:		{
+        -:  423:#ifndef OPENSSL_NO_HASH_COMP
+441049772:  424:		lh->num_hash_comps++;
+441049772:  425:		if (n1->hash != hash)
+        -:  426:			{
+256789950:  427:			ret= &(n1->next);
+256789950:  428:			continue;
+        -:  429:			}
+        -:  430:#endif
+184259822:  431:		lh->num_comp_calls++;
+184259822:  432:		if(cf(n1->data,data) == 0)
+        -:  433:			break;
+ 10620000:  434:		ret= &(n1->next);
+        -:  435:		}
+209376659:  436:	return(ret);
+        -:  437:	}
+        -:  438:
+        -:  439:/* The following hash seems to work very well on normal text strings
+        -:  440: * no collisions on /usr/dict/words and it distributes on %2^n quite
+        -:  441: * well, not as good as MD5, but still good.
+        -:  442: */
+ 12191942:  443:unsigned long lh_strhash(const char *c)
+        -:  444:	{
+        -:  445:	unsigned long ret=0;
+        -:  446:	long n;
+        -:  447:	unsigned long v;
+        -:  448:	int r;
+        -:  449:
+ 12191942:  450:	if ((c == NULL) || (*c == '\0'))
+        -:  451:		return(ret);
+        -:  452:/*
+        -:  453:	unsigned char b[16];
+        -:  454:	MD5(c,strlen(c),b);
+        -:  455:	return(b[0]|(b[1]<<8)|(b[2]<<16)|(b[3]<<24)); 
+        -:  456:*/
+        -:  457:
+        -:  458:	n=0x100;
+136289710:  459:	while (*c)
+        -:  460:		{
+124407768:  461:		v=n|(*c);
+124407768:  462:		n+=0x100;
+124407768:  463:		r= (int)((v>>2)^v)&0x0f;
+124407768:  464:		ret=(ret<<r)|(ret>>(32-r));
+124407768:  465:		ret&=0xFFFFFFFFL;
+124407768:  466:		ret^=v*v;
+124407768:  467:		c++;
+        -:  468:		}
+ 11881942:  469:	return((ret>>16)^ret);
+        -:  470:	}
+        -:  471:
+    20000:  472:unsigned long lh_num_items(const _LHASH *lh)
+        -:  473:	{
+    20000:  474:	return lh ? lh->num_items : 0;
+        -:  475:	}

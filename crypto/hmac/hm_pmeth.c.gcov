@@ -1,0 +1,276 @@
+        -:    0:Source:hm_pmeth.c
+        -:    0:Graph:hm_pmeth.gcno
+        -:    0:Data:hm_pmeth.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* Written by Dr Stephen N Henson (steve@openssl.org) for the OpenSSL
+        -:    2: * project 2007.
+        -:    3: */
+        -:    4:/* ====================================================================
+        -:    5: * Copyright (c) 2007 The OpenSSL Project.  All rights reserved.
+        -:    6: *
+        -:    7: * Redistribution and use in source and binary forms, with or without
+        -:    8: * modification, are permitted provided that the following conditions
+        -:    9: * are met:
+        -:   10: *
+        -:   11: * 1. Redistributions of source code must retain the above copyright
+        -:   12: *    notice, this list of conditions and the following disclaimer. 
+        -:   13: *
+        -:   14: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   15: *    notice, this list of conditions and the following disclaimer in
+        -:   16: *    the documentation and/or other materials provided with the
+        -:   17: *    distribution.
+        -:   18: *
+        -:   19: * 3. All advertising materials mentioning features or use of this
+        -:   20: *    software must display the following acknowledgment:
+        -:   21: *    "This product includes software developed by the OpenSSL Project
+        -:   22: *    for use in the OpenSSL Toolkit. (http://www.OpenSSL.org/)"
+        -:   23: *
+        -:   24: * 4. The names "OpenSSL Toolkit" and "OpenSSL Project" must not be used to
+        -:   25: *    endorse or promote products derived from this software without
+        -:   26: *    prior written permission. For written permission, please contact
+        -:   27: *    licensing@OpenSSL.org.
+        -:   28: *
+        -:   29: * 5. Products derived from this software may not be called "OpenSSL"
+        -:   30: *    nor may "OpenSSL" appear in their names without prior written
+        -:   31: *    permission of the OpenSSL Project.
+        -:   32: *
+        -:   33: * 6. Redistributions of any form whatsoever must retain the following
+        -:   34: *    acknowledgment:
+        -:   35: *    "This product includes software developed by the OpenSSL Project
+        -:   36: *    for use in the OpenSSL Toolkit (http://www.OpenSSL.org/)"
+        -:   37: *
+        -:   38: * THIS SOFTWARE IS PROVIDED BY THE OpenSSL PROJECT ``AS IS'' AND ANY
+        -:   39: * EXPRESSED OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   40: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+        -:   41: * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE OpenSSL PROJECT OR
+        -:   42: * ITS CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+        -:   43: * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+        -:   44: * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+        -:   45: * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   46: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+        -:   47: * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+        -:   48: * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+        -:   49: * OF THE POSSIBILITY OF SUCH DAMAGE.
+        -:   50: * ====================================================================
+        -:   51: *
+        -:   52: * This product includes cryptographic software written by Eric Young
+        -:   53: * (eay@cryptsoft.com).  This product includes software written by Tim
+        -:   54: * Hudson (tjh@cryptsoft.com).
+        -:   55: *
+        -:   56: */
+        -:   57:
+        -:   58:#include <stdio.h>
+        -:   59:#include "cryptlib.h"
+        -:   60:#include <openssl/x509.h>
+        -:   61:#include <openssl/x509v3.h>
+        -:   62:#include <openssl/evp.h>
+        -:   63:#include <openssl/hmac.h>
+        -:   64:#include "evp_locl.h"
+        -:   65:
+        -:   66:/* HMAC pkey context structure */
+        -:   67:
+        -:   68:typedef struct
+        -:   69:	{
+        -:   70:	const EVP_MD *md;	/* MD for HMAC use */
+        -:   71:	ASN1_OCTET_STRING ktmp; /* Temp storage for key */
+        -:   72:	HMAC_CTX ctx;
+        -:   73:	} HMAC_PKEY_CTX;
+        -:   74:
+   270000:   75:static int pkey_hmac_init(EVP_PKEY_CTX *ctx)
+        -:   76:	{
+        -:   77:	HMAC_PKEY_CTX *hctx;
+   270000:   78:	hctx = OPENSSL_malloc(sizeof(HMAC_PKEY_CTX));
+   270000:   79:	if (!hctx)
+        -:   80:		return 0;
+   270000:   81:	hctx->md = NULL;
+   270000:   82:	hctx->ktmp.data = NULL;
+   270000:   83:	hctx->ktmp.length = 0;
+   270000:   84:	hctx->ktmp.flags = 0;
+   270000:   85:	hctx->ktmp.type = V_ASN1_OCTET_STRING;
+   270000:   86:	HMAC_CTX_init(&hctx->ctx);
+        -:   87:
+   270000:   88:	ctx->data = hctx;
+   270000:   89:	ctx->keygen_info_count = 0;
+        -:   90:
+   270000:   91:	return 1;
+        -:   92:	}
+        -:   93:
+   120000:   94:static int pkey_hmac_copy(EVP_PKEY_CTX *dst, EVP_PKEY_CTX *src)
+        -:   95:	{
+        -:   96:	HMAC_PKEY_CTX *sctx, *dctx;
+   120000:   97:	if (!pkey_hmac_init(dst))
+        -:   98:		return 0;
+   120000:   99:       	sctx = src->data;
+   120000:  100:	dctx = dst->data;
+   120000:  101:	dctx->md = sctx->md;
+   120000:  102:	HMAC_CTX_init(&dctx->ctx);
+   120000:  103:	if (!HMAC_CTX_copy(&dctx->ctx, &sctx->ctx))
+        -:  104:		return 0;
+   120000:  105:	if (sctx->ktmp.data)
+        -:  106:		{
+    #####:  107:		if (!ASN1_OCTET_STRING_set(&dctx->ktmp,
+        -:  108:					sctx->ktmp.data, sctx->ktmp.length))
+        -:  109:			return 0;
+        -:  110:		}
+        -:  111:	return 1;
+        -:  112:	}
+        -:  113:
+   270000:  114:static void pkey_hmac_cleanup(EVP_PKEY_CTX *ctx)
+        -:  115:	{
+   270000:  116:	HMAC_PKEY_CTX *hctx = ctx->data;
+   270000:  117:	HMAC_CTX_cleanup(&hctx->ctx);
+   270000:  118:	if (hctx->ktmp.data)
+        -:  119:		{
+    50000:  120:		if (hctx->ktmp.length)
+    50000:  121:			OPENSSL_cleanse(hctx->ktmp.data, hctx->ktmp.length);
+    50000:  122:		OPENSSL_free(hctx->ktmp.data);
+    50000:  123:		hctx->ktmp.data = NULL;
+        -:  124:		}
+   270000:  125:	OPENSSL_free(hctx);
+   270000:  126:	}
+        -:  127:
+    50000:  128:static int pkey_hmac_keygen(EVP_PKEY_CTX *ctx, EVP_PKEY *pkey)
+        -:  129:	{
+        -:  130:	ASN1_OCTET_STRING *hkey = NULL;
+    50000:  131:	HMAC_PKEY_CTX *hctx = ctx->data;
+    50000:  132:	if (!hctx->ktmp.data)
+        -:  133:		return 0;
+    50000:  134:	hkey = ASN1_OCTET_STRING_dup(&hctx->ktmp);
+    50000:  135:	if (!hkey)
+        -:  136:		return 0;
+    50000:  137:	EVP_PKEY_assign(pkey, EVP_PKEY_HMAC, hkey);
+        -:  138:	
+    50000:  139:	return 1;
+        -:  140:	}
+        -:  141:
+   390000:  142:static int int_update(EVP_MD_CTX *ctx,const void *data,size_t count)
+        -:  143:	{
+   390000:  144:	HMAC_PKEY_CTX *hctx = ctx->pctx->data;
+   390000:  145:	if (!HMAC_Update(&hctx->ctx, data, count))
+        -:  146:		return 0;
+   390000:  147:	return 1;
+        -:  148:	}
+        -:  149:
+   220000:  150:static int hmac_signctx_init(EVP_PKEY_CTX *ctx, EVP_MD_CTX *mctx)
+        -:  151:	{
+   220000:  152:	HMAC_PKEY_CTX *hctx = ctx->data;
+   220000:  153:	HMAC_CTX_set_flags(&hctx->ctx, mctx->flags & ~EVP_MD_CTX_FLAG_NO_INIT);
+   220000:  154:	EVP_MD_CTX_set_flags(mctx, EVP_MD_CTX_FLAG_NO_INIT);
+   220000:  155:	mctx->update = int_update;
+   220000:  156:	return 1;
+        -:  157:	}
+        -:  158:
+   120000:  159:static int hmac_signctx(EVP_PKEY_CTX *ctx, unsigned char *sig, size_t *siglen,
+        -:  160:					EVP_MD_CTX *mctx)
+        -:  161:	{
+        -:  162:	unsigned int hlen;
+   120000:  163:	HMAC_PKEY_CTX *hctx = ctx->data;
+   120000:  164:	int l = EVP_MD_CTX_size(mctx);
+        -:  165:
+   120000:  166:	if (l < 0)
+        -:  167:		return 0;
+   120000:  168:	*siglen = l;
+   120000:  169:	if (!sig)
+        -:  170:		return 1;
+        -:  171:
+   120000:  172:	if (!HMAC_Final(&hctx->ctx, sig, &hlen))
+        -:  173:		return 0;
+   120000:  174:	*siglen = (size_t)hlen;
+   120000:  175:	return 1;
+        -:  176:	}
+        -:  177:
+   490000:  178:static int pkey_hmac_ctrl(EVP_PKEY_CTX *ctx, int type, int p1, void *p2)
+        -:  179:	{
+   490000:  180:	HMAC_PKEY_CTX *hctx = ctx->data;
+        -:  181:	ASN1_OCTET_STRING *key;
+   490000:  182:	switch (type)
+        -:  183:		{
+        -:  184:
+        -:  185:		case EVP_PKEY_CTRL_SET_MAC_KEY:
+    50000:  186:		if ((!p2 && p1 > 0) || (p1 < -1))
+        -:  187:			return 0;
+    50000:  188:		if (!ASN1_OCTET_STRING_set(&hctx->ktmp, p2, p1))
+        -:  189:			return 0;
+        -:  190:		break;
+        -:  191:
+        -:  192:		case EVP_PKEY_CTRL_MD:
+   220000:  193:		hctx->md = p2;
+   220000:  194:		break;
+        -:  195:
+        -:  196:		case EVP_PKEY_CTRL_DIGESTINIT:
+   220000:  197:		key = (ASN1_OCTET_STRING *)ctx->pkey->pkey.ptr;
+   220000:  198:		if (!HMAC_Init_ex(&hctx->ctx, key->data, key->length, hctx->md,
+        -:  199:				ctx->engine))
+        -:  200:			return 0;
+        -:  201:		break;
+        -:  202:
+        -:  203:		default:
+        -:  204:		return -2;
+        -:  205:
+        -:  206:		}
+        -:  207:	return 1;
+        -:  208:	}
+        -:  209:
+    #####:  210:static int pkey_hmac_ctrl_str(EVP_PKEY_CTX *ctx,
+        -:  211:			const char *type, const char *value)
+        -:  212:	{
+    #####:  213:	if (!value)
+        -:  214:		{
+        -:  215:		return 0;
+        -:  216:		}
+    #####:  217:	if (!strcmp(type, "key"))
+        -:  218:		{
+        -:  219:		void *p = (void *)value;
+    #####:  220:		return pkey_hmac_ctrl(ctx, EVP_PKEY_CTRL_SET_MAC_KEY,
+        -:  221:				-1, p);
+        -:  222:		}
+    #####:  223:	if (!strcmp(type, "hexkey"))
+        -:  224:		{
+        -:  225:		unsigned char *key;
+        -:  226:		int r;
+        -:  227:		long keylen;
+    #####:  228:		key = string_to_hex(value, &keylen);
+    #####:  229:		if (!key)
+        -:  230:			return 0;
+    #####:  231:		r = pkey_hmac_ctrl(ctx, EVP_PKEY_CTRL_SET_MAC_KEY, keylen, key);
+    #####:  232:		OPENSSL_free(key);
+    #####:  233:		return r;
+        -:  234:		}
+        -:  235:	return -2;
+        -:  236:	}
+        -:  237:
+        -:  238:const EVP_PKEY_METHOD hmac_pkey_meth = 
+        -:  239:	{
+        -:  240:	EVP_PKEY_HMAC,
+        -:  241:	0,
+        -:  242:	pkey_hmac_init,
+        -:  243:	pkey_hmac_copy,
+        -:  244:	pkey_hmac_cleanup,
+        -:  245:
+        -:  246:	0, 0,
+        -:  247:
+        -:  248:	0,
+        -:  249:	pkey_hmac_keygen,
+        -:  250:
+        -:  251:	0, 0,
+        -:  252:
+        -:  253:	0, 0,
+        -:  254:
+        -:  255:	0,0,
+        -:  256:
+        -:  257:	hmac_signctx_init,
+        -:  258:	hmac_signctx,
+        -:  259:
+        -:  260:	0,0,
+        -:  261:
+        -:  262:	0,0,
+        -:  263:
+        -:  264:	0,0,
+        -:  265:
+        -:  266:	0,0,
+        -:  267:
+        -:  268:	pkey_hmac_ctrl,
+        -:  269:	pkey_hmac_ctrl_str
+        -:  270:
+        -:  271:	};

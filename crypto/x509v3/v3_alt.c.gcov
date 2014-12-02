@@ -1,0 +1,619 @@
+        -:    0:Source:v3_alt.c
+        -:    0:Graph:v3_alt.gcno
+        -:    0:Data:v3_alt.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* v3_alt.c */
+        -:    2:/* Written by Dr Stephen N Henson (steve@openssl.org) for the OpenSSL
+        -:    3: * project.
+        -:    4: */
+        -:    5:/* ====================================================================
+        -:    6: * Copyright (c) 1999-2003 The OpenSSL Project.  All rights reserved.
+        -:    7: *
+        -:    8: * Redistribution and use in source and binary forms, with or without
+        -:    9: * modification, are permitted provided that the following conditions
+        -:   10: * are met:
+        -:   11: *
+        -:   12: * 1. Redistributions of source code must retain the above copyright
+        -:   13: *    notice, this list of conditions and the following disclaimer. 
+        -:   14: *
+        -:   15: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   16: *    notice, this list of conditions and the following disclaimer in
+        -:   17: *    the documentation and/or other materials provided with the
+        -:   18: *    distribution.
+        -:   19: *
+        -:   20: * 3. All advertising materials mentioning features or use of this
+        -:   21: *    software must display the following acknowledgment:
+        -:   22: *    "This product includes software developed by the OpenSSL Project
+        -:   23: *    for use in the OpenSSL Toolkit. (http://www.OpenSSL.org/)"
+        -:   24: *
+        -:   25: * 4. The names "OpenSSL Toolkit" and "OpenSSL Project" must not be used to
+        -:   26: *    endorse or promote products derived from this software without
+        -:   27: *    prior written permission. For written permission, please contact
+        -:   28: *    licensing@OpenSSL.org.
+        -:   29: *
+        -:   30: * 5. Products derived from this software may not be called "OpenSSL"
+        -:   31: *    nor may "OpenSSL" appear in their names without prior written
+        -:   32: *    permission of the OpenSSL Project.
+        -:   33: *
+        -:   34: * 6. Redistributions of any form whatsoever must retain the following
+        -:   35: *    acknowledgment:
+        -:   36: *    "This product includes software developed by the OpenSSL Project
+        -:   37: *    for use in the OpenSSL Toolkit (http://www.OpenSSL.org/)"
+        -:   38: *
+        -:   39: * THIS SOFTWARE IS PROVIDED BY THE OpenSSL PROJECT ``AS IS'' AND ANY
+        -:   40: * EXPRESSED OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   41: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+        -:   42: * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE OpenSSL PROJECT OR
+        -:   43: * ITS CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+        -:   44: * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+        -:   45: * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+        -:   46: * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   47: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+        -:   48: * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+        -:   49: * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+        -:   50: * OF THE POSSIBILITY OF SUCH DAMAGE.
+        -:   51: * ====================================================================
+        -:   52: *
+        -:   53: * This product includes cryptographic software written by Eric Young
+        -:   54: * (eay@cryptsoft.com).  This product includes software written by Tim
+        -:   55: * Hudson (tjh@cryptsoft.com).
+        -:   56: *
+        -:   57: */
+        -:   58:
+        -:   59:#include <stdio.h>
+        -:   60:#include "cryptlib.h"
+        -:   61:#include <openssl/conf.h>
+        -:   62:#include <openssl/x509v3.h>
+        -:   63:
+        -:   64:static GENERAL_NAMES *v2i_subject_alt(X509V3_EXT_METHOD *method, X509V3_CTX *ctx, STACK_OF(CONF_VALUE) *nval);
+        -:   65:static GENERAL_NAMES *v2i_issuer_alt(X509V3_EXT_METHOD *method, X509V3_CTX *ctx, STACK_OF(CONF_VALUE) *nval);
+        -:   66:static int copy_email(X509V3_CTX *ctx, GENERAL_NAMES *gens, int move_p);
+        -:   67:static int copy_issuer(X509V3_CTX *ctx, GENERAL_NAMES *gens);
+        -:   68:static int do_othername(GENERAL_NAME *gen, char *value, X509V3_CTX *ctx);
+        -:   69:static int do_dirname(GENERAL_NAME *gen, char *value, X509V3_CTX *ctx);
+        -:   70:
+        -:   71:const X509V3_EXT_METHOD v3_alt[] = {
+        -:   72:{ NID_subject_alt_name, 0, ASN1_ITEM_ref(GENERAL_NAMES),
+        -:   73:0,0,0,0,
+        -:   74:0,0,
+        -:   75:(X509V3_EXT_I2V)i2v_GENERAL_NAMES,
+        -:   76:(X509V3_EXT_V2I)v2i_subject_alt,
+        -:   77:NULL, NULL, NULL},
+        -:   78:
+        -:   79:{ NID_issuer_alt_name, 0, ASN1_ITEM_ref(GENERAL_NAMES),
+        -:   80:0,0,0,0,
+        -:   81:0,0,
+        -:   82:(X509V3_EXT_I2V)i2v_GENERAL_NAMES,
+        -:   83:(X509V3_EXT_V2I)v2i_issuer_alt,
+        -:   84:NULL, NULL, NULL},
+        -:   85:
+        -:   86:{ NID_certificate_issuer, 0, ASN1_ITEM_ref(GENERAL_NAMES),
+        -:   87:0,0,0,0,
+        -:   88:0,0,
+        -:   89:(X509V3_EXT_I2V)i2v_GENERAL_NAMES,
+        -:   90:NULL, NULL, NULL, NULL},
+        -:   91:};
+        -:   92:
+    #####:   93:STACK_OF(CONF_VALUE) *i2v_GENERAL_NAMES(X509V3_EXT_METHOD *method,
+        -:   94:		GENERAL_NAMES *gens, STACK_OF(CONF_VALUE) *ret)
+        -:   95:{
+        -:   96:	int i;
+        -:   97:	GENERAL_NAME *gen;
+    #####:   98:	for(i = 0; i < sk_GENERAL_NAME_num(gens); i++) {
+    #####:   99:		gen = sk_GENERAL_NAME_value(gens, i);
+    #####:  100:		ret = i2v_GENERAL_NAME(method, gen, ret);
+        -:  101:	}
+    #####:  102:	if(!ret) return sk_CONF_VALUE_new_null();
+        -:  103:	return ret;
+        -:  104:}
+        -:  105:
+    #####:  106:STACK_OF(CONF_VALUE) *i2v_GENERAL_NAME(X509V3_EXT_METHOD *method,
+        -:  107:				GENERAL_NAME *gen, STACK_OF(CONF_VALUE) *ret)
+        -:  108:{
+        -:  109:	unsigned char *p;
+        -:  110:	char oline[256], htmp[5];
+        -:  111:	int i;
+    #####:  112:	switch (gen->type)
+        -:  113:	{
+        -:  114:		case GEN_OTHERNAME:
+    #####:  115:		X509V3_add_value("othername","<unsupported>", &ret);
+    #####:  116:		break;
+        -:  117:
+        -:  118:		case GEN_X400:
+    #####:  119:		X509V3_add_value("X400Name","<unsupported>", &ret);
+    #####:  120:		break;
+        -:  121:
+        -:  122:		case GEN_EDIPARTY:
+    #####:  123:		X509V3_add_value("EdiPartyName","<unsupported>", &ret);
+    #####:  124:		break;
+        -:  125:
+        -:  126:		case GEN_EMAIL:
+    #####:  127:		X509V3_add_value_uchar("email",gen->d.ia5->data, &ret);
+    #####:  128:		break;
+        -:  129:
+        -:  130:		case GEN_DNS:
+    #####:  131:		X509V3_add_value_uchar("DNS",gen->d.ia5->data, &ret);
+    #####:  132:		break;
+        -:  133:
+        -:  134:		case GEN_URI:
+    #####:  135:		X509V3_add_value_uchar("URI",gen->d.ia5->data, &ret);
+    #####:  136:		break;
+        -:  137:
+        -:  138:		case GEN_DIRNAME:
+    #####:  139:		X509_NAME_oneline(gen->d.dirn, oline, 256);
+    #####:  140:		X509V3_add_value("DirName",oline, &ret);
+    #####:  141:		break;
+        -:  142:
+        -:  143:		case GEN_IPADD:
+    #####:  144:		p = gen->d.ip->data;
+    #####:  145:		if(gen->d.ip->length == 4)
+    #####:  146:			BIO_snprintf(oline, sizeof oline,
+    #####:  147:				     "%d.%d.%d.%d", p[0], p[1], p[2], p[3]);
+    #####:  148:		else if(gen->d.ip->length == 16)
+        -:  149:			{
+    #####:  150:			oline[0] = 0;
+    #####:  151:			for (i = 0; i < 8; i++)
+        -:  152:				{
+    #####:  153:				BIO_snprintf(htmp, sizeof htmp,
+    #####:  154:					     "%X", p[0] << 8 | p[1]);
+    #####:  155:				p += 2;
+        -:  156:				strcat(oline, htmp);
+    #####:  157:				if (i != 7)
+        -:  158:					strcat(oline, ":");
+        -:  159:				}
+        -:  160:			}
+        -:  161:		else
+        -:  162:			{
+    #####:  163:			X509V3_add_value("IP Address","<invalid>", &ret);
+    #####:  164:			break;
+        -:  165:			}
+    #####:  166:		X509V3_add_value("IP Address",oline, &ret);
+    #####:  167:		break;
+        -:  168:
+        -:  169:		case GEN_RID:
+    #####:  170:		i2t_ASN1_OBJECT(oline, 256, gen->d.rid);
+    #####:  171:		X509V3_add_value("Registered ID",oline, &ret);
+    #####:  172:		break;
+        -:  173:	}
+    #####:  174:	return ret;
+        -:  175:}
+        -:  176:
+    #####:  177:int GENERAL_NAME_print(BIO *out, GENERAL_NAME *gen)
+        -:  178:{
+        -:  179:	unsigned char *p;
+        -:  180:	int i;
+    #####:  181:	switch (gen->type)
+        -:  182:	{
+        -:  183:		case GEN_OTHERNAME:
+    #####:  184:		BIO_printf(out, "othername:<unsupported>");
+    #####:  185:		break;
+        -:  186:
+        -:  187:		case GEN_X400:
+    #####:  188:		BIO_printf(out, "X400Name:<unsupported>");
+    #####:  189:		break;
+        -:  190:
+        -:  191:		case GEN_EDIPARTY:
+        -:  192:		/* Maybe fix this: it is supported now */
+    #####:  193:		BIO_printf(out, "EdiPartyName:<unsupported>");
+    #####:  194:		break;
+        -:  195:
+        -:  196:		case GEN_EMAIL:
+    #####:  197:		BIO_printf(out, "email:%s",gen->d.ia5->data);
+    #####:  198:		break;
+        -:  199:
+        -:  200:		case GEN_DNS:
+    #####:  201:		BIO_printf(out, "DNS:%s",gen->d.ia5->data);
+    #####:  202:		break;
+        -:  203:
+        -:  204:		case GEN_URI:
+    #####:  205:		BIO_printf(out, "URI:%s",gen->d.ia5->data);
+    #####:  206:		break;
+        -:  207:
+        -:  208:		case GEN_DIRNAME:
+    #####:  209:		BIO_printf(out, "DirName: ");
+    #####:  210:		X509_NAME_print_ex(out, gen->d.dirn, 0, XN_FLAG_ONELINE);
+    #####:  211:		break;
+        -:  212:
+        -:  213:		case GEN_IPADD:
+    #####:  214:		p = gen->d.ip->data;
+    #####:  215:		if(gen->d.ip->length == 4)
+    #####:  216:			BIO_printf(out, "IP Address:%d.%d.%d.%d",
+    #####:  217:						p[0], p[1], p[2], p[3]);
+    #####:  218:		else if(gen->d.ip->length == 16)
+        -:  219:			{
+    #####:  220:			BIO_printf(out, "IP Address");
+    #####:  221:			for (i = 0; i < 8; i++)
+        -:  222:				{
+    #####:  223:				BIO_printf(out, ":%X", p[0] << 8 | p[1]);
+    #####:  224:				p += 2;
+        -:  225:				}
+    #####:  226:			BIO_puts(out, "\n");
+        -:  227:			}
+        -:  228:		else
+        -:  229:			{
+    #####:  230:			BIO_printf(out,"IP Address:<invalid>");
+    #####:  231:			break;
+        -:  232:			}
+        -:  233:		break;
+        -:  234:
+        -:  235:		case GEN_RID:
+    #####:  236:		BIO_printf(out, "Registered ID");
+    #####:  237:		i2a_ASN1_OBJECT(out, gen->d.rid);
+    #####:  238:		break;
+        -:  239:	}
+    #####:  240:	return 1;
+        -:  241:}
+        -:  242:
+    #####:  243:static GENERAL_NAMES *v2i_issuer_alt(X509V3_EXT_METHOD *method,
+        -:  244:				 X509V3_CTX *ctx, STACK_OF(CONF_VALUE) *nval)
+        -:  245:{
+        -:  246:	GENERAL_NAMES *gens = NULL;
+        -:  247:	CONF_VALUE *cnf;
+        -:  248:	int i;
+    #####:  249:	if(!(gens = sk_GENERAL_NAME_new_null())) {
+    #####:  250:		X509V3err(X509V3_F_V2I_ISSUER_ALT,ERR_R_MALLOC_FAILURE);
+    #####:  251:		return NULL;
+        -:  252:	}
+    #####:  253:	for(i = 0; i < sk_CONF_VALUE_num(nval); i++) {
+    #####:  254:		cnf = sk_CONF_VALUE_value(nval, i);
+    #####:  255:		if(!name_cmp(cnf->name, "issuer") && cnf->value &&
+    #####:  256:						!strcmp(cnf->value, "copy")) {
+    #####:  257:			if(!copy_issuer(ctx, gens)) goto err;
+        -:  258:		} else {
+        -:  259:			GENERAL_NAME *gen;
+    #####:  260:			if(!(gen = v2i_GENERAL_NAME(method, ctx, cnf)))
+        -:  261:								 goto err; 
+    #####:  262:			sk_GENERAL_NAME_push(gens, gen);
+        -:  263:		}
+        -:  264:	}
+        -:  265:	return gens;
+        -:  266:	err:
+    #####:  267:	sk_GENERAL_NAME_pop_free(gens, GENERAL_NAME_free);
+    #####:  268:	return NULL;
+        -:  269:}
+        -:  270:
+        -:  271:/* Append subject altname of issuer to issuer alt name of subject */
+        -:  272:
+    #####:  273:static int copy_issuer(X509V3_CTX *ctx, GENERAL_NAMES *gens)
+        -:  274:{
+        -:  275:	GENERAL_NAMES *ialt;
+        -:  276:	GENERAL_NAME *gen;
+        -:  277:	X509_EXTENSION *ext;
+        -:  278:	int i;
+    #####:  279:	if(ctx && (ctx->flags == CTX_TEST)) return 1;
+    #####:  280:	if(!ctx || !ctx->issuer_cert) {
+    #####:  281:		X509V3err(X509V3_F_COPY_ISSUER,X509V3_R_NO_ISSUER_DETAILS);
+    #####:  282:		goto err;
+        -:  283:	}
+    #####:  284:        i = X509_get_ext_by_NID(ctx->issuer_cert, NID_subject_alt_name, -1);
+    #####:  285:	if(i < 0) return 1;
+    #####:  286:        if(!(ext = X509_get_ext(ctx->issuer_cert, i)) ||
+        -:  287:                        !(ialt = X509V3_EXT_d2i(ext)) ) {
+    #####:  288:		X509V3err(X509V3_F_COPY_ISSUER,X509V3_R_ISSUER_DECODE_ERROR);
+    #####:  289:		goto err;
+        -:  290:	}
+        -:  291:
+    #####:  292:	for(i = 0; i < sk_GENERAL_NAME_num(ialt); i++) {
+    #####:  293:		gen = sk_GENERAL_NAME_value(ialt, i);
+    #####:  294:		if(!sk_GENERAL_NAME_push(gens, gen)) {
+    #####:  295:			X509V3err(X509V3_F_COPY_ISSUER,ERR_R_MALLOC_FAILURE);
+    #####:  296:			goto err;
+        -:  297:		}
+        -:  298:	}
+    #####:  299:	sk_GENERAL_NAME_free(ialt);
+        -:  300:
+    #####:  301:	return 1;
+        -:  302:		
+        -:  303:	err:
+        -:  304:	return 0;
+        -:  305:	
+        -:  306:}
+        -:  307:
+    #####:  308:static GENERAL_NAMES *v2i_subject_alt(X509V3_EXT_METHOD *method,
+        -:  309:				 X509V3_CTX *ctx, STACK_OF(CONF_VALUE) *nval)
+        -:  310:{
+        -:  311:	GENERAL_NAMES *gens = NULL;
+        -:  312:	CONF_VALUE *cnf;
+        -:  313:	int i;
+    #####:  314:	if(!(gens = sk_GENERAL_NAME_new_null())) {
+    #####:  315:		X509V3err(X509V3_F_V2I_SUBJECT_ALT,ERR_R_MALLOC_FAILURE);
+    #####:  316:		return NULL;
+        -:  317:	}
+    #####:  318:	for(i = 0; i < sk_CONF_VALUE_num(nval); i++) {
+    #####:  319:		cnf = sk_CONF_VALUE_value(nval, i);
+    #####:  320:		if(!name_cmp(cnf->name, "email") && cnf->value &&
+    #####:  321:						!strcmp(cnf->value, "copy")) {
+    #####:  322:			if(!copy_email(ctx, gens, 0)) goto err;
+    #####:  323:		} else if(!name_cmp(cnf->name, "email") && cnf->value &&
+    #####:  324:						!strcmp(cnf->value, "move")) {
+    #####:  325:			if(!copy_email(ctx, gens, 1)) goto err;
+        -:  326:		} else {
+        -:  327:			GENERAL_NAME *gen;
+    #####:  328:			if(!(gen = v2i_GENERAL_NAME(method, ctx, cnf)))
+        -:  329:								 goto err; 
+    #####:  330:			sk_GENERAL_NAME_push(gens, gen);
+        -:  331:		}
+        -:  332:	}
+        -:  333:	return gens;
+        -:  334:	err:
+    #####:  335:	sk_GENERAL_NAME_pop_free(gens, GENERAL_NAME_free);
+    #####:  336:	return NULL;
+        -:  337:}
+        -:  338:
+        -:  339:/* Copy any email addresses in a certificate or request to 
+        -:  340: * GENERAL_NAMES
+        -:  341: */
+        -:  342:
+    #####:  343:static int copy_email(X509V3_CTX *ctx, GENERAL_NAMES *gens, int move_p)
+        -:  344:{
+        -:  345:	X509_NAME *nm;
+        -:  346:	ASN1_IA5STRING *email = NULL;
+        -:  347:	X509_NAME_ENTRY *ne;
+        -:  348:	GENERAL_NAME *gen = NULL;
+        -:  349:	int i;
+    #####:  350:	if(ctx != NULL && ctx->flags == CTX_TEST)
+        -:  351:		return 1;
+    #####:  352:	if(!ctx || (!ctx->subject_cert && !ctx->subject_req)) {
+    #####:  353:		X509V3err(X509V3_F_COPY_EMAIL,X509V3_R_NO_SUBJECT_DETAILS);
+    #####:  354:		goto err;
+        -:  355:	}
+        -:  356:	/* Find the subject name */
+    #####:  357:	if(ctx->subject_cert) nm = X509_get_subject_name(ctx->subject_cert);
+    #####:  358:	else nm = X509_REQ_get_subject_name(ctx->subject_req);
+        -:  359:
+        -:  360:	/* Now add any email address(es) to STACK */
+        -:  361:	i = -1;
+    #####:  362:	while((i = X509_NAME_get_index_by_NID(nm,
+        -:  363:					 NID_pkcs9_emailAddress, i)) >= 0) {
+    #####:  364:		ne = X509_NAME_get_entry(nm, i);
+    #####:  365:		email = M_ASN1_IA5STRING_dup(X509_NAME_ENTRY_get_data(ne));
+    #####:  366:                if (move_p)
+        -:  367:                        {
+    #####:  368:                        X509_NAME_delete_entry(nm, i);
+    #####:  369:			X509_NAME_ENTRY_free(ne);
+    #####:  370:                        i--;
+        -:  371:                        }
+    #####:  372:		if(!email || !(gen = GENERAL_NAME_new())) {
+    #####:  373:			X509V3err(X509V3_F_COPY_EMAIL,ERR_R_MALLOC_FAILURE);
+    #####:  374:			goto err;
+        -:  375:		}
+    #####:  376:		gen->d.ia5 = email;
+        -:  377:		email = NULL;
+    #####:  378:		gen->type = GEN_EMAIL;
+    #####:  379:		if(!sk_GENERAL_NAME_push(gens, gen)) {
+    #####:  380:			X509V3err(X509V3_F_COPY_EMAIL,ERR_R_MALLOC_FAILURE);
+    #####:  381:			goto err;
+        -:  382:		}
+        -:  383:		gen = NULL;
+        -:  384:	}
+        -:  385:
+        -:  386:	
+        -:  387:	return 1;
+        -:  388:		
+        -:  389:	err:
+    #####:  390:	GENERAL_NAME_free(gen);
+    #####:  391:	M_ASN1_IA5STRING_free(email);
+    #####:  392:	return 0;
+        -:  393:	
+        -:  394:}
+        -:  395:
+    #####:  396:GENERAL_NAMES *v2i_GENERAL_NAMES(const X509V3_EXT_METHOD *method,
+        -:  397:				 X509V3_CTX *ctx, STACK_OF(CONF_VALUE) *nval)
+        -:  398:{
+        -:  399:	GENERAL_NAME *gen;
+        -:  400:	GENERAL_NAMES *gens = NULL;
+        -:  401:	CONF_VALUE *cnf;
+        -:  402:	int i;
+    #####:  403:	if(!(gens = sk_GENERAL_NAME_new_null())) {
+    #####:  404:		X509V3err(X509V3_F_V2I_GENERAL_NAMES,ERR_R_MALLOC_FAILURE);
+    #####:  405:		return NULL;
+        -:  406:	}
+    #####:  407:	for(i = 0; i < sk_CONF_VALUE_num(nval); i++) {
+    #####:  408:		cnf = sk_CONF_VALUE_value(nval, i);
+    #####:  409:		if(!(gen = v2i_GENERAL_NAME(method, ctx, cnf))) goto err; 
+    #####:  410:		sk_GENERAL_NAME_push(gens, gen);
+        -:  411:	}
+        -:  412:	return gens;
+        -:  413:	err:
+    #####:  414:	sk_GENERAL_NAME_pop_free(gens, GENERAL_NAME_free);
+    #####:  415:	return NULL;
+        -:  416:}
+        -:  417:
+    #####:  418:GENERAL_NAME *v2i_GENERAL_NAME(const X509V3_EXT_METHOD *method, X509V3_CTX *ctx,
+        -:  419:			       CONF_VALUE *cnf)
+        -:  420:	{
+    #####:  421:	return v2i_GENERAL_NAME_ex(NULL, method, ctx, cnf, 0);
+        -:  422:	}
+        -:  423:
+    #####:  424:GENERAL_NAME *a2i_GENERAL_NAME(GENERAL_NAME *out,
+        -:  425:			       const X509V3_EXT_METHOD *method, X509V3_CTX *ctx,
+        -:  426:			       int gen_type, char *value, int is_nc)
+        -:  427:	{
+        -:  428:	char is_string = 0;
+        -:  429:	GENERAL_NAME *gen = NULL;
+        -:  430:
+    #####:  431:	if(!value)
+        -:  432:		{
+    #####:  433:		X509V3err(X509V3_F_A2I_GENERAL_NAME,X509V3_R_MISSING_VALUE);
+    #####:  434:		return NULL;
+        -:  435:		}
+        -:  436:
+    #####:  437:	if (out)
+        -:  438:		gen = out;
+        -:  439:	else
+        -:  440:		{
+    #####:  441:		gen = GENERAL_NAME_new();
+    #####:  442:		if(gen == NULL)
+        -:  443:			{
+    #####:  444:			X509V3err(X509V3_F_A2I_GENERAL_NAME,ERR_R_MALLOC_FAILURE);
+    #####:  445:			return NULL;
+        -:  446:			}
+        -:  447:		}
+        -:  448:
+    #####:  449:	switch (gen_type)
+        -:  450:		{
+        -:  451:		case GEN_URI:
+        -:  452:		case GEN_EMAIL:
+        -:  453:		case GEN_DNS:
+        -:  454:		is_string = 1;
+        -:  455:		break;
+        -:  456:		
+        -:  457:		case GEN_RID:
+        -:  458:		{
+        -:  459:		ASN1_OBJECT *obj;
+    #####:  460:		if(!(obj = OBJ_txt2obj(value,0)))
+        -:  461:			{
+    #####:  462:			X509V3err(X509V3_F_A2I_GENERAL_NAME,X509V3_R_BAD_OBJECT);
+    #####:  463:			ERR_add_error_data(2, "value=", value);
+    #####:  464:			goto err;
+        -:  465:			}
+    #####:  466:		gen->d.rid = obj;
+        -:  467:		}
+    #####:  468:		break;
+        -:  469:
+        -:  470:		case GEN_IPADD:
+    #####:  471:		if (is_nc)
+    #####:  472:			gen->d.ip = a2i_IPADDRESS_NC(value);
+        -:  473:		else
+    #####:  474:			gen->d.ip = a2i_IPADDRESS(value);
+    #####:  475:		if(gen->d.ip == NULL)
+        -:  476:			{
+    #####:  477:			X509V3err(X509V3_F_A2I_GENERAL_NAME,X509V3_R_BAD_IP_ADDRESS);
+    #####:  478:			ERR_add_error_data(2, "value=", value);
+    #####:  479:			goto err;
+        -:  480:			}
+        -:  481:		break;
+        -:  482:
+        -:  483:		case GEN_DIRNAME:
+    #####:  484:		if (!do_dirname(gen, value, ctx))
+        -:  485:			{
+    #####:  486:			X509V3err(X509V3_F_A2I_GENERAL_NAME,X509V3_R_DIRNAME_ERROR);
+    #####:  487:			goto err;
+        -:  488:			}
+        -:  489:		break;
+        -:  490:
+        -:  491:		case GEN_OTHERNAME:
+    #####:  492:		if (!do_othername(gen, value, ctx))
+        -:  493:			{
+    #####:  494:			X509V3err(X509V3_F_A2I_GENERAL_NAME,X509V3_R_OTHERNAME_ERROR);
+    #####:  495:			goto err;
+        -:  496:			}
+        -:  497:		break;
+        -:  498:		default:
+    #####:  499:		X509V3err(X509V3_F_A2I_GENERAL_NAME,X509V3_R_UNSUPPORTED_TYPE);
+    #####:  500:		goto err;
+        -:  501:		}
+        -:  502:
+    #####:  503:	if(is_string)
+        -:  504:		{
+    #####:  505:		if(!(gen->d.ia5 = M_ASN1_IA5STRING_new()) ||
+    #####:  506:			      !ASN1_STRING_set(gen->d.ia5, (unsigned char*)value,
+    #####:  507:					       strlen(value)))
+        -:  508:			{
+    #####:  509:			X509V3err(X509V3_F_A2I_GENERAL_NAME,ERR_R_MALLOC_FAILURE);
+    #####:  510:			goto err;
+        -:  511:			}
+        -:  512:		}
+        -:  513:
+    #####:  514:	gen->type = gen_type;
+        -:  515:
+    #####:  516:	return gen;
+        -:  517:
+        -:  518:	err:
+    #####:  519:	if (!out)
+    #####:  520:		GENERAL_NAME_free(gen);
+        -:  521:	return NULL;
+        -:  522:	}
+        -:  523:
+    #####:  524:GENERAL_NAME *v2i_GENERAL_NAME_ex(GENERAL_NAME *out,
+        -:  525:				  const X509V3_EXT_METHOD *method,
+        -:  526:				  X509V3_CTX *ctx, CONF_VALUE *cnf, int is_nc)
+        -:  527:	{
+        -:  528:	int type;
+        -:  529:
+        -:  530:	char *name, *value;
+        -:  531:
+    #####:  532:	name = cnf->name;
+    #####:  533:	value = cnf->value;
+        -:  534:
+    #####:  535:	if(!value)
+        -:  536:		{
+    #####:  537:		X509V3err(X509V3_F_V2I_GENERAL_NAME_EX,X509V3_R_MISSING_VALUE);
+    #####:  538:		return NULL;
+        -:  539:		}
+        -:  540:
+    #####:  541:	if(!name_cmp(name, "email"))
+        -:  542:		type = GEN_EMAIL;
+    #####:  543:	else if(!name_cmp(name, "URI"))
+        -:  544:		type = GEN_URI;
+    #####:  545:	else if(!name_cmp(name, "DNS"))
+        -:  546:		type = GEN_DNS;
+    #####:  547:	else if(!name_cmp(name, "RID"))
+        -:  548:		type = GEN_RID;
+    #####:  549:	else if(!name_cmp(name, "IP"))
+        -:  550:		type = GEN_IPADD;
+    #####:  551:	else if(!name_cmp(name, "dirName"))
+        -:  552:		type = GEN_DIRNAME;
+    #####:  553:	else if(!name_cmp(name, "otherName"))
+        -:  554:		type = GEN_OTHERNAME;
+        -:  555:	else
+        -:  556:		{
+    #####:  557:		X509V3err(X509V3_F_V2I_GENERAL_NAME_EX,X509V3_R_UNSUPPORTED_OPTION);
+    #####:  558:		ERR_add_error_data(2, "name=", name);
+    #####:  559:		return NULL;
+        -:  560:		}
+        -:  561:
+    #####:  562:	return a2i_GENERAL_NAME(out, method, ctx, type, value, is_nc);
+        -:  563:
+        -:  564:	}
+        -:  565:
+    #####:  566:static int do_othername(GENERAL_NAME *gen, char *value, X509V3_CTX *ctx)
+        -:  567:	{
+        -:  568:	char *objtmp = NULL, *p;
+        -:  569:	int objlen;
+    #####:  570:	if (!(p = strchr(value, ';')))
+        -:  571:		return 0;
+    #####:  572:	if (!(gen->d.otherName = OTHERNAME_new()))
+        -:  573:		return 0;
+        -:  574:	/* Free this up because we will overwrite it.
+        -:  575:	 * no need to free type_id because it is static
+        -:  576:	 */
+    #####:  577:	ASN1_TYPE_free(gen->d.otherName->value);
+    #####:  578:	if (!(gen->d.otherName->value = ASN1_generate_v3(p + 1, ctx)))
+        -:  579:		return 0;
+    #####:  580:	objlen = p - value;
+    #####:  581:	objtmp = OPENSSL_malloc(objlen + 1);
+    #####:  582:	strncpy(objtmp, value, objlen);
+    #####:  583:	objtmp[objlen] = 0;
+    #####:  584:	gen->d.otherName->type_id = OBJ_txt2obj(objtmp, 0);
+    #####:  585:	OPENSSL_free(objtmp);	
+    #####:  586:	if (!gen->d.otherName->type_id)
+        -:  587:		return 0;
+        -:  588:	return 1;
+        -:  589:	}
+        -:  590:
+    #####:  591:static int do_dirname(GENERAL_NAME *gen, char *value, X509V3_CTX *ctx)
+        -:  592:	{
+        -:  593:	int ret;
+        -:  594:	STACK_OF(CONF_VALUE) *sk;
+        -:  595:	X509_NAME *nm;
+    #####:  596:	if (!(nm = X509_NAME_new()))
+        -:  597:		return 0;
+    #####:  598:	sk = X509V3_get_section(ctx, value);
+    #####:  599:	if (!sk)
+        -:  600:		{
+    #####:  601:		X509V3err(X509V3_F_DO_DIRNAME,X509V3_R_SECTION_NOT_FOUND);
+    #####:  602:		ERR_add_error_data(2, "section=", value);
+    #####:  603:		X509_NAME_free(nm);
+        -:  604:		return 0;
+        -:  605:		}
+        -:  606:	/* FIXME: should allow other character types... */
+    #####:  607:	ret = X509V3_NAME_from_section(nm, sk, MBSTRING_ASC);
+    #####:  608:	if (!ret)
+    #####:  609:		X509_NAME_free(nm);
+    #####:  610:	gen->d.dirn = nm;
+    #####:  611:	X509V3_section_free(ctx, sk);
+        -:  612:		
+        -:  613:	return ret;
+        -:  614:	}

@@ -1,0 +1,474 @@
+        -:    0:Source:p_lib.c
+        -:    0:Graph:p_lib.gcno
+        -:    0:Data:p_lib.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* crypto/evp/p_lib.c */
+        -:    2:/* Copyright (C) 1995-1998 Eric Young (eay@cryptsoft.com)
+        -:    3: * All rights reserved.
+        -:    4: *
+        -:    5: * This package is an SSL implementation written
+        -:    6: * by Eric Young (eay@cryptsoft.com).
+        -:    7: * The implementation was written so as to conform with Netscapes SSL.
+        -:    8: * 
+        -:    9: * This library is free for commercial and non-commercial use as long as
+        -:   10: * the following conditions are aheared to.  The following conditions
+        -:   11: * apply to all code found in this distribution, be it the RC4, RSA,
+        -:   12: * lhash, DES, etc., code; not just the SSL code.  The SSL documentation
+        -:   13: * included with this distribution is covered by the same copyright terms
+        -:   14: * except that the holder is Tim Hudson (tjh@cryptsoft.com).
+        -:   15: * 
+        -:   16: * Copyright remains Eric Young's, and as such any Copyright notices in
+        -:   17: * the code are not to be removed.
+        -:   18: * If this package is used in a product, Eric Young should be given attribution
+        -:   19: * as the author of the parts of the library used.
+        -:   20: * This can be in the form of a textual message at program startup or
+        -:   21: * in documentation (online or textual) provided with the package.
+        -:   22: * 
+        -:   23: * Redistribution and use in source and binary forms, with or without
+        -:   24: * modification, are permitted provided that the following conditions
+        -:   25: * are met:
+        -:   26: * 1. Redistributions of source code must retain the copyright
+        -:   27: *    notice, this list of conditions and the following disclaimer.
+        -:   28: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   29: *    notice, this list of conditions and the following disclaimer in the
+        -:   30: *    documentation and/or other materials provided with the distribution.
+        -:   31: * 3. All advertising materials mentioning features or use of this software
+        -:   32: *    must display the following acknowledgement:
+        -:   33: *    "This product includes cryptographic software written by
+        -:   34: *     Eric Young (eay@cryptsoft.com)"
+        -:   35: *    The word 'cryptographic' can be left out if the rouines from the library
+        -:   36: *    being used are not cryptographic related :-).
+        -:   37: * 4. If you include any Windows specific code (or a derivative thereof) from 
+        -:   38: *    the apps directory (application code) you must include an acknowledgement:
+        -:   39: *    "This product includes software written by Tim Hudson (tjh@cryptsoft.com)"
+        -:   40: * 
+        -:   41: * THIS SOFTWARE IS PROVIDED BY ERIC YOUNG ``AS IS'' AND
+        -:   42: * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   43: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+        -:   44: * ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+        -:   45: * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+        -:   46: * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+        -:   47: * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   48: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+        -:   49: * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+        -:   50: * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+        -:   51: * SUCH DAMAGE.
+        -:   52: * 
+        -:   53: * The licence and distribution terms for any publically available version or
+        -:   54: * derivative of this code cannot be changed.  i.e. this code cannot simply be
+        -:   55: * copied and put under another distribution licence
+        -:   56: * [including the GNU Public Licence.]
+        -:   57: */
+        -:   58:
+        -:   59:#include <stdio.h>
+        -:   60:#include "cryptlib.h"
+        -:   61:#include <openssl/bn.h>
+        -:   62:#include <openssl/err.h>
+        -:   63:#include <openssl/objects.h>
+        -:   64:#include <openssl/evp.h>
+        -:   65:#include <openssl/asn1_mac.h>
+        -:   66:#include <openssl/x509.h>
+        -:   67:#ifndef OPENSSL_NO_RSA
+        -:   68:#include <openssl/rsa.h>
+        -:   69:#endif
+        -:   70:#ifndef OPENSSL_NO_DSA
+        -:   71:#include <openssl/dsa.h>
+        -:   72:#endif
+        -:   73:#ifndef OPENSSL_NO_DH
+        -:   74:#include <openssl/dh.h>
+        -:   75:#endif
+        -:   76:
+        -:   77:#ifndef OPENSSL_NO_ENGINE
+        -:   78:#include <openssl/engine.h>
+        -:   79:#endif
+        -:   80:
+        -:   81:#include "asn1_locl.h"
+        -:   82:
+        -:   83:static void EVP_PKEY_free_it(EVP_PKEY *x);
+        -:   84:
+    10000:   85:int EVP_PKEY_bits(EVP_PKEY *pkey)
+        -:   86:	{
+    10000:   87:	if (pkey && pkey->ameth && pkey->ameth->pkey_bits)
+    10000:   88:		return pkey->ameth->pkey_bits(pkey);
+        -:   89:	return 0;
+        -:   90:	}
+        -:   91:
+    10000:   92:int EVP_PKEY_size(EVP_PKEY *pkey)
+        -:   93:	{
+    10000:   94:	if (pkey && pkey->ameth && pkey->ameth->pkey_size)
+    10000:   95:		return pkey->ameth->pkey_size(pkey);
+        -:   96:	return 0;
+        -:   97:	}
+        -:   98:
+    #####:   99:int EVP_PKEY_save_parameters(EVP_PKEY *pkey, int mode)
+        -:  100:	{
+        -:  101:#ifndef OPENSSL_NO_DSA
+    #####:  102:	if (pkey->type == EVP_PKEY_DSA)
+        -:  103:		{
+    #####:  104:		int ret=pkey->save_parameters;
+        -:  105:
+    #####:  106:		if (mode >= 0)
+    #####:  107:			pkey->save_parameters=mode;
+    #####:  108:		return(ret);
+        -:  109:		}
+        -:  110:#endif
+        -:  111:#ifndef OPENSSL_NO_EC
+    #####:  112:	if (pkey->type == EVP_PKEY_EC)
+        -:  113:		{
+    #####:  114:		int ret = pkey->save_parameters;
+        -:  115:
+    #####:  116:		if (mode >= 0)
+    #####:  117:			pkey->save_parameters = mode;
+    #####:  118:		return(ret);
+        -:  119:		}
+        -:  120:#endif
+        -:  121:	return(0);
+        -:  122:	}
+        -:  123:
+    #####:  124:int EVP_PKEY_copy_parameters(EVP_PKEY *to, const EVP_PKEY *from)
+        -:  125:	{
+    #####:  126:	if (to->type != from->type)
+        -:  127:		{
+    #####:  128:		EVPerr(EVP_F_EVP_PKEY_COPY_PARAMETERS,EVP_R_DIFFERENT_KEY_TYPES);
+    #####:  129:		goto err;
+        -:  130:		}
+        -:  131:
+    #####:  132:	if (EVP_PKEY_missing_parameters(from))
+        -:  133:		{
+    #####:  134:		EVPerr(EVP_F_EVP_PKEY_COPY_PARAMETERS,EVP_R_MISSING_PARAMETERS);
+    #####:  135:		goto err;
+        -:  136:		}
+    #####:  137:	if (from->ameth && from->ameth->param_copy)
+    #####:  138:		return from->ameth->param_copy(to, from);
+        -:  139:err:
+        -:  140:	return 0;
+        -:  141:	}
+        -:  142:
+    20003:  143:int EVP_PKEY_missing_parameters(const EVP_PKEY *pkey)
+        -:  144:	{
+    20003:  145:	if (pkey->ameth && pkey->ameth->param_missing)
+    #####:  146:		return pkey->ameth->param_missing(pkey);
+        -:  147:	return 0;
+        -:  148:	}
+        -:  149:
+    #####:  150:int EVP_PKEY_cmp_parameters(const EVP_PKEY *a, const EVP_PKEY *b)
+        -:  151:	{
+    #####:  152:	if (a->type != b->type)
+        -:  153:		return -1;
+    #####:  154:	if (a->ameth && a->ameth->param_cmp)
+    #####:  155:		return a->ameth->param_cmp(a, b);
+        -:  156:	return -2;
+        -:  157:	}
+        -:  158:
+    #####:  159:int EVP_PKEY_cmp(const EVP_PKEY *a, const EVP_PKEY *b)
+        -:  160:	{
+    #####:  161:	if (a->type != b->type)
+        -:  162:		return -1;
+        -:  163:
+    #####:  164:	if (a->ameth)
+        -:  165:		{
+        -:  166:		int ret;
+        -:  167:		/* Compare parameters if the algorithm has them */
+    #####:  168:		if (a->ameth->param_cmp)
+        -:  169:			{
+    #####:  170:			ret = a->ameth->param_cmp(a, b);
+    #####:  171:			if (ret <= 0)
+        -:  172:				return ret;
+        -:  173:			}
+        -:  174:
+    #####:  175:		if (a->ameth->pub_cmp)
+    #####:  176:			return a->ameth->pub_cmp(a, b);
+        -:  177:		}
+        -:  178:
+        -:  179:	return -2;
+        -:  180:	}
+        -:  181:
+    61942:  182:EVP_PKEY *EVP_PKEY_new(void)
+        -:  183:	{
+        -:  184:	EVP_PKEY *ret;
+        -:  185:
+    61942:  186:	ret=(EVP_PKEY *)OPENSSL_malloc(sizeof(EVP_PKEY));
+    61942:  187:	if (ret == NULL)
+        -:  188:		{
+    #####:  189:		EVPerr(EVP_F_EVP_PKEY_NEW,ERR_R_MALLOC_FAILURE);
+    #####:  190:		return(NULL);
+        -:  191:		}
+    61942:  192:	ret->type=EVP_PKEY_NONE;
+    61942:  193:	ret->save_type=EVP_PKEY_NONE;
+    61942:  194:	ret->references=1;
+    61942:  195:	ret->ameth=NULL;
+    61942:  196:	ret->engine=NULL;
+    61942:  197:	ret->pkey.ptr=NULL;
+    61942:  198:	ret->attributes=NULL;
+    61942:  199:	ret->save_parameters=1;
+    61942:  200:	return(ret);
+        -:  201:	}
+        -:  202:
+        -:  203:/* Setup a public key ASN1 method and ENGINE from a NID or a string.
+        -:  204: * If pkey is NULL just return 1 or 0 if the algorithm exists.
+        -:  205: */
+        -:  206:
+    73884:  207:static int pkey_set_type(EVP_PKEY *pkey, int type, const char *str, int len)
+        -:  208:	{
+        -:  209:	const EVP_PKEY_ASN1_METHOD *ameth;
+    73884:  210:	ENGINE *e = NULL;
+    73884:  211:	if (pkey)
+        -:  212:		{
+    73884:  213:		if (pkey->pkey.ptr)
+    #####:  214:			EVP_PKEY_free_it(pkey);
+        -:  215:		/* If key type matches and a method exists then this
+        -:  216:		 * lookup has succeeded once so just indicate success.
+        -:  217:		 */
+    73884:  218:		if ((type == pkey->save_type) && pkey->ameth)
+        -:  219:			return 1;
+        -:  220:#ifndef OPENSSL_NO_ENGINE
+        -:  221:		/* If we have an ENGINE release it */
+    61942:  222:		if (pkey->engine)
+        -:  223:			{
+    #####:  224:			ENGINE_finish(pkey->engine);
+    #####:  225:			pkey->engine = NULL;
+        -:  226:			}
+        -:  227:#endif
+        -:  228:		}
+    61942:  229:	if (str)
+    #####:  230:		ameth = EVP_PKEY_asn1_find_str(&e, str, len);
+        -:  231:	else
+    61942:  232:		ameth = EVP_PKEY_asn1_find(&e, type);
+        -:  233:#ifndef OPENSSL_NO_ENGINE
+    61942:  234:	if (!pkey && e)
+    #####:  235:		ENGINE_finish(e);
+        -:  236:#endif
+    61942:  237:	if (!ameth)
+        -:  238:		{
+    #####:  239:		EVPerr(EVP_F_PKEY_SET_TYPE, EVP_R_UNSUPPORTED_ALGORITHM);
+    #####:  240:		return 0;
+        -:  241:		}
+    61942:  242:	if (pkey)
+        -:  243:		{
+    61942:  244:		pkey->ameth = ameth;
+    61942:  245:		pkey->engine = e;
+        -:  246:
+    61942:  247:		pkey->type = pkey->ameth->pkey_id;
+    61942:  248:		pkey->save_type=type;
+        -:  249:		}
+        -:  250:	return 1;
+        -:  251:	}
+        -:  252:
+    11942:  253:int EVP_PKEY_set_type(EVP_PKEY *pkey, int type)
+        -:  254:	{
+    73884:  255:	return pkey_set_type(pkey, type, NULL, -1);
+        -:  256:	}
+        -:  257:
+    #####:  258:int EVP_PKEY_set_type_str(EVP_PKEY *pkey, const char *str, int len)
+        -:  259:	{
+    #####:  260:	return pkey_set_type(pkey, EVP_PKEY_NONE, str, len);
+        -:  261:	}
+        -:  262:
+    61942:  263:int EVP_PKEY_assign(EVP_PKEY *pkey, int type, void *key)
+        -:  264:	{
+    61942:  265:	if (!EVP_PKEY_set_type(pkey, type))
+        -:  266:		return 0;
+    61942:  267:	pkey->pkey.ptr=key;
+    61942:  268:	return (key != NULL);
+        -:  269:	}
+        -:  270:
+    #####:  271:void *EVP_PKEY_get0(EVP_PKEY *pkey)
+        -:  272:	{
+    #####:  273:	return pkey->pkey.ptr;
+        -:  274:	}
+        -:  275:
+        -:  276:#ifndef OPENSSL_NO_RSA
+    #####:  277:int EVP_PKEY_set1_RSA(EVP_PKEY *pkey, RSA *key)
+        -:  278:{
+        -:  279:	int ret = EVP_PKEY_assign_RSA(pkey, key);
+    #####:  280:	if(ret)
+    #####:  281:		RSA_up_ref(key);
+    #####:  282:	return ret;
+        -:  283:}
+        -:  284:
+    #####:  285:RSA *EVP_PKEY_get1_RSA(EVP_PKEY *pkey)
+        -:  286:	{
+    #####:  287:	if(pkey->type != EVP_PKEY_RSA) {
+    #####:  288:		EVPerr(EVP_F_EVP_PKEY_GET1_RSA, EVP_R_EXPECTING_AN_RSA_KEY);
+    #####:  289:		return NULL;
+        -:  290:	}
+    #####:  291:	RSA_up_ref(pkey->pkey.rsa);
+    #####:  292:	return pkey->pkey.rsa;
+        -:  293:}
+        -:  294:#endif
+        -:  295:
+        -:  296:#ifndef OPENSSL_NO_DSA
+    #####:  297:int EVP_PKEY_set1_DSA(EVP_PKEY *pkey, DSA *key)
+        -:  298:{
+        -:  299:	int ret = EVP_PKEY_assign_DSA(pkey, key);
+    #####:  300:	if(ret)
+    #####:  301:		DSA_up_ref(key);
+    #####:  302:	return ret;
+        -:  303:}
+        -:  304:
+    #####:  305:DSA *EVP_PKEY_get1_DSA(EVP_PKEY *pkey)
+        -:  306:	{
+    #####:  307:	if(pkey->type != EVP_PKEY_DSA) {
+    #####:  308:		EVPerr(EVP_F_EVP_PKEY_GET1_DSA, EVP_R_EXPECTING_A_DSA_KEY);
+    #####:  309:		return NULL;
+        -:  310:	}
+    #####:  311:	DSA_up_ref(pkey->pkey.dsa);
+    #####:  312:	return pkey->pkey.dsa;
+        -:  313:}
+        -:  314:#endif
+        -:  315:
+        -:  316:#ifndef OPENSSL_NO_EC
+        -:  317:
+    #####:  318:int EVP_PKEY_set1_EC_KEY(EVP_PKEY *pkey, EC_KEY *key)
+        -:  319:{
+        -:  320:	int ret = EVP_PKEY_assign_EC_KEY(pkey,key);
+    #####:  321:	if (ret)
+    #####:  322:		EC_KEY_up_ref(key);
+    #####:  323:	return ret;
+        -:  324:}
+        -:  325:
+    #####:  326:EC_KEY *EVP_PKEY_get1_EC_KEY(EVP_PKEY *pkey)
+        -:  327:{
+    #####:  328:	if (pkey->type != EVP_PKEY_EC)
+        -:  329:	{
+    #####:  330:		EVPerr(EVP_F_EVP_PKEY_GET1_EC_KEY, EVP_R_EXPECTING_A_EC_KEY);
+    #####:  331:		return NULL;
+        -:  332:	}
+    #####:  333:	EC_KEY_up_ref(pkey->pkey.ec);
+    #####:  334:	return pkey->pkey.ec;
+        -:  335:}
+        -:  336:#endif
+        -:  337:
+        -:  338:
+        -:  339:#ifndef OPENSSL_NO_DH
+        -:  340:
+    #####:  341:int EVP_PKEY_set1_DH(EVP_PKEY *pkey, DH *key)
+        -:  342:{
+        -:  343:	int ret = EVP_PKEY_assign_DH(pkey, key);
+    #####:  344:	if(ret)
+    #####:  345:		DH_up_ref(key);
+    #####:  346:	return ret;
+        -:  347:}
+        -:  348:
+    #####:  349:DH *EVP_PKEY_get1_DH(EVP_PKEY *pkey)
+        -:  350:	{
+    #####:  351:	if(pkey->type != EVP_PKEY_DH) {
+    #####:  352:		EVPerr(EVP_F_EVP_PKEY_GET1_DH, EVP_R_EXPECTING_A_DH_KEY);
+    #####:  353:		return NULL;
+        -:  354:	}
+    #####:  355:	DH_up_ref(pkey->pkey.dh);
+    #####:  356:	return pkey->pkey.dh;
+        -:  357:}
+        -:  358:#endif
+        -:  359:
+     1942:  360:int EVP_PKEY_type(int type)
+        -:  361:	{
+        -:  362:	int ret;
+        -:  363:	const EVP_PKEY_ASN1_METHOD *ameth;
+        -:  364:	ENGINE *e;
+     1942:  365:	ameth = EVP_PKEY_asn1_find(&e, type);
+     1942:  366:	if (ameth)
+     1942:  367:		ret = ameth->pkey_id;
+        -:  368:	else
+        -:  369:		ret = NID_undef;
+        -:  370:#ifndef OPENSSL_NO_ENGINE
+     1942:  371:	if (e)
+    #####:  372:		ENGINE_finish(e);
+        -:  373:#endif
+     1942:  374:	return ret;
+        -:  375:	}
+        -:  376:
+    #####:  377:int EVP_PKEY_id(const EVP_PKEY *pkey)
+        -:  378:	{
+    #####:  379:	return pkey->type;
+        -:  380:	}
+        -:  381:
+    #####:  382:int EVP_PKEY_base_id(const EVP_PKEY *pkey)
+        -:  383:	{
+    #####:  384:	return EVP_PKEY_type(pkey->type);
+        -:  385:	}
+        -:  386:
+   355804:  387:void EVP_PKEY_free(EVP_PKEY *x)
+        -:  388:	{
+        -:  389:	int i;
+        -:  390:
+   355804:  391:	if (x == NULL) return;
+        -:  392:
+   337771:  393:	i=CRYPTO_add(&x->references,-1,CRYPTO_LOCK_EVP_PKEY);
+        -:  394:#ifdef REF_PRINT
+        -:  395:	REF_PRINT("EVP_PKEY",x);
+        -:  396:#endif
+   337771:  397:	if (i > 0) return;
+        -:  398:#ifdef REF_CHECK
+        -:  399:	if (i < 0)
+        -:  400:		{
+        -:  401:		fprintf(stderr,"EVP_PKEY_free, bad reference count\n");
+        -:  402:		abort();
+        -:  403:		}
+        -:  404:#endif
+    61942:  405:	EVP_PKEY_free_it(x);
+    61942:  406:	if (x->attributes)
+    #####:  407:		sk_X509_ATTRIBUTE_pop_free(x->attributes, X509_ATTRIBUTE_free);
+    61942:  408:	OPENSSL_free(x);
+        -:  409:	}
+        -:  410:
+    61942:  411:static void EVP_PKEY_free_it(EVP_PKEY *x)
+        -:  412:	{
+    61942:  413:	if (x->ameth && x->ameth->pkey_free)
+        -:  414:		{
+    61942:  415:		x->ameth->pkey_free(x);
+    61942:  416:		x->pkey.ptr = NULL;
+        -:  417:		}
+        -:  418:#ifndef OPENSSL_NO_ENGINE
+    61942:  419:	if (x->engine)
+        -:  420:		{
+    #####:  421:		ENGINE_finish(x->engine);
+    #####:  422:		x->engine = NULL;
+        -:  423:		}
+        -:  424:#endif
+    61942:  425:	}
+        -:  426:
+    #####:  427:static int unsup_alg(BIO *out, const EVP_PKEY *pkey, int indent,
+        -:  428:				const char *kstr)
+        -:  429:	{
+    #####:  430:	BIO_indent(out, indent, 128);
+    #####:  431:	BIO_printf(out, "%s algorithm \"%s\" unsupported\n",
+        -:  432:						kstr, OBJ_nid2ln(pkey->type));
+    #####:  433:	return 1;
+        -:  434:	}
+        -:  435:
+    #####:  436:int EVP_PKEY_print_public(BIO *out, const EVP_PKEY *pkey,
+        -:  437:				int indent, ASN1_PCTX *pctx)
+        -:  438:	{
+    #####:  439:	if (pkey->ameth && pkey->ameth->pub_print)
+    #####:  440:		return pkey->ameth->pub_print(out, pkey, indent, pctx);
+        -:  441:	
+    #####:  442:	return unsup_alg(out, pkey, indent, "Public Key");
+        -:  443:	}
+        -:  444:
+    #####:  445:int EVP_PKEY_print_private(BIO *out, const EVP_PKEY *pkey,
+        -:  446:				int indent, ASN1_PCTX *pctx)
+        -:  447:	{
+    #####:  448:	if (pkey->ameth && pkey->ameth->priv_print)
+    #####:  449:		return pkey->ameth->priv_print(out, pkey, indent, pctx);
+        -:  450:	
+    #####:  451:	return unsup_alg(out, pkey, indent, "Private Key");
+        -:  452:	}
+        -:  453:
+    #####:  454:int EVP_PKEY_print_params(BIO *out, const EVP_PKEY *pkey,
+        -:  455:				int indent, ASN1_PCTX *pctx)
+        -:  456:	{
+    #####:  457:	if (pkey->ameth && pkey->ameth->param_print)
+    #####:  458:		return pkey->ameth->param_print(out, pkey, indent, pctx);
+    #####:  459:	return unsup_alg(out, pkey, indent, "Parameters");
+        -:  460:	}
+        -:  461:
+    #####:  462:int EVP_PKEY_get_default_digest_nid(EVP_PKEY *pkey, int *pnid)
+        -:  463:	{
+    #####:  464:	if (!pkey->ameth || !pkey->ameth->pkey_ctrl)
+        -:  465:		return -2;
+    #####:  466:	return pkey->ameth->pkey_ctrl(pkey, ASN1_PKEY_CTRL_DEFAULT_MD_NID,
+        -:  467:						0, pnid);
+        -:  468:	}
+        -:  469:

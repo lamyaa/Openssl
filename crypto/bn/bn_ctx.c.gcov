@@ -1,0 +1,459 @@
+        -:    0:Source:bn_ctx.c
+        -:    0:Graph:bn_ctx.gcno
+        -:    0:Data:bn_ctx.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* crypto/bn/bn_ctx.c */
+        -:    2:/* Written by Ulf Moeller for the OpenSSL project. */
+        -:    3:/* ====================================================================
+        -:    4: * Copyright (c) 1998-2004 The OpenSSL Project.  All rights reserved.
+        -:    5: *
+        -:    6: * Redistribution and use in source and binary forms, with or without
+        -:    7: * modification, are permitted provided that the following conditions
+        -:    8: * are met:
+        -:    9: *
+        -:   10: * 1. Redistributions of source code must retain the above copyright
+        -:   11: *    notice, this list of conditions and the following disclaimer. 
+        -:   12: *
+        -:   13: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   14: *    notice, this list of conditions and the following disclaimer in
+        -:   15: *    the documentation and/or other materials provided with the
+        -:   16: *    distribution.
+        -:   17: *
+        -:   18: * 3. All advertising materials mentioning features or use of this
+        -:   19: *    software must display the following acknowledgment:
+        -:   20: *    "This product includes software developed by the OpenSSL Project
+        -:   21: *    for use in the OpenSSL Toolkit. (http://www.openssl.org/)"
+        -:   22: *
+        -:   23: * 4. The names "OpenSSL Toolkit" and "OpenSSL Project" must not be used to
+        -:   24: *    endorse or promote products derived from this software without
+        -:   25: *    prior written permission. For written permission, please contact
+        -:   26: *    openssl-core@openssl.org.
+        -:   27: *
+        -:   28: * 5. Products derived from this software may not be called "OpenSSL"
+        -:   29: *    nor may "OpenSSL" appear in their names without prior written
+        -:   30: *    permission of the OpenSSL Project.
+        -:   31: *
+        -:   32: * 6. Redistributions of any form whatsoever must retain the following
+        -:   33: *    acknowledgment:
+        -:   34: *    "This product includes software developed by the OpenSSL Project
+        -:   35: *    for use in the OpenSSL Toolkit (http://www.openssl.org/)"
+        -:   36: *
+        -:   37: * THIS SOFTWARE IS PROVIDED BY THE OpenSSL PROJECT ``AS IS'' AND ANY
+        -:   38: * EXPRESSED OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   39: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+        -:   40: * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE OpenSSL PROJECT OR
+        -:   41: * ITS CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+        -:   42: * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+        -:   43: * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+        -:   44: * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   45: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+        -:   46: * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+        -:   47: * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+        -:   48: * OF THE POSSIBILITY OF SUCH DAMAGE.
+        -:   49: * ====================================================================
+        -:   50: *
+        -:   51: * This product includes cryptographic software written by Eric Young
+        -:   52: * (eay@cryptsoft.com).  This product includes software written by Tim
+        -:   53: * Hudson (tjh@cryptsoft.com).
+        -:   54: *
+        -:   55: */
+        -:   56:
+        -:   57:#if !defined(BN_CTX_DEBUG) && !defined(BN_DEBUG)
+        -:   58:#ifndef NDEBUG
+        -:   59:#define NDEBUG
+        -:   60:#endif
+        -:   61:#endif
+        -:   62:
+        -:   63:#include <stdio.h>
+        -:   64:#include <assert.h>
+        -:   65:
+        -:   66:#include "cryptlib.h"
+        -:   67:#include "bn_lcl.h"
+        -:   68:
+        -:   69:/* TODO list
+        -:   70: *
+        -:   71: * 1. Check a bunch of "(words+1)" type hacks in various bignum functions and
+        -:   72: * check they can be safely removed.
+        -:   73: *  - Check +1 and other ugliness in BN_from_montgomery()
+        -:   74: *
+        -:   75: * 2. Consider allowing a BN_new_ex() that, at least, lets you specify an
+        -:   76: * appropriate 'block' size that will be honoured by bn_expand_internal() to
+        -:   77: * prevent piddly little reallocations. OTOH, profiling bignum expansions in
+        -:   78: * BN_CTX doesn't show this to be a big issue.
+        -:   79: */
+        -:   80:
+        -:   81:/* How many bignums are in each "pool item"; */
+        -:   82:#define BN_CTX_POOL_SIZE	16
+        -:   83:/* The stack frame info is resizing, set a first-time expansion size; */
+        -:   84:#define BN_CTX_START_FRAMES	32
+        -:   85:
+        -:   86:/***********/
+        -:   87:/* BN_POOL */
+        -:   88:/***********/
+        -:   89:
+        -:   90:/* A bundle of bignums that can be linked with other bundles */
+        -:   91:typedef struct bignum_pool_item
+        -:   92:	{
+        -:   93:	/* The bignum values */
+        -:   94:	BIGNUM vals[BN_CTX_POOL_SIZE];
+        -:   95:	/* Linked-list admin */
+        -:   96:	struct bignum_pool_item *prev, *next;
+        -:   97:	} BN_POOL_ITEM;
+        -:   98:/* A linked-list of bignums grouped in bundles */
+        -:   99:typedef struct bignum_pool
+        -:  100:	{
+        -:  101:	/* Linked-list admin */
+        -:  102:	BN_POOL_ITEM *head, *current, *tail;
+        -:  103:	/* Stack depth and allocation size */
+        -:  104:	unsigned used, size;
+        -:  105:	} BN_POOL;
+        -:  106:static void		BN_POOL_init(BN_POOL *);
+        -:  107:static void		BN_POOL_finish(BN_POOL *);
+        -:  108:#ifndef OPENSSL_NO_DEPRECATED
+        -:  109:static void		BN_POOL_reset(BN_POOL *);
+        -:  110:#endif
+        -:  111:static BIGNUM *		BN_POOL_get(BN_POOL *);
+        -:  112:static void		BN_POOL_release(BN_POOL *, unsigned int);
+        -:  113:
+        -:  114:/************/
+        -:  115:/* BN_STACK */
+        -:  116:/************/
+        -:  117:
+        -:  118:/* A wrapper to manage the "stack frames" */
+        -:  119:typedef struct bignum_ctx_stack
+        -:  120:	{
+        -:  121:	/* Array of indexes into the bignum stack */
+        -:  122:	unsigned int *indexes;
+        -:  123:	/* Number of stack frames, and the size of the allocated array */
+        -:  124:	unsigned int depth, size;
+        -:  125:	} BN_STACK;
+        -:  126:static void		BN_STACK_init(BN_STACK *);
+        -:  127:static void		BN_STACK_finish(BN_STACK *);
+        -:  128:#ifndef OPENSSL_NO_DEPRECATED
+        -:  129:static void		BN_STACK_reset(BN_STACK *);
+        -:  130:#endif
+        -:  131:static int		BN_STACK_push(BN_STACK *, unsigned int);
+        -:  132:static unsigned int	BN_STACK_pop(BN_STACK *);
+        -:  133:
+        -:  134:/**********/
+        -:  135:/* BN_CTX */
+        -:  136:/**********/
+        -:  137:
+        -:  138:/* The opaque BN_CTX type */
+        -:  139:struct bignum_ctx
+        -:  140:	{
+        -:  141:	/* The bignum bundles */
+        -:  142:	BN_POOL pool;
+        -:  143:	/* The "stack frames", if you will */
+        -:  144:	BN_STACK stack;
+        -:  145:	/* The number of bignums currently assigned */
+        -:  146:	unsigned int used;
+        -:  147:	/* Depth of stack overflow */
+        -:  148:	int err_stack;
+        -:  149:	/* Block "gets" until an "end" (compatibility behaviour) */
+        -:  150:	int too_many;
+        -:  151:	};
+        -:  152:
+        -:  153:/* Enable this to find BN_CTX bugs */
+        -:  154:#ifdef BN_CTX_DEBUG
+        -:  155:static const char *ctxdbg_cur = NULL;
+        -:  156:static void ctxdbg(BN_CTX *ctx)
+        -:  157:	{
+        -:  158:	unsigned int bnidx = 0, fpidx = 0;
+        -:  159:	BN_POOL_ITEM *item = ctx->pool.head;
+        -:  160:	BN_STACK *stack = &ctx->stack;
+        -:  161:	fprintf(stderr,"(%08x): ", (unsigned int)ctx);
+        -:  162:	while(bnidx < ctx->used)
+        -:  163:		{
+        -:  164:		fprintf(stderr,"%03x ", item->vals[bnidx++ % BN_CTX_POOL_SIZE].dmax);
+        -:  165:		if(!(bnidx % BN_CTX_POOL_SIZE))
+        -:  166:			item = item->next;
+        -:  167:		}
+        -:  168:	fprintf(stderr,"\n");
+        -:  169:	bnidx = 0;
+        -:  170:	fprintf(stderr,"          : ");
+        -:  171:	while(fpidx < stack->depth)
+        -:  172:		{
+        -:  173:		while(bnidx++ < stack->indexes[fpidx])
+        -:  174:			fprintf(stderr,"    ");
+        -:  175:		fprintf(stderr,"^^^ ");
+        -:  176:		bnidx++;
+        -:  177:		fpidx++;
+        -:  178:		}
+        -:  179:	fprintf(stderr,"\n");
+        -:  180:	}
+        -:  181:#define CTXDBG_ENTRY(str, ctx)	do { \
+        -:  182:				ctxdbg_cur = (str); \
+        -:  183:				fprintf(stderr,"Starting %s\n", ctxdbg_cur); \
+        -:  184:				ctxdbg(ctx); \
+        -:  185:				} while(0)
+        -:  186:#define CTXDBG_EXIT(ctx)	do { \
+        -:  187:				fprintf(stderr,"Ending %s\n", ctxdbg_cur); \
+        -:  188:				ctxdbg(ctx); \
+        -:  189:				} while(0)
+        -:  190:#define CTXDBG_RET(ctx,ret)
+        -:  191:#else
+        -:  192:#define CTXDBG_ENTRY(str, ctx)
+        -:  193:#define CTXDBG_EXIT(ctx)
+        -:  194:#define CTXDBG_RET(ctx,ret)
+        -:  195:#endif
+        -:  196:
+        -:  197:/* This function is an evil legacy and should not be used. This implementation
+        -:  198: * is WYSIWYG, though I've done my best. */
+        -:  199:#ifndef OPENSSL_NO_DEPRECATED
+    #####:  200:void BN_CTX_init(BN_CTX *ctx)
+        -:  201:	{
+        -:  202:	/* Assume the caller obtained the context via BN_CTX_new() and so is
+        -:  203:	 * trying to reset it for use. Nothing else makes sense, least of all
+        -:  204:	 * binary compatibility from a time when they could declare a static
+        -:  205:	 * variable. */
+    #####:  206:	BN_POOL_reset(&ctx->pool);
+        -:  207:	BN_STACK_reset(&ctx->stack);
+    #####:  208:	ctx->used = 0;
+    #####:  209:	ctx->err_stack = 0;
+    #####:  210:	ctx->too_many = 0;
+    #####:  211:	}
+        -:  212:#endif
+        -:  213:
+    11942:  214:BN_CTX *BN_CTX_new(void)
+        -:  215:	{
+    11942:  216:	BN_CTX *ret = OPENSSL_malloc(sizeof(BN_CTX));
+    11942:  217:	if(!ret)
+        -:  218:		{
+    #####:  219:		BNerr(BN_F_BN_CTX_NEW,ERR_R_MALLOC_FAILURE);
+    #####:  220:		return NULL;
+        -:  221:		}
+        -:  222:	/* Initialise the structure */
+        -:  223:	BN_POOL_init(&ret->pool);
+        -:  224:	BN_STACK_init(&ret->stack);
+    11942:  225:	ret->used = 0;
+    11942:  226:	ret->err_stack = 0;
+    11942:  227:	ret->too_many = 0;
+    11942:  228:	return ret;
+        -:  229:	}
+        -:  230:
+    11942:  231:void BN_CTX_free(BN_CTX *ctx)
+        -:  232:	{
+    11942:  233:	if (ctx == NULL)
+    11942:  234:		return;
+        -:  235:#ifdef BN_CTX_DEBUG
+        -:  236:	{
+        -:  237:	BN_POOL_ITEM *pool = ctx->pool.head;
+        -:  238:	fprintf(stderr,"BN_CTX_free, stack-size=%d, pool-bignums=%d\n",
+        -:  239:		ctx->stack.size, ctx->pool.size);
+        -:  240:	fprintf(stderr,"dmaxs: ");
+        -:  241:	while(pool) {
+        -:  242:		unsigned loop = 0;
+        -:  243:		while(loop < BN_CTX_POOL_SIZE)
+        -:  244:			fprintf(stderr,"%02x ", pool->vals[loop++].dmax);
+        -:  245:		pool = pool->next;
+        -:  246:	}
+        -:  247:	fprintf(stderr,"\n");
+        -:  248:	}
+        -:  249:#endif
+    11942:  250:	BN_STACK_finish(&ctx->stack);
+    11942:  251:	BN_POOL_finish(&ctx->pool);
+    11942:  252:	OPENSSL_free(ctx);
+        -:  253:	}
+        -:  254:
+   131362:  255:void BN_CTX_start(BN_CTX *ctx)
+        -:  256:	{
+        -:  257:	CTXDBG_ENTRY("BN_CTX_start", ctx);
+        -:  258:	/* If we're already overflowing ... */
+   131362:  259:	if(ctx->err_stack || ctx->too_many)
+    #####:  260:		ctx->err_stack++;
+        -:  261:	/* (Try to) get a new frame pointer */
+   131362:  262:	else if(!BN_STACK_push(&ctx->stack, ctx->used))
+        -:  263:		{
+    #####:  264:		BNerr(BN_F_BN_CTX_START,BN_R_TOO_MANY_TEMPORARY_VARIABLES);
+    #####:  265:		ctx->err_stack++;
+        -:  266:		}
+        -:  267:	CTXDBG_EXIT(ctx);
+   131362:  268:	}
+        -:  269:
+   131362:  270:void BN_CTX_end(BN_CTX *ctx)
+        -:  271:	{
+        -:  272:	CTXDBG_ENTRY("BN_CTX_end", ctx);
+   131362:  273:	if(ctx->err_stack)
+    #####:  274:		ctx->err_stack--;
+        -:  275:	else
+        -:  276:		{
+        -:  277:		unsigned int fp = BN_STACK_pop(&ctx->stack);
+        -:  278:		/* Does this stack frame have anything to release? */
+   131362:  279:		if(fp < ctx->used)
+   119420:  280:			BN_POOL_release(&ctx->pool, ctx->used - fp);
+   131362:  281:		ctx->used = fp;
+        -:  282:		/* Unjam "too_many" in case "get" had failed */
+   131362:  283:		ctx->too_many = 0;
+        -:  284:		}
+        -:  285:	CTXDBG_EXIT(ctx);
+   131362:  286:	}
+        -:  287:
+   358260:  288:BIGNUM *BN_CTX_get(BN_CTX *ctx)
+        -:  289:	{
+        -:  290:	BIGNUM *ret;
+        -:  291:	CTXDBG_ENTRY("BN_CTX_get", ctx);
+   358260:  292:	if(ctx->err_stack || ctx->too_many) return NULL;
+   358260:  293:	if((ret = BN_POOL_get(&ctx->pool)) == NULL)
+        -:  294:		{
+        -:  295:		/* Setting too_many prevents repeated "get" attempts from
+        -:  296:		 * cluttering the error stack. */
+    #####:  297:		ctx->too_many = 1;
+    #####:  298:		BNerr(BN_F_BN_CTX_GET,BN_R_TOO_MANY_TEMPORARY_VARIABLES);
+    #####:  299:		return NULL;
+        -:  300:		}
+        -:  301:	/* OK, make sure the returned bignum is "zero" */
+   358260:  302:	BN_zero(ret);
+   358260:  303:	ctx->used++;
+        -:  304:	CTXDBG_RET(ctx, ret);
+   358260:  305:	return ret;
+        -:  306:	}
+        -:  307:
+        -:  308:/************/
+        -:  309:/* BN_STACK */
+        -:  310:/************/
+        -:  311:
+        -:  312:static void BN_STACK_init(BN_STACK *st)
+        -:  313:	{
+    11942:  314:	st->indexes = NULL;
+    11942:  315:	st->depth = st->size = 0;
+        -:  316:	}
+        -:  317:
+        -:  318:static void BN_STACK_finish(BN_STACK *st)
+        -:  319:	{
+    11942:  320:	if(st->size) OPENSSL_free(st->indexes);
+        -:  321:	}
+        -:  322:
+        -:  323:#ifndef OPENSSL_NO_DEPRECATED
+        -:  324:static void BN_STACK_reset(BN_STACK *st)
+        -:  325:	{
+    #####:  326:	st->depth = 0;
+        -:  327:	}
+        -:  328:#endif
+        -:  329:
+   131362:  330:static int BN_STACK_push(BN_STACK *st, unsigned int idx)
+        -:  331:	{
+   131362:  332:	if(st->depth == st->size)
+        -:  333:		/* Need to expand */
+        -:  334:		{
+        -:  335:		unsigned int newsize = (st->size ?
+    11942:  336:				(st->size * 3 / 2) : BN_CTX_START_FRAMES);
+    11942:  337:		unsigned int *newitems = OPENSSL_malloc(newsize *
+        -:  338:						sizeof(unsigned int));
+    11942:  339:		if(!newitems) return 0;
+    11942:  340:		if(st->depth)
+    #####:  341:			memcpy(newitems, st->indexes, st->depth *
+        -:  342:						sizeof(unsigned int));
+    11942:  343:		if(st->size) OPENSSL_free(st->indexes);
+    11942:  344:		st->indexes = newitems;
+    11942:  345:		st->size = newsize;
+        -:  346:		}
+   131362:  347:	st->indexes[(st->depth)++] = idx;
+   131362:  348:	return 1;
+        -:  349:	}
+        -:  350:
+        -:  351:static unsigned int BN_STACK_pop(BN_STACK *st)
+        -:  352:	{
+   131362:  353:	return st->indexes[--(st->depth)];
+        -:  354:	}
+        -:  355:
+        -:  356:/***********/
+        -:  357:/* BN_POOL */
+        -:  358:/***********/
+        -:  359:
+        -:  360:static void BN_POOL_init(BN_POOL *p)
+        -:  361:	{
+    11942:  362:	p->head = p->current = p->tail = NULL;
+    11942:  363:	p->used = p->size = 0;
+        -:  364:	}
+        -:  365:
+    11942:  366:static void BN_POOL_finish(BN_POOL *p)
+        -:  367:	{
+    23884:  368:	while(p->head)
+        -:  369:		{
+        -:  370:		unsigned int loop = 0;
+    11942:  371:		BIGNUM *bn = p->head->vals;
+   203014:  372:		while(loop++ < BN_CTX_POOL_SIZE)
+        -:  373:			{
+   191072:  374:			if(bn->d) BN_clear_free(bn);
+   191072:  375:			bn++;
+        -:  376:			}
+    11942:  377:		p->current = p->head->next;
+    11942:  378:		OPENSSL_free(p->head);
+    11942:  379:		p->head = p->current;
+        -:  380:		}
+    11942:  381:	}
+        -:  382:
+        -:  383:#ifndef OPENSSL_NO_DEPRECATED
+    #####:  384:static void BN_POOL_reset(BN_POOL *p)
+        -:  385:	{
+    #####:  386:	BN_POOL_ITEM *item = p->head;
+    #####:  387:	while(item)
+        -:  388:		{
+        -:  389:		unsigned int loop = 0;
+    #####:  390:		BIGNUM *bn = item->vals;
+    #####:  391:		while(loop++ < BN_CTX_POOL_SIZE)
+        -:  392:			{
+    #####:  393:			if(bn->d) BN_clear(bn);
+    #####:  394:			bn++;
+        -:  395:			}
+    #####:  396:		item = item->next;
+        -:  397:		}
+    #####:  398:	p->current = p->head;
+    #####:  399:	p->used = 0;
+    #####:  400:	}
+        -:  401:#endif
+        -:  402:
+   358260:  403:static BIGNUM *BN_POOL_get(BN_POOL *p)
+        -:  404:	{
+   358260:  405:	if(p->used == p->size)
+        -:  406:		{
+        -:  407:		BIGNUM *bn;
+        -:  408:		unsigned int loop = 0;
+    11942:  409:		BN_POOL_ITEM *item = OPENSSL_malloc(sizeof(BN_POOL_ITEM));
+    11942:  410:		if(!item) return NULL;
+        -:  411:		/* Initialise the structure */
+    11942:  412:		bn = item->vals;
+   214956:  413:		while(loop++ < BN_CTX_POOL_SIZE)
+   191072:  414:			BN_init(bn++);
+    11942:  415:		item->prev = p->tail;
+    11942:  416:		item->next = NULL;
+        -:  417:		/* Link it in */
+    11942:  418:		if(!p->head)
+    11942:  419:			p->head = p->current = p->tail = item;
+        -:  420:		else
+        -:  421:			{
+    #####:  422:			p->tail->next = item;
+    #####:  423:			p->tail = item;
+    #####:  424:			p->current = item;
+        -:  425:			}
+    11942:  426:		p->size += BN_CTX_POOL_SIZE;
+    11942:  427:		p->used++;
+        -:  428:		/* Return the first bignum from the new pool */
+    11942:  429:		return item->vals;
+        -:  430:		}
+   346318:  431:	if(!p->used)
+    #####:  432:		p->current = p->head;
+   346318:  433:	else if((p->used % BN_CTX_POOL_SIZE) == 0)
+    #####:  434:		p->current = p->current->next;
+   346318:  435:	return p->current->vals + ((p->used++) % BN_CTX_POOL_SIZE);
+        -:  436:	}
+        -:  437:
+        -:  438:static void BN_POOL_release(BN_POOL *p, unsigned int num)
+        -:  439:	{
+   119420:  440:	unsigned int offset = (p->used - 1) % BN_CTX_POOL_SIZE;
+   119420:  441:	p->used -= num;
+   477680:  442:	while(num--)
+        -:  443:		{
+        -:  444:		bn_check_top(p->current->vals + offset);
+   358260:  445:		if(!offset)
+        -:  446:			{
+        -:  447:			offset = BN_CTX_POOL_SIZE - 1;
+    11942:  448:			p->current = p->current->prev;
+        -:  449:			}
+        -:  450:		else
+   346318:  451:			offset--;
+        -:  452:		}
+        -:  453:	}
+        -:  454:

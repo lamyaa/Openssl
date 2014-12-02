@@ -1,0 +1,665 @@
+        -:    0:Source:ec_ameth.c
+        -:    0:Graph:ec_ameth.gcno
+        -:    0:Data:ec_ameth.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* Written by Dr Stephen N Henson (steve@openssl.org) for the OpenSSL
+        -:    2: * project 2006.
+        -:    3: */
+        -:    4:/* ====================================================================
+        -:    5: * Copyright (c) 2006 The OpenSSL Project.  All rights reserved.
+        -:    6: *
+        -:    7: * Redistribution and use in source and binary forms, with or without
+        -:    8: * modification, are permitted provided that the following conditions
+        -:    9: * are met:
+        -:   10: *
+        -:   11: * 1. Redistributions of source code must retain the above copyright
+        -:   12: *    notice, this list of conditions and the following disclaimer. 
+        -:   13: *
+        -:   14: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   15: *    notice, this list of conditions and the following disclaimer in
+        -:   16: *    the documentation and/or other materials provided with the
+        -:   17: *    distribution.
+        -:   18: *
+        -:   19: * 3. All advertising materials mentioning features or use of this
+        -:   20: *    software must display the following acknowledgment:
+        -:   21: *    "This product includes software developed by the OpenSSL Project
+        -:   22: *    for use in the OpenSSL Toolkit. (http://www.OpenSSL.org/)"
+        -:   23: *
+        -:   24: * 4. The names "OpenSSL Toolkit" and "OpenSSL Project" must not be used to
+        -:   25: *    endorse or promote products derived from this software without
+        -:   26: *    prior written permission. For written permission, please contact
+        -:   27: *    licensing@OpenSSL.org.
+        -:   28: *
+        -:   29: * 5. Products derived from this software may not be called "OpenSSL"
+        -:   30: *    nor may "OpenSSL" appear in their names without prior written
+        -:   31: *    permission of the OpenSSL Project.
+        -:   32: *
+        -:   33: * 6. Redistributions of any form whatsoever must retain the following
+        -:   34: *    acknowledgment:
+        -:   35: *    "This product includes software developed by the OpenSSL Project
+        -:   36: *    for use in the OpenSSL Toolkit (http://www.OpenSSL.org/)"
+        -:   37: *
+        -:   38: * THIS SOFTWARE IS PROVIDED BY THE OpenSSL PROJECT ``AS IS'' AND ANY
+        -:   39: * EXPRESSED OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   40: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+        -:   41: * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE OpenSSL PROJECT OR
+        -:   42: * ITS CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+        -:   43: * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+        -:   44: * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+        -:   45: * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   46: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+        -:   47: * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+        -:   48: * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+        -:   49: * OF THE POSSIBILITY OF SUCH DAMAGE.
+        -:   50: * ====================================================================
+        -:   51: *
+        -:   52: * This product includes cryptographic software written by Eric Young
+        -:   53: * (eay@cryptsoft.com).  This product includes software written by Tim
+        -:   54: * Hudson (tjh@cryptsoft.com).
+        -:   55: *
+        -:   56: */
+        -:   57:
+        -:   58:#include <stdio.h>
+        -:   59:#include "cryptlib.h"
+        -:   60:#include <openssl/x509.h>
+        -:   61:#include <openssl/ec.h>
+        -:   62:#include <openssl/bn.h>
+        -:   63:#ifndef OPENSSL_NO_CMS
+        -:   64:#include <openssl/cms.h>
+        -:   65:#endif
+        -:   66:#include "asn1_locl.h"
+        -:   67:
+    #####:   68:static int eckey_param2type(int *pptype, void **ppval, EC_KEY *ec_key)
+        -:   69:	{
+        -:   70:	const EC_GROUP  *group;
+        -:   71:	int nid;
+    #####:   72:	if (ec_key == NULL || (group = EC_KEY_get0_group(ec_key)) == NULL) 
+        -:   73:	{
+    #####:   74:		ECerr(EC_F_ECKEY_PARAM2TYPE, EC_R_MISSING_PARAMETERS);
+    #####:   75:		return 0;
+        -:   76:	}
+    #####:   77:	if (EC_GROUP_get_asn1_flag(group)
+    #####:   78:                     && (nid = EC_GROUP_get_curve_name(group)))
+        -:   79:		/* we have a 'named curve' => just set the OID */
+        -:   80:		{
+    #####:   81:		*ppval = OBJ_nid2obj(nid);
+    #####:   82:		*pptype = V_ASN1_OBJECT;
+        -:   83:		}
+        -:   84:	else	/* explicit parameters */
+        -:   85:		{
+        -:   86:		ASN1_STRING *pstr = NULL;
+    #####:   87:		pstr = ASN1_STRING_new();
+    #####:   88:		if (!pstr)
+        -:   89:			return 0;
+    #####:   90:		pstr->length = i2d_ECParameters(ec_key, &pstr->data);
+    #####:   91:		if (pstr->length < 0)
+        -:   92:			{
+    #####:   93:			ASN1_STRING_free(pstr);
+    #####:   94:			ECerr(EC_F_ECKEY_PARAM2TYPE, ERR_R_EC_LIB);
+    #####:   95:			return 0;
+        -:   96:			}
+    #####:   97:		*ppval = pstr;
+    #####:   98:		*pptype = V_ASN1_SEQUENCE;
+        -:   99:		}
+        -:  100:	return 1;
+        -:  101:	}
+        -:  102:
+    #####:  103:static int eckey_pub_encode(X509_PUBKEY *pk, const EVP_PKEY *pkey)
+        -:  104:	{
+    #####:  105:	EC_KEY *ec_key = pkey->pkey.ec;
+    #####:  106:	void *pval = NULL;
+        -:  107:	int ptype;
+        -:  108:	unsigned char *penc = NULL, *p;
+        -:  109:	int penclen;
+        -:  110:
+    #####:  111:	if (!eckey_param2type(&ptype, &pval, ec_key))
+        -:  112:		{
+    #####:  113:		ECerr(EC_F_ECKEY_PUB_ENCODE, ERR_R_EC_LIB);
+    #####:  114:		return 0;
+        -:  115:		}
+    #####:  116:	penclen = i2o_ECPublicKey(ec_key, NULL);
+    #####:  117:	if (penclen <= 0)
+        -:  118:		goto err;
+    #####:  119:	penc = OPENSSL_malloc(penclen);
+    #####:  120:	if (!penc)
+        -:  121:		goto err;
+    #####:  122:	p = penc;
+    #####:  123:	penclen = i2o_ECPublicKey(ec_key, &p);
+    #####:  124:	if (penclen <= 0)
+        -:  125:		goto err;
+    #####:  126:	if (X509_PUBKEY_set0_param(pk, OBJ_nid2obj(EVP_PKEY_EC),
+        -:  127:				ptype, pval, penc, penclen))
+        -:  128:		return 1;
+        -:  129:	err:
+    #####:  130:	if (ptype == V_ASN1_OBJECT)
+    #####:  131:		ASN1_OBJECT_free(pval);
+        -:  132:	else
+    #####:  133:		ASN1_STRING_free(pval);
+    #####:  134:	if (penc)
+    #####:  135:		OPENSSL_free(penc);
+        -:  136:	return 0;
+        -:  137:	}
+        -:  138:
+    #####:  139:static EC_KEY *eckey_type2param(int ptype, void *pval)
+        -:  140:	{
+        -:  141:	EC_KEY *eckey = NULL;
+    #####:  142:	if (ptype == V_ASN1_SEQUENCE)
+        -:  143:		{
+        -:  144:		ASN1_STRING *pstr = pval;
+    #####:  145:		const unsigned char *pm = NULL;
+        -:  146:		int pmlen;
+    #####:  147:		pm = pstr->data;
+    #####:  148:		pmlen = pstr->length;
+    #####:  149:		if (!(eckey = d2i_ECParameters(NULL, &pm, pmlen)))
+        -:  150:			{
+    #####:  151:			ECerr(EC_F_ECKEY_TYPE2PARAM, EC_R_DECODE_ERROR);
+    #####:  152:			goto ecerr;
+        -:  153:			}
+        -:  154:		}
+    #####:  155:	else if (ptype == V_ASN1_OBJECT)
+        -:  156:		{
+        -:  157:		ASN1_OBJECT *poid = pval;
+        -:  158:		EC_GROUP *group;
+        -:  159:
+        -:  160:		/* type == V_ASN1_OBJECT => the parameters are given
+        -:  161:		 * by an asn1 OID
+        -:  162:		 */
+    #####:  163:		if ((eckey = EC_KEY_new()) == NULL)
+        -:  164:			{
+    #####:  165:			ECerr(EC_F_ECKEY_TYPE2PARAM, ERR_R_MALLOC_FAILURE);
+    #####:  166:			goto ecerr;
+        -:  167:			}
+    #####:  168:		group = EC_GROUP_new_by_curve_name(OBJ_obj2nid(poid));
+    #####:  169:		if (group == NULL)
+        -:  170:			goto ecerr;
+    #####:  171:		EC_GROUP_set_asn1_flag(group, OPENSSL_EC_NAMED_CURVE);
+    #####:  172:		if (EC_KEY_set_group(eckey, group) == 0)
+        -:  173:			goto ecerr;
+    #####:  174:		EC_GROUP_free(group);
+        -:  175:		}
+        -:  176:	else
+        -:  177:		{
+    #####:  178:		ECerr(EC_F_ECKEY_TYPE2PARAM, EC_R_DECODE_ERROR);
+    #####:  179:		goto ecerr;
+        -:  180:		}
+        -:  181:
+    #####:  182:	return eckey;
+        -:  183:
+        -:  184:	ecerr:
+    #####:  185:	if (eckey)
+    #####:  186:		EC_KEY_free(eckey);
+        -:  187:	return NULL;
+        -:  188:	}
+        -:  189:
+    #####:  190:static int eckey_pub_decode(EVP_PKEY *pkey, X509_PUBKEY *pubkey)
+        -:  191:	{
+    #####:  192:	const unsigned char *p = NULL;
+        -:  193:	void *pval;
+        -:  194:	int ptype, pklen;
+    #####:  195:	EC_KEY *eckey = NULL;
+        -:  196:	X509_ALGOR *palg;
+        -:  197:
+    #####:  198:	if (!X509_PUBKEY_get0_param(NULL, &p, &pklen, &palg, pubkey))
+        -:  199:		return 0;
+    #####:  200:	X509_ALGOR_get0(NULL, &ptype, &pval, palg);
+        -:  201:
+    #####:  202:	eckey = eckey_type2param(ptype, pval);
+        -:  203:
+    #####:  204:	if (!eckey)
+        -:  205:		{
+    #####:  206:		ECerr(EC_F_ECKEY_PUB_DECODE, ERR_R_EC_LIB);
+    #####:  207:		return 0;
+        -:  208:		}
+        -:  209:
+        -:  210:	/* We have parameters now set public key */
+    #####:  211:	if (!o2i_ECPublicKey(&eckey, &p, pklen))
+        -:  212:		{
+    #####:  213:		ECerr(EC_F_ECKEY_PUB_DECODE, EC_R_DECODE_ERROR);
+        -:  214:		goto ecerr;
+        -:  215:		}
+        -:  216:
+    #####:  217:	EVP_PKEY_assign_EC_KEY(pkey, eckey);
+    #####:  218:	return 1;
+        -:  219:
+        -:  220:	ecerr:
+    #####:  221:	if (eckey)
+    #####:  222:		EC_KEY_free(eckey);
+        -:  223:	return 0;
+        -:  224:	}
+        -:  225:
+    #####:  226:static int eckey_pub_cmp(const EVP_PKEY *a, const EVP_PKEY *b)
+        -:  227:	{
+        -:  228:	int  r;
+    #####:  229:	const EC_GROUP *group = EC_KEY_get0_group(b->pkey.ec);
+    #####:  230:	const EC_POINT *pa = EC_KEY_get0_public_key(a->pkey.ec),
+    #####:  231:	               *pb = EC_KEY_get0_public_key(b->pkey.ec);
+    #####:  232:	r = EC_POINT_cmp(group, pa, pb, NULL);
+    #####:  233:	if (r == 0)
+        -:  234:		return 1;
+    #####:  235:	if (r == 1)
+        -:  236:		return 0;
+    #####:  237:	return -2;
+        -:  238:	}
+        -:  239:
+    #####:  240:static int eckey_priv_decode(EVP_PKEY *pkey, PKCS8_PRIV_KEY_INFO *p8)
+        -:  241:	{
+    #####:  242:	const unsigned char *p = NULL;
+        -:  243:	void *pval;
+        -:  244:	int ptype, pklen;
+    #####:  245:	EC_KEY *eckey = NULL;
+        -:  246:	X509_ALGOR *palg;
+        -:  247:
+    #####:  248:	if (!PKCS8_pkey_get0(NULL, &p, &pklen, &palg, p8))
+        -:  249:		return 0;
+    #####:  250:	X509_ALGOR_get0(NULL, &ptype, &pval, palg);
+        -:  251:
+    #####:  252:	eckey = eckey_type2param(ptype, pval);
+        -:  253:
+    #####:  254:	if (!eckey)
+        -:  255:		goto ecliberr;
+        -:  256:
+        -:  257:	/* We have parameters now set private key */
+    #####:  258:	if (!d2i_ECPrivateKey(&eckey, &p, pklen))
+        -:  259:		{
+    #####:  260:		ECerr(EC_F_ECKEY_PRIV_DECODE, EC_R_DECODE_ERROR);
+    #####:  261:		goto ecerr;
+        -:  262:		}
+        -:  263:
+        -:  264:	/* calculate public key (if necessary) */
+    #####:  265:	if (EC_KEY_get0_public_key(eckey) == NULL)
+        -:  266:		{
+        -:  267:		const BIGNUM *priv_key;
+        -:  268:		const EC_GROUP *group;
+        -:  269:		EC_POINT *pub_key;
+        -:  270:		/* the public key was not included in the SEC1 private
+        -:  271:		 * key => calculate the public key */
+    #####:  272:		group   = EC_KEY_get0_group(eckey);
+    #####:  273:		pub_key = EC_POINT_new(group);
+    #####:  274:		if (pub_key == NULL)
+        -:  275:			{
+    #####:  276:			ECerr(EC_F_ECKEY_PRIV_DECODE, ERR_R_EC_LIB);
+    #####:  277:			goto ecliberr;
+        -:  278:			}
+    #####:  279:		if (!EC_POINT_copy(pub_key, EC_GROUP_get0_generator(group)))
+        -:  280:			{
+    #####:  281:			EC_POINT_free(pub_key);
+    #####:  282:			ECerr(EC_F_ECKEY_PRIV_DECODE, ERR_R_EC_LIB);
+    #####:  283:			goto ecliberr;
+        -:  284:			}
+    #####:  285:		priv_key = EC_KEY_get0_private_key(eckey);
+    #####:  286:		if (!EC_POINT_mul(group, pub_key, priv_key, NULL, NULL, NULL))
+        -:  287:			{
+    #####:  288:			EC_POINT_free(pub_key);
+    #####:  289:			ECerr(EC_F_ECKEY_PRIV_DECODE, ERR_R_EC_LIB);
+    #####:  290:			goto ecliberr;
+        -:  291:			}
+    #####:  292:		if (EC_KEY_set_public_key(eckey, pub_key) == 0)
+        -:  293:			{
+    #####:  294:			EC_POINT_free(pub_key);
+    #####:  295:			ECerr(EC_F_ECKEY_PRIV_DECODE, ERR_R_EC_LIB);
+    #####:  296:			goto ecliberr;
+        -:  297:			}
+    #####:  298:		EC_POINT_free(pub_key);
+        -:  299:		}
+        -:  300:
+    #####:  301:	EVP_PKEY_assign_EC_KEY(pkey, eckey);
+    #####:  302:	return 1;
+        -:  303:
+        -:  304:	ecliberr:
+    #####:  305:	ECerr(EC_F_ECKEY_PRIV_DECODE, ERR_R_EC_LIB);
+        -:  306:	ecerr:
+    #####:  307:	if (eckey)
+    #####:  308:		EC_KEY_free(eckey);
+        -:  309:	return 0;
+        -:  310:	}
+        -:  311:
+    #####:  312:static int eckey_priv_encode(PKCS8_PRIV_KEY_INFO *p8, const EVP_PKEY *pkey)
+        -:  313:{
+        -:  314:	EC_KEY		*ec_key;
+        -:  315:	unsigned char	*ep, *p;
+        -:  316:	int 		eplen, ptype;
+        -:  317:	void		*pval;
+        -:  318:	unsigned int    tmp_flags, old_flags;
+        -:  319:
+    #####:  320:	ec_key = pkey->pkey.ec;
+        -:  321:
+    #####:  322:	if (!eckey_param2type(&ptype, &pval, ec_key))
+        -:  323:		{
+    #####:  324:		ECerr(EC_F_ECKEY_PRIV_ENCODE, EC_R_DECODE_ERROR);
+    #####:  325:		return 0;
+        -:  326:		}
+        -:  327:
+        -:  328:	/* set the private key */
+        -:  329:
+        -:  330:	/* do not include the parameters in the SEC1 private key
+        -:  331:	 * see PKCS#11 12.11 */
+    #####:  332:	old_flags = EC_KEY_get_enc_flags(ec_key);
+    #####:  333:	tmp_flags = old_flags | EC_PKEY_NO_PARAMETERS;
+    #####:  334:	EC_KEY_set_enc_flags(ec_key, tmp_flags);
+    #####:  335:	eplen = i2d_ECPrivateKey(ec_key, NULL);
+    #####:  336:	if (!eplen)
+        -:  337:	{
+    #####:  338:		EC_KEY_set_enc_flags(ec_key, old_flags);
+    #####:  339:		ECerr(EC_F_ECKEY_PRIV_ENCODE, ERR_R_EC_LIB);
+    #####:  340:		return 0;
+        -:  341:	}
+    #####:  342:	ep = (unsigned char *) OPENSSL_malloc(eplen);
+    #####:  343:	if (!ep)
+        -:  344:	{
+    #####:  345:		EC_KEY_set_enc_flags(ec_key, old_flags);
+    #####:  346:		ECerr(EC_F_ECKEY_PRIV_ENCODE, ERR_R_MALLOC_FAILURE);
+    #####:  347:		return 0;
+        -:  348:	}
+    #####:  349:	p = ep;
+    #####:  350:	if (!i2d_ECPrivateKey(ec_key, &p))
+        -:  351:	{
+    #####:  352:		EC_KEY_set_enc_flags(ec_key, old_flags);
+    #####:  353:		OPENSSL_free(ep);
+    #####:  354:		ECerr(EC_F_ECKEY_PRIV_ENCODE, ERR_R_EC_LIB);
+        -:  355:	}
+        -:  356:	/* restore old encoding flags */
+    #####:  357:	EC_KEY_set_enc_flags(ec_key, old_flags);
+        -:  358:
+    #####:  359:	if (!PKCS8_pkey_set0(p8, OBJ_nid2obj(NID_X9_62_id_ecPublicKey), 0,
+        -:  360:				ptype, pval, ep, eplen))
+        -:  361:		return 0;
+        -:  362:
+    #####:  363:	return 1;
+        -:  364:}
+        -:  365:
+    #####:  366:static int int_ec_size(const EVP_PKEY *pkey)
+        -:  367:	{
+    #####:  368:	return ECDSA_size(pkey->pkey.ec);
+        -:  369:	}
+        -:  370:
+    #####:  371:static int ec_bits(const EVP_PKEY *pkey)
+        -:  372:	{
+    #####:  373:	BIGNUM *order = BN_new();
+        -:  374:	const EC_GROUP *group;
+        -:  375:	int ret;
+        -:  376:
+    #####:  377:	if (!order)
+        -:  378:		{
+    #####:  379:		ERR_clear_error();
+    #####:  380:		return 0;
+        -:  381:		}
+    #####:  382:	group = EC_KEY_get0_group(pkey->pkey.ec);
+    #####:  383:	if (!EC_GROUP_get_order(group, order, NULL))
+        -:  384:		{
+    #####:  385:		ERR_clear_error();
+    #####:  386:		return 0;
+        -:  387:		}
+        -:  388:
+    #####:  389:	ret = BN_num_bits(order);
+    #####:  390:	BN_free(order);
+    #####:  391:	return ret;
+        -:  392:	}
+        -:  393:
+    #####:  394:static int ec_missing_parameters(const EVP_PKEY *pkey)
+        -:  395:	{
+    #####:  396:	if (EC_KEY_get0_group(pkey->pkey.ec) == NULL)
+        -:  397:		return 1;
+    #####:  398:	return 0;
+        -:  399:	}
+        -:  400:
+    #####:  401:static int ec_copy_parameters(EVP_PKEY *to, const EVP_PKEY *from)
+        -:  402:	{
+    #####:  403:	EC_GROUP *group = EC_GROUP_dup(EC_KEY_get0_group(from->pkey.ec));
+    #####:  404:	if (group == NULL)
+        -:  405:		return 0;
+    #####:  406:	if (EC_KEY_set_group(to->pkey.ec, group) == 0)
+        -:  407:		return 0;
+    #####:  408:	EC_GROUP_free(group);
+    #####:  409:	return 1;
+        -:  410:	}
+        -:  411:
+    #####:  412:static int ec_cmp_parameters(const EVP_PKEY *a, const EVP_PKEY *b)
+        -:  413:	{
+    #####:  414:	const EC_GROUP *group_a = EC_KEY_get0_group(a->pkey.ec),
+    #####:  415:	               *group_b = EC_KEY_get0_group(b->pkey.ec);
+    #####:  416:	if (EC_GROUP_cmp(group_a, group_b, NULL))
+        -:  417:		return 0;
+        -:  418:	else
+    #####:  419:		return 1;
+        -:  420:	}
+        -:  421:
+    #####:  422:static void int_ec_free(EVP_PKEY *pkey)
+        -:  423:	{
+    #####:  424:	EC_KEY_free(pkey->pkey.ec);
+    #####:  425:	}
+        -:  426:
+    #####:  427:static int do_EC_KEY_print(BIO *bp, const EC_KEY *x, int off, int ktype)
+        -:  428:	{
+        -:  429:	unsigned char *buffer=NULL;
+        -:  430:	const char *ecstr;
+        -:  431:	size_t	buf_len=0, i;
+        -:  432:	int     ret=0, reason=ERR_R_BIO_LIB;
+        -:  433:	BIGNUM  *pub_key=NULL, *order=NULL;
+        -:  434:	BN_CTX  *ctx=NULL;
+        -:  435:	const EC_GROUP *group;
+        -:  436:	const EC_POINT *public_key;
+        -:  437:	const BIGNUM *priv_key;
+        -:  438: 
+    #####:  439:	if (x == NULL || (group = EC_KEY_get0_group(x)) == NULL)
+        -:  440:		{
+        -:  441:		reason = ERR_R_PASSED_NULL_PARAMETER;
+        -:  442:		goto err;
+        -:  443:		}
+        -:  444:
+    #####:  445:	ctx = BN_CTX_new();
+    #####:  446:	if (ctx == NULL)
+        -:  447:		{
+        -:  448:		reason = ERR_R_MALLOC_FAILURE;
+        -:  449:		goto err;
+        -:  450:		}
+        -:  451:
+    #####:  452:	if (ktype > 0)
+        -:  453:		{
+    #####:  454:		public_key = EC_KEY_get0_public_key(x);
+    #####:  455:		if ((pub_key = EC_POINT_point2bn(group, public_key,
+        -:  456:			EC_KEY_get_conv_form(x), NULL, ctx)) == NULL)
+        -:  457:			{
+        -:  458:			reason = ERR_R_EC_LIB;
+        -:  459:			goto err;
+        -:  460:			}
+    #####:  461:		if (pub_key)
+    #####:  462:			buf_len = (size_t)BN_num_bytes(pub_key);
+        -:  463:		}
+        -:  464:
+    #####:  465:	if (ktype == 2)
+        -:  466:		{
+    #####:  467:		priv_key = EC_KEY_get0_private_key(x);
+    #####:  468:		if (priv_key && (i = (size_t)BN_num_bytes(priv_key)) > buf_len)
+        -:  469:			buf_len = i;
+        -:  470:		}
+        -:  471:	else
+        -:  472:		priv_key = NULL;
+        -:  473:
+    #####:  474:	if (ktype > 0)
+        -:  475:		{
+    #####:  476:		buf_len += 10;
+    #####:  477:		if ((buffer = OPENSSL_malloc(buf_len)) == NULL)
+        -:  478:			{
+        -:  479:			reason = ERR_R_MALLOC_FAILURE;
+        -:  480:			goto err;
+        -:  481:			}
+        -:  482:		}
+    #####:  483:	if (ktype == 2)
+        -:  484:		ecstr = "Private-Key";
+    #####:  485:	else if (ktype == 1)
+        -:  486:		ecstr = "Public-Key";
+        -:  487:	else
+        -:  488:		ecstr = "ECDSA-Parameters";
+        -:  489:
+    #####:  490:	if (!BIO_indent(bp, off, 128))
+        -:  491:		goto err;
+    #####:  492:	if ((order = BN_new()) == NULL)
+        -:  493:		goto err;
+    #####:  494:	if (!EC_GROUP_get_order(group, order, NULL))
+        -:  495:		goto err;
+    #####:  496:	if (BIO_printf(bp, "%s: (%d bit)\n", ecstr,
+        -:  497:		BN_num_bits(order)) <= 0) goto err;
+        -:  498:  
+    #####:  499:	if ((priv_key != NULL) && !ASN1_bn_print(bp, "priv:", priv_key, 
+        -:  500:		buffer, off))
+        -:  501:		goto err;
+    #####:  502:	if ((pub_key != NULL) && !ASN1_bn_print(bp, "pub: ", pub_key,
+        -:  503:		buffer, off))
+        -:  504:		goto err;
+    #####:  505:	if (!ECPKParameters_print(bp, group, off))
+        -:  506:		goto err;
+        -:  507:	ret=1;
+        -:  508:err:
+    #####:  509:	if (!ret)
+    #####:  510: 		ECerr(EC_F_DO_EC_KEY_PRINT, reason);
+    #####:  511:	if (pub_key) 
+    #####:  512:		BN_free(pub_key);
+    #####:  513:	if (order)
+    #####:  514:		BN_free(order);
+    #####:  515:	if (ctx)
+    #####:  516:		BN_CTX_free(ctx);
+    #####:  517:	if (buffer != NULL)
+    #####:  518:		OPENSSL_free(buffer);
+    #####:  519:	return(ret);
+        -:  520:	}
+        -:  521:
+    #####:  522:static int eckey_param_decode(EVP_PKEY *pkey,
+        -:  523:					const unsigned char **pder, int derlen)
+        -:  524:	{
+        -:  525:	EC_KEY *eckey;
+    #####:  526:	if (!(eckey = d2i_ECParameters(NULL, pder, derlen)))
+        -:  527:		{
+    #####:  528:		ECerr(EC_F_ECKEY_PARAM_DECODE, ERR_R_EC_LIB);
+    #####:  529:		return 0;
+        -:  530:		}
+    #####:  531:	EVP_PKEY_assign_EC_KEY(pkey, eckey);
+    #####:  532:	return 1;
+        -:  533:	}
+        -:  534:
+    #####:  535:static int eckey_param_encode(const EVP_PKEY *pkey, unsigned char **pder)
+        -:  536:	{
+    #####:  537:	return i2d_ECParameters(pkey->pkey.ec, pder);
+        -:  538:	}
+        -:  539:
+    #####:  540:static int eckey_param_print(BIO *bp, const EVP_PKEY *pkey, int indent,
+        -:  541:							ASN1_PCTX *ctx)
+        -:  542:	{
+    #####:  543:	return do_EC_KEY_print(bp, pkey->pkey.ec, indent, 0);
+        -:  544:	}
+        -:  545:
+    #####:  546:static int eckey_pub_print(BIO *bp, const EVP_PKEY *pkey, int indent,
+        -:  547:							ASN1_PCTX *ctx)
+        -:  548:	{
+    #####:  549:	return do_EC_KEY_print(bp, pkey->pkey.ec, indent, 1);
+        -:  550:	}
+        -:  551:
+        -:  552:
+    #####:  553:static int eckey_priv_print(BIO *bp, const EVP_PKEY *pkey, int indent,
+        -:  554:							ASN1_PCTX *ctx)
+        -:  555:	{
+    #####:  556:	return do_EC_KEY_print(bp, pkey->pkey.ec, indent, 2);
+        -:  557:	}
+        -:  558:
+    #####:  559:static int old_ec_priv_decode(EVP_PKEY *pkey,
+        -:  560:					const unsigned char **pder, int derlen)
+        -:  561:	{
+        -:  562:	EC_KEY *ec;
+    #####:  563:	if (!(ec = d2i_ECPrivateKey (NULL, pder, derlen)))
+        -:  564:		{
+    #####:  565:		ECerr(EC_F_OLD_EC_PRIV_DECODE, EC_R_DECODE_ERROR);
+    #####:  566:		return 0;
+        -:  567:		}
+    #####:  568:	EVP_PKEY_assign_EC_KEY(pkey, ec);
+    #####:  569:	return 1;
+        -:  570:	}
+        -:  571:
+    #####:  572:static int old_ec_priv_encode(const EVP_PKEY *pkey, unsigned char **pder)
+        -:  573:	{
+    #####:  574:	return i2d_ECPrivateKey(pkey->pkey.ec, pder);
+        -:  575:	}
+        -:  576:
+    #####:  577:static int ec_pkey_ctrl(EVP_PKEY *pkey, int op, long arg1, void *arg2)
+        -:  578:	{
+    #####:  579:	switch (op)
+        -:  580:		{
+        -:  581:		case ASN1_PKEY_CTRL_PKCS7_SIGN:
+    #####:  582:		if (arg1 == 0)
+        -:  583:			{
+        -:  584:			int snid, hnid;
+        -:  585:			X509_ALGOR *alg1, *alg2;
+    #####:  586:			PKCS7_SIGNER_INFO_get0_algs(arg2, NULL, &alg1, &alg2);
+    #####:  587:			if (alg1 == NULL || alg1->algorithm == NULL)
+    #####:  588:				return -1;
+    #####:  589:			hnid = OBJ_obj2nid(alg1->algorithm);
+    #####:  590:			if (hnid == NID_undef)
+        -:  591:				return -1;
+    #####:  592:			if (!OBJ_find_sigid_by_algs(&snid, hnid, EVP_PKEY_id(pkey)))
+        -:  593:				return -1; 
+    #####:  594:			X509_ALGOR_set0(alg2, OBJ_nid2obj(snid), V_ASN1_UNDEF, 0);
+        -:  595:			}
+        -:  596:		return 1;
+        -:  597:#ifndef OPENSSL_NO_CMS
+        -:  598:		case ASN1_PKEY_CTRL_CMS_SIGN:
+    #####:  599:		if (arg1 == 0)
+        -:  600:			{
+        -:  601:			int snid, hnid;
+        -:  602:			X509_ALGOR *alg1, *alg2;
+    #####:  603:			CMS_SignerInfo_get0_algs(arg2, NULL, NULL,
+        -:  604:								&alg1, &alg2);
+    #####:  605:			if (alg1 == NULL || alg1->algorithm == NULL)
+    #####:  606:				return -1;
+    #####:  607:			hnid = OBJ_obj2nid(alg1->algorithm);
+    #####:  608:			if (hnid == NID_undef)
+        -:  609:				return -1;
+    #####:  610:			if (!OBJ_find_sigid_by_algs(&snid, hnid, EVP_PKEY_id(pkey)))
+        -:  611:				return -1; 
+    #####:  612:			X509_ALGOR_set0(alg2, OBJ_nid2obj(snid), V_ASN1_UNDEF, 0);
+        -:  613:			}
+        -:  614:		return 1;
+        -:  615:#endif
+        -:  616:
+        -:  617:		case ASN1_PKEY_CTRL_DEFAULT_MD_NID:
+    #####:  618:		*(int *)arg2 = NID_sha1;
+    #####:  619:		return 2;
+        -:  620:
+        -:  621:		default:
+        -:  622:		return -2;
+        -:  623:
+        -:  624:		}
+        -:  625:
+        -:  626:	}
+        -:  627:
+        -:  628:const EVP_PKEY_ASN1_METHOD eckey_asn1_meth = 
+        -:  629:	{
+        -:  630:	EVP_PKEY_EC,
+        -:  631:	EVP_PKEY_EC,
+        -:  632:	0,
+        -:  633:	"EC",
+        -:  634:	"OpenSSL EC algorithm",
+        -:  635:
+        -:  636:	eckey_pub_decode,
+        -:  637:	eckey_pub_encode,
+        -:  638:	eckey_pub_cmp,
+        -:  639:	eckey_pub_print,
+        -:  640:
+        -:  641:	eckey_priv_decode,
+        -:  642:	eckey_priv_encode,
+        -:  643:	eckey_priv_print,
+        -:  644:
+        -:  645:	int_ec_size,
+        -:  646:	ec_bits,
+        -:  647:
+        -:  648:	eckey_param_decode,
+        -:  649:	eckey_param_encode,
+        -:  650:	ec_missing_parameters,
+        -:  651:	ec_copy_parameters,
+        -:  652:	ec_cmp_parameters,
+        -:  653:	eckey_param_print,
+        -:  654:	0,
+        -:  655:
+        -:  656:	int_ec_free,
+        -:  657:	ec_pkey_ctrl,
+        -:  658:	old_ec_priv_decode,
+        -:  659:	old_ec_priv_encode
+        -:  660:	};

@@ -1,0 +1,356 @@
+        -:    0:Source:eng_table.c
+        -:    0:Graph:eng_table.gcno
+        -:    0:Data:eng_table.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* ====================================================================
+        -:    2: * Copyright (c) 2001 The OpenSSL Project.  All rights reserved.
+        -:    3: *
+        -:    4: * Redistribution and use in source and binary forms, with or without
+        -:    5: * modification, are permitted provided that the following conditions
+        -:    6: * are met:
+        -:    7: *
+        -:    8: * 1. Redistributions of source code must retain the above copyright
+        -:    9: *    notice, this list of conditions and the following disclaimer. 
+        -:   10: *
+        -:   11: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   12: *    notice, this list of conditions and the following disclaimer in
+        -:   13: *    the documentation and/or other materials provided with the
+        -:   14: *    distribution.
+        -:   15: *
+        -:   16: * 3. All advertising materials mentioning features or use of this
+        -:   17: *    software must display the following acknowledgment:
+        -:   18: *    "This product includes software developed by the OpenSSL Project
+        -:   19: *    for use in the OpenSSL Toolkit. (http://www.OpenSSL.org/)"
+        -:   20: *
+        -:   21: * 4. The names "OpenSSL Toolkit" and "OpenSSL Project" must not be used to
+        -:   22: *    endorse or promote products derived from this software without
+        -:   23: *    prior written permission. For written permission, please contact
+        -:   24: *    licensing@OpenSSL.org.
+        -:   25: *
+        -:   26: * 5. Products derived from this software may not be called "OpenSSL"
+        -:   27: *    nor may "OpenSSL" appear in their names without prior written
+        -:   28: *    permission of the OpenSSL Project.
+        -:   29: *
+        -:   30: * 6. Redistributions of any form whatsoever must retain the following
+        -:   31: *    acknowledgment:
+        -:   32: *    "This product includes software developed by the OpenSSL Project
+        -:   33: *    for use in the OpenSSL Toolkit (http://www.OpenSSL.org/)"
+        -:   34: *
+        -:   35: * THIS SOFTWARE IS PROVIDED BY THE OpenSSL PROJECT ``AS IS'' AND ANY
+        -:   36: * EXPRESSED OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   37: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+        -:   38: * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE OpenSSL PROJECT OR
+        -:   39: * ITS CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+        -:   40: * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+        -:   41: * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+        -:   42: * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   43: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+        -:   44: * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+        -:   45: * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+        -:   46: * OF THE POSSIBILITY OF SUCH DAMAGE.
+        -:   47: * ====================================================================
+        -:   48: *
+        -:   49: * This product includes cryptographic software written by Eric Young
+        -:   50: * (eay@cryptsoft.com).  This product includes software written by Tim
+        -:   51: * Hudson (tjh@cryptsoft.com).
+        -:   52: *
+        -:   53: */
+        -:   54:
+        -:   55:#include "cryptlib.h"
+        -:   56:#include <openssl/evp.h>
+        -:   57:#include <openssl/lhash.h>
+        -:   58:#include "eng_int.h"
+        -:   59:
+        -:   60:/* The type of the items in the table */
+        -:   61:typedef struct st_engine_pile
+        -:   62:	{
+        -:   63:	/* The 'nid' of this algorithm/mode */
+        -:   64:	int nid;
+        -:   65:	/* ENGINEs that implement this algorithm/mode. */
+        -:   66:	STACK_OF(ENGINE) *sk;
+        -:   67:	/* The default ENGINE to perform this algorithm/mode. */
+        -:   68:	ENGINE *funct;
+        -:   69:	/* Zero if 'sk' is newer than the cached 'funct', non-zero otherwise */
+        -:   70:	int uptodate;
+        -:   71:	} ENGINE_PILE;
+        -:   72:
+        -:   73:DECLARE_LHASH_OF(ENGINE_PILE);
+        -:   74:
+        -:   75:/* The type exposed in eng_int.h */
+        -:   76:struct st_engine_table
+        -:   77:	{
+        -:   78:	LHASH_OF(ENGINE_PILE) piles;
+        -:   79:	}; /* ENGINE_TABLE */
+        -:   80:
+        -:   81:
+        -:   82:typedef struct st_engine_pile_doall
+        -:   83:	{
+        -:   84:	engine_table_doall_cb *cb;
+        -:   85:	void *arg;
+        -:   86:	} ENGINE_PILE_DOALL;
+        -:   87:	
+        -:   88:
+        -:   89:/* Global flags (ENGINE_TABLE_FLAG_***). */
+        -:   90:static unsigned int table_flags = 0;
+        -:   91:
+        -:   92:/* API function manipulating 'table_flags' */
+    #####:   93:unsigned int ENGINE_get_table_flags(void)
+        -:   94:	{
+    #####:   95:	return table_flags;
+        -:   96:	}
+        -:   97:
+    #####:   98:void ENGINE_set_table_flags(unsigned int flags)
+        -:   99:	{
+    #####:  100:	table_flags = flags;
+    #####:  101:	}
+        -:  102:
+        -:  103:/* Internal functions for the "piles" hash table */
+        -:  104:static unsigned long engine_pile_hash(const ENGINE_PILE *c)
+        -:  105:	{
+  1425261:  106:	return c->nid;
+        -:  107:	}
+        -:  108:
+        -:  109:static int engine_pile_cmp(const ENGINE_PILE *a, const ENGINE_PILE *b)
+        -:  110:	{
+   321942:  111:	return a->nid - b->nid;
+        -:  112:	}
+  2850522:  113:static IMPLEMENT_LHASH_HASH_FN(engine_pile, ENGINE_PILE)
+   643884:  114:static IMPLEMENT_LHASH_COMP_FN(engine_pile, ENGINE_PILE)
+        -:  115:
+  1235261:  116:static int int_table_check(ENGINE_TABLE **t, int create)
+        -:  117:	{
+        -:  118:	LHASH_OF(ENGINE_PILE) *lh;
+        -:  119:
+  1235261:  120:	if(*t) return 1;
+    70000:  121:	if(!create) return 0;
+    70000:  122:	if((lh = lh_ENGINE_PILE_new()) == NULL)
+        -:  123:		return 0;
+    70000:  124:	*t = (ENGINE_TABLE *)lh;
+    70000:  125:	return 1;
+        -:  126:	}
+        -:  127:
+        -:  128:/* Privately exposed (via eng_int.h) functions for adding and/or removing
+        -:  129: * ENGINEs from the implementation table */
+   330000:  130:int engine_table_register(ENGINE_TABLE **table, ENGINE_CLEANUP_CB *cleanup,
+        -:  131:		ENGINE *e, const int *nids, int num_nids, int setdefault)
+        -:  132:	{
+        -:  133:	int ret = 0, added = 0;
+        -:  134:	ENGINE_PILE tmplate, *fnd;
+   330000:  135:	CRYPTO_w_lock(CRYPTO_LOCK_ENGINE);
+   330000:  136:	if(!(*table))
+        -:  137:		added = 1;
+   330000:  138:	if(!int_table_check(table, 1))
+        -:  139:		goto end;
+   330000:  140:	if(added)
+        -:  141:		/* The cleanup callback needs to be added */
+    70000:  142:		engine_cleanup_add_first(cleanup);
+   740000:  143:	while(num_nids--)
+        -:  144:		{
+   410000:  145:		tmplate.nid = *nids;
+   410000:  146:		fnd = lh_ENGINE_PILE_retrieve(&(*table)->piles, &tmplate);
+   410000:  147:		if(!fnd)
+        -:  148:			{
+   110000:  149:			fnd = OPENSSL_malloc(sizeof(ENGINE_PILE));
+   110000:  150:			if(!fnd) goto end;
+   110000:  151:			fnd->uptodate = 1;
+   110000:  152:			fnd->nid = *nids;
+   110000:  153:			fnd->sk = sk_ENGINE_new_null();
+   110000:  154:			if(!fnd->sk)
+        -:  155:				{
+    #####:  156:				OPENSSL_free(fnd);
+    #####:  157:				goto end;
+        -:  158:				}
+   110000:  159:			fnd->funct = NULL;
+   110000:  160:			(void)lh_ENGINE_PILE_insert(&(*table)->piles, fnd);
+        -:  161:			}
+        -:  162:		/* A registration shouldn't add duplciate entries */
+   410000:  163:		(void)sk_ENGINE_delete_ptr(fnd->sk, e);
+        -:  164:		/* if 'setdefault', this ENGINE goes to the head of the list */
+   410000:  165:		if(!sk_ENGINE_push(fnd->sk, e))
+        -:  166:			goto end;
+        -:  167:		/* "touch" this ENGINE_PILE */
+   410000:  168:		fnd->uptodate = 0;
+   410000:  169:		if(setdefault)
+        -:  170:			{
+    #####:  171:			if(!engine_unlocked_init(e))
+        -:  172:				{
+    #####:  173:				ENGINEerr(ENGINE_F_ENGINE_TABLE_REGISTER,
+        -:  174:						ENGINE_R_INIT_FAILED);
+    #####:  175:				goto end;
+        -:  176:				}
+    #####:  177:			if(fnd->funct)
+    #####:  178:				engine_unlocked_finish(fnd->funct, 0);
+    #####:  179:			fnd->funct = e;
+    #####:  180:			fnd->uptodate = 1;
+        -:  181:			}
+   410000:  182:		nids++;
+        -:  183:		}
+        -:  184:	ret = 1;
+        -:  185:end:
+   330000:  186:	CRYPTO_w_unlock(CRYPTO_LOCK_ENGINE);
+   330000:  187:	return ret;
+        -:  188:	}
+    #####:  189:static void int_unregister_cb_doall_arg(ENGINE_PILE *pile, ENGINE *e)
+        -:  190:	{
+        -:  191:	int n;
+        -:  192:	/* Iterate the 'c->sk' stack removing any occurance of 'e' */
+    #####:  193:	while((n = sk_ENGINE_find(pile->sk, e)) >= 0)
+        -:  194:		{
+    #####:  195:		(void)sk_ENGINE_delete(pile->sk, n);
+    #####:  196:		pile->uptodate = 0;
+        -:  197:		}
+    #####:  198:	if(pile->funct == e)
+        -:  199:		{
+    #####:  200:		engine_unlocked_finish(e, 0);
+    #####:  201:		pile->funct = NULL;
+        -:  202:		}
+    #####:  203:	}
+    #####:  204:static IMPLEMENT_LHASH_DOALL_ARG_FN(int_unregister_cb, ENGINE_PILE, ENGINE)
+        -:  205:
+    #####:  206:void engine_table_unregister(ENGINE_TABLE **table, ENGINE *e)
+        -:  207:	{
+    #####:  208:	CRYPTO_w_lock(CRYPTO_LOCK_ENGINE);
+    #####:  209:	if(int_table_check(table, 0))
+    #####:  210:		lh_ENGINE_PILE_doall_arg(&(*table)->piles,
+        -:  211:					 LHASH_DOALL_ARG_FN(int_unregister_cb),
+        -:  212:					 ENGINE, e);
+    #####:  213:	CRYPTO_w_unlock(CRYPTO_LOCK_ENGINE);
+    #####:  214:	}
+        -:  215:
+   110000:  216:static void int_cleanup_cb_doall(ENGINE_PILE *p)
+        -:  217:	{
+   110000:  218:	sk_ENGINE_free(p->sk);
+   110000:  219:	if(p->funct)
+    20000:  220:		engine_unlocked_finish(p->funct, 0);
+   110000:  221:	OPENSSL_free(p);
+   110000:  222:	}
+   110000:  223:static IMPLEMENT_LHASH_DOALL_FN(int_cleanup_cb, ENGINE_PILE)
+        -:  224:
+    70000:  225:void engine_table_cleanup(ENGINE_TABLE **table)
+        -:  226:	{
+    70000:  227:	CRYPTO_w_lock(CRYPTO_LOCK_ENGINE);
+    70000:  228:	if(*table)
+        -:  229:		{
+    70000:  230:		lh_ENGINE_PILE_doall(&(*table)->piles,
+        -:  231:				     LHASH_DOALL_FN(int_cleanup_cb));
+    70000:  232:		lh_ENGINE_PILE_free(&(*table)->piles);
+    70000:  233:		*table = NULL;
+        -:  234:		}
+    70000:  235:	CRYPTO_w_unlock(CRYPTO_LOCK_ENGINE);
+    70000:  236:	}
+        -:  237:
+        -:  238:/* return a functional reference for a given 'nid' */
+        -:  239:#ifndef ENGINE_TABLE_DEBUG
+   969145:  240:ENGINE *engine_table_select(ENGINE_TABLE **table, int nid)
+        -:  241:#else
+        -:  242:ENGINE *engine_table_select_tmp(ENGINE_TABLE **table, int nid, const char *f, int l)
+        -:  243:#endif
+        -:  244:	{
+        -:  245:	ENGINE *ret = NULL;
+        -:  246:	ENGINE_PILE tmplate, *fnd=NULL;
+        -:  247:	int initres, loop = 0;
+        -:  248:
+   969145:  249:	if(!(*table))
+        -:  250:		{
+        -:  251:#ifdef ENGINE_TABLE_DEBUG
+        -:  252:		fprintf(stderr, "engine_table_dbg: %s:%d, nid=%d, nothing "
+        -:  253:			"registered!\n", f, l, nid);
+        -:  254:#endif
+        -:  255:		return NULL;
+        -:  256:		}
+   905261:  257:	ERR_set_mark();
+   905261:  258:	CRYPTO_w_lock(CRYPTO_LOCK_ENGINE);
+        -:  259:	/* Check again inside the lock otherwise we could race against cleanup
+        -:  260:	 * operations. But don't worry about a fprintf(stderr). */
+   905261:  261:	if(!int_table_check(table, 0)) goto end;
+   905261:  262:	tmplate.nid = nid;
+   905261:  263:	fnd = lh_ENGINE_PILE_retrieve(&(*table)->piles, &tmplate);
+   905261:  264:	if(!fnd) goto end;
+    21942:  265:	if(fnd->funct && engine_unlocked_init(fnd->funct))
+        -:  266:		{
+        -:  267:#ifdef ENGINE_TABLE_DEBUG
+        -:  268:		fprintf(stderr, "engine_table_dbg: %s:%d, nid=%d, using "
+        -:  269:			"ENGINE '%s' cached\n", f, l, nid, fnd->funct->id);
+        -:  270:#endif
+     1942:  271:		ret = fnd->funct;
+     1942:  272:		goto end;
+        -:  273:		}
+    20000:  274:	if(fnd->uptodate)
+        -:  275:		{
+    #####:  276:		ret = fnd->funct;
+    #####:  277:		goto end;
+        -:  278:		}
+        -:  279:trynext:
+    20000:  280:	ret = sk_ENGINE_value(fnd->sk, loop++);
+    20000:  281:	if(!ret)
+        -:  282:		{
+        -:  283:#ifdef ENGINE_TABLE_DEBUG
+        -:  284:		fprintf(stderr, "engine_table_dbg: %s:%d, nid=%d, no "
+        -:  285:				"registered implementations would initialise\n",
+        -:  286:				f, l, nid);
+        -:  287:#endif
+        -:  288:		goto end;
+        -:  289:		}
+        -:  290:	/* Try to initialise the ENGINE? */
+    20000:  291:	if((ret->funct_ref > 0) || !(table_flags & ENGINE_TABLE_FLAG_NOINIT))
+    20000:  292:		initres = engine_unlocked_init(ret);
+        -:  293:	else
+        -:  294:		initres = 0;
+    20000:  295:	if(initres)
+        -:  296:		{
+        -:  297:		/* Update 'funct' */
+    20000:  298:		if((fnd->funct != ret) && engine_unlocked_init(ret))
+        -:  299:			{
+        -:  300:			/* If there was a previous default we release it. */
+    20000:  301:			if(fnd->funct)
+    #####:  302:				engine_unlocked_finish(fnd->funct, 0);
+    20000:  303:			fnd->funct = ret;
+        -:  304:#ifdef ENGINE_TABLE_DEBUG
+        -:  305:			fprintf(stderr, "engine_table_dbg: %s:%d, nid=%d, "
+        -:  306:				"setting default to '%s'\n", f, l, nid, ret->id);
+        -:  307:#endif
+        -:  308:			}
+        -:  309:#ifdef ENGINE_TABLE_DEBUG
+        -:  310:		fprintf(stderr, "engine_table_dbg: %s:%d, nid=%d, using "
+        -:  311:				"newly initialised '%s'\n", f, l, nid, ret->id);
+        -:  312:#endif
+        -:  313:		goto end;
+        -:  314:		}
+        -:  315:	goto trynext;
+        -:  316:end:
+        -:  317:	/* If it failed, it is unlikely to succeed again until some future
+        -:  318:	 * registrations have taken place. In all cases, we cache. */
+   905261:  319:	if(fnd) fnd->uptodate = 1;
+        -:  320:#ifdef ENGINE_TABLE_DEBUG
+        -:  321:	if(ret)
+        -:  322:		fprintf(stderr, "engine_table_dbg: %s:%d, nid=%d, caching "
+        -:  323:				"ENGINE '%s'\n", f, l, nid, ret->id);
+        -:  324:	else
+        -:  325:		fprintf(stderr, "engine_table_dbg: %s:%d, nid=%d, caching "
+        -:  326:				"'no matching ENGINE'\n", f, l, nid);
+        -:  327:#endif
+   905261:  328:	CRYPTO_w_unlock(CRYPTO_LOCK_ENGINE);
+        -:  329:	/* Whatever happened, any failed init()s are not failures in this
+        -:  330:	 * context, so clear our error state. */
+   905261:  331:	ERR_pop_to_mark();
+   905261:  332:	return ret;
+        -:  333:	}
+        -:  334:
+        -:  335:/* Table enumeration */
+        -:  336:
+        -:  337:static void int_cb_doall_arg(ENGINE_PILE *pile, ENGINE_PILE_DOALL *dall)
+        -:  338:	{
+    #####:  339:	dall->cb(pile->nid, pile->sk, pile->funct, dall->arg);
+        -:  340:	}
+    #####:  341:static IMPLEMENT_LHASH_DOALL_ARG_FN(int_cb, ENGINE_PILE,ENGINE_PILE_DOALL)
+        -:  342:
+    30000:  343:void engine_table_doall(ENGINE_TABLE *table, engine_table_doall_cb *cb,
+        -:  344:								void *arg)
+        -:  345:	{
+        -:  346:	ENGINE_PILE_DOALL dall;
+    30000:  347:	dall.cb = cb;
+    30000:  348:	dall.arg = arg;
+    30000:  349:	lh_ENGINE_PILE_doall_arg(&table->piles, LHASH_DOALL_ARG_FN(int_cb),
+        -:  350:				 ENGINE_PILE_DOALL, &dall);
+    30000:  351:	}

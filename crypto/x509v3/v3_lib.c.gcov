@@ -1,0 +1,314 @@
+        -:    0:Source:v3_lib.c
+        -:    0:Graph:v3_lib.gcno
+        -:    0:Data:v3_lib.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* v3_lib.c */
+        -:    2:/* Written by Dr Stephen N Henson (steve@openssl.org) for the OpenSSL
+        -:    3: * project 1999.
+        -:    4: */
+        -:    5:/* ====================================================================
+        -:    6: * Copyright (c) 1999 The OpenSSL Project.  All rights reserved.
+        -:    7: *
+        -:    8: * Redistribution and use in source and binary forms, with or without
+        -:    9: * modification, are permitted provided that the following conditions
+        -:   10: * are met:
+        -:   11: *
+        -:   12: * 1. Redistributions of source code must retain the above copyright
+        -:   13: *    notice, this list of conditions and the following disclaimer. 
+        -:   14: *
+        -:   15: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   16: *    notice, this list of conditions and the following disclaimer in
+        -:   17: *    the documentation and/or other materials provided with the
+        -:   18: *    distribution.
+        -:   19: *
+        -:   20: * 3. All advertising materials mentioning features or use of this
+        -:   21: *    software must display the following acknowledgment:
+        -:   22: *    "This product includes software developed by the OpenSSL Project
+        -:   23: *    for use in the OpenSSL Toolkit. (http://www.OpenSSL.org/)"
+        -:   24: *
+        -:   25: * 4. The names "OpenSSL Toolkit" and "OpenSSL Project" must not be used to
+        -:   26: *    endorse or promote products derived from this software without
+        -:   27: *    prior written permission. For written permission, please contact
+        -:   28: *    licensing@OpenSSL.org.
+        -:   29: *
+        -:   30: * 5. Products derived from this software may not be called "OpenSSL"
+        -:   31: *    nor may "OpenSSL" appear in their names without prior written
+        -:   32: *    permission of the OpenSSL Project.
+        -:   33: *
+        -:   34: * 6. Redistributions of any form whatsoever must retain the following
+        -:   35: *    acknowledgment:
+        -:   36: *    "This product includes software developed by the OpenSSL Project
+        -:   37: *    for use in the OpenSSL Toolkit (http://www.OpenSSL.org/)"
+        -:   38: *
+        -:   39: * THIS SOFTWARE IS PROVIDED BY THE OpenSSL PROJECT ``AS IS'' AND ANY
+        -:   40: * EXPRESSED OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   41: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+        -:   42: * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE OpenSSL PROJECT OR
+        -:   43: * ITS CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+        -:   44: * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+        -:   45: * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+        -:   46: * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   47: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+        -:   48: * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+        -:   49: * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+        -:   50: * OF THE POSSIBILITY OF SUCH DAMAGE.
+        -:   51: * ====================================================================
+        -:   52: *
+        -:   53: * This product includes cryptographic software written by Eric Young
+        -:   54: * (eay@cryptsoft.com).  This product includes software written by Tim
+        -:   55: * Hudson (tjh@cryptsoft.com).
+        -:   56: *
+        -:   57: */
+        -:   58:/* X509 v3 extension utilities */
+        -:   59:
+        -:   60:#include <stdio.h>
+        -:   61:#include "cryptlib.h"
+        -:   62:#include <openssl/conf.h>
+        -:   63:#include <openssl/x509v3.h>
+        -:   64:
+        -:   65:#include "ext_dat.h"
+        -:   66:
+        -:   67:static STACK_OF(X509V3_EXT_METHOD) *ext_list = NULL;
+        -:   68:
+        -:   69:static int ext_cmp(const X509V3_EXT_METHOD * const *a,
+        -:   70:		const X509V3_EXT_METHOD * const *b);
+        -:   71:static void ext_list_free(X509V3_EXT_METHOD *ext);
+        -:   72:
+    #####:   73:int X509V3_EXT_add(X509V3_EXT_METHOD *ext)
+        -:   74:{
+    #####:   75:	if(!ext_list && !(ext_list = sk_X509V3_EXT_METHOD_new(ext_cmp))) {
+    #####:   76:		X509V3err(X509V3_F_X509V3_EXT_ADD,ERR_R_MALLOC_FAILURE);
+    #####:   77:		return 0;
+        -:   78:	}
+    #####:   79:	if(!sk_X509V3_EXT_METHOD_push(ext_list, ext)) {
+    #####:   80:		X509V3err(X509V3_F_X509V3_EXT_ADD,ERR_R_MALLOC_FAILURE);
+    #####:   81:		return 0;
+        -:   82:	}
+        -:   83:	return 1;
+        -:   84:}
+        -:   85:
+    #####:   86:static int ext_cmp(const X509V3_EXT_METHOD * const *a,
+        -:   87:		   const X509V3_EXT_METHOD * const *b)
+        -:   88:{
+   418445:   89:	return ((*a)->ext_nid - (*b)->ext_nid);
+        -:   90:}
+        -:   91:
+        -:   92:DECLARE_OBJ_BSEARCH_CMP_FN(const X509V3_EXT_METHOD *, const X509V3_EXT_METHOD *,
+        -:   93:			   ext);
+   922155:   94:IMPLEMENT_OBJ_BSEARCH_CMP_FN(const X509V3_EXT_METHOD *,
+        -:   95:			     const X509V3_EXT_METHOD *, ext);
+        -:   96:
+    85265:   97:const X509V3_EXT_METHOD *X509V3_EXT_get_nid(int nid)
+        -:   98:{
+        -:   99:	X509V3_EXT_METHOD tmp;
+    85265:  100:	const X509V3_EXT_METHOD *t = &tmp, * const *ret;
+        -:  101:	int idx;
+    85265:  102:	if(nid < 0) return NULL;
+    85265:  103:	tmp.ext_nid = nid;
+        -:  104:	ret = OBJ_bsearch_ext(&t, standard_exts, STANDARD_EXTENSION_COUNT);
+    85265:  105:	if(ret) return *ret;
+    #####:  106:	if(!ext_list) return NULL;
+    #####:  107:	idx = sk_X509V3_EXT_METHOD_find(ext_list, &tmp);
+    #####:  108:	if(idx == -1) return NULL;
+    #####:  109:	return sk_X509V3_EXT_METHOD_value(ext_list, idx);
+        -:  110:}
+        -:  111:
+    85265:  112:const X509V3_EXT_METHOD *X509V3_EXT_get(X509_EXTENSION *ext)
+        -:  113:{
+        -:  114:	int nid;
+    85265:  115:	if((nid = OBJ_obj2nid(ext->object)) == NID_undef) return NULL;
+    85265:  116:	return X509V3_EXT_get_nid(nid);
+        -:  117:}
+        -:  118:
+        -:  119:
+    #####:  120:int X509V3_EXT_add_list(X509V3_EXT_METHOD *extlist)
+        -:  121:{
+    #####:  122:	for(;extlist->ext_nid!=-1;extlist++) 
+    #####:  123:			if(!X509V3_EXT_add(extlist)) return 0;
+        -:  124:	return 1;
+        -:  125:}
+        -:  126:
+    #####:  127:int X509V3_EXT_add_alias(int nid_to, int nid_from)
+        -:  128:{
+        -:  129:	const X509V3_EXT_METHOD *ext;
+        -:  130:	X509V3_EXT_METHOD *tmpext;
+        -:  131:
+    #####:  132:	if(!(ext = X509V3_EXT_get_nid(nid_from))) {
+    #####:  133:		X509V3err(X509V3_F_X509V3_EXT_ADD_ALIAS,X509V3_R_EXTENSION_NOT_FOUND);
+    #####:  134:		return 0;
+        -:  135:	}
+    #####:  136:	if(!(tmpext = (X509V3_EXT_METHOD *)OPENSSL_malloc(sizeof(X509V3_EXT_METHOD)))) {
+    #####:  137:		X509V3err(X509V3_F_X509V3_EXT_ADD_ALIAS,ERR_R_MALLOC_FAILURE);
+    #####:  138:		return 0;
+        -:  139:	}
+    #####:  140:	*tmpext = *ext;
+    #####:  141:	tmpext->ext_nid = nid_to;
+    #####:  142:	tmpext->ext_flags |= X509V3_EXT_DYNAMIC;
+    #####:  143:	return X509V3_EXT_add(tmpext);
+        -:  144:}
+        -:  145:
+    #####:  146:void X509V3_EXT_cleanup(void)
+        -:  147:{
+    #####:  148:	sk_X509V3_EXT_METHOD_pop_free(ext_list, ext_list_free);
+    #####:  149:	ext_list = NULL;
+    #####:  150:}
+        -:  151:
+    #####:  152:static void ext_list_free(X509V3_EXT_METHOD *ext)
+        -:  153:{
+    #####:  154:	if(ext->ext_flags & X509V3_EXT_DYNAMIC) OPENSSL_free(ext);
+    #####:  155:}
+        -:  156:
+        -:  157:/* Legacy function: we don't need to add standard extensions
+        -:  158: * any more because they are now kept in ext_dat.h.
+        -:  159: */
+        -:  160:
+    #####:  161:int X509V3_add_standard_extensions(void)
+        -:  162:{
+    #####:  163:	return 1;
+        -:  164:}
+        -:  165:
+        -:  166:/* Return an extension internal structure */
+        -:  167:
+    85265:  168:void *X509V3_EXT_d2i(X509_EXTENSION *ext)
+        -:  169:{
+        -:  170:	const X509V3_EXT_METHOD *method;
+        -:  171:	const unsigned char *p;
+        -:  172:
+    85265:  173:	if(!(method = X509V3_EXT_get(ext))) return NULL;
+    85265:  174:	p = ext->value->data;
+    85265:  175:	if(method->it) return ASN1_item_d2i(NULL, &p, ext->value->length, ASN1_ITEM_ptr(method->it));
+    #####:  176:	return method->d2i(NULL, &p, ext->value->length);
+        -:  177:}
+        -:  178:
+        -:  179:/* Get critical flag and decoded version of extension from a NID.
+        -:  180: * The "idx" variable returns the last found extension and can
+        -:  181: * be used to retrieve multiple extensions of the same NID.
+        -:  182: * However multiple extensions with the same NID is usually
+        -:  183: * due to a badly encoded certificate so if idx is NULL we
+        -:  184: * choke if multiple extensions exist.
+        -:  185: * The "crit" variable is set to the critical value.
+        -:  186: * The return value is the decoded extension or NULL on
+        -:  187: * error. The actual error can have several different causes,
+        -:  188: * the value of *crit reflects the cause:
+        -:  189: * >= 0, extension found but not decoded (reflects critical value).
+        -:  190: * -1 extension not found.
+        -:  191: * -2 extension occurs more than once.
+        -:  192: */
+        -:  193:
+   271440:  194:void *X509V3_get_d2i(STACK_OF(X509_EXTENSION) *x, int nid, int *crit, int *idx)
+        -:  195:{
+        -:  196:	int lastpos, i;
+        -:  197:	X509_EXTENSION *ex, *found_ex = NULL;
+   271440:  198:	if(!x) {
+     9730:  199:		if(idx) *idx = -1;
+     9730:  200:		if(crit) *crit = -1;
+        -:  201:		return NULL;
+        -:  202:	}
+   261710:  203:	if(idx) lastpos = *idx + 1;
+        -:  204:	else lastpos = 0;
+   261710:  205:	if(lastpos < 0) lastpos = 0;
+  2430850:  206:	for(i = lastpos; i < sk_X509_EXTENSION_num(x); i++)
+        -:  207:	{
+  2169140:  208:		ex = sk_X509_EXTENSION_value(x, i);
+  2169140:  209:		if(OBJ_obj2nid(ex->object) == nid) {
+    85265:  210:			if(idx) {
+    #####:  211:				*idx = i;
+        -:  212:				found_ex = ex;
+    #####:  213:				break;
+    85265:  214:			} else if(found_ex) {
+        -:  215:				/* Found more than one */
+    #####:  216:				if(crit) *crit = -2;
+        -:  217:				return NULL;
+        -:  218:			}
+        -:  219:			found_ex = ex;
+        -:  220:		}
+        -:  221:	}
+   261710:  222:	if(found_ex) {
+        -:  223:		/* Found it */
+    85265:  224:		if(crit) *crit = X509_EXTENSION_get_critical(found_ex);
+    85265:  225:		return X509V3_EXT_d2i(found_ex);
+        -:  226:	}
+        -:  227:
+        -:  228:	/* Extension not found */
+   176445:  229:	if(idx) *idx = -1;
+   176445:  230:	if(crit) *crit = -1;
+        -:  231:	return NULL;
+        -:  232:}
+        -:  233:
+        -:  234:/* This function is a general extension append, replace and delete utility.
+        -:  235: * The precise operation is governed by the 'flags' value. The 'crit' and
+        -:  236: * 'value' arguments (if relevant) are the extensions internal structure.
+        -:  237: */
+        -:  238:
+    #####:  239:int X509V3_add1_i2d(STACK_OF(X509_EXTENSION) **x, int nid, void *value,
+        -:  240:					int crit, unsigned long flags)
+        -:  241:{
+        -:  242:	int extidx = -1;
+        -:  243:	int errcode;
+        -:  244:	X509_EXTENSION *ext, *extmp;
+    #####:  245:	unsigned long ext_op = flags & X509V3_ADD_OP_MASK;
+        -:  246:
+        -:  247:	/* If appending we don't care if it exists, otherwise
+        -:  248:	 * look for existing extension.
+        -:  249:	 */
+    #####:  250:	if(ext_op != X509V3_ADD_APPEND)
+    #####:  251:		extidx = X509v3_get_ext_by_NID(*x, nid, -1);
+        -:  252:
+        -:  253:	/* See if extension exists */
+    #####:  254:	if(extidx >= 0) {
+        -:  255:		/* If keep existing, nothing to do */
+    #####:  256:		if(ext_op == X509V3_ADD_KEEP_EXISTING)
+        -:  257:			return 1;
+        -:  258:		/* If default then its an error */
+    #####:  259:		if(ext_op == X509V3_ADD_DEFAULT) {
+        -:  260:			errcode = X509V3_R_EXTENSION_EXISTS;
+        -:  261:			goto err;
+        -:  262:		}
+        -:  263:		/* If delete, just delete it */
+    #####:  264:		if(ext_op == X509V3_ADD_DELETE) {
+    #####:  265:			if(!sk_X509_EXTENSION_delete(*x, extidx)) return -1;
+    #####:  266:			return 1;
+        -:  267:		}
+        -:  268:	} else {
+        -:  269:		/* If replace existing or delete, error since 
+        -:  270:		 * extension must exist
+        -:  271:		 */
+    #####:  272:		if((ext_op == X509V3_ADD_REPLACE_EXISTING) ||
+    #####:  273:		   (ext_op == X509V3_ADD_DELETE)) {
+        -:  274:			errcode = X509V3_R_EXTENSION_NOT_FOUND;
+        -:  275:			goto err;
+        -:  276:		}
+        -:  277:	}
+        -:  278:
+        -:  279:	/* If we get this far then we have to create an extension:
+        -:  280:	 * could have some flags for alternative encoding schemes...
+        -:  281:	 */
+        -:  282:
+    #####:  283:	ext = X509V3_EXT_i2d(nid, crit, value);
+        -:  284:
+    #####:  285:	if(!ext) {
+    #####:  286:		X509V3err(X509V3_F_X509V3_ADD1_I2D, X509V3_R_ERROR_CREATING_EXTENSION);
+    #####:  287:		return 0;
+        -:  288:	}
+        -:  289:
+        -:  290:	/* If extension exists replace it.. */
+    #####:  291:	if(extidx >= 0) {
+    #####:  292:		extmp = sk_X509_EXTENSION_value(*x, extidx);
+    #####:  293:		X509_EXTENSION_free(extmp);
+    #####:  294:		if(!sk_X509_EXTENSION_set(*x, extidx, ext)) return -1;
+    #####:  295:		return 1;
+        -:  296:	}
+        -:  297:
+    #####:  298:	if(!*x && !(*x = sk_X509_EXTENSION_new_null())) return -1;
+    #####:  299:	if(!sk_X509_EXTENSION_push(*x, ext)) return -1;
+        -:  300:
+    #####:  301:	return 1;
+        -:  302:
+        -:  303:	err:
+    #####:  304:	if(!(flags & X509V3_ADD_SILENT))
+    #####:  305:		X509V3err(X509V3_F_X509V3_ADD1_I2D, errcode);
+        -:  306:	return 0;
+        -:  307:}
+        -:  308:
+        -:  309:IMPLEMENT_STACK_OF(X509V3_EXT_METHOD)

@@ -1,0 +1,229 @@
+        -:    0:Source:cm_pmeth.c
+        -:    0:Graph:cm_pmeth.gcno
+        -:    0:Data:cm_pmeth.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* Written by Dr Stephen N Henson (steve@openssl.org) for the OpenSSL
+        -:    2: * project 2010.
+        -:    3: */
+        -:    4:/* ====================================================================
+        -:    5: * Copyright (c) 2010 The OpenSSL Project.  All rights reserved.
+        -:    6: *
+        -:    7: * Redistribution and use in source and binary forms, with or without
+        -:    8: * modification, are permitted provided that the following conditions
+        -:    9: * are met:
+        -:   10: *
+        -:   11: * 1. Redistributions of source code must retain the above copyright
+        -:   12: *    notice, this list of conditions and the following disclaimer. 
+        -:   13: *
+        -:   14: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   15: *    notice, this list of conditions and the following disclaimer in
+        -:   16: *    the documentation and/or other materials provided with the
+        -:   17: *    distribution.
+        -:   18: *
+        -:   19: * 3. All advertising materials mentioning features or use of this
+        -:   20: *    software must display the following acknowledgment:
+        -:   21: *    "This product includes software developed by the OpenSSL Project
+        -:   22: *    for use in the OpenSSL Toolkit. (http://www.OpenSSL.org/)"
+        -:   23: *
+        -:   24: * 4. The names "OpenSSL Toolkit" and "OpenSSL Project" must not be used to
+        -:   25: *    endorse or promote products derived from this software without
+        -:   26: *    prior written permission. For written permission, please contact
+        -:   27: *    licensing@OpenSSL.org.
+        -:   28: *
+        -:   29: * 5. Products derived from this software may not be called "OpenSSL"
+        -:   30: *    nor may "OpenSSL" appear in their names without prior written
+        -:   31: *    permission of the OpenSSL Project.
+        -:   32: *
+        -:   33: * 6. Redistributions of any form whatsoever must retain the following
+        -:   34: *    acknowledgment:
+        -:   35: *    "This product includes software developed by the OpenSSL Project
+        -:   36: *    for use in the OpenSSL Toolkit (http://www.OpenSSL.org/)"
+        -:   37: *
+        -:   38: * THIS SOFTWARE IS PROVIDED BY THE OpenSSL PROJECT ``AS IS'' AND ANY
+        -:   39: * EXPRESSED OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   40: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+        -:   41: * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE OpenSSL PROJECT OR
+        -:   42: * ITS CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+        -:   43: * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+        -:   44: * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+        -:   45: * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   46: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+        -:   47: * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+        -:   48: * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+        -:   49: * OF THE POSSIBILITY OF SUCH DAMAGE.
+        -:   50: * ====================================================================
+        -:   51: */
+        -:   52:
+        -:   53:#include <stdio.h>
+        -:   54:#include "cryptlib.h"
+        -:   55:#include <openssl/x509.h>
+        -:   56:#include <openssl/x509v3.h>
+        -:   57:#include <openssl/evp.h>
+        -:   58:#include <openssl/cmac.h>
+        -:   59:#include "evp_locl.h"
+        -:   60:
+        -:   61:/* The context structure and "key" is simply a CMAC_CTX */
+        -:   62:
+    #####:   63:static int pkey_cmac_init(EVP_PKEY_CTX *ctx)
+        -:   64:	{
+    #####:   65:	ctx->data = CMAC_CTX_new();
+    #####:   66:	if (!ctx->data)
+        -:   67:		return 0;
+    #####:   68:	ctx->keygen_info_count = 0;
+    #####:   69:	return 1;
+        -:   70:	}
+        -:   71:
+    #####:   72:static int pkey_cmac_copy(EVP_PKEY_CTX *dst, EVP_PKEY_CTX *src)
+        -:   73:	{
+    #####:   74:	if (!pkey_cmac_init(dst))
+        -:   75:		return 0;
+    #####:   76:	if (!CMAC_CTX_copy(dst->data, src->data))
+        -:   77:		return 0;
+    #####:   78:	return 1;
+        -:   79:	}
+        -:   80:
+    #####:   81:static void pkey_cmac_cleanup(EVP_PKEY_CTX *ctx)
+        -:   82:	{
+    #####:   83:	CMAC_CTX_free(ctx->data);
+    #####:   84:	}
+        -:   85:
+    #####:   86:static int pkey_cmac_keygen(EVP_PKEY_CTX *ctx, EVP_PKEY *pkey)
+        -:   87:	{
+    #####:   88:	CMAC_CTX *cmkey = CMAC_CTX_new();
+    #####:   89:	CMAC_CTX *cmctx = ctx->data;
+    #####:   90:	if (!cmkey)
+        -:   91:		return 0;
+    #####:   92:	if (!CMAC_CTX_copy(cmkey, cmctx))
+        -:   93:		{
+    #####:   94:		CMAC_CTX_free(cmkey);
+    #####:   95:		return 0;
+        -:   96:		}
+    #####:   97:	EVP_PKEY_assign(pkey, EVP_PKEY_CMAC, cmkey);
+        -:   98:	
+    #####:   99:	return 1;
+        -:  100:	}
+        -:  101:
+    #####:  102:static int int_update(EVP_MD_CTX *ctx,const void *data,size_t count)
+        -:  103:	{
+    #####:  104:	if (!CMAC_Update(ctx->pctx->data, data, count))
+        -:  105:		return 0;
+    #####:  106:	return 1;
+        -:  107:	}
+        -:  108:
+    #####:  109:static int cmac_signctx_init(EVP_PKEY_CTX *ctx, EVP_MD_CTX *mctx)
+        -:  110:	{
+    #####:  111:	EVP_MD_CTX_set_flags(mctx, EVP_MD_CTX_FLAG_NO_INIT);
+    #####:  112:	mctx->update = int_update;
+    #####:  113:	return 1;
+        -:  114:	}
+        -:  115:
+    #####:  116:static int cmac_signctx(EVP_PKEY_CTX *ctx, unsigned char *sig, size_t *siglen,
+        -:  117:					EVP_MD_CTX *mctx)
+        -:  118:	{
+    #####:  119:	return CMAC_Final(ctx->data, sig, siglen);
+        -:  120:	}
+        -:  121:
+    #####:  122:static int pkey_cmac_ctrl(EVP_PKEY_CTX *ctx, int type, int p1, void *p2)
+        -:  123:	{
+    #####:  124:	CMAC_CTX *cmctx = ctx->data;
+    #####:  125:	switch (type)
+        -:  126:		{
+        -:  127:
+        -:  128:		case EVP_PKEY_CTRL_SET_MAC_KEY:
+    #####:  129:		if (!p2 || p1 < 0)
+        -:  130:			return 0;
+    #####:  131:		if (!CMAC_Init(cmctx, p2, p1, NULL, NULL))
+        -:  132:			return 0;
+        -:  133:		break;
+        -:  134:
+        -:  135:		case EVP_PKEY_CTRL_CIPHER:
+    #####:  136:		if (!CMAC_Init(cmctx, NULL, 0, p2, ctx->engine))
+        -:  137:			return 0;
+        -:  138:		break;
+        -:  139:
+        -:  140:		case EVP_PKEY_CTRL_MD:
+    #####:  141:		if (ctx->pkey && !CMAC_CTX_copy(ctx->data,
+    #####:  142:					(CMAC_CTX *)ctx->pkey->pkey.ptr))
+        -:  143:			return 0;
+    #####:  144:		if (!CMAC_Init(cmctx, NULL, 0, NULL, NULL))
+        -:  145:			return 0;
+        -:  146:		break;
+        -:  147:
+        -:  148:		default:
+        -:  149:		return -2;
+        -:  150:
+        -:  151:		}
+        -:  152:	return 1;
+        -:  153:	}
+        -:  154:
+    #####:  155:static int pkey_cmac_ctrl_str(EVP_PKEY_CTX *ctx,
+        -:  156:			const char *type, const char *value)
+        -:  157:	{
+    #####:  158:	if (!value)
+        -:  159:		{
+        -:  160:		return 0;
+        -:  161:		}
+    #####:  162:	if (!strcmp(type, "key"))
+        -:  163:		{
+        -:  164:		void *p = (void *)value;
+    #####:  165:		return pkey_cmac_ctrl(ctx, EVP_PKEY_CTRL_SET_MAC_KEY,
+    #####:  166:								strlen(p), p);
+        -:  167:		}
+    #####:  168:	if (!strcmp(type, "cipher"))
+        -:  169:		{
+        -:  170:		const EVP_CIPHER *c;
+    #####:  171:		c = EVP_get_cipherbyname(value);
+    #####:  172:		if (!c)
+        -:  173:			return 0;
+    #####:  174:		return pkey_cmac_ctrl(ctx, EVP_PKEY_CTRL_CIPHER, -1, (void *)c);
+        -:  175:		}
+    #####:  176:	if (!strcmp(type, "hexkey"))
+        -:  177:		{
+        -:  178:		unsigned char *key;
+        -:  179:		int r;
+        -:  180:		long keylen;
+    #####:  181:		key = string_to_hex(value, &keylen);
+    #####:  182:		if (!key)
+        -:  183:			return 0;
+    #####:  184:		r = pkey_cmac_ctrl(ctx, EVP_PKEY_CTRL_SET_MAC_KEY, keylen, key);
+    #####:  185:		OPENSSL_free(key);
+    #####:  186:		return r;
+        -:  187:		}
+        -:  188:	return -2;
+        -:  189:	}
+        -:  190:
+        -:  191:const EVP_PKEY_METHOD cmac_pkey_meth = 
+        -:  192:	{
+        -:  193:	EVP_PKEY_CMAC,
+        -:  194:	EVP_PKEY_FLAG_SIGCTX_CUSTOM,
+        -:  195:	pkey_cmac_init,
+        -:  196:	pkey_cmac_copy,
+        -:  197:	pkey_cmac_cleanup,
+        -:  198:
+        -:  199:	0, 0,
+        -:  200:
+        -:  201:	0,
+        -:  202:	pkey_cmac_keygen,
+        -:  203:
+        -:  204:	0, 0,
+        -:  205:
+        -:  206:	0, 0,
+        -:  207:
+        -:  208:	0,0,
+        -:  209:
+        -:  210:	cmac_signctx_init,
+        -:  211:	cmac_signctx,
+        -:  212:
+        -:  213:	0,0,
+        -:  214:
+        -:  215:	0,0,
+        -:  216:
+        -:  217:	0,0,
+        -:  218:
+        -:  219:	0,0,
+        -:  220:
+        -:  221:	pkey_cmac_ctrl,
+        -:  222:	pkey_cmac_ctrl_str
+        -:  223:
+        -:  224:	};

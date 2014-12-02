@@ -1,0 +1,247 @@
+        -:    0:Source:evp_pkey.c
+        -:    0:Graph:evp_pkey.gcno
+        -:    0:Data:evp_pkey.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* evp_pkey.c */
+        -:    2:/* Written by Dr Stephen N Henson (steve@openssl.org) for the OpenSSL
+        -:    3: * project 1999.
+        -:    4: */
+        -:    5:/* ====================================================================
+        -:    6: * Copyright (c) 1999-2005 The OpenSSL Project.  All rights reserved.
+        -:    7: *
+        -:    8: * Redistribution and use in source and binary forms, with or without
+        -:    9: * modification, are permitted provided that the following conditions
+        -:   10: * are met:
+        -:   11: *
+        -:   12: * 1. Redistributions of source code must retain the above copyright
+        -:   13: *    notice, this list of conditions and the following disclaimer. 
+        -:   14: *
+        -:   15: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   16: *    notice, this list of conditions and the following disclaimer in
+        -:   17: *    the documentation and/or other materials provided with the
+        -:   18: *    distribution.
+        -:   19: *
+        -:   20: * 3. All advertising materials mentioning features or use of this
+        -:   21: *    software must display the following acknowledgment:
+        -:   22: *    "This product includes software developed by the OpenSSL Project
+        -:   23: *    for use in the OpenSSL Toolkit. (http://www.OpenSSL.org/)"
+        -:   24: *
+        -:   25: * 4. The names "OpenSSL Toolkit" and "OpenSSL Project" must not be used to
+        -:   26: *    endorse or promote products derived from this software without
+        -:   27: *    prior written permission. For written permission, please contact
+        -:   28: *    licensing@OpenSSL.org.
+        -:   29: *
+        -:   30: * 5. Products derived from this software may not be called "OpenSSL"
+        -:   31: *    nor may "OpenSSL" appear in their names without prior written
+        -:   32: *    permission of the OpenSSL Project.
+        -:   33: *
+        -:   34: * 6. Redistributions of any form whatsoever must retain the following
+        -:   35: *    acknowledgment:
+        -:   36: *    "This product includes software developed by the OpenSSL Project
+        -:   37: *    for use in the OpenSSL Toolkit (http://www.OpenSSL.org/)"
+        -:   38: *
+        -:   39: * THIS SOFTWARE IS PROVIDED BY THE OpenSSL PROJECT ``AS IS'' AND ANY
+        -:   40: * EXPRESSED OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   41: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+        -:   42: * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE OpenSSL PROJECT OR
+        -:   43: * ITS CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+        -:   44: * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+        -:   45: * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+        -:   46: * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   47: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+        -:   48: * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+        -:   49: * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+        -:   50: * OF THE POSSIBILITY OF SUCH DAMAGE.
+        -:   51: * ====================================================================
+        -:   52: *
+        -:   53: * This product includes cryptographic software written by Eric Young
+        -:   54: * (eay@cryptsoft.com).  This product includes software written by Tim
+        -:   55: * Hudson (tjh@cryptsoft.com).
+        -:   56: *
+        -:   57: */
+        -:   58:
+        -:   59:#include <stdio.h>
+        -:   60:#include <stdlib.h>
+        -:   61:#include "cryptlib.h"
+        -:   62:#include <openssl/x509.h>
+        -:   63:#include <openssl/rand.h>
+        -:   64:#include "asn1_locl.h"
+        -:   65:
+        -:   66:/* Extract a private key from a PKCS8 structure */
+        -:   67:
+    #####:   68:EVP_PKEY *EVP_PKCS82PKEY(PKCS8_PRIV_KEY_INFO *p8)
+        -:   69:{
+        -:   70:	EVP_PKEY *pkey = NULL;
+        -:   71:	ASN1_OBJECT *algoid;
+        -:   72:	char obj_tmp[80];
+        -:   73:
+    #####:   74:	if (!PKCS8_pkey_get0(&algoid, NULL, NULL, NULL, p8))
+        -:   75:		return NULL;
+        -:   76:
+    #####:   77:	if (!(pkey = EVP_PKEY_new())) {
+    #####:   78:		EVPerr(EVP_F_EVP_PKCS82PKEY,ERR_R_MALLOC_FAILURE);
+    #####:   79:		return NULL;
+        -:   80:	}
+        -:   81:
+    #####:   82:	if (!EVP_PKEY_set_type(pkey, OBJ_obj2nid(algoid)))
+        -:   83:		{
+    #####:   84:		EVPerr(EVP_F_EVP_PKCS82PKEY, EVP_R_UNSUPPORTED_PRIVATE_KEY_ALGORITHM);
+    #####:   85:		i2t_ASN1_OBJECT(obj_tmp, 80, algoid);
+    #####:   86:		ERR_add_error_data(2, "TYPE=", obj_tmp);
+    #####:   87:		goto error;
+        -:   88:		}
+        -:   89:
+    #####:   90:	if (pkey->ameth->priv_decode)
+        -:   91:		{
+    #####:   92:		if (!pkey->ameth->priv_decode(pkey, p8))
+        -:   93:			{
+    #####:   94:			EVPerr(EVP_F_EVP_PKCS82PKEY,
+        -:   95:					EVP_R_PRIVATE_KEY_DECODE_ERROR);
+    #####:   96:			goto error;
+        -:   97:			}
+        -:   98:		}
+        -:   99:	else
+        -:  100:		{
+    #####:  101:		EVPerr(EVP_F_EVP_PKCS82PKEY, EVP_R_METHOD_NOT_SUPPORTED);
+    #####:  102:		goto error;
+        -:  103:		}
+        -:  104:
+        -:  105:	return pkey;
+        -:  106:
+        -:  107:	error:
+    #####:  108:	EVP_PKEY_free (pkey);
+    #####:  109:	return NULL;
+        -:  110:}
+        -:  111:
+    #####:  112:PKCS8_PRIV_KEY_INFO *EVP_PKEY2PKCS8(EVP_PKEY *pkey)
+        -:  113:{
+    #####:  114:	return EVP_PKEY2PKCS8_broken(pkey, PKCS8_OK);
+        -:  115:}
+        -:  116:
+        -:  117:/* Turn a private key into a PKCS8 structure */
+        -:  118:
+    #####:  119:PKCS8_PRIV_KEY_INFO *EVP_PKEY2PKCS8_broken(EVP_PKEY *pkey, int broken)
+        -:  120:{
+        -:  121:	PKCS8_PRIV_KEY_INFO *p8;
+        -:  122:
+    #####:  123:	if (!(p8 = PKCS8_PRIV_KEY_INFO_new())) {	
+    #####:  124:		EVPerr(EVP_F_EVP_PKEY2PKCS8_BROKEN,ERR_R_MALLOC_FAILURE);
+    #####:  125:		return NULL;
+        -:  126:	}
+    #####:  127:	p8->broken = broken;
+        -:  128:
+    #####:  129:	if (pkey->ameth)
+        -:  130:		{
+    #####:  131:		if (pkey->ameth->priv_encode)
+        -:  132:			{
+    #####:  133:			if (!pkey->ameth->priv_encode(p8, pkey))
+        -:  134:				{
+    #####:  135:				EVPerr(EVP_F_EVP_PKEY2PKCS8_BROKEN,
+        -:  136:					EVP_R_PRIVATE_KEY_ENCODE_ERROR);
+    #####:  137:				goto error;
+        -:  138:				}
+        -:  139:			}
+        -:  140:		else
+        -:  141:			{
+    #####:  142:			EVPerr(EVP_F_EVP_PKEY2PKCS8_BROKEN,
+        -:  143:					EVP_R_METHOD_NOT_SUPPORTED);
+    #####:  144:			goto error;
+        -:  145:			}
+        -:  146:		}
+        -:  147:	else
+        -:  148:		{
+    #####:  149:		EVPerr(EVP_F_EVP_PKEY2PKCS8_BROKEN,
+        -:  150:				EVP_R_UNSUPPORTED_PRIVATE_KEY_ALGORITHM);
+    #####:  151:		goto error;
+        -:  152:		}
+    #####:  153:	RAND_add(p8->pkey->value.octet_string->data,
+    #####:  154:		 p8->pkey->value.octet_string->length, 0.0);
+    #####:  155:	return p8;
+        -:  156:	error:
+    #####:  157:	PKCS8_PRIV_KEY_INFO_free(p8);
+    #####:  158:	return NULL;
+        -:  159:}
+        -:  160:
+    #####:  161:PKCS8_PRIV_KEY_INFO *PKCS8_set_broken(PKCS8_PRIV_KEY_INFO *p8, int broken)
+        -:  162:{
+    #####:  163:	switch (broken) {
+        -:  164:
+        -:  165:		case PKCS8_OK:
+    #####:  166:		p8->broken = PKCS8_OK;
+    #####:  167:		return p8;
+        -:  168:		break;
+        -:  169:
+        -:  170:		case PKCS8_NO_OCTET:
+    #####:  171:		p8->broken = PKCS8_NO_OCTET;
+    #####:  172:		p8->pkey->type = V_ASN1_SEQUENCE;
+    #####:  173:		return p8;
+        -:  174:		break;
+        -:  175:
+        -:  176:		default:
+    #####:  177:		EVPerr(EVP_F_PKCS8_SET_BROKEN,EVP_R_PKCS8_UNKNOWN_BROKEN_TYPE);
+    #####:  178:		return NULL;
+        -:  179:	}
+        -:  180:}
+        -:  181:
+        -:  182:/* EVP_PKEY attribute functions */
+        -:  183:
+    #####:  184:int EVP_PKEY_get_attr_count(const EVP_PKEY *key)
+        -:  185:{
+    #####:  186:	return X509at_get_attr_count(key->attributes);
+        -:  187:}
+        -:  188:
+    #####:  189:int EVP_PKEY_get_attr_by_NID(const EVP_PKEY *key, int nid,
+        -:  190:			  int lastpos)
+        -:  191:{
+    #####:  192:	return X509at_get_attr_by_NID(key->attributes, nid, lastpos);
+        -:  193:}
+        -:  194:
+    #####:  195:int EVP_PKEY_get_attr_by_OBJ(const EVP_PKEY *key, ASN1_OBJECT *obj,
+        -:  196:			  int lastpos)
+        -:  197:{
+    #####:  198:	return X509at_get_attr_by_OBJ(key->attributes, obj, lastpos);
+        -:  199:}
+        -:  200:
+    #####:  201:X509_ATTRIBUTE *EVP_PKEY_get_attr(const EVP_PKEY *key, int loc)
+        -:  202:{
+    #####:  203:	return X509at_get_attr(key->attributes, loc);
+        -:  204:}
+        -:  205:
+    #####:  206:X509_ATTRIBUTE *EVP_PKEY_delete_attr(EVP_PKEY *key, int loc)
+        -:  207:{
+    #####:  208:	return X509at_delete_attr(key->attributes, loc);
+        -:  209:}
+        -:  210:
+    #####:  211:int EVP_PKEY_add1_attr(EVP_PKEY *key, X509_ATTRIBUTE *attr)
+        -:  212:{
+    #####:  213:	if(X509at_add1_attr(&key->attributes, attr)) return 1;
+    #####:  214:	return 0;
+        -:  215:}
+        -:  216:
+    #####:  217:int EVP_PKEY_add1_attr_by_OBJ(EVP_PKEY *key,
+        -:  218:			const ASN1_OBJECT *obj, int type,
+        -:  219:			const unsigned char *bytes, int len)
+        -:  220:{
+    #####:  221:	if(X509at_add1_attr_by_OBJ(&key->attributes, obj,
+        -:  222:				type, bytes, len)) return 1;
+    #####:  223:	return 0;
+        -:  224:}
+        -:  225:
+    #####:  226:int EVP_PKEY_add1_attr_by_NID(EVP_PKEY *key,
+        -:  227:			int nid, int type,
+        -:  228:			const unsigned char *bytes, int len)
+        -:  229:{
+    #####:  230:	if(X509at_add1_attr_by_NID(&key->attributes, nid,
+        -:  231:				type, bytes, len)) return 1;
+    #####:  232:	return 0;
+        -:  233:}
+        -:  234:
+    #####:  235:int EVP_PKEY_add1_attr_by_txt(EVP_PKEY *key,
+        -:  236:			const char *attrname, int type,
+        -:  237:			const unsigned char *bytes, int len)
+        -:  238:{
+    #####:  239:	if(X509at_add1_attr_by_txt(&key->attributes, attrname,
+        -:  240:				type, bytes, len)) return 1;
+    #####:  241:	return 0;
+        -:  242:}

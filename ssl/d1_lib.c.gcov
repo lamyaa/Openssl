@@ -1,0 +1,487 @@
+        -:    0:Source:d1_lib.c
+        -:    0:Graph:d1_lib.gcno
+        -:    0:Data:d1_lib.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* ssl/d1_lib.c */
+        -:    2:/* 
+        -:    3: * DTLS implementation written by Nagendra Modadugu
+        -:    4: * (nagendra@cs.stanford.edu) for the OpenSSL project 2005.  
+        -:    5: */
+        -:    6:/* ====================================================================
+        -:    7: * Copyright (c) 1999-2005 The OpenSSL Project.  All rights reserved.
+        -:    8: *
+        -:    9: * Redistribution and use in source and binary forms, with or without
+        -:   10: * modification, are permitted provided that the following conditions
+        -:   11: * are met:
+        -:   12: *
+        -:   13: * 1. Redistributions of source code must retain the above copyright
+        -:   14: *    notice, this list of conditions and the following disclaimer. 
+        -:   15: *
+        -:   16: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   17: *    notice, this list of conditions and the following disclaimer in
+        -:   18: *    the documentation and/or other materials provided with the
+        -:   19: *    distribution.
+        -:   20: *
+        -:   21: * 3. All advertising materials mentioning features or use of this
+        -:   22: *    software must display the following acknowledgment:
+        -:   23: *    "This product includes software developed by the OpenSSL Project
+        -:   24: *    for use in the OpenSSL Toolkit. (http://www.OpenSSL.org/)"
+        -:   25: *
+        -:   26: * 4. The names "OpenSSL Toolkit" and "OpenSSL Project" must not be used to
+        -:   27: *    endorse or promote products derived from this software without
+        -:   28: *    prior written permission. For written permission, please contact
+        -:   29: *    openssl-core@OpenSSL.org.
+        -:   30: *
+        -:   31: * 5. Products derived from this software may not be called "OpenSSL"
+        -:   32: *    nor may "OpenSSL" appear in their names without prior written
+        -:   33: *    permission of the OpenSSL Project.
+        -:   34: *
+        -:   35: * 6. Redistributions of any form whatsoever must retain the following
+        -:   36: *    acknowledgment:
+        -:   37: *    "This product includes software developed by the OpenSSL Project
+        -:   38: *    for use in the OpenSSL Toolkit (http://www.OpenSSL.org/)"
+        -:   39: *
+        -:   40: * THIS SOFTWARE IS PROVIDED BY THE OpenSSL PROJECT ``AS IS'' AND ANY
+        -:   41: * EXPRESSED OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   42: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+        -:   43: * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE OpenSSL PROJECT OR
+        -:   44: * ITS CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+        -:   45: * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+        -:   46: * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+        -:   47: * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   48: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+        -:   49: * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+        -:   50: * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+        -:   51: * OF THE POSSIBILITY OF SUCH DAMAGE.
+        -:   52: * ====================================================================
+        -:   53: *
+        -:   54: * This product includes cryptographic software written by Eric Young
+        -:   55: * (eay@cryptsoft.com).  This product includes software written by Tim
+        -:   56: * Hudson (tjh@cryptsoft.com).
+        -:   57: *
+        -:   58: */
+        -:   59:
+        -:   60:#include <stdio.h>
+        -:   61:#define USE_SOCKETS
+        -:   62:#include <openssl/objects.h>
+        -:   63:#include "ssl_locl.h"
+        -:   64:
+        -:   65:#if defined(OPENSSL_SYS_WIN32) || defined(OPENSSL_SYS_VMS)
+        -:   66:#include <sys/timeb.h>
+        -:   67:#endif
+        -:   68:
+        -:   69:static void get_current_time(struct timeval *t);
+        -:   70:const char dtls1_version_str[]="DTLSv1" OPENSSL_VERSION_PTEXT;
+        -:   71:int dtls1_listen(SSL *s, struct sockaddr *client);
+        -:   72:
+        -:   73:SSL3_ENC_METHOD DTLSv1_enc_data={
+        -:   74:    dtls1_enc,
+        -:   75:	tls1_mac,
+        -:   76:	tls1_setup_key_block,
+        -:   77:	tls1_generate_master_secret,
+        -:   78:	tls1_change_cipher_state,
+        -:   79:	tls1_final_finish_mac,
+        -:   80:	TLS1_FINISH_MAC_LENGTH,
+        -:   81:	tls1_cert_verify_mac,
+        -:   82:	TLS_MD_CLIENT_FINISH_CONST,TLS_MD_CLIENT_FINISH_CONST_SIZE,
+        -:   83:	TLS_MD_SERVER_FINISH_CONST,TLS_MD_SERVER_FINISH_CONST_SIZE,
+        -:   84:	tls1_alert_code,
+        -:   85:	tls1_export_keying_material,
+        -:   86:	};
+        -:   87:
+    #####:   88:long dtls1_default_timeout(void)
+        -:   89:	{
+        -:   90:	/* 2 hours, the 24 hours mentioned in the DTLSv1 spec
+        -:   91:	 * is way too long for http, the cache would over fill */
+    #####:   92:	return(60*60*2);
+        -:   93:	}
+        -:   94:
+    #####:   95:int dtls1_new(SSL *s)
+        -:   96:	{
+        -:   97:	DTLS1_STATE *d1;
+        -:   98:
+    #####:   99:	if (!ssl3_new(s)) return(0);
+    #####:  100:	if ((d1=OPENSSL_malloc(sizeof *d1)) == NULL) return (0);
+        -:  101:	memset(d1,0, sizeof *d1);
+        -:  102:
+        -:  103:	/* d1->handshake_epoch=0; */
+        -:  104:
+    #####:  105:	d1->unprocessed_rcds.q=pqueue_new();
+    #####:  106:	d1->processed_rcds.q=pqueue_new();
+    #####:  107:	d1->buffered_messages = pqueue_new();
+    #####:  108:	d1->sent_messages=pqueue_new();
+    #####:  109:	d1->buffered_app_data.q=pqueue_new();
+        -:  110:
+    #####:  111:	if ( s->server)
+        -:  112:		{
+    #####:  113:		d1->cookie_len = sizeof(s->d1->cookie);
+        -:  114:		}
+        -:  115:
+    #####:  116:	if( ! d1->unprocessed_rcds.q || ! d1->processed_rcds.q 
+    #####:  117:        || ! d1->buffered_messages || ! d1->sent_messages || ! d1->buffered_app_data.q)
+        -:  118:		{
+    #####:  119:        if ( d1->unprocessed_rcds.q) pqueue_free(d1->unprocessed_rcds.q);
+    #####:  120:        if ( d1->processed_rcds.q) pqueue_free(d1->processed_rcds.q);
+    #####:  121:        if ( d1->buffered_messages) pqueue_free(d1->buffered_messages);
+    #####:  122:		if ( d1->sent_messages) pqueue_free(d1->sent_messages);
+    #####:  123:		if ( d1->buffered_app_data.q) pqueue_free(d1->buffered_app_data.q);
+    #####:  124:		OPENSSL_free(d1);
+    #####:  125:		return (0);
+        -:  126:		}
+        -:  127:
+    #####:  128:	s->d1=d1;
+    #####:  129:	s->method->ssl_clear(s);
+    #####:  130:	return(1);
+        -:  131:	}
+        -:  132:
+    #####:  133:static void dtls1_clear_queues(SSL *s)
+        -:  134:	{
+        -:  135:    pitem *item = NULL;
+        -:  136:    hm_fragment *frag = NULL;
+        -:  137:	DTLS1_RECORD_DATA *rdata;
+        -:  138:
+    #####:  139:    while( (item = pqueue_pop(s->d1->unprocessed_rcds.q)) != NULL)
+        -:  140:        {
+    #####:  141:		rdata = (DTLS1_RECORD_DATA *) item->data;
+    #####:  142:		if (rdata->rbuf.buf)
+        -:  143:			{
+    #####:  144:			OPENSSL_free(rdata->rbuf.buf);
+        -:  145:			}
+    #####:  146:        OPENSSL_free(item->data);
+    #####:  147:        pitem_free(item);
+        -:  148:        }
+        -:  149:
+    #####:  150:    while( (item = pqueue_pop(s->d1->processed_rcds.q)) != NULL)
+        -:  151:        {
+    #####:  152:		rdata = (DTLS1_RECORD_DATA *) item->data;
+    #####:  153:		if (rdata->rbuf.buf)
+        -:  154:			{
+    #####:  155:			OPENSSL_free(rdata->rbuf.buf);
+        -:  156:			}
+    #####:  157:        OPENSSL_free(item->data);
+    #####:  158:        pitem_free(item);
+        -:  159:        }
+        -:  160:
+    #####:  161:    while( (item = pqueue_pop(s->d1->buffered_messages)) != NULL)
+        -:  162:        {
+    #####:  163:        frag = (hm_fragment *)item->data;
+    #####:  164:        OPENSSL_free(frag->fragment);
+    #####:  165:        OPENSSL_free(frag);
+    #####:  166:        pitem_free(item);
+        -:  167:        }
+        -:  168:
+    #####:  169:    while ( (item = pqueue_pop(s->d1->sent_messages)) != NULL)
+        -:  170:        {
+    #####:  171:        frag = (hm_fragment *)item->data;
+    #####:  172:        OPENSSL_free(frag->fragment);
+    #####:  173:        OPENSSL_free(frag);
+    #####:  174:        pitem_free(item);
+        -:  175:        }
+        -:  176:
+    #####:  177:	while ( (item = pqueue_pop(s->d1->buffered_app_data.q)) != NULL)
+        -:  178:		{
+    #####:  179:		frag = (hm_fragment *)item->data;
+    #####:  180:		OPENSSL_free(frag->fragment);
+    #####:  181:		OPENSSL_free(frag);
+    #####:  182:		pitem_free(item);
+        -:  183:		}
+    #####:  184:	}
+        -:  185:
+    #####:  186:void dtls1_free(SSL *s)
+        -:  187:	{
+    #####:  188:	ssl3_free(s);
+        -:  189:
+    #####:  190:	dtls1_clear_queues(s);
+        -:  191:
+    #####:  192:    pqueue_free(s->d1->unprocessed_rcds.q);
+    #####:  193:    pqueue_free(s->d1->processed_rcds.q);
+    #####:  194:    pqueue_free(s->d1->buffered_messages);
+    #####:  195:	pqueue_free(s->d1->sent_messages);
+    #####:  196:	pqueue_free(s->d1->buffered_app_data.q);
+        -:  197:
+    #####:  198:	OPENSSL_free(s->d1);
+    #####:  199:	}
+        -:  200:
+    #####:  201:void dtls1_clear(SSL *s)
+        -:  202:	{
+        -:  203:    pqueue unprocessed_rcds;
+        -:  204:    pqueue processed_rcds;
+        -:  205:    pqueue buffered_messages;
+        -:  206:	pqueue sent_messages;
+        -:  207:	pqueue buffered_app_data;
+        -:  208:	unsigned int mtu;
+        -:  209:
+    #####:  210:	if (s->d1)
+        -:  211:		{
+    #####:  212:		unprocessed_rcds = s->d1->unprocessed_rcds.q;
+    #####:  213:		processed_rcds = s->d1->processed_rcds.q;
+    #####:  214:		buffered_messages = s->d1->buffered_messages;
+    #####:  215:		sent_messages = s->d1->sent_messages;
+    #####:  216:		buffered_app_data = s->d1->buffered_app_data.q;
+    #####:  217:		mtu = s->d1->mtu;
+        -:  218:
+    #####:  219:		dtls1_clear_queues(s);
+        -:  220:
+    #####:  221:		memset(s->d1, 0, sizeof(*(s->d1)));
+        -:  222:
+    #####:  223:		if (s->server)
+        -:  224:			{
+    #####:  225:			s->d1->cookie_len = sizeof(s->d1->cookie);
+        -:  226:			}
+        -:  227:
+    #####:  228:		if (SSL_get_options(s) & SSL_OP_NO_QUERY_MTU)
+        -:  229:			{
+    #####:  230:			s->d1->mtu = mtu;
+        -:  231:			}
+        -:  232:
+    #####:  233:		s->d1->unprocessed_rcds.q = unprocessed_rcds;
+    #####:  234:		s->d1->processed_rcds.q = processed_rcds;
+    #####:  235:		s->d1->buffered_messages = buffered_messages;
+    #####:  236:		s->d1->sent_messages = sent_messages;
+    #####:  237:		s->d1->buffered_app_data.q = buffered_app_data;
+        -:  238:		}
+        -:  239:
+    #####:  240:	ssl3_clear(s);
+    #####:  241:	if (s->options & SSL_OP_CISCO_ANYCONNECT)
+    #####:  242:		s->version=DTLS1_BAD_VER;
+        -:  243:	else
+    #####:  244:		s->version=DTLS1_VERSION;
+    #####:  245:	}
+        -:  246:
+    #####:  247:long dtls1_ctrl(SSL *s, int cmd, long larg, void *parg)
+        -:  248:	{
+        -:  249:	int ret=0;
+        -:  250:
+    #####:  251:	switch (cmd)
+        -:  252:		{
+        -:  253:	case DTLS_CTRL_GET_TIMEOUT:
+    #####:  254:		if (dtls1_get_timeout(s, (struct timeval*) parg) != NULL)
+        -:  255:			{
+        -:  256:			ret = 1;
+        -:  257:			}
+        -:  258:		break;
+        -:  259:	case DTLS_CTRL_HANDLE_TIMEOUT:
+    #####:  260:		ret = dtls1_handle_timeout(s);
+    #####:  261:		break;
+        -:  262:	case DTLS_CTRL_LISTEN:
+    #####:  263:		ret = dtls1_listen(s, parg);
+    #####:  264:		break;
+        -:  265:
+        -:  266:	default:
+    #####:  267:		ret = ssl3_ctrl(s, cmd, larg, parg);
+    #####:  268:		break;
+        -:  269:		}
+    #####:  270:	return(ret);
+        -:  271:	}
+        -:  272:
+        -:  273:/*
+        -:  274: * As it's impossible to use stream ciphers in "datagram" mode, this
+        -:  275: * simple filter is designed to disengage them in DTLS. Unfortunately
+        -:  276: * there is no universal way to identify stream SSL_CIPHER, so we have
+        -:  277: * to explicitly list their SSL_* codes. Currently RC4 is the only one
+        -:  278: * available, but if new ones emerge, they will have to be added...
+        -:  279: */
+    #####:  280:const SSL_CIPHER *dtls1_get_cipher(unsigned int u)
+        -:  281:	{
+    #####:  282:	const SSL_CIPHER *ciph = ssl3_get_cipher(u);
+        -:  283:
+    #####:  284:	if (ciph != NULL)
+        -:  285:		{
+    #####:  286:		if (ciph->algorithm_enc == SSL_RC4)
+        -:  287:			return NULL;
+        -:  288:		}
+        -:  289:
+    #####:  290:	return ciph;
+        -:  291:	}
+        -:  292:
+    #####:  293:void dtls1_start_timer(SSL *s)
+        -:  294:	{
+        -:  295:#ifndef OPENSSL_NO_SCTP
+        -:  296:	/* Disable timer for SCTP */
+        -:  297:	if (BIO_dgram_is_sctp(SSL_get_wbio(s)))
+        -:  298:		{
+        -:  299:		memset(&(s->d1->next_timeout), 0, sizeof(struct timeval));
+        -:  300:		return;
+        -:  301:		}
+        -:  302:#endif
+        -:  303:
+        -:  304:	/* If timer is not set, initialize duration with 1 second */
+    #####:  305:	if (s->d1->next_timeout.tv_sec == 0 && s->d1->next_timeout.tv_usec == 0)
+        -:  306:		{
+    #####:  307:		s->d1->timeout_duration = 1;
+        -:  308:		}
+        -:  309:	
+        -:  310:	/* Set timeout to current time */
+    #####:  311:	get_current_time(&(s->d1->next_timeout));
+        -:  312:
+        -:  313:	/* Add duration to current time */
+    #####:  314:	s->d1->next_timeout.tv_sec += s->d1->timeout_duration;
+    #####:  315:	BIO_ctrl(SSL_get_rbio(s), BIO_CTRL_DGRAM_SET_NEXT_TIMEOUT, 0, &(s->d1->next_timeout));
+    #####:  316:	}
+        -:  317:
+    #####:  318:struct timeval* dtls1_get_timeout(SSL *s, struct timeval* timeleft)
+        -:  319:	{
+        -:  320:	struct timeval timenow;
+        -:  321:
+        -:  322:	/* If no timeout is set, just return NULL */
+    #####:  323:	if (s->d1->next_timeout.tv_sec == 0 && s->d1->next_timeout.tv_usec == 0)
+        -:  324:		{
+        -:  325:		return NULL;
+        -:  326:		}
+        -:  327:
+        -:  328:	/* Get current time */
+        -:  329:	get_current_time(&timenow);
+        -:  330:
+        -:  331:	/* If timer already expired, set remaining time to 0 */
+    #####:  332:	if (s->d1->next_timeout.tv_sec < timenow.tv_sec ||
+    #####:  333:		(s->d1->next_timeout.tv_sec == timenow.tv_sec &&
+    #####:  334:		 s->d1->next_timeout.tv_usec <= timenow.tv_usec))
+        -:  335:		{
+        -:  336:		memset(timeleft, 0, sizeof(struct timeval));
+    #####:  337:		return timeleft;
+        -:  338:		}
+        -:  339:
+        -:  340:	/* Calculate time left until timer expires */
+    #####:  341:	memcpy(timeleft, &(s->d1->next_timeout), sizeof(struct timeval));
+    #####:  342:	timeleft->tv_sec -= timenow.tv_sec;
+    #####:  343:	timeleft->tv_usec -= timenow.tv_usec;
+    #####:  344:	if (timeleft->tv_usec < 0)
+        -:  345:		{
+    #####:  346:		timeleft->tv_sec--;
+    #####:  347:		timeleft->tv_usec += 1000000;
+        -:  348:		}
+        -:  349:
+        -:  350:	/* If remaining time is less than 15 ms, set it to 0
+        -:  351:	 * to prevent issues because of small devergences with
+        -:  352:	 * socket timeouts.
+        -:  353:	 */
+    #####:  354:	if (timeleft->tv_sec == 0 && timeleft->tv_usec < 15000)
+        -:  355:		{
+        -:  356:		memset(timeleft, 0, sizeof(struct timeval));
+        -:  357:		}
+        -:  358:	
+        -:  359:
+    #####:  360:	return timeleft;
+        -:  361:	}
+        -:  362:
+    #####:  363:int dtls1_is_timer_expired(SSL *s)
+        -:  364:	{
+        -:  365:	struct timeval timeleft;
+        -:  366:
+        -:  367:	/* Get time left until timeout, return false if no timer running */
+    #####:  368:	if (dtls1_get_timeout(s, &timeleft) == NULL)
+        -:  369:		{
+        -:  370:		return 0;
+        -:  371:		}
+        -:  372:
+        -:  373:	/* Return false if timer is not expired yet */
+    #####:  374:	if (timeleft.tv_sec > 0 || timeleft.tv_usec > 0)
+        -:  375:		{
+        -:  376:		return 0;
+        -:  377:		}
+        -:  378:
+        -:  379:	/* Timer expired, so return true */	
+    #####:  380:	return 1;
+        -:  381:	}
+        -:  382:
+    #####:  383:void dtls1_double_timeout(SSL *s)
+        -:  384:	{
+    #####:  385:	s->d1->timeout_duration *= 2;
+    #####:  386:	if (s->d1->timeout_duration > 60)
+    #####:  387:		s->d1->timeout_duration = 60;
+    #####:  388:	dtls1_start_timer(s);
+    #####:  389:	}
+        -:  390:
+    #####:  391:void dtls1_stop_timer(SSL *s)
+        -:  392:	{
+        -:  393:	/* Reset everything */
+    #####:  394:	memset(&(s->d1->timeout), 0, sizeof(struct dtls1_timeout_st));
+    #####:  395:	memset(&(s->d1->next_timeout), 0, sizeof(struct timeval));
+    #####:  396:	s->d1->timeout_duration = 1;
+    #####:  397:	BIO_ctrl(SSL_get_rbio(s), BIO_CTRL_DGRAM_SET_NEXT_TIMEOUT, 0, &(s->d1->next_timeout));
+        -:  398:	/* Clear retransmission buffer */
+    #####:  399:	dtls1_clear_record_buffer(s);
+    #####:  400:	}
+        -:  401:
+    #####:  402:int dtls1_check_timeout_num(SSL *s)
+        -:  403:	{
+    #####:  404:	s->d1->timeout.num_alerts++;
+        -:  405:
+        -:  406:	/* Reduce MTU after 2 unsuccessful retransmissions */
+    #####:  407:	if (s->d1->timeout.num_alerts > 2)
+        -:  408:		{
+    #####:  409:		s->d1->mtu = BIO_ctrl(SSL_get_wbio(s), BIO_CTRL_DGRAM_GET_FALLBACK_MTU, 0, NULL);		
+        -:  410:		}
+        -:  411:
+    #####:  412:	if (s->d1->timeout.num_alerts > DTLS1_TMO_ALERT_COUNT)
+        -:  413:		{
+        -:  414:		/* fail the connection, enough alerts have been sent */
+    #####:  415:		SSLerr(SSL_F_DTLS1_CHECK_TIMEOUT_NUM,SSL_R_READ_TIMEOUT_EXPIRED);
+    #####:  416:		return -1;
+        -:  417:		}
+        -:  418:
+        -:  419:	return 0;
+        -:  420:	}
+        -:  421:
+    #####:  422:int dtls1_handle_timeout(SSL *s)
+        -:  423:	{
+        -:  424:	/* if no timer is expired, don't do anything */
+    #####:  425:	if (!dtls1_is_timer_expired(s))
+        -:  426:		{
+        -:  427:		return 0;
+        -:  428:		}
+        -:  429:
+    #####:  430:	dtls1_double_timeout(s);
+        -:  431:
+    #####:  432:	if (dtls1_check_timeout_num(s) < 0)
+        -:  433:		return -1;
+        -:  434:
+    #####:  435:	s->d1->timeout.read_timeouts++;
+    #####:  436:	if (s->d1->timeout.read_timeouts > DTLS1_TMO_READ_COUNT)
+        -:  437:		{
+    #####:  438:		s->d1->timeout.read_timeouts = 1;
+        -:  439:		}
+        -:  440:
+        -:  441:#ifndef OPENSSL_NO_HEARTBEATS
+    #####:  442:	if (s->tlsext_hb_pending)
+        -:  443:		{
+    #####:  444:		s->tlsext_hb_pending = 0;
+    #####:  445:		return dtls1_heartbeat(s);
+        -:  446:		}
+        -:  447:#endif
+        -:  448:
+    #####:  449:	dtls1_start_timer(s);
+    #####:  450:	return dtls1_retransmit_buffered_messages(s);
+        -:  451:	}
+        -:  452:
+        -:  453:static void get_current_time(struct timeval *t)
+        -:  454:{
+        -:  455:#ifdef OPENSSL_SYS_WIN32
+        -:  456:	struct _timeb tb;
+        -:  457:	_ftime(&tb);
+        -:  458:	t->tv_sec = (long)tb.time;
+        -:  459:	t->tv_usec = (long)tb.millitm * 1000;
+        -:  460:#elif defined(OPENSSL_SYS_VMS)
+        -:  461:	struct timeb tb;
+        -:  462:	ftime(&tb);
+        -:  463:	t->tv_sec = (long)tb.time;
+        -:  464:	t->tv_usec = (long)tb.millitm * 1000;
+        -:  465:#else
+    #####:  466:	gettimeofday(t, NULL);
+        -:  467:#endif
+        -:  468:}
+        -:  469:
+    #####:  470:int dtls1_listen(SSL *s, struct sockaddr *client)
+        -:  471:	{
+        -:  472:	int ret;
+        -:  473:
+    #####:  474:	SSL_set_options(s, SSL_OP_COOKIE_EXCHANGE);
+    #####:  475:	s->d1->listen = 1;
+        -:  476:
+    #####:  477:	ret = SSL_accept(s);
+    #####:  478:	if (ret <= 0) return ret;
+        -:  479:	
+    #####:  480:	(void) BIO_dgram_get_peer(SSL_get_rbio(s), client);
+    #####:  481:	return 1;
+        -:  482:	}

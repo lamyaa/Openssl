@@ -1,0 +1,649 @@
+        -:    0:Source:dgst.c
+        -:    0:Graph:dgst.gcno
+        -:    0:Data:dgst.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* apps/dgst.c */
+        -:    2:/* Copyright (C) 1995-1998 Eric Young (eay@cryptsoft.com)
+        -:    3: * All rights reserved.
+        -:    4: *
+        -:    5: * This package is an SSL implementation written
+        -:    6: * by Eric Young (eay@cryptsoft.com).
+        -:    7: * The implementation was written so as to conform with Netscapes SSL.
+        -:    8: * 
+        -:    9: * This library is free for commercial and non-commercial use as long as
+        -:   10: * the following conditions are aheared to.  The following conditions
+        -:   11: * apply to all code found in this distribution, be it the RC4, RSA,
+        -:   12: * lhash, DES, etc., code; not just the SSL code.  The SSL documentation
+        -:   13: * included with this distribution is covered by the same copyright terms
+        -:   14: * except that the holder is Tim Hudson (tjh@cryptsoft.com).
+        -:   15: * 
+        -:   16: * Copyright remains Eric Young's, and as such any Copyright notices in
+        -:   17: * the code are not to be removed.
+        -:   18: * If this package is used in a product, Eric Young should be given attribution
+        -:   19: * as the author of the parts of the library used.
+        -:   20: * This can be in the form of a textual message at program startup or
+        -:   21: * in documentation (online or textual) provided with the package.
+        -:   22: * 
+        -:   23: * Redistribution and use in source and binary forms, with or without
+        -:   24: * modification, are permitted provided that the following conditions
+        -:   25: * are met:
+        -:   26: * 1. Redistributions of source code must retain the copyright
+        -:   27: *    notice, this list of conditions and the following disclaimer.
+        -:   28: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   29: *    notice, this list of conditions and the following disclaimer in the
+        -:   30: *    documentation and/or other materials provided with the distribution.
+        -:   31: * 3. All advertising materials mentioning features or use of this software
+        -:   32: *    must display the following acknowledgement:
+        -:   33: *    "This product includes cryptographic software written by
+        -:   34: *     Eric Young (eay@cryptsoft.com)"
+        -:   35: *    The word 'cryptographic' can be left out if the rouines from the library
+        -:   36: *    being used are not cryptographic related :-).
+        -:   37: * 4. If you include any Windows specific code (or a derivative thereof) from 
+        -:   38: *    the apps directory (application code) you must include an acknowledgement:
+        -:   39: *    "This product includes software written by Tim Hudson (tjh@cryptsoft.com)"
+        -:   40: * 
+        -:   41: * THIS SOFTWARE IS PROVIDED BY ERIC YOUNG ``AS IS'' AND
+        -:   42: * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   43: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+        -:   44: * ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+        -:   45: * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+        -:   46: * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+        -:   47: * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   48: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+        -:   49: * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+        -:   50: * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+        -:   51: * SUCH DAMAGE.
+        -:   52: * 
+        -:   53: * The licence and distribution terms for any publically available version or
+        -:   54: * derivative of this code cannot be changed.  i.e. this code cannot simply be
+        -:   55: * copied and put under another distribution licence
+        -:   56: * [including the GNU Public Licence.]
+        -:   57: */
+        -:   58:
+        -:   59:#include <stdio.h>
+        -:   60:#include <string.h>
+        -:   61:#include <stdlib.h>
+        -:   62:#include "apps.h"
+        -:   63:#include <openssl/bio.h>
+        -:   64:#include <openssl/err.h>
+        -:   65:#include <openssl/evp.h>
+        -:   66:#include <openssl/objects.h>
+        -:   67:#include <openssl/x509.h>
+        -:   68:#include <openssl/pem.h>
+        -:   69:#include <openssl/hmac.h>
+        -:   70:
+        -:   71:#undef BUFSIZE
+        -:   72:#define BUFSIZE	1024*8
+        -:   73:
+        -:   74:#undef PROG
+        -:   75:#define PROG	dgst_main
+        -:   76:
+        -:   77:int do_fp(BIO *out, unsigned char *buf, BIO *bp, int sep, int binout,
+        -:   78:	  EVP_PKEY *key, unsigned char *sigin, int siglen,
+        -:   79:	  const char *sig_name, const char *md_name,
+        -:   80:	  const char *file,BIO *bmd);
+        -:   81:
+    #####:   82:static void list_md_fn(const EVP_MD *m,
+        -:   83:			const char *from, const char *to, void *arg)
+        -:   84:	{
+        -:   85:	const char *mname;
+        -:   86:	/* Skip aliases */
+    #####:   87:	if (!m)
+        -:   88:		return;
+    #####:   89:	mname = OBJ_nid2ln(EVP_MD_type(m));
+        -:   90:	/* Skip shortnames */
+    #####:   91:	if (strcmp(from, mname))
+        -:   92:		return;
+        -:   93:	/* Skip clones */
+    #####:   94:	if (EVP_MD_flags(m) & EVP_MD_FLAG_PKEY_DIGEST)
+        -:   95:		return;
+    #####:   96:	if (strchr(mname, ' '))
+    #####:   97:		mname= EVP_MD_name(m);
+    #####:   98:	BIO_printf(arg, "-%-14s to use the %s message digest algorithm\n",
+        -:   99:			mname, mname);
+        -:  100:	}
+        -:  101:
+        -:  102:int MAIN(int, char **);
+        -:  103:
+    #####:  104:int MAIN(int argc, char **argv)
+        -:  105:	{
+        -:  106:	ENGINE *e = NULL;
+        -:  107:	unsigned char *buf=NULL;
+        -:  108:	int i,err=1;
+        -:  109:	const EVP_MD *md=NULL,*m;
+        -:  110:	BIO *in=NULL,*inp;
+        -:  111:	BIO *bmd=NULL;
+        -:  112:	BIO *out = NULL;
+        -:  113:#define PROG_NAME_SIZE  39
+        -:  114:	char pname[PROG_NAME_SIZE+1];
+        -:  115:	int separator=0;
+        -:  116:	int debug=0;
+        -:  117:	int keyform=FORMAT_PEM;
+        -:  118:	const char *outfile = NULL, *keyfile = NULL;
+        -:  119:	const char *sigfile = NULL, *randfile = NULL;
+        -:  120:	int out_bin = -1, want_pub = 0, do_verify = 0;
+    #####:  121:	EVP_PKEY *sigkey = NULL;
+        -:  122:	unsigned char *sigbuf = NULL;
+        -:  123:	int siglen = 0;
+    #####:  124:	char *passargin = NULL, *passin = NULL;
+        -:  125:#ifndef OPENSSL_NO_ENGINE
+        -:  126:	char *engine=NULL;
+        -:  127:#endif
+        -:  128:	char *hmac_key=NULL;
+        -:  129:	char *mac_name=NULL;
+        -:  130:	int non_fips_allow = 0;
+        -:  131:	STACK_OF(OPENSSL_STRING) *sigopts = NULL, *macopts = NULL;
+        -:  132:
+    #####:  133:	apps_startup();
+        -:  134:
+    #####:  135:	if ((buf=(unsigned char *)OPENSSL_malloc(BUFSIZE)) == NULL)
+        -:  136:		{
+    #####:  137:		BIO_printf(bio_err,"out of memory\n");
+    #####:  138:		goto end;
+        -:  139:		}
+    #####:  140:	if (bio_err == NULL)
+    #####:  141:		if ((bio_err=BIO_new(BIO_s_file())) != NULL)
+    #####:  142:			BIO_set_fp(bio_err,stderr,BIO_NOCLOSE|BIO_FP_TEXT);
+        -:  143:
+    #####:  144:	if (!load_config(bio_err, NULL))
+        -:  145:		goto end;
+        -:  146:
+        -:  147:	/* first check the program name */
+    #####:  148:	program_name(argv[0],pname,sizeof pname);
+        -:  149:
+    #####:  150:	md=EVP_get_digestbyname(pname);
+        -:  151:
+    #####:  152:	argc--;
+    #####:  153:	argv++;
+    #####:  154:	while (argc > 0)
+        -:  155:		{
+    #####:  156:		if ((*argv)[0] != '-') break;
+    #####:  157:		if (strcmp(*argv,"-c") == 0)
+        -:  158:			separator=1;
+    #####:  159:		else if (strcmp(*argv,"-r") == 0)
+        -:  160:			separator=2;
+    #####:  161:		else if (strcmp(*argv,"-rand") == 0)
+        -:  162:			{
+    #####:  163:			if (--argc < 1) break;
+    #####:  164:			randfile=*(++argv);
+        -:  165:			}
+    #####:  166:		else if (strcmp(*argv,"-out") == 0)
+        -:  167:			{
+    #####:  168:			if (--argc < 1) break;
+    #####:  169:			outfile=*(++argv);
+        -:  170:			}
+    #####:  171:		else if (strcmp(*argv,"-sign") == 0)
+        -:  172:			{
+    #####:  173:			if (--argc < 1) break;
+    #####:  174:			keyfile=*(++argv);
+        -:  175:			}
+    #####:  176:		else if (!strcmp(*argv,"-passin"))
+        -:  177:			{
+    #####:  178:			if (--argc < 1)
+        -:  179:				break;
+    #####:  180:			passargin=*++argv;
+        -:  181:			}
+    #####:  182:		else if (strcmp(*argv,"-verify") == 0)
+        -:  183:			{
+    #####:  184:			if (--argc < 1) break;
+    #####:  185:			keyfile=*(++argv);
+        -:  186:			want_pub = 1;
+        -:  187:			do_verify = 1;
+        -:  188:			}
+    #####:  189:		else if (strcmp(*argv,"-prverify") == 0)
+        -:  190:			{
+    #####:  191:			if (--argc < 1) break;
+    #####:  192:			keyfile=*(++argv);
+        -:  193:			do_verify = 1;
+        -:  194:			}
+    #####:  195:		else if (strcmp(*argv,"-signature") == 0)
+        -:  196:			{
+    #####:  197:			if (--argc < 1) break;
+    #####:  198:			sigfile=*(++argv);
+        -:  199:			}
+    #####:  200:		else if (strcmp(*argv,"-keyform") == 0)
+        -:  201:			{
+    #####:  202:			if (--argc < 1) break;
+    #####:  203:			keyform=str2fmt(*(++argv));
+        -:  204:			}
+        -:  205:#ifndef OPENSSL_NO_ENGINE
+    #####:  206:		else if (strcmp(*argv,"-engine") == 0)
+        -:  207:			{
+    #####:  208:			if (--argc < 1) break;
+    #####:  209:			engine= *(++argv);
+    #####:  210:        		e = setup_engine(bio_err, engine, 0);
+        -:  211:			}
+        -:  212:#endif
+    #####:  213:		else if (strcmp(*argv,"-hex") == 0)
+        -:  214:			out_bin = 0;
+    #####:  215:		else if (strcmp(*argv,"-binary") == 0)
+        -:  216:			out_bin = 1;
+    #####:  217:		else if (strcmp(*argv,"-d") == 0)
+        -:  218:			debug=1;
+    #####:  219:		else if (!strcmp(*argv,"-fips-fingerprint"))
+        -:  220:			hmac_key = "etaonrishdlcupfm";
+    #####:  221:		else if (strcmp(*argv,"-non-fips-allow") == 0)
+        -:  222:			non_fips_allow=1;
+    #####:  223:		else if (!strcmp(*argv,"-hmac"))
+        -:  224:			{
+    #####:  225:			if (--argc < 1)
+        -:  226:				break;
+    #####:  227:			hmac_key=*++argv;
+        -:  228:			}
+    #####:  229:		else if (!strcmp(*argv,"-mac"))
+        -:  230:			{
+    #####:  231:			if (--argc < 1)
+        -:  232:				break;
+    #####:  233:			mac_name=*++argv;
+        -:  234:			}
+    #####:  235:		else if (strcmp(*argv,"-sigopt") == 0)
+        -:  236:			{
+    #####:  237:			if (--argc < 1)
+        -:  238:				break;
+    #####:  239:			if (!sigopts)
+    #####:  240:				sigopts = sk_OPENSSL_STRING_new_null();
+    #####:  241:			if (!sigopts || !sk_OPENSSL_STRING_push(sigopts, *(++argv)))
+        -:  242:				break;
+        -:  243:			}
+    #####:  244:		else if (strcmp(*argv,"-macopt") == 0)
+        -:  245:			{
+    #####:  246:			if (--argc < 1)
+        -:  247:				break;
+    #####:  248:			if (!macopts)
+    #####:  249:				macopts = sk_OPENSSL_STRING_new_null();
+    #####:  250:			if (!macopts || !sk_OPENSSL_STRING_push(macopts, *(++argv)))
+        -:  251:				break;
+        -:  252:			}
+    #####:  253:		else if ((m=EVP_get_digestbyname(&((*argv)[1]))) != NULL)
+        -:  254:			md=m;
+        -:  255:		else
+        -:  256:			break;
+    #####:  257:		argc--;
+    #####:  258:		argv++;
+        -:  259:		}
+        -:  260:
+        -:  261:
+    #####:  262:	if(do_verify && !sigfile) {
+    #####:  263:		BIO_printf(bio_err, "No signature to verify: use the -signature option\n");
+    #####:  264:		goto end;
+        -:  265:	}
+        -:  266:
+    #####:  267:	if ((argc > 0) && (argv[0][0] == '-')) /* bad option */
+        -:  268:		{
+    #####:  269:		BIO_printf(bio_err,"unknown option '%s'\n",*argv);
+    #####:  270:		BIO_printf(bio_err,"options are\n");
+    #####:  271:		BIO_printf(bio_err,"-c              to output the digest with separating colons\n");
+    #####:  272:		BIO_printf(bio_err,"-r              to output the digest in coreutils format\n");
+    #####:  273:		BIO_printf(bio_err,"-d              to output debug info\n");
+    #####:  274:		BIO_printf(bio_err,"-hex            output as hex dump\n");
+    #####:  275:		BIO_printf(bio_err,"-binary         output in binary form\n");
+    #####:  276:		BIO_printf(bio_err,"-sign   file    sign digest using private key in file\n");
+    #####:  277:		BIO_printf(bio_err,"-verify file    verify a signature using public key in file\n");
+    #####:  278:		BIO_printf(bio_err,"-prverify file  verify a signature using private key in file\n");
+    #####:  279:		BIO_printf(bio_err,"-keyform arg    key file format (PEM or ENGINE)\n");
+    #####:  280:		BIO_printf(bio_err,"-out filename   output to filename rather than stdout\n");
+    #####:  281:		BIO_printf(bio_err,"-signature file signature to verify\n");
+    #####:  282:		BIO_printf(bio_err,"-sigopt nm:v    signature parameter\n");
+    #####:  283:		BIO_printf(bio_err,"-hmac key       create hashed MAC with key\n");
+    #####:  284:		BIO_printf(bio_err,"-mac algorithm  create MAC (not neccessarily HMAC)\n"); 
+    #####:  285:		BIO_printf(bio_err,"-macopt nm:v    MAC algorithm parameters or key\n");
+        -:  286:#ifndef OPENSSL_NO_ENGINE
+    #####:  287:		BIO_printf(bio_err,"-engine e       use engine e, possibly a hardware device.\n");
+        -:  288:#endif
+        -:  289:
+    #####:  290:		EVP_MD_do_all_sorted(list_md_fn, bio_err);
+    #####:  291:		goto end;
+        -:  292:		}
+        -:  293:
+    #####:  294:	in=BIO_new(BIO_s_file());
+    #####:  295:	bmd=BIO_new(BIO_f_md());
+    #####:  296:	if (debug)
+        -:  297:		{
+    #####:  298:		BIO_set_callback(in,BIO_debug_callback);
+        -:  299:		/* needed for windows 3.1 */
+    #####:  300:		BIO_set_callback_arg(in,(char *)bio_err);
+        -:  301:		}
+        -:  302:
+    #####:  303:	if(!app_passwd(bio_err, passargin, NULL, &passin, NULL))
+        -:  304:		{
+    #####:  305:		BIO_printf(bio_err, "Error getting password\n");
+    #####:  306:		goto end;
+        -:  307:		}
+        -:  308:
+    #####:  309:	if ((in == NULL) || (bmd == NULL))
+        -:  310:		{
+    #####:  311:		ERR_print_errors(bio_err);
+    #####:  312:		goto end;
+        -:  313:		}
+        -:  314:
+    #####:  315:	if(out_bin == -1) {
+    #####:  316:		if(keyfile)
+        -:  317:			out_bin = 1;
+        -:  318:		else
+        -:  319:			out_bin = 0;
+        -:  320:	}
+        -:  321:
+    #####:  322:	if(randfile)
+    #####:  323:		app_RAND_load_file(randfile, bio_err, 0);
+        -:  324:
+    #####:  325:	if(outfile) {
+    #####:  326:		if(out_bin)
+    #####:  327:			out = BIO_new_file(outfile, "wb");
+    #####:  328:		else    out = BIO_new_file(outfile, "w");
+        -:  329:	} else {
+    #####:  330:		out = BIO_new_fp(stdout, BIO_NOCLOSE);
+        -:  331:#ifdef OPENSSL_SYS_VMS
+        -:  332:		{
+        -:  333:		BIO *tmpbio = BIO_new(BIO_f_linebuffer());
+        -:  334:		out = BIO_push(tmpbio, out);
+        -:  335:		}
+        -:  336:#endif
+        -:  337:	}
+        -:  338:
+    #####:  339:	if(!out) {
+    #####:  340:		BIO_printf(bio_err, "Error opening output file %s\n", 
+        -:  341:					outfile ? outfile : "(stdout)");
+    #####:  342:		ERR_print_errors(bio_err);
+    #####:  343:		goto end;
+        -:  344:	}
+    #####:  345:	if ((!!mac_name + !!keyfile + !!hmac_key) > 1)
+        -:  346:		{
+    #####:  347:		BIO_printf(bio_err, "MAC and Signing key cannot both be specified\n");
+    #####:  348:		goto end;
+        -:  349:		}
+        -:  350:
+    #####:  351:	if(keyfile)
+        -:  352:		{
+    #####:  353:		if (want_pub)
+    #####:  354:			sigkey = load_pubkey(bio_err, keyfile, keyform, 0, NULL,
+        -:  355:				e, "key file");
+        -:  356:		else
+    #####:  357:			sigkey = load_key(bio_err, keyfile, keyform, 0, passin,
+        -:  358:				e, "key file");
+    #####:  359:		if (!sigkey)
+        -:  360:			{
+        -:  361:			/* load_[pub]key() has already printed an appropriate
+        -:  362:			   message */
+        -:  363:			goto end;
+        -:  364:			}
+        -:  365:		}
+        -:  366:
+    #####:  367:	if (mac_name)
+        -:  368:		{
+    #####:  369:		EVP_PKEY_CTX *mac_ctx = NULL;
+        -:  370:		int r = 0;
+    #####:  371:		if (!init_gen_str(bio_err, &mac_ctx, mac_name,e, 0))
+        -:  372:			goto mac_end;
+    #####:  373:		if (macopts)
+        -:  374:			{
+        -:  375:			char *macopt;
+    #####:  376:			for (i = 0; i < sk_OPENSSL_STRING_num(macopts); i++)
+        -:  377:				{
+    #####:  378:				macopt = sk_OPENSSL_STRING_value(macopts, i);
+    #####:  379:				if (pkey_ctrl_string(mac_ctx, macopt) <= 0)
+        -:  380:					{
+    #####:  381:					BIO_printf(bio_err,
+        -:  382:						"MAC parameter error \"%s\"\n",
+        -:  383:						macopt);
+    #####:  384:					ERR_print_errors(bio_err);
+    #####:  385:					goto mac_end;
+        -:  386:					}
+        -:  387:				}
+        -:  388:			}
+    #####:  389:		if (EVP_PKEY_keygen(mac_ctx, &sigkey) <= 0)
+        -:  390:			{
+    #####:  391:			BIO_puts(bio_err, "Error generating key\n");
+    #####:  392:			ERR_print_errors(bio_err);
+    #####:  393:			goto mac_end;
+        -:  394:			}
+        -:  395:		r = 1;
+        -:  396:		mac_end:
+    #####:  397:		if (mac_ctx)
+    #####:  398:			EVP_PKEY_CTX_free(mac_ctx);
+    #####:  399:		if (r == 0)
+        -:  400:			goto end;
+        -:  401:		}
+        -:  402:
+    #####:  403:	if (non_fips_allow)
+        -:  404:		{
+        -:  405:		EVP_MD_CTX *md_ctx;
+    #####:  406:		BIO_get_md_ctx(bmd,&md_ctx);
+    #####:  407:		EVP_MD_CTX_set_flags(md_ctx, EVP_MD_CTX_FLAG_NON_FIPS_ALLOW);
+        -:  408:		}
+        -:  409:
+    #####:  410:	if (hmac_key)
+        -:  411:		{
+    #####:  412:		sigkey = EVP_PKEY_new_mac_key(EVP_PKEY_HMAC, e,
+        -:  413:					(unsigned char *)hmac_key, -1);
+    #####:  414:		if (!sigkey)
+        -:  415:			goto end;
+        -:  416:		}
+        -:  417:
+    #####:  418:	if (sigkey)
+        -:  419:		{
+    #####:  420:		EVP_MD_CTX *mctx = NULL;
+    #####:  421:		EVP_PKEY_CTX *pctx = NULL;
+        -:  422:		int r;
+    #####:  423:		if (!BIO_get_md_ctx(bmd, &mctx))
+        -:  424:			{
+    #####:  425:			BIO_printf(bio_err, "Error getting context\n");
+    #####:  426:			ERR_print_errors(bio_err);
+    #####:  427:			goto end;
+        -:  428:			}
+    #####:  429:		if (do_verify)
+    #####:  430:			r = EVP_DigestVerifyInit(mctx, &pctx, md, e, sigkey);
+        -:  431:		else
+    #####:  432:			r = EVP_DigestSignInit(mctx, &pctx, md, e, sigkey);
+    #####:  433:		if (!r)
+        -:  434:			{
+    #####:  435:			BIO_printf(bio_err, "Error setting context\n");
+    #####:  436:			ERR_print_errors(bio_err);
+    #####:  437:			goto end;
+        -:  438:			}
+    #####:  439:		if (sigopts)
+        -:  440:			{
+        -:  441:			char *sigopt;
+    #####:  442:			for (i = 0; i < sk_OPENSSL_STRING_num(sigopts); i++)
+        -:  443:				{
+    #####:  444:				sigopt = sk_OPENSSL_STRING_value(sigopts, i);
+    #####:  445:				if (pkey_ctrl_string(pctx, sigopt) <= 0)
+        -:  446:					{
+    #####:  447:					BIO_printf(bio_err,
+        -:  448:						"parameter error \"%s\"\n",
+        -:  449:						sigopt);
+    #####:  450:					ERR_print_errors(bio_err);
+    #####:  451:					goto end;
+        -:  452:					}
+        -:  453:				}
+        -:  454:			}
+        -:  455:		}
+        -:  456:	/* we use md as a filter, reading from 'in' */
+        -:  457:	else
+        -:  458:		{
+    #####:  459:		if (md == NULL)
+    #####:  460:			md = EVP_md5(); 
+    #####:  461:		if (!BIO_set_md(bmd,md))
+        -:  462:			{
+    #####:  463:			BIO_printf(bio_err, "Error setting digest %s\n", pname);
+    #####:  464:			ERR_print_errors(bio_err);
+    #####:  465:			goto end;
+        -:  466:			}
+        -:  467:		}
+        -:  468:
+    #####:  469:	if(sigfile && sigkey) {
+        -:  470:		BIO *sigbio;
+    #####:  471:		sigbio = BIO_new_file(sigfile, "rb");
+    #####:  472:		siglen = EVP_PKEY_size(sigkey);
+    #####:  473:		sigbuf = OPENSSL_malloc(siglen);
+    #####:  474:		if(!sigbio) {
+    #####:  475:			BIO_printf(bio_err, "Error opening signature file %s\n",
+        -:  476:								sigfile);
+    #####:  477:			ERR_print_errors(bio_err);
+    #####:  478:			goto end;
+        -:  479:		}
+    #####:  480:		siglen = BIO_read(sigbio, sigbuf, siglen);
+    #####:  481:		BIO_free(sigbio);
+    #####:  482:		if(siglen <= 0) {
+    #####:  483:			BIO_printf(bio_err, "Error reading signature file %s\n",
+        -:  484:								sigfile);
+    #####:  485:			ERR_print_errors(bio_err);
+    #####:  486:			goto end;
+        -:  487:		}
+        -:  488:	}
+    #####:  489:	inp=BIO_push(bmd,in);
+        -:  490:
+    #####:  491:	if (md == NULL)
+        -:  492:		{
+        -:  493:		EVP_MD_CTX *tctx;
+    #####:  494:		BIO_get_md_ctx(bmd, &tctx);
+    #####:  495:		md = EVP_MD_CTX_md(tctx);
+        -:  496:		}
+        -:  497:
+    #####:  498:	if (argc == 0)
+        -:  499:		{
+    #####:  500:		BIO_set_fp(in,stdin,BIO_NOCLOSE);
+    #####:  501:		err=do_fp(out, buf,inp,separator, out_bin, sigkey, sigbuf,
+        -:  502:			  siglen,NULL,NULL,"stdin",bmd);
+        -:  503:		}
+        -:  504:	else
+        -:  505:		{
+    #####:  506:		const char *md_name = NULL, *sig_name = NULL;
+    #####:  507:		if(!out_bin)
+        -:  508:			{
+    #####:  509:			if (sigkey)
+        -:  510:				{
+        -:  511:				const EVP_PKEY_ASN1_METHOD *ameth;
+    #####:  512:				ameth = EVP_PKEY_get0_asn1(sigkey);
+    #####:  513:				if (ameth)
+    #####:  514:					EVP_PKEY_asn1_get0_info(NULL, NULL,
+        -:  515:						NULL, NULL, &sig_name, ameth);
+        -:  516:				}
+    #####:  517:			md_name = EVP_MD_name(md);
+        -:  518:			}
+        -:  519:		err = 0;
+    #####:  520:		for (i=0; i<argc; i++)
+        -:  521:			{
+        -:  522:			int r;
+    #####:  523:			if (BIO_read_filename(in,argv[i]) <= 0)
+        -:  524:				{
+    #####:  525:				perror(argv[i]);
+    #####:  526:				err++;
+    #####:  527:				continue;
+        -:  528:				}
+        -:  529:			else
+    #####:  530:			r=do_fp(out,buf,inp,separator,out_bin,sigkey,sigbuf,
+        -:  531:				siglen,sig_name,md_name, argv[i],bmd);
+    #####:  532:			if(r)
+        -:  533:			    err=r;
+    #####:  534:			(void)BIO_reset(bmd);
+        -:  535:			}
+        -:  536:		}
+        -:  537:end:
+    #####:  538:	if (buf != NULL)
+        -:  539:		{
+    #####:  540:		OPENSSL_cleanse(buf,BUFSIZE);
+    #####:  541:		OPENSSL_free(buf);
+        -:  542:		}
+    #####:  543:	if (in != NULL) BIO_free(in);
+    #####:  544:	if (passin)
+    #####:  545:		OPENSSL_free(passin);
+    #####:  546:	BIO_free_all(out);
+    #####:  547:	EVP_PKEY_free(sigkey);
+    #####:  548:	if (sigopts)
+    #####:  549:		sk_OPENSSL_STRING_free(sigopts);
+    #####:  550:	if (macopts)
+    #####:  551:		sk_OPENSSL_STRING_free(macopts);
+    #####:  552:	if(sigbuf) OPENSSL_free(sigbuf);
+    #####:  553:	if (bmd != NULL) BIO_free(bmd);
+        -:  554:	apps_shutdown();
+    #####:  555:	OPENSSL_EXIT(err);
+        -:  556:	}
+        -:  557:
+    #####:  558:int do_fp(BIO *out, unsigned char *buf, BIO *bp, int sep, int binout,
+        -:  559:	  EVP_PKEY *key, unsigned char *sigin, int siglen,
+        -:  560:	  const char *sig_name, const char *md_name,
+        -:  561:	  const char *file,BIO *bmd)
+        -:  562:	{
+        -:  563:	size_t len;
+        -:  564:	int i;
+        -:  565:
+        -:  566:	for (;;)
+        -:  567:		{
+    #####:  568:		i=BIO_read(bp,(char *)buf,BUFSIZE);
+    #####:  569:		if(i < 0)
+        -:  570:			{
+    #####:  571:			BIO_printf(bio_err, "Read Error in %s\n",file);
+    #####:  572:			ERR_print_errors(bio_err);
+    #####:  573:			return 1;
+        -:  574:			}
+    #####:  575:		if (i == 0) break;
+        -:  576:		}
+    #####:  577:	if(sigin)
+        -:  578:		{
+        -:  579:		EVP_MD_CTX *ctx;
+    #####:  580:		BIO_get_md_ctx(bp, &ctx);
+    #####:  581:		i = EVP_DigestVerifyFinal(ctx, sigin, (unsigned int)siglen); 
+    #####:  582:		if(i > 0)
+    #####:  583:			BIO_printf(out, "Verified OK\n");
+    #####:  584:		else if(i == 0)
+        -:  585:			{
+    #####:  586:			BIO_printf(out, "Verification Failure\n");
+    #####:  587:			return 1;
+        -:  588:			}
+        -:  589:		else
+        -:  590:			{
+    #####:  591:			BIO_printf(bio_err, "Error Verifying Data\n");
+    #####:  592:			ERR_print_errors(bio_err);
+    #####:  593:			return 1;
+        -:  594:			}
+    #####:  595:		return 0;
+        -:  596:		}
+    #####:  597:	if(key)
+        -:  598:		{
+        -:  599:		EVP_MD_CTX *ctx;
+    #####:  600:		BIO_get_md_ctx(bp, &ctx);
+    #####:  601:		len = BUFSIZE;
+    #####:  602:		if(!EVP_DigestSignFinal(ctx, buf, &len)) 
+        -:  603:			{
+    #####:  604:			BIO_printf(bio_err, "Error Signing Data\n");
+    #####:  605:			ERR_print_errors(bio_err);
+    #####:  606:			return 1;
+        -:  607:			}
+        -:  608:		}
+        -:  609:	else
+        -:  610:		{
+    #####:  611:		len=BIO_gets(bp,(char *)buf,BUFSIZE);
+    #####:  612:		if ((int)len <0)
+        -:  613:			{
+    #####:  614:			ERR_print_errors(bio_err);
+    #####:  615:			return 1;
+        -:  616:			}
+        -:  617:		}
+        -:  618:
+    #####:  619:	if(binout) BIO_write(out, buf, len);
+    #####:  620:	else if (sep == 2)
+        -:  621:		{
+    #####:  622:		for (i=0; i<(int)len; i++)
+    #####:  623:			BIO_printf(out, "%02x",buf[i]);
+    #####:  624:		BIO_printf(out, " *%s\n", file);
+        -:  625:		}
+        -:  626:	else 
+        -:  627:		{
+    #####:  628:		if (sig_name)
+    #####:  629:			BIO_printf(out, "%s-%s(%s)= ", sig_name, md_name, file);
+    #####:  630:		else if (md_name)
+    #####:  631:			BIO_printf(out, "%s(%s)= ", md_name, file);
+        -:  632:		else
+    #####:  633:			BIO_printf(out, "(%s)= ", file);
+    #####:  634:		for (i=0; i<(int)len; i++)
+        -:  635:			{
+    #####:  636:			if (sep && (i != 0))
+    #####:  637:				BIO_printf(out, ":");
+    #####:  638:			BIO_printf(out, "%02x",buf[i]);
+        -:  639:			}
+    #####:  640:		BIO_printf(out, "\n");
+        -:  641:		}
+        -:  642:	return 0;
+        -:  643:	}
+        -:  644:

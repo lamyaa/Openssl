@@ -1,0 +1,395 @@
+        -:    0:Source:ec2_mult.c
+        -:    0:Graph:ec2_mult.gcno
+        -:    0:Data:ec2_mult.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* crypto/ec/ec2_mult.c */
+        -:    2:/* ====================================================================
+        -:    3: * Copyright 2002 Sun Microsystems, Inc. ALL RIGHTS RESERVED.
+        -:    4: *
+        -:    5: * The Elliptic Curve Public-Key Crypto Library (ECC Code) included
+        -:    6: * herein is developed by SUN MICROSYSTEMS, INC., and is contributed
+        -:    7: * to the OpenSSL project.
+        -:    8: *
+        -:    9: * The ECC Code is licensed pursuant to the OpenSSL open source
+        -:   10: * license provided below.
+        -:   11: *
+        -:   12: * The software is originally written by Sheueling Chang Shantz and
+        -:   13: * Douglas Stebila of Sun Microsystems Laboratories.
+        -:   14: *
+        -:   15: */
+        -:   16:/* ====================================================================
+        -:   17: * Copyright (c) 1998-2003 The OpenSSL Project.  All rights reserved.
+        -:   18: *
+        -:   19: * Redistribution and use in source and binary forms, with or without
+        -:   20: * modification, are permitted provided that the following conditions
+        -:   21: * are met:
+        -:   22: *
+        -:   23: * 1. Redistributions of source code must retain the above copyright
+        -:   24: *    notice, this list of conditions and the following disclaimer. 
+        -:   25: *
+        -:   26: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   27: *    notice, this list of conditions and the following disclaimer in
+        -:   28: *    the documentation and/or other materials provided with the
+        -:   29: *    distribution.
+        -:   30: *
+        -:   31: * 3. All advertising materials mentioning features or use of this
+        -:   32: *    software must display the following acknowledgment:
+        -:   33: *    "This product includes software developed by the OpenSSL Project
+        -:   34: *    for use in the OpenSSL Toolkit. (http://www.openssl.org/)"
+        -:   35: *
+        -:   36: * 4. The names "OpenSSL Toolkit" and "OpenSSL Project" must not be used to
+        -:   37: *    endorse or promote products derived from this software without
+        -:   38: *    prior written permission. For written permission, please contact
+        -:   39: *    openssl-core@openssl.org.
+        -:   40: *
+        -:   41: * 5. Products derived from this software may not be called "OpenSSL"
+        -:   42: *    nor may "OpenSSL" appear in their names without prior written
+        -:   43: *    permission of the OpenSSL Project.
+        -:   44: *
+        -:   45: * 6. Redistributions of any form whatsoever must retain the following
+        -:   46: *    acknowledgment:
+        -:   47: *    "This product includes software developed by the OpenSSL Project
+        -:   48: *    for use in the OpenSSL Toolkit (http://www.openssl.org/)"
+        -:   49: *
+        -:   50: * THIS SOFTWARE IS PROVIDED BY THE OpenSSL PROJECT ``AS IS'' AND ANY
+        -:   51: * EXPRESSED OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   52: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+        -:   53: * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE OpenSSL PROJECT OR
+        -:   54: * ITS CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+        -:   55: * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+        -:   56: * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+        -:   57: * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   58: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+        -:   59: * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+        -:   60: * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+        -:   61: * OF THE POSSIBILITY OF SUCH DAMAGE.
+        -:   62: * ====================================================================
+        -:   63: *
+        -:   64: * This product includes cryptographic software written by Eric Young
+        -:   65: * (eay@cryptsoft.com).  This product includes software written by Tim
+        -:   66: * Hudson (tjh@cryptsoft.com).
+        -:   67: *
+        -:   68: */
+        -:   69:
+        -:   70:#include <openssl/err.h>
+        -:   71:
+        -:   72:#include "ec_lcl.h"
+        -:   73:
+        -:   74:#ifndef OPENSSL_NO_EC2M
+        -:   75:
+        -:   76:
+        -:   77:/* Compute the x-coordinate x/z for the point 2*(x/z) in Montgomery projective 
+        -:   78: * coordinates.
+        -:   79: * Uses algorithm Mdouble in appendix of 
+        -:   80: *     Lopez, J. and Dahab, R.  "Fast multiplication on elliptic curves over 
+        -:   81: *     GF(2^m) without precomputation" (CHES '99, LNCS 1717).
+        -:   82: * modified to not require precomputation of c=b^{2^{m-1}}.
+        -:   83: */
+    #####:   84:static int gf2m_Mdouble(const EC_GROUP *group, BIGNUM *x, BIGNUM *z, BN_CTX *ctx)
+        -:   85:	{
+        -:   86:	BIGNUM *t1;
+        -:   87:	int ret = 0;
+        -:   88:	
+        -:   89:	/* Since Mdouble is static we can guarantee that ctx != NULL. */
+    #####:   90:	BN_CTX_start(ctx);
+    #####:   91:	t1 = BN_CTX_get(ctx);
+    #####:   92:	if (t1 == NULL) goto err;
+        -:   93:
+    #####:   94:	if (!group->meth->field_sqr(group, x, x, ctx)) goto err;
+    #####:   95:	if (!group->meth->field_sqr(group, t1, z, ctx)) goto err;
+    #####:   96:	if (!group->meth->field_mul(group, z, x, t1, ctx)) goto err;
+    #####:   97:	if (!group->meth->field_sqr(group, x, x, ctx)) goto err;
+    #####:   98:	if (!group->meth->field_sqr(group, t1, t1, ctx)) goto err;
+    #####:   99:	if (!group->meth->field_mul(group, t1, &group->b, t1, ctx)) goto err;
+    #####:  100:	if (!BN_GF2m_add(x, x, t1)) goto err;
+        -:  101:
+        -:  102:	ret = 1;
+        -:  103:
+        -:  104: err:
+    #####:  105:	BN_CTX_end(ctx);
+    #####:  106:	return ret;
+        -:  107:	}
+        -:  108:
+        -:  109:/* Compute the x-coordinate x1/z1 for the point (x1/z1)+(x2/x2) in Montgomery 
+        -:  110: * projective coordinates.
+        -:  111: * Uses algorithm Madd in appendix of 
+        -:  112: *     Lopez, J. and Dahab, R.  "Fast multiplication on elliptic curves over 
+        -:  113: *     GF(2^m) without precomputation" (CHES '99, LNCS 1717).
+        -:  114: */
+    #####:  115:static int gf2m_Madd(const EC_GROUP *group, const BIGNUM *x, BIGNUM *x1, BIGNUM *z1, 
+        -:  116:	const BIGNUM *x2, const BIGNUM *z2, BN_CTX *ctx)
+        -:  117:	{
+        -:  118:	BIGNUM *t1, *t2;
+        -:  119:	int ret = 0;
+        -:  120:	
+        -:  121:	/* Since Madd is static we can guarantee that ctx != NULL. */
+    #####:  122:	BN_CTX_start(ctx);
+    #####:  123:	t1 = BN_CTX_get(ctx);
+    #####:  124:	t2 = BN_CTX_get(ctx);
+    #####:  125:	if (t2 == NULL) goto err;
+        -:  126:
+    #####:  127:	if (!BN_copy(t1, x)) goto err;
+    #####:  128:	if (!group->meth->field_mul(group, x1, x1, z2, ctx)) goto err;
+    #####:  129:	if (!group->meth->field_mul(group, z1, z1, x2, ctx)) goto err;
+    #####:  130:	if (!group->meth->field_mul(group, t2, x1, z1, ctx)) goto err;
+    #####:  131:	if (!BN_GF2m_add(z1, z1, x1)) goto err;
+    #####:  132:	if (!group->meth->field_sqr(group, z1, z1, ctx)) goto err;
+    #####:  133:	if (!group->meth->field_mul(group, x1, z1, t1, ctx)) goto err;
+    #####:  134:	if (!BN_GF2m_add(x1, x1, t2)) goto err;
+        -:  135:
+        -:  136:	ret = 1;
+        -:  137:
+        -:  138: err:
+    #####:  139:	BN_CTX_end(ctx);
+    #####:  140:	return ret;
+        -:  141:	}
+        -:  142:
+        -:  143:/* Compute the x, y affine coordinates from the point (x1, z1) (x2, z2) 
+        -:  144: * using Montgomery point multiplication algorithm Mxy() in appendix of 
+        -:  145: *     Lopez, J. and Dahab, R.  "Fast multiplication on elliptic curves over 
+        -:  146: *     GF(2^m) without precomputation" (CHES '99, LNCS 1717).
+        -:  147: * Returns:
+        -:  148: *     0 on error
+        -:  149: *     1 if return value should be the point at infinity
+        -:  150: *     2 otherwise
+        -:  151: */
+    #####:  152:static int gf2m_Mxy(const EC_GROUP *group, const BIGNUM *x, const BIGNUM *y, BIGNUM *x1, 
+        -:  153:	BIGNUM *z1, BIGNUM *x2, BIGNUM *z2, BN_CTX *ctx)
+        -:  154:	{
+        -:  155:	BIGNUM *t3, *t4, *t5;
+        -:  156:	int ret = 0;
+        -:  157:	
+    #####:  158:	if (BN_is_zero(z1))
+        -:  159:		{
+    #####:  160:		BN_zero(x2);
+    #####:  161:		BN_zero(z2);
+    #####:  162:		return 1;
+        -:  163:		}
+        -:  164:	
+    #####:  165:	if (BN_is_zero(z2))
+        -:  166:		{
+    #####:  167:		if (!BN_copy(x2, x)) return 0;
+    #####:  168:		if (!BN_GF2m_add(z2, x, y)) return 0;
+    #####:  169:		return 2;
+        -:  170:		}
+        -:  171:		
+        -:  172:	/* Since Mxy is static we can guarantee that ctx != NULL. */
+    #####:  173:	BN_CTX_start(ctx);
+    #####:  174:	t3 = BN_CTX_get(ctx);
+    #####:  175:	t4 = BN_CTX_get(ctx);
+    #####:  176:	t5 = BN_CTX_get(ctx);
+    #####:  177:	if (t5 == NULL) goto err;
+        -:  178:
+    #####:  179:	if (!BN_one(t5)) goto err;
+        -:  180:
+    #####:  181:	if (!group->meth->field_mul(group, t3, z1, z2, ctx)) goto err;
+        -:  182:
+    #####:  183:	if (!group->meth->field_mul(group, z1, z1, x, ctx)) goto err;
+    #####:  184:	if (!BN_GF2m_add(z1, z1, x1)) goto err;
+    #####:  185:	if (!group->meth->field_mul(group, z2, z2, x, ctx)) goto err;
+    #####:  186:	if (!group->meth->field_mul(group, x1, z2, x1, ctx)) goto err;
+    #####:  187:	if (!BN_GF2m_add(z2, z2, x2)) goto err;
+        -:  188:
+    #####:  189:	if (!group->meth->field_mul(group, z2, z2, z1, ctx)) goto err;
+    #####:  190:	if (!group->meth->field_sqr(group, t4, x, ctx)) goto err;
+    #####:  191:	if (!BN_GF2m_add(t4, t4, y)) goto err;
+    #####:  192:	if (!group->meth->field_mul(group, t4, t4, t3, ctx)) goto err;
+    #####:  193:	if (!BN_GF2m_add(t4, t4, z2)) goto err;
+        -:  194:
+    #####:  195:	if (!group->meth->field_mul(group, t3, t3, x, ctx)) goto err;
+    #####:  196:	if (!group->meth->field_div(group, t3, t5, t3, ctx)) goto err;
+    #####:  197:	if (!group->meth->field_mul(group, t4, t3, t4, ctx)) goto err;
+    #####:  198:	if (!group->meth->field_mul(group, x2, x1, t3, ctx)) goto err;
+    #####:  199:	if (!BN_GF2m_add(z2, x2, x)) goto err;
+        -:  200:
+    #####:  201:	if (!group->meth->field_mul(group, z2, z2, t4, ctx)) goto err;
+    #####:  202:	if (!BN_GF2m_add(z2, z2, y)) goto err;
+        -:  203:
+        -:  204:	ret = 2;
+        -:  205:
+        -:  206: err:
+    #####:  207:	BN_CTX_end(ctx);
+    #####:  208:	return ret;
+        -:  209:	}
+        -:  210:
+        -:  211:/* Computes scalar*point and stores the result in r.
+        -:  212: * point can not equal r.
+        -:  213: * Uses algorithm 2P of
+        -:  214: *     Lopez, J. and Dahab, R.  "Fast multiplication on elliptic curves over 
+        -:  215: *     GF(2^m) without precomputation" (CHES '99, LNCS 1717).
+        -:  216: */
+    #####:  217:static int ec_GF2m_montgomery_point_multiply(const EC_GROUP *group, EC_POINT *r, const BIGNUM *scalar,
+        -:  218:	const EC_POINT *point, BN_CTX *ctx)
+        -:  219:	{
+        -:  220:	BIGNUM *x1, *x2, *z1, *z2;
+        -:  221:	int ret = 0, i;
+        -:  222:	BN_ULONG mask,word;
+        -:  223:
+    #####:  224:	if (r == point)
+        -:  225:		{
+    #####:  226:		ECerr(EC_F_EC_GF2M_MONTGOMERY_POINT_MULTIPLY, EC_R_INVALID_ARGUMENT);
+    #####:  227:		return 0;
+        -:  228:		}
+        -:  229:	
+        -:  230:	/* if result should be point at infinity */
+    #####:  231:	if ((scalar == NULL) || BN_is_zero(scalar) || (point == NULL) || 
+    #####:  232:		EC_POINT_is_at_infinity(group, point))
+        -:  233:		{
+    #####:  234:		return EC_POINT_set_to_infinity(group, r);
+        -:  235:		}
+        -:  236:
+        -:  237:	/* only support affine coordinates */
+    #####:  238:	if (!point->Z_is_one) return 0;
+        -:  239:
+        -:  240:	/* Since point_multiply is static we can guarantee that ctx != NULL. */
+    #####:  241:	BN_CTX_start(ctx);
+    #####:  242:	x1 = BN_CTX_get(ctx);
+    #####:  243:	z1 = BN_CTX_get(ctx);
+    #####:  244:	if (z1 == NULL) goto err;
+        -:  245:
+    #####:  246:	x2 = &r->X;
+    #####:  247:	z2 = &r->Y;
+        -:  248:
+    #####:  249:	if (!BN_GF2m_mod_arr(x1, &point->X, group->poly)) goto err; /* x1 = x */
+    #####:  250:	if (!BN_one(z1)) goto err; /* z1 = 1 */
+    #####:  251:	if (!group->meth->field_sqr(group, z2, x1, ctx)) goto err; /* z2 = x1^2 = x^2 */
+    #####:  252:	if (!group->meth->field_sqr(group, x2, z2, ctx)) goto err;
+    #####:  253:	if (!BN_GF2m_add(x2, x2, &group->b)) goto err; /* x2 = x^4 + b */
+        -:  254:
+        -:  255:	/* find top most bit and go one past it */
+    #####:  256:	i = scalar->top - 1;
+        -:  257:	mask = BN_TBIT;
+    #####:  258:	word = scalar->d[i];
+    #####:  259:	while (!(word & mask)) mask >>= 1;
+    #####:  260:	mask >>= 1;
+        -:  261:	/* if top most bit was at word break, go to next word */
+    #####:  262:	if (!mask) 
+        -:  263:		{
+    #####:  264:		i--;
+        -:  265:		mask = BN_TBIT;
+        -:  266:		}
+        -:  267:
+    #####:  268:	for (; i >= 0; i--)
+        -:  269:		{
+    #####:  270:		word = scalar->d[i];
+    #####:  271:		while (mask)
+        -:  272:			{
+    #####:  273:			if (word & mask)
+        -:  274:				{
+    #####:  275:				if (!gf2m_Madd(group, &point->X, x1, z1, x2, z2, ctx)) goto err;
+    #####:  276:				if (!gf2m_Mdouble(group, x2, z2, ctx)) goto err;
+        -:  277:				}
+        -:  278:			else
+        -:  279:				{
+    #####:  280:				if (!gf2m_Madd(group, &point->X, x2, z2, x1, z1, ctx)) goto err;
+    #####:  281:				if (!gf2m_Mdouble(group, x1, z1, ctx)) goto err;
+        -:  282:				}
+    #####:  283:			mask >>= 1;
+        -:  284:			}
+        -:  285:		mask = BN_TBIT;
+        -:  286:		}
+        -:  287:
+        -:  288:	/* convert out of "projective" coordinates */
+    #####:  289:	i = gf2m_Mxy(group, &point->X, &point->Y, x1, z1, x2, z2, ctx);
+    #####:  290:	if (i == 0) goto err;
+    #####:  291:	else if (i == 1) 
+        -:  292:		{
+    #####:  293:		if (!EC_POINT_set_to_infinity(group, r)) goto err;
+        -:  294:		}
+        -:  295:	else
+        -:  296:		{
+    #####:  297:		if (!BN_one(&r->Z)) goto err;
+    #####:  298:		r->Z_is_one = 1;
+        -:  299:		}
+        -:  300:
+        -:  301:	/* GF(2^m) field elements should always have BIGNUM::neg = 0 */
+    #####:  302:	BN_set_negative(&r->X, 0);
+    #####:  303:	BN_set_negative(&r->Y, 0);
+        -:  304:
+        -:  305:	ret = 1;
+        -:  306:
+        -:  307: err:
+    #####:  308:	BN_CTX_end(ctx);
+    #####:  309:	return ret;
+        -:  310:	}
+        -:  311:
+        -:  312:
+        -:  313:/* Computes the sum
+        -:  314: *     scalar*group->generator + scalars[0]*points[0] + ... + scalars[num-1]*points[num-1]
+        -:  315: * gracefully ignoring NULL scalar values.
+        -:  316: */
+    #####:  317:int ec_GF2m_simple_mul(const EC_GROUP *group, EC_POINT *r, const BIGNUM *scalar,
+        -:  318:	size_t num, const EC_POINT *points[], const BIGNUM *scalars[], BN_CTX *ctx)
+        -:  319:	{
+        -:  320:	BN_CTX *new_ctx = NULL;
+        -:  321:	int ret = 0;
+        -:  322:	size_t i;
+        -:  323:	EC_POINT *p=NULL;
+        -:  324:	EC_POINT *acc = NULL;
+        -:  325:
+    #####:  326:	if (ctx == NULL)
+        -:  327:		{
+    #####:  328:		ctx = new_ctx = BN_CTX_new();
+    #####:  329:		if (ctx == NULL)
+        -:  330:			return 0;
+        -:  331:		}
+        -:  332:
+        -:  333:	/* This implementation is more efficient than the wNAF implementation for 2
+        -:  334:	 * or fewer points.  Use the ec_wNAF_mul implementation for 3 or more points,
+        -:  335:	 * or if we can perform a fast multiplication based on precomputation.
+        -:  336:	 */
+    #####:  337:	if ((scalar && (num > 1)) || (num > 2) || (num == 0 && EC_GROUP_have_precompute_mult(group)))
+        -:  338:		{
+    #####:  339:		ret = ec_wNAF_mul(group, r, scalar, num, points, scalars, ctx);
+    #####:  340:		goto err;
+        -:  341:		}
+        -:  342:
+    #####:  343:	if ((p = EC_POINT_new(group)) == NULL) goto err;
+    #####:  344:	if ((acc = EC_POINT_new(group)) == NULL) goto err;
+        -:  345:
+    #####:  346:	if (!EC_POINT_set_to_infinity(group, acc)) goto err;
+        -:  347:
+    #####:  348:	if (scalar)
+        -:  349:		{
+    #####:  350:		if (!ec_GF2m_montgomery_point_multiply(group, p, scalar, group->generator, ctx)) goto err;
+    #####:  351:		if (BN_is_negative(scalar))
+    #####:  352:			if (!group->meth->invert(group, p, ctx)) goto err;
+    #####:  353:		if (!group->meth->add(group, acc, acc, p, ctx)) goto err;
+        -:  354:		}
+        -:  355:
+    #####:  356:	for (i = 0; i < num; i++)
+        -:  357:		{
+    #####:  358:		if (!ec_GF2m_montgomery_point_multiply(group, p, scalars[i], points[i], ctx)) goto err;
+    #####:  359:		if (BN_is_negative(scalars[i]))
+    #####:  360:			if (!group->meth->invert(group, p, ctx)) goto err;
+    #####:  361:		if (!group->meth->add(group, acc, acc, p, ctx)) goto err;
+        -:  362:		}
+        -:  363:
+    #####:  364:	if (!EC_POINT_copy(r, acc)) goto err;
+        -:  365:
+        -:  366:	ret = 1;
+        -:  367:
+        -:  368:  err:
+    #####:  369:	if (p) EC_POINT_free(p);
+    #####:  370:	if (acc) EC_POINT_free(acc);
+    #####:  371:	if (new_ctx != NULL)
+    #####:  372:		BN_CTX_free(new_ctx);
+    #####:  373:	return ret;
+        -:  374:	}
+        -:  375:
+        -:  376:
+        -:  377:/* Precomputation for point multiplication: fall back to wNAF methods
+        -:  378: * because ec_GF2m_simple_mul() uses ec_wNAF_mul() if appropriate */
+        -:  379:
+    #####:  380:int ec_GF2m_precompute_mult(EC_GROUP *group, BN_CTX *ctx)
+        -:  381:	{
+    #####:  382:	return ec_wNAF_precompute_mult(group, ctx);
+        -:  383: 	}
+        -:  384:
+    #####:  385:int ec_GF2m_have_precompute_mult(const EC_GROUP *group)
+        -:  386:	{
+    #####:  387:	return ec_wNAF_have_precompute_mult(group);
+        -:  388: 	}
+        -:  389:
+        -:  390:#endif

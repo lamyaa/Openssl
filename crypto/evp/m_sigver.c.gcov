@@ -1,0 +1,205 @@
+        -:    0:Source:m_sigver.c
+        -:    0:Graph:m_sigver.gcno
+        -:    0:Data:m_sigver.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* m_sigver.c */
+        -:    2:/* Written by Dr Stephen N Henson (steve@openssl.org) for the OpenSSL
+        -:    3: * project 2006.
+        -:    4: */
+        -:    5:/* ====================================================================
+        -:    6: * Copyright (c) 2006,2007 The OpenSSL Project.  All rights reserved.
+        -:    7: *
+        -:    8: * Redistribution and use in source and binary forms, with or without
+        -:    9: * modification, are permitted provided that the following conditions
+        -:   10: * are met:
+        -:   11: *
+        -:   12: * 1. Redistributions of source code must retain the above copyright
+        -:   13: *    notice, this list of conditions and the following disclaimer. 
+        -:   14: *
+        -:   15: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   16: *    notice, this list of conditions and the following disclaimer in
+        -:   17: *    the documentation and/or other materials provided with the
+        -:   18: *    distribution.
+        -:   19: *
+        -:   20: * 3. All advertising materials mentioning features or use of this
+        -:   21: *    software must display the following acknowledgment:
+        -:   22: *    "This product includes software developed by the OpenSSL Project
+        -:   23: *    for use in the OpenSSL Toolkit. (http://www.OpenSSL.org/)"
+        -:   24: *
+        -:   25: * 4. The names "OpenSSL Toolkit" and "OpenSSL Project" must not be used to
+        -:   26: *    endorse or promote products derived from this software without
+        -:   27: *    prior written permission. For written permission, please contact
+        -:   28: *    licensing@OpenSSL.org.
+        -:   29: *
+        -:   30: * 5. Products derived from this software may not be called "OpenSSL"
+        -:   31: *    nor may "OpenSSL" appear in their names without prior written
+        -:   32: *    permission of the OpenSSL Project.
+        -:   33: *
+        -:   34: * 6. Redistributions of any form whatsoever must retain the following
+        -:   35: *    acknowledgment:
+        -:   36: *    "This product includes software developed by the OpenSSL Project
+        -:   37: *    for use in the OpenSSL Toolkit (http://www.OpenSSL.org/)"
+        -:   38: *
+        -:   39: * THIS SOFTWARE IS PROVIDED BY THE OpenSSL PROJECT ``AS IS'' AND ANY
+        -:   40: * EXPRESSED OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   41: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+        -:   42: * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE OpenSSL PROJECT OR
+        -:   43: * ITS CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+        -:   44: * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+        -:   45: * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+        -:   46: * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   47: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+        -:   48: * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+        -:   49: * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+        -:   50: * OF THE POSSIBILITY OF SUCH DAMAGE.
+        -:   51: * ====================================================================
+        -:   52: *
+        -:   53: * This product includes cryptographic software written by Eric Young
+        -:   54: * (eay@cryptsoft.com).  This product includes software written by Tim
+        -:   55: * Hudson (tjh@cryptsoft.com).
+        -:   56: *
+        -:   57: */
+        -:   58:
+        -:   59:#include <stdio.h>
+        -:   60:#include "cryptlib.h"
+        -:   61:#include <openssl/evp.h>
+        -:   62:#include <openssl/objects.h>
+        -:   63:#include <openssl/x509.h>
+        -:   64:#include "evp_locl.h"
+        -:   65:
+   221942:   66:static int do_sigver_init(EVP_MD_CTX *ctx, EVP_PKEY_CTX **pctx,
+        -:   67:			  const EVP_MD *type, ENGINE *e, EVP_PKEY *pkey,
+        -:   68:			  int ver)
+        -:   69:	{
+   221942:   70:	if (ctx->pctx == NULL)
+   101942:   71:		ctx->pctx = EVP_PKEY_CTX_new(pkey, e);
+   221942:   72:	if (ctx->pctx == NULL)
+        -:   73:		return 0;
+        -:   74:
+   221942:   75:	if (type == NULL)
+        -:   76:		{
+        -:   77:		int def_nid;
+    #####:   78:		if (EVP_PKEY_get_default_digest_nid(pkey, &def_nid) > 0)
+    #####:   79:			type = EVP_get_digestbynid(def_nid);
+        -:   80:		}
+        -:   81:
+   221942:   82:	if (type == NULL)
+        -:   83:		{
+    #####:   84:		EVPerr(EVP_F_DO_SIGVER_INIT, EVP_R_NO_DEFAULT_DIGEST);
+    #####:   85:		return 0;
+        -:   86:		}
+        -:   87:
+   221942:   88:	if (ver)
+        -:   89:		{
+     1942:   90:		if (ctx->pctx->pmeth->verifyctx_init)
+        -:   91:			{
+    #####:   92:			if (ctx->pctx->pmeth->verifyctx_init(ctx->pctx, ctx) <=0)
+        -:   93:				return 0;
+    #####:   94:			ctx->pctx->operation = EVP_PKEY_OP_VERIFYCTX;
+        -:   95:			}
+     1942:   96:		else if (EVP_PKEY_verify_init(ctx->pctx) <= 0)
+        -:   97:			return 0;
+        -:   98:		}
+        -:   99:	else
+        -:  100:		{
+   220000:  101:		if (ctx->pctx->pmeth->signctx_init)
+        -:  102:			{
+   220000:  103:			if (ctx->pctx->pmeth->signctx_init(ctx->pctx, ctx) <= 0)
+        -:  104:				return 0;
+   220000:  105:			ctx->pctx->operation = EVP_PKEY_OP_SIGNCTX;
+        -:  106:			}
+    #####:  107:		else if (EVP_PKEY_sign_init(ctx->pctx) <= 0)
+        -:  108:			return 0;
+        -:  109:		}
+   221942:  110:	if (EVP_PKEY_CTX_set_signature_md(ctx->pctx, type) <= 0)
+        -:  111:		return 0;
+   221942:  112:	if (pctx)
+    #####:  113:		*pctx = ctx->pctx;
+   221942:  114:	if (!EVP_DigestInit_ex(ctx, type, e))
+        -:  115:		return 0;
+   221942:  116:	return 1;
+        -:  117:	}
+        -:  118:
+   220000:  119:int EVP_DigestSignInit(EVP_MD_CTX *ctx, EVP_PKEY_CTX **pctx,
+        -:  120:			const EVP_MD *type, ENGINE *e, EVP_PKEY *pkey)
+        -:  121:	{
+   220000:  122:	return do_sigver_init(ctx, pctx, type, e, pkey, 0);
+        -:  123:	}
+        -:  124:
+     1942:  125:int EVP_DigestVerifyInit(EVP_MD_CTX *ctx, EVP_PKEY_CTX **pctx,
+        -:  126:			const EVP_MD *type, ENGINE *e, EVP_PKEY *pkey)
+        -:  127:	{
+     1942:  128:	return do_sigver_init(ctx, pctx, type, e, pkey, 1);
+        -:  129:	}
+        -:  130:
+   120000:  131:int EVP_DigestSignFinal(EVP_MD_CTX *ctx, unsigned char *sigret, size_t *siglen)
+        -:  132:	{
+        -:  133:	int sctx, r = 0;
+   120000:  134:	if (ctx->pctx->pmeth->signctx)
+        -:  135:		sctx = 1;
+        -:  136:	else
+        -:  137:		sctx = 0;
+   120000:  138:	if (sigret)
+        -:  139:		{
+        -:  140:		EVP_MD_CTX tmp_ctx;
+        -:  141:		unsigned char md[EVP_MAX_MD_SIZE];
+        -:  142:		unsigned int mdlen;
+   120000:  143:		EVP_MD_CTX_init(&tmp_ctx);
+   120000:  144:		if (!EVP_MD_CTX_copy_ex(&tmp_ctx,ctx))
+   120000:  145:		     	return 0;
+   120000:  146:		if (sctx)
+   120000:  147:			r = tmp_ctx.pctx->pmeth->signctx(tmp_ctx.pctx,
+        -:  148:					sigret, siglen, &tmp_ctx);
+        -:  149:		else
+    #####:  150:			r = EVP_DigestFinal_ex(&tmp_ctx,md,&mdlen);
+   120000:  151:		EVP_MD_CTX_cleanup(&tmp_ctx);
+   120000:  152:		if (sctx || !r)
+        -:  153:			return r;
+    #####:  154:		if (EVP_PKEY_sign(ctx->pctx, sigret, siglen, md, mdlen) <= 0)
+        -:  155:			return 0;
+        -:  156:		}
+        -:  157:	else
+        -:  158:		{
+    #####:  159:		if (sctx)
+        -:  160:			{
+    #####:  161:			if (ctx->pctx->pmeth->signctx(ctx->pctx, sigret, siglen, ctx) <= 0)
+        -:  162:				return 0;
+        -:  163:			}
+        -:  164:		else
+        -:  165:			{
+    #####:  166:			int s = EVP_MD_size(ctx->digest);
+    #####:  167:			if (s < 0 || EVP_PKEY_sign(ctx->pctx, sigret, siglen, NULL, s) <= 0)
+        -:  168:				return 0;
+        -:  169:			}
+        -:  170:		}
+        -:  171:	return 1;
+        -:  172:	}
+        -:  173:
+     1942:  174:int EVP_DigestVerifyFinal(EVP_MD_CTX *ctx, unsigned char *sig, size_t siglen)
+        -:  175:	{
+        -:  176:	EVP_MD_CTX tmp_ctx;
+        -:  177:	unsigned char md[EVP_MAX_MD_SIZE];
+        -:  178:	int r;
+        -:  179:	unsigned int mdlen;
+        -:  180:	int vctx;
+        -:  181:
+     1942:  182:	if (ctx->pctx->pmeth->verifyctx)
+        -:  183:		vctx = 1;
+        -:  184:	else
+        -:  185:		vctx = 0;
+     1942:  186:	EVP_MD_CTX_init(&tmp_ctx);
+     1942:  187:	if (!EVP_MD_CTX_copy_ex(&tmp_ctx,ctx))
+        -:  188:		return -1;	
+     1942:  189:	if (vctx)
+        -:  190:		{
+    #####:  191:		r = tmp_ctx.pctx->pmeth->verifyctx(tmp_ctx.pctx,
+        -:  192:					sig, siglen, &tmp_ctx);
+        -:  193:		}
+        -:  194:	else
+     1942:  195:		r = EVP_DigestFinal_ex(&tmp_ctx,md,&mdlen);
+     1942:  196:	EVP_MD_CTX_cleanup(&tmp_ctx);
+     1942:  197:	if (vctx || !r)
+        -:  198:		return r;
+     1942:  199:	return EVP_PKEY_verify(ctx->pctx, sig, siglen, md, mdlen);
+        -:  200:	}

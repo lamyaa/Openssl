@@ -1,0 +1,327 @@
+        -:    0:Source:p5_crpt2.c
+        -:    0:Graph:p5_crpt2.gcno
+        -:    0:Data:p5_crpt2.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* p5_crpt2.c */
+        -:    2:/* Written by Dr Stephen N Henson (steve@openssl.org) for the OpenSSL
+        -:    3: * project 1999.
+        -:    4: */
+        -:    5:/* ====================================================================
+        -:    6: * Copyright (c) 1999-2006 The OpenSSL Project.  All rights reserved.
+        -:    7: *
+        -:    8: * Redistribution and use in source and binary forms, with or without
+        -:    9: * modification, are permitted provided that the following conditions
+        -:   10: * are met:
+        -:   11: *
+        -:   12: * 1. Redistributions of source code must retain the above copyright
+        -:   13: *    notice, this list of conditions and the following disclaimer. 
+        -:   14: *
+        -:   15: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   16: *    notice, this list of conditions and the following disclaimer in
+        -:   17: *    the documentation and/or other materials provided with the
+        -:   18: *    distribution.
+        -:   19: *
+        -:   20: * 3. All advertising materials mentioning features or use of this
+        -:   21: *    software must display the following acknowledgment:
+        -:   22: *    "This product includes software developed by the OpenSSL Project
+        -:   23: *    for use in the OpenSSL Toolkit. (http://www.OpenSSL.org/)"
+        -:   24: *
+        -:   25: * 4. The names "OpenSSL Toolkit" and "OpenSSL Project" must not be used to
+        -:   26: *    endorse or promote products derived from this software without
+        -:   27: *    prior written permission. For written permission, please contact
+        -:   28: *    licensing@OpenSSL.org.
+        -:   29: *
+        -:   30: * 5. Products derived from this software may not be called "OpenSSL"
+        -:   31: *    nor may "OpenSSL" appear in their names without prior written
+        -:   32: *    permission of the OpenSSL Project.
+        -:   33: *
+        -:   34: * 6. Redistributions of any form whatsoever must retain the following
+        -:   35: *    acknowledgment:
+        -:   36: *    "This product includes software developed by the OpenSSL Project
+        -:   37: *    for use in the OpenSSL Toolkit (http://www.OpenSSL.org/)"
+        -:   38: *
+        -:   39: * THIS SOFTWARE IS PROVIDED BY THE OpenSSL PROJECT ``AS IS'' AND ANY
+        -:   40: * EXPRESSED OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   41: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+        -:   42: * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE OpenSSL PROJECT OR
+        -:   43: * ITS CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+        -:   44: * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+        -:   45: * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+        -:   46: * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   47: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+        -:   48: * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+        -:   49: * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+        -:   50: * OF THE POSSIBILITY OF SUCH DAMAGE.
+        -:   51: * ====================================================================
+        -:   52: *
+        -:   53: * This product includes cryptographic software written by Eric Young
+        -:   54: * (eay@cryptsoft.com).  This product includes software written by Tim
+        -:   55: * Hudson (tjh@cryptsoft.com).
+        -:   56: *
+        -:   57: */
+        -:   58:#include <stdio.h>
+        -:   59:#include <stdlib.h>
+        -:   60:#include "cryptlib.h"
+        -:   61:#if !defined(OPENSSL_NO_HMAC) && !defined(OPENSSL_NO_SHA)
+        -:   62:#include <openssl/x509.h>
+        -:   63:#include <openssl/evp.h>
+        -:   64:#include <openssl/hmac.h>
+        -:   65:#include "evp_locl.h"
+        -:   66:
+        -:   67:/* set this to print out info about the keygen algorithm */
+        -:   68:/* #define DEBUG_PKCS5V2 */
+        -:   69:
+        -:   70:#ifdef DEBUG_PKCS5V2
+        -:   71:	static void h__dump (const unsigned char *p, int len);
+        -:   72:#endif
+        -:   73:
+        -:   74:/* This is an implementation of PKCS#5 v2.0 password based encryption key
+        -:   75: * derivation function PBKDF2.
+        -:   76: * SHA1 version verified against test vectors posted by Peter Gutmann
+        -:   77: * <pgut001@cs.auckland.ac.nz> to the PKCS-TNG <pkcs-tng@rsa.com> mailing list.
+        -:   78: */
+        -:   79:
+    #####:   80:int PKCS5_PBKDF2_HMAC(const char *pass, int passlen,
+        -:   81:			   const unsigned char *salt, int saltlen, int iter,
+        -:   82:			   const EVP_MD *digest,
+        -:   83:			   int keylen, unsigned char *out)
+        -:   84:	{
+        -:   85:	unsigned char digtmp[EVP_MAX_MD_SIZE], *p, itmp[4];
+        -:   86:	int cplen, j, k, tkeylen, mdlen;
+        -:   87:	unsigned long i = 1;
+        -:   88:	HMAC_CTX hctx;
+        -:   89:
+    #####:   90:	mdlen = EVP_MD_size(digest);
+    #####:   91:	if (mdlen < 0)
+        -:   92:		return 0;
+        -:   93:
+    #####:   94:	HMAC_CTX_init(&hctx);
+        -:   95:	p = out;
+        -:   96:	tkeylen = keylen;
+    #####:   97:	if(!pass)
+        -:   98:		passlen = 0;
+    #####:   99:	else if(passlen == -1)
+    #####:  100:		passlen = strlen(pass);
+    #####:  101:	while(tkeylen)
+        -:  102:		{
+    #####:  103:		if(tkeylen > mdlen)
+        -:  104:			cplen = mdlen;
+        -:  105:		else
+        -:  106:			cplen = tkeylen;
+        -:  107:		/* We are unlikely to ever use more than 256 blocks (5120 bits!)
+        -:  108:		 * but just in case...
+        -:  109:		 */
+    #####:  110:		itmp[0] = (unsigned char)((i >> 24) & 0xff);
+    #####:  111:		itmp[1] = (unsigned char)((i >> 16) & 0xff);
+    #####:  112:		itmp[2] = (unsigned char)((i >> 8) & 0xff);
+    #####:  113:		itmp[3] = (unsigned char)(i & 0xff);
+    #####:  114:		if (!HMAC_Init_ex(&hctx, pass, passlen, digest, NULL)
+    #####:  115:			|| !HMAC_Update(&hctx, salt, saltlen)
+    #####:  116:			|| !HMAC_Update(&hctx, itmp, 4)
+    #####:  117:			|| !HMAC_Final(&hctx, digtmp, NULL))
+        -:  118:			{
+    #####:  119:			HMAC_CTX_cleanup(&hctx);
+    #####:  120:			return 0;
+        -:  121:			}
+    #####:  122:		memcpy(p, digtmp, cplen);
+    #####:  123:		for(j = 1; j < iter; j++)
+        -:  124:			{
+    #####:  125:			HMAC(digest, pass, passlen,
+        -:  126:				 digtmp, mdlen, digtmp, NULL);
+    #####:  127:			for(k = 0; k < cplen; k++)
+    #####:  128:				p[k] ^= digtmp[k];
+        -:  129:			}
+    #####:  130:		tkeylen-= cplen;
+    #####:  131:		i++;
+    #####:  132:		p+= cplen;
+        -:  133:		}
+    #####:  134:	HMAC_CTX_cleanup(&hctx);
+        -:  135:#ifdef DEBUG_PKCS5V2
+        -:  136:	fprintf(stderr, "Password:\n");
+        -:  137:	h__dump (pass, passlen);
+        -:  138:	fprintf(stderr, "Salt:\n");
+        -:  139:	h__dump (salt, saltlen);
+        -:  140:	fprintf(stderr, "Iteration count %d\n", iter);
+        -:  141:	fprintf(stderr, "Key:\n");
+        -:  142:	h__dump (out, keylen);
+        -:  143:#endif
+    #####:  144:	return 1;
+        -:  145:	}
+        -:  146:
+    #####:  147:int PKCS5_PBKDF2_HMAC_SHA1(const char *pass, int passlen,
+        -:  148:			   const unsigned char *salt, int saltlen, int iter,
+        -:  149:			   int keylen, unsigned char *out)
+        -:  150:	{
+    #####:  151:	return PKCS5_PBKDF2_HMAC(pass, passlen, salt, saltlen, iter, EVP_sha1(),
+        -:  152:					keylen, out);
+        -:  153:	}
+        -:  154:
+        -:  155:#ifdef DO_TEST
+        -:  156:main()
+        -:  157:{
+        -:  158:	unsigned char out[4];
+        -:  159:	unsigned char salt[] = {0x12, 0x34, 0x56, 0x78};
+        -:  160:	PKCS5_PBKDF2_HMAC_SHA1("password", -1, salt, 4, 5, 4, out);
+        -:  161:	fprintf(stderr, "Out %02X %02X %02X %02X\n",
+        -:  162:					 out[0], out[1], out[2], out[3]);
+        -:  163:}
+        -:  164:
+        -:  165:#endif
+        -:  166:
+        -:  167:/* Now the key derivation function itself. This is a bit evil because
+        -:  168: * it has to check the ASN1 parameters are valid: and there are quite a
+        -:  169: * few of them...
+        -:  170: */
+        -:  171:
+    #####:  172:int PKCS5_v2_PBE_keyivgen(EVP_CIPHER_CTX *ctx, const char *pass, int passlen,
+        -:  173:                         ASN1_TYPE *param, const EVP_CIPHER *c, const EVP_MD *md,
+        -:  174:                         int en_de)
+        -:  175:{
+        -:  176:	const unsigned char *pbuf;
+        -:  177:	int plen;
+        -:  178:	PBE2PARAM *pbe2 = NULL;
+        -:  179:	const EVP_CIPHER *cipher;
+        -:  180:
+        -:  181:	int rv = 0;
+        -:  182:
+    #####:  183:	if (param == NULL || param->type != V_ASN1_SEQUENCE ||
+    #####:  184:	    param->value.sequence == NULL) {
+    #####:  185:		EVPerr(EVP_F_PKCS5_V2_PBE_KEYIVGEN,EVP_R_DECODE_ERROR);
+    #####:  186:		goto err;
+        -:  187:	}
+        -:  188:
+    #####:  189:	pbuf = param->value.sequence->data;
+    #####:  190:	plen = param->value.sequence->length;
+    #####:  191:	if(!(pbe2 = d2i_PBE2PARAM(NULL, &pbuf, plen))) {
+    #####:  192:		EVPerr(EVP_F_PKCS5_V2_PBE_KEYIVGEN,EVP_R_DECODE_ERROR);
+    #####:  193:		goto err;
+        -:  194:	}
+        -:  195:
+        -:  196:	/* See if we recognise the key derivation function */
+        -:  197:
+    #####:  198:	if(OBJ_obj2nid(pbe2->keyfunc->algorithm) != NID_id_pbkdf2) {
+    #####:  199:		EVPerr(EVP_F_PKCS5_V2_PBE_KEYIVGEN,
+        -:  200:				EVP_R_UNSUPPORTED_KEY_DERIVATION_FUNCTION);
+    #####:  201:		goto err;
+        -:  202:	}
+        -:  203:
+        -:  204:	/* lets see if we recognise the encryption algorithm.
+        -:  205:	 */
+        -:  206:
+    #####:  207:	cipher = EVP_get_cipherbyobj(pbe2->encryption->algorithm);
+        -:  208:
+    #####:  209:	if(!cipher) {
+    #####:  210:		EVPerr(EVP_F_PKCS5_V2_PBE_KEYIVGEN,
+        -:  211:						EVP_R_UNSUPPORTED_CIPHER);
+    #####:  212:		goto err;
+        -:  213:	}
+        -:  214:
+        -:  215:	/* Fixup cipher based on AlgorithmIdentifier */
+    #####:  216:	if (!EVP_CipherInit_ex(ctx, cipher, NULL, NULL, NULL, en_de))
+        -:  217:		goto err;
+    #####:  218:	if(EVP_CIPHER_asn1_to_param(ctx, pbe2->encryption->parameter) < 0) {
+    #####:  219:		EVPerr(EVP_F_PKCS5_V2_PBE_KEYIVGEN,
+        -:  220:					EVP_R_CIPHER_PARAMETER_ERROR);
+    #####:  221:		goto err;
+        -:  222:	}
+    #####:  223:	rv = PKCS5_v2_PBKDF2_keyivgen(ctx, pass, passlen,
+    #####:  224:					pbe2->keyfunc->parameter, c, md, en_de);
+        -:  225:	err:
+    #####:  226:	PBE2PARAM_free(pbe2);
+    #####:  227:	return rv;
+        -:  228:}
+        -:  229:
+    #####:  230:int PKCS5_v2_PBKDF2_keyivgen(EVP_CIPHER_CTX *ctx, const char *pass, int passlen,
+        -:  231:                         ASN1_TYPE *param,
+        -:  232:			 const EVP_CIPHER *c, const EVP_MD *md, int en_de)
+        -:  233:{
+        -:  234:	unsigned char *salt, key[EVP_MAX_KEY_LENGTH];
+        -:  235:	const unsigned char *pbuf;
+        -:  236:	int saltlen, iter, plen;
+        -:  237:	int rv = 0;
+        -:  238:	unsigned int keylen = 0;
+        -:  239:	int prf_nid, hmac_md_nid;
+        -:  240:	PBKDF2PARAM *kdf = NULL;
+        -:  241:	const EVP_MD *prfmd;
+        -:  242:
+    #####:  243:	if (EVP_CIPHER_CTX_cipher(ctx) == NULL)
+        -:  244:		{
+    #####:  245:		EVPerr(EVP_F_PKCS5_V2_PBKDF2_KEYIVGEN,EVP_R_NO_CIPHER_SET);
+    #####:  246:		goto err;
+        -:  247:		}
+    #####:  248:	keylen = EVP_CIPHER_CTX_key_length(ctx);
+    #####:  249:	OPENSSL_assert(keylen <= sizeof key);
+        -:  250:
+        -:  251:	/* Decode parameter */
+        -:  252:
+    #####:  253:	if(!param || (param->type != V_ASN1_SEQUENCE))
+        -:  254:		{
+    #####:  255:		EVPerr(EVP_F_PKCS5_V2_PBKDF2_KEYIVGEN,EVP_R_DECODE_ERROR);
+    #####:  256:		goto err;
+        -:  257:		}
+        -:  258:
+    #####:  259:	pbuf = param->value.sequence->data;
+    #####:  260:	plen = param->value.sequence->length;
+        -:  261:
+    #####:  262:	if(!(kdf = d2i_PBKDF2PARAM(NULL, &pbuf, plen)) ) {
+    #####:  263:		EVPerr(EVP_F_PKCS5_V2_PBKDF2_KEYIVGEN,EVP_R_DECODE_ERROR);
+    #####:  264:		goto err;
+        -:  265:	}
+        -:  266:
+    #####:  267:	keylen = EVP_CIPHER_CTX_key_length(ctx);
+        -:  268:
+        -:  269:	/* Now check the parameters of the kdf */
+        -:  270:
+    #####:  271:	if(kdf->keylength && (ASN1_INTEGER_get(kdf->keylength) != (int)keylen)){
+    #####:  272:		EVPerr(EVP_F_PKCS5_V2_PBKDF2_KEYIVGEN,
+        -:  273:						EVP_R_UNSUPPORTED_KEYLENGTH);
+    #####:  274:		goto err;
+        -:  275:	}
+        -:  276:
+    #####:  277:	if (kdf->prf)
+    #####:  278:		prf_nid = OBJ_obj2nid(kdf->prf->algorithm);
+        -:  279:	else
+        -:  280:		prf_nid = NID_hmacWithSHA1;
+        -:  281:
+    #####:  282:	if (!EVP_PBE_find(EVP_PBE_TYPE_PRF, prf_nid, NULL, &hmac_md_nid, 0))
+        -:  283:		{
+    #####:  284:		EVPerr(EVP_F_PKCS5_V2_PBKDF2_KEYIVGEN, EVP_R_UNSUPPORTED_PRF);
+    #####:  285:		goto err;
+        -:  286:		}
+        -:  287:
+    #####:  288:	prfmd = EVP_get_digestbynid(hmac_md_nid);
+    #####:  289:	if (prfmd == NULL)
+        -:  290:		{
+    #####:  291:		EVPerr(EVP_F_PKCS5_V2_PBKDF2_KEYIVGEN, EVP_R_UNSUPPORTED_PRF);
+    #####:  292:		goto err;
+        -:  293:		}
+        -:  294:
+    #####:  295:	if(kdf->salt->type != V_ASN1_OCTET_STRING) {
+    #####:  296:		EVPerr(EVP_F_PKCS5_V2_PBKDF2_KEYIVGEN,
+        -:  297:						EVP_R_UNSUPPORTED_SALT_TYPE);
+    #####:  298:		goto err;
+        -:  299:	}
+        -:  300:
+        -:  301:	/* it seems that its all OK */
+    #####:  302:	salt = kdf->salt->value.octet_string->data;
+    #####:  303:	saltlen = kdf->salt->value.octet_string->length;
+    #####:  304:	iter = ASN1_INTEGER_get(kdf->iter);
+    #####:  305:	if(!PKCS5_PBKDF2_HMAC(pass, passlen, salt, saltlen, iter, prfmd,
+        -:  306:						   keylen, key))
+        -:  307:		goto err;
+    #####:  308:	rv = EVP_CipherInit_ex(ctx, NULL, NULL, key, NULL, en_de);
+        -:  309:	err:
+    #####:  310:	OPENSSL_cleanse(key, keylen);
+    #####:  311:	PBKDF2PARAM_free(kdf);
+    #####:  312:	return rv;
+        -:  313:}
+        -:  314:
+        -:  315:#ifdef DEBUG_PKCS5V2
+        -:  316:static void h__dump (const unsigned char *p, int len)
+        -:  317:{
+        -:  318:        for (; len --; p++) fprintf(stderr, "%02X ", *p);
+        -:  319:        fprintf(stderr, "\n");
+        -:  320:}
+        -:  321:#endif
+        -:  322:#endif

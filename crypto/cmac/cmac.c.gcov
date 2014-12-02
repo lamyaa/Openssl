@@ -1,0 +1,313 @@
+        -:    0:Source:cmac.c
+        -:    0:Graph:cmac.gcno
+        -:    0:Data:cmac.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* crypto/cmac/cmac.c */
+        -:    2:/* Written by Dr Stephen N Henson (steve@openssl.org) for the OpenSSL
+        -:    3: * project.
+        -:    4: */
+        -:    5:/* ====================================================================
+        -:    6: * Copyright (c) 2010 The OpenSSL Project.  All rights reserved.
+        -:    7: *
+        -:    8: * Redistribution and use in source and binary forms, with or without
+        -:    9: * modification, are permitted provided that the following conditions
+        -:   10: * are met:
+        -:   11: *
+        -:   12: * 1. Redistributions of source code must retain the above copyright
+        -:   13: *    notice, this list of conditions and the following disclaimer. 
+        -:   14: *
+        -:   15: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   16: *    notice, this list of conditions and the following disclaimer in
+        -:   17: *    the documentation and/or other materials provided with the
+        -:   18: *    distribution.
+        -:   19: *
+        -:   20: * 3. All advertising materials mentioning features or use of this
+        -:   21: *    software must display the following acknowledgment:
+        -:   22: *    "This product includes software developed by the OpenSSL Project
+        -:   23: *    for use in the OpenSSL Toolkit. (http://www.OpenSSL.org/)"
+        -:   24: *
+        -:   25: * 4. The names "OpenSSL Toolkit" and "OpenSSL Project" must not be used to
+        -:   26: *    endorse or promote products derived from this software without
+        -:   27: *    prior written permission. For written permission, please contact
+        -:   28: *    licensing@OpenSSL.org.
+        -:   29: *
+        -:   30: * 5. Products derived from this software may not be called "OpenSSL"
+        -:   31: *    nor may "OpenSSL" appear in their names without prior written
+        -:   32: *    permission of the OpenSSL Project.
+        -:   33: *
+        -:   34: * 6. Redistributions of any form whatsoever must retain the following
+        -:   35: *    acknowledgment:
+        -:   36: *    "This product includes software developed by the OpenSSL Project
+        -:   37: *    for use in the OpenSSL Toolkit (http://www.OpenSSL.org/)"
+        -:   38: *
+        -:   39: * THIS SOFTWARE IS PROVIDED BY THE OpenSSL PROJECT ``AS IS'' AND ANY
+        -:   40: * EXPRESSED OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   41: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+        -:   42: * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE OpenSSL PROJECT OR
+        -:   43: * ITS CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+        -:   44: * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+        -:   45: * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+        -:   46: * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   47: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+        -:   48: * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+        -:   49: * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+        -:   50: * OF THE POSSIBILITY OF SUCH DAMAGE.
+        -:   51: * ====================================================================
+        -:   52: */
+        -:   53:
+        -:   54:#include <stdio.h>
+        -:   55:#include <stdlib.h>
+        -:   56:#include <string.h>
+        -:   57:#include "cryptlib.h"
+        -:   58:#include <openssl/cmac.h>
+        -:   59:
+        -:   60:#ifdef OPENSSL_FIPS
+        -:   61:#include <openssl/fips.h>
+        -:   62:#endif
+        -:   63:
+        -:   64:struct CMAC_CTX_st
+        -:   65:	{
+        -:   66:	/* Cipher context to use */
+        -:   67:	EVP_CIPHER_CTX cctx;
+        -:   68:	/* Keys k1 and k2 */
+        -:   69:	unsigned char k1[EVP_MAX_BLOCK_LENGTH];
+        -:   70:	unsigned char k2[EVP_MAX_BLOCK_LENGTH];
+        -:   71:	/* Temporary block */
+        -:   72:	unsigned char tbl[EVP_MAX_BLOCK_LENGTH];
+        -:   73:	/* Last (possibly partial) block */
+        -:   74:	unsigned char last_block[EVP_MAX_BLOCK_LENGTH];
+        -:   75:	/* Number of bytes in last block: -1 means context not initialised */
+        -:   76:	int nlast_block;
+        -:   77:	};
+        -:   78:
+        -:   79:
+        -:   80:/* Make temporary keys K1 and K2 */
+        -:   81:
+    #####:   82:static void make_kn(unsigned char *k1, unsigned char *l, int bl)
+        -:   83:	{
+        -:   84:	int i;
+        -:   85:	/* Shift block to left, including carry */
+    #####:   86:	for (i = 0; i < bl; i++)
+        -:   87:		{
+    #####:   88:		k1[i] = l[i] << 1;
+    #####:   89:		if (i < bl - 1 && l[i + 1] & 0x80)
+    #####:   90:			k1[i] |= 1;
+        -:   91:		}
+        -:   92:	/* If MSB set fixup with R */
+    #####:   93:	if (l[0] & 0x80)
+    #####:   94:		k1[bl - 1] ^= bl == 16 ? 0x87 : 0x1b;
+    #####:   95:	}
+        -:   96:
+    #####:   97:CMAC_CTX *CMAC_CTX_new(void)
+        -:   98:	{
+        -:   99:	CMAC_CTX *ctx;
+    #####:  100:	ctx = OPENSSL_malloc(sizeof(CMAC_CTX));
+    #####:  101:	if (!ctx)
+        -:  102:		return NULL;
+    #####:  103:	EVP_CIPHER_CTX_init(&ctx->cctx);
+    #####:  104:	ctx->nlast_block = -1;
+    #####:  105:	return ctx;
+        -:  106:	}
+        -:  107:
+    #####:  108:void CMAC_CTX_cleanup(CMAC_CTX *ctx)
+        -:  109:	{
+        -:  110:#ifdef OPENSSL_FIPS
+        -:  111:	if (FIPS_mode() && !ctx->cctx.engine)
+        -:  112:		{
+        -:  113:		FIPS_cmac_ctx_cleanup(ctx);
+        -:  114:		return;
+        -:  115:		}
+        -:  116:#endif
+    #####:  117:	EVP_CIPHER_CTX_cleanup(&ctx->cctx);
+    #####:  118:	OPENSSL_cleanse(ctx->tbl, EVP_MAX_BLOCK_LENGTH);
+    #####:  119:	OPENSSL_cleanse(ctx->k1, EVP_MAX_BLOCK_LENGTH);
+    #####:  120:	OPENSSL_cleanse(ctx->k2, EVP_MAX_BLOCK_LENGTH);
+    #####:  121:	OPENSSL_cleanse(ctx->last_block, EVP_MAX_BLOCK_LENGTH);
+    #####:  122:	ctx->nlast_block = -1;
+    #####:  123:	}
+        -:  124:
+    #####:  125:EVP_CIPHER_CTX *CMAC_CTX_get0_cipher_ctx(CMAC_CTX *ctx)
+        -:  126:	{
+    #####:  127:	return &ctx->cctx;
+        -:  128:	}
+        -:  129:
+    #####:  130:void CMAC_CTX_free(CMAC_CTX *ctx)
+        -:  131:	{
+    #####:  132:	CMAC_CTX_cleanup(ctx);
+    #####:  133:	OPENSSL_free(ctx);
+    #####:  134:	}
+        -:  135:
+    #####:  136:int CMAC_CTX_copy(CMAC_CTX *out, const CMAC_CTX *in)
+        -:  137:	{
+        -:  138:	int bl;
+    #####:  139:	if (in->nlast_block == -1)
+        -:  140:		return 0;
+    #####:  141:	if (!EVP_CIPHER_CTX_copy(&out->cctx, &in->cctx))
+        -:  142:		return 0;
+    #####:  143:	bl = EVP_CIPHER_CTX_block_size(&in->cctx);
+    #####:  144:	memcpy(out->k1, in->k1, bl);
+    #####:  145:	memcpy(out->k2, in->k2, bl);
+    #####:  146:	memcpy(out->tbl, in->tbl, bl);
+    #####:  147:	memcpy(out->last_block, in->last_block, bl);
+    #####:  148:	out->nlast_block = in->nlast_block;
+    #####:  149:	return 1;
+        -:  150:	}
+        -:  151:
+    #####:  152:int CMAC_Init(CMAC_CTX *ctx, const void *key, size_t keylen, 
+        -:  153:			const EVP_CIPHER *cipher, ENGINE *impl)
+        -:  154:	{
+        -:  155:	static unsigned char zero_iv[EVP_MAX_BLOCK_LENGTH];
+        -:  156:#ifdef OPENSSL_FIPS
+        -:  157:	if (FIPS_mode())
+        -:  158:		{
+        -:  159:		/* If we have an ENGINE need to allow non FIPS */
+        -:  160:		if ((impl || ctx->cctx.engine)
+        -:  161:			&& !(ctx->cctx.flags & EVP_CIPH_FLAG_NON_FIPS_ALLOW))
+        -:  162:
+        -:  163:			{
+        -:  164:			EVPerr(EVP_F_CMAC_INIT, EVP_R_DISABLED_FOR_FIPS);
+        -:  165:			return 0;
+        -:  166:			}
+        -:  167:		/* Other algorithm blocking will be done in FIPS_cmac_init,
+        -:  168:		 * via FIPS_cipherinit().
+        -:  169:		 */
+        -:  170:		if (!impl && !ctx->cctx.engine)
+        -:  171:			return FIPS_cmac_init(ctx, key, keylen, cipher, NULL);
+        -:  172:		}
+        -:  173:#endif
+        -:  174:	/* All zeros means restart */
+    #####:  175:	if (!key && !cipher && !impl && keylen == 0)
+        -:  176:		{
+        -:  177:		/* Not initialised */
+    #####:  178:		if (ctx->nlast_block == -1)
+        -:  179:			return 0;
+    #####:  180:		if (!EVP_EncryptInit_ex(&ctx->cctx, NULL, NULL, NULL, zero_iv))
+        -:  181:			return 0;
+    #####:  182:		memset(ctx->tbl, 0, EVP_CIPHER_CTX_block_size(&ctx->cctx));
+    #####:  183:		ctx->nlast_block = 0;
+    #####:  184:		return 1;
+        -:  185:		}
+        -:  186:	/* Initialiase context */
+    #####:  187:	if (cipher && !EVP_EncryptInit_ex(&ctx->cctx, cipher, impl, NULL, NULL))
+        -:  188:		return 0;
+        -:  189:	/* Non-NULL key means initialisation complete */
+    #####:  190:	if (key)
+        -:  191:		{
+        -:  192:		int bl;
+    #####:  193:		if (!EVP_CIPHER_CTX_cipher(&ctx->cctx))
+        -:  194:			return 0;
+    #####:  195:		if (!EVP_CIPHER_CTX_set_key_length(&ctx->cctx, keylen))
+        -:  196:			return 0;
+    #####:  197:		if (!EVP_EncryptInit_ex(&ctx->cctx, NULL, NULL, key, zero_iv))
+        -:  198:			return 0;
+    #####:  199:		bl = EVP_CIPHER_CTX_block_size(&ctx->cctx);
+    #####:  200:		if (!EVP_Cipher(&ctx->cctx, ctx->tbl, zero_iv, bl))
+        -:  201:			return 0;
+    #####:  202:		make_kn(ctx->k1, ctx->tbl, bl);
+    #####:  203:		make_kn(ctx->k2, ctx->k1, bl);
+    #####:  204:		OPENSSL_cleanse(ctx->tbl, bl);
+        -:  205:		/* Reset context again ready for first data block */
+    #####:  206:		if (!EVP_EncryptInit_ex(&ctx->cctx, NULL, NULL, NULL, zero_iv))
+        -:  207:			return 0;
+        -:  208:		/* Zero tbl so resume works */
+        -:  209:		memset(ctx->tbl, 0, bl);
+    #####:  210:		ctx->nlast_block = 0;
+        -:  211:		}
+        -:  212:	return 1;
+        -:  213:	}
+        -:  214:
+    #####:  215:int CMAC_Update(CMAC_CTX *ctx, const void *in, size_t dlen)
+        -:  216:	{
+        -:  217:	const unsigned char *data = in;
+        -:  218:	size_t bl;
+        -:  219:#ifdef OPENSSL_FIPS
+        -:  220:	if (FIPS_mode() && !ctx->cctx.engine)
+        -:  221:		return FIPS_cmac_update(ctx, in, dlen);
+        -:  222:#endif
+    #####:  223:	if (ctx->nlast_block == -1)
+        -:  224:		return 0;
+    #####:  225:	if (dlen == 0)
+        -:  226:		return 1;
+    #####:  227:	bl = EVP_CIPHER_CTX_block_size(&ctx->cctx);
+        -:  228:	/* Copy into partial block if we need to */
+    #####:  229:	if (ctx->nlast_block > 0)
+        -:  230:		{
+        -:  231:		size_t nleft;
+    #####:  232:		nleft = bl - ctx->nlast_block;
+    #####:  233:		if (dlen < nleft)
+        -:  234:			nleft = dlen;
+    #####:  235:		memcpy(ctx->last_block + ctx->nlast_block, data, nleft);
+    #####:  236:		dlen -= nleft;
+    #####:  237:		ctx->nlast_block += nleft;
+        -:  238:		/* If no more to process return */
+    #####:  239:		if (dlen == 0)
+        -:  240:			return 1;
+    #####:  241:		data += nleft;
+        -:  242:		/* Else not final block so encrypt it */
+    #####:  243:		if (!EVP_Cipher(&ctx->cctx, ctx->tbl, ctx->last_block,bl))
+        -:  244:			return 0;
+        -:  245:		}
+        -:  246:	/* Encrypt all but one of the complete blocks left */
+    #####:  247:	while(dlen > bl)
+        -:  248:		{
+    #####:  249:		if (!EVP_Cipher(&ctx->cctx, ctx->tbl, data, bl))
+        -:  250:			return 0;
+    #####:  251:		dlen -= bl;
+    #####:  252:		data += bl;
+        -:  253:		}
+        -:  254:	/* Copy any data left to last block buffer */
+    #####:  255:	memcpy(ctx->last_block, data, dlen);
+    #####:  256:	ctx->nlast_block = dlen;
+    #####:  257:	return 1;
+        -:  258:
+        -:  259:	}
+        -:  260:
+    #####:  261:int CMAC_Final(CMAC_CTX *ctx, unsigned char *out, size_t *poutlen)
+        -:  262:	{
+        -:  263:	int i, bl, lb;
+        -:  264:#ifdef OPENSSL_FIPS
+        -:  265:	if (FIPS_mode() && !ctx->cctx.engine)
+        -:  266:		return FIPS_cmac_final(ctx, out, poutlen);
+        -:  267:#endif
+    #####:  268:	if (ctx->nlast_block == -1)
+        -:  269:		return 0;
+    #####:  270:	bl = EVP_CIPHER_CTX_block_size(&ctx->cctx);
+    #####:  271:	*poutlen = (size_t)bl;
+    #####:  272:	if (!out)
+        -:  273:		return 1;
+    #####:  274:	lb = ctx->nlast_block;
+        -:  275:	/* Is last block complete? */
+    #####:  276:	if (lb == bl)
+        -:  277:		{
+    #####:  278:		for (i = 0; i < bl; i++)
+    #####:  279:			out[i] = ctx->last_block[i] ^ ctx->k1[i];
+        -:  280:		}
+        -:  281:	else
+        -:  282:		{
+    #####:  283:		ctx->last_block[lb] = 0x80;
+    #####:  284:		if (bl - lb > 1)
+    #####:  285:			memset(ctx->last_block + lb + 1, 0, bl - lb - 1);
+    #####:  286:		for (i = 0; i < bl; i++)
+    #####:  287:			out[i] = ctx->last_block[i] ^ ctx->k2[i];
+        -:  288:		}
+    #####:  289:	if (!EVP_Cipher(&ctx->cctx, out, out, bl))
+        -:  290:		{
+    #####:  291:		OPENSSL_cleanse(out, bl);	
+    #####:  292:		return 0;
+        -:  293:		}
+        -:  294:	return 1;
+        -:  295:	}
+        -:  296:
+    #####:  297:int CMAC_resume(CMAC_CTX *ctx)
+        -:  298:	{
+    #####:  299:	if (ctx->nlast_block == -1)
+        -:  300:		return 0;
+        -:  301:	/* The buffer "tbl" containes the last fully encrypted block
+        -:  302:	 * which is the last IV (or all zeroes if no last encrypted block).
+        -:  303:	 * The last block has not been modified since CMAC_final().
+        -:  304:	 * So reinitliasing using the last decrypted block will allow
+        -:  305:	 * CMAC to continue after calling CMAC_Final(). 
+        -:  306:	 */
+    #####:  307:	return EVP_EncryptInit_ex(&ctx->cctx, NULL, NULL, NULL, ctx->tbl);
+        -:  308:	}

@@ -1,0 +1,533 @@
+        -:    0:Source:t_x509.c
+        -:    0:Graph:t_x509.gcno
+        -:    0:Data:t_x509.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* crypto/asn1/t_x509.c */
+        -:    2:/* Copyright (C) 1995-1998 Eric Young (eay@cryptsoft.com)
+        -:    3: * All rights reserved.
+        -:    4: *
+        -:    5: * This package is an SSL implementation written
+        -:    6: * by Eric Young (eay@cryptsoft.com).
+        -:    7: * The implementation was written so as to conform with Netscapes SSL.
+        -:    8: * 
+        -:    9: * This library is free for commercial and non-commercial use as long as
+        -:   10: * the following conditions are aheared to.  The following conditions
+        -:   11: * apply to all code found in this distribution, be it the RC4, RSA,
+        -:   12: * lhash, DES, etc., code; not just the SSL code.  The SSL documentation
+        -:   13: * included with this distribution is covered by the same copyright terms
+        -:   14: * except that the holder is Tim Hudson (tjh@cryptsoft.com).
+        -:   15: * 
+        -:   16: * Copyright remains Eric Young's, and as such any Copyright notices in
+        -:   17: * the code are not to be removed.
+        -:   18: * If this package is used in a product, Eric Young should be given attribution
+        -:   19: * as the author of the parts of the library used.
+        -:   20: * This can be in the form of a textual message at program startup or
+        -:   21: * in documentation (online or textual) provided with the package.
+        -:   22: * 
+        -:   23: * Redistribution and use in source and binary forms, with or without
+        -:   24: * modification, are permitted provided that the following conditions
+        -:   25: * are met:
+        -:   26: * 1. Redistributions of source code must retain the copyright
+        -:   27: *    notice, this list of conditions and the following disclaimer.
+        -:   28: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   29: *    notice, this list of conditions and the following disclaimer in the
+        -:   30: *    documentation and/or other materials provided with the distribution.
+        -:   31: * 3. All advertising materials mentioning features or use of this software
+        -:   32: *    must display the following acknowledgement:
+        -:   33: *    "This product includes cryptographic software written by
+        -:   34: *     Eric Young (eay@cryptsoft.com)"
+        -:   35: *    The word 'cryptographic' can be left out if the rouines from the library
+        -:   36: *    being used are not cryptographic related :-).
+        -:   37: * 4. If you include any Windows specific code (or a derivative thereof) from 
+        -:   38: *    the apps directory (application code) you must include an acknowledgement:
+        -:   39: *    "This product includes software written by Tim Hudson (tjh@cryptsoft.com)"
+        -:   40: * 
+        -:   41: * THIS SOFTWARE IS PROVIDED BY ERIC YOUNG ``AS IS'' AND
+        -:   42: * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   43: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+        -:   44: * ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+        -:   45: * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+        -:   46: * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+        -:   47: * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   48: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+        -:   49: * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+        -:   50: * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+        -:   51: * SUCH DAMAGE.
+        -:   52: * 
+        -:   53: * The licence and distribution terms for any publically available version or
+        -:   54: * derivative of this code cannot be changed.  i.e. this code cannot simply be
+        -:   55: * copied and put under another distribution licence
+        -:   56: * [including the GNU Public Licence.]
+        -:   57: */
+        -:   58:
+        -:   59:#include <stdio.h>
+        -:   60:#include "cryptlib.h"
+        -:   61:#include <openssl/buffer.h>
+        -:   62:#include <openssl/bn.h>
+        -:   63:#ifndef OPENSSL_NO_RSA
+        -:   64:#include <openssl/rsa.h>
+        -:   65:#endif
+        -:   66:#ifndef OPENSSL_NO_DSA
+        -:   67:#include <openssl/dsa.h>
+        -:   68:#endif
+        -:   69:#ifndef OPENSSL_NO_EC
+        -:   70:#include <openssl/ec.h>
+        -:   71:#endif
+        -:   72:#include <openssl/objects.h>
+        -:   73:#include <openssl/x509.h>
+        -:   74:#include <openssl/x509v3.h>
+        -:   75:#include "asn1_locl.h"
+        -:   76:
+        -:   77:#ifndef OPENSSL_NO_FP_API
+    #####:   78:int X509_print_fp(FILE *fp, X509 *x)
+        -:   79:	{
+    #####:   80:	return X509_print_ex_fp(fp, x, XN_FLAG_COMPAT, X509_FLAG_COMPAT);
+        -:   81:	}
+        -:   82:
+    #####:   83:int X509_print_ex_fp(FILE *fp, X509 *x, unsigned long nmflag, unsigned long cflag)
+        -:   84:        {
+        -:   85:        BIO *b;
+        -:   86:        int ret;
+        -:   87:
+    #####:   88:        if ((b=BIO_new(BIO_s_file())) == NULL)
+        -:   89:		{
+    #####:   90:		X509err(X509_F_X509_PRINT_EX_FP,ERR_R_BUF_LIB);
+    #####:   91:                return(0);
+        -:   92:		}
+    #####:   93:        BIO_set_fp(b,fp,BIO_NOCLOSE);
+    #####:   94:        ret=X509_print_ex(b, x, nmflag, cflag);
+    #####:   95:        BIO_free(b);
+    #####:   96:        return(ret);
+        -:   97:        }
+        -:   98:#endif
+        -:   99:
+    #####:  100:int X509_print(BIO *bp, X509 *x)
+        -:  101:{
+    #####:  102:	return X509_print_ex(bp, x, XN_FLAG_COMPAT, X509_FLAG_COMPAT);
+        -:  103:}
+        -:  104:
+    #####:  105:int X509_print_ex(BIO *bp, X509 *x, unsigned long nmflags, unsigned long cflag)
+        -:  106:	{
+        -:  107:	long l;
+        -:  108:	int ret=0,i;
+        -:  109:	char *m=NULL,mlch = ' ';
+        -:  110:	int nmindent = 0;
+        -:  111:	X509_CINF *ci;
+        -:  112:	ASN1_INTEGER *bs;
+        -:  113:	EVP_PKEY *pkey=NULL;
+        -:  114:	const char *neg;
+        -:  115:
+    #####:  116:	if((nmflags & XN_FLAG_SEP_MASK) == XN_FLAG_SEP_MULTILINE) {
+        -:  117:			mlch = '\n';
+        -:  118:			nmindent = 12;
+        -:  119:	}
+        -:  120:
+    #####:  121:	if(nmflags == X509_FLAG_COMPAT)
+        -:  122:		nmindent = 16;
+        -:  123:
+    #####:  124:	ci=x->cert_info;
+    #####:  125:	if(!(cflag & X509_FLAG_NO_HEADER))
+        -:  126:		{
+    #####:  127:		if (BIO_write(bp,"Certificate:\n",13) <= 0) goto err;
+    #####:  128:		if (BIO_write(bp,"    Data:\n",10) <= 0) goto err;
+        -:  129:		}
+    #####:  130:	if(!(cflag & X509_FLAG_NO_VERSION))
+        -:  131:		{
+    #####:  132:		l=X509_get_version(x);
+    #####:  133:		if (BIO_printf(bp,"%8sVersion: %lu (0x%lx)\n","",l+1,l) <= 0) goto err;
+        -:  134:		}
+    #####:  135:	if(!(cflag & X509_FLAG_NO_SERIAL))
+        -:  136:		{
+        -:  137:
+    #####:  138:		if (BIO_write(bp,"        Serial Number:",22) <= 0) goto err;
+        -:  139:
+    #####:  140:		bs=X509_get_serialNumber(x);
+    #####:  141:		if (bs->length <= (int)sizeof(long))
+        -:  142:			{
+    #####:  143:			l=ASN1_INTEGER_get(bs);
+    #####:  144:			if (bs->type == V_ASN1_NEG_INTEGER)
+        -:  145:				{
+    #####:  146:				l= -l;
+        -:  147:				neg="-";
+        -:  148:				}
+        -:  149:			else
+        -:  150:				neg="";
+    #####:  151:			if (BIO_printf(bp," %s%lu (%s0x%lx)\n",neg,l,neg,l) <= 0)
+        -:  152:				goto err;
+        -:  153:			}
+        -:  154:		else
+        -:  155:			{
+    #####:  156:			neg=(bs->type == V_ASN1_NEG_INTEGER)?" (Negative)":"";
+    #####:  157:			if (BIO_printf(bp,"\n%12s%s","",neg) <= 0) goto err;
+        -:  158:
+    #####:  159:			for (i=0; i<bs->length; i++)
+        -:  160:				{
+    #####:  161:				if (BIO_printf(bp,"%02x%c",bs->data[i],
+    #####:  162:					((i+1 == bs->length)?'\n':':')) <= 0)
+        -:  163:					goto err;
+        -:  164:				}
+        -:  165:			}
+        -:  166:
+        -:  167:		}
+        -:  168:
+    #####:  169:	if(!(cflag & X509_FLAG_NO_SIGNAME))
+        -:  170:		{
+    #####:  171:		if(X509_signature_print(bp, x->sig_alg, NULL) <= 0)
+        -:  172:			goto err;
+        -:  173:#if 0
+        -:  174:		if (BIO_printf(bp,"%8sSignature Algorithm: ","") <= 0) 
+        -:  175:			goto err;
+        -:  176:		if (i2a_ASN1_OBJECT(bp, ci->signature->algorithm) <= 0)
+        -:  177:			goto err;
+        -:  178:		if (BIO_puts(bp, "\n") <= 0)
+        -:  179:			goto err;
+        -:  180:#endif
+        -:  181:		}
+        -:  182:
+    #####:  183:	if(!(cflag & X509_FLAG_NO_ISSUER))
+        -:  184:		{
+    #####:  185:		if (BIO_printf(bp,"        Issuer:%c",mlch) <= 0) goto err;
+    #####:  186:		if (X509_NAME_print_ex(bp,X509_get_issuer_name(x),nmindent, nmflags) < 0) goto err;
+    #####:  187:		if (BIO_write(bp,"\n",1) <= 0) goto err;
+        -:  188:		}
+    #####:  189:	if(!(cflag & X509_FLAG_NO_VALIDITY))
+        -:  190:		{
+    #####:  191:		if (BIO_write(bp,"        Validity\n",17) <= 0) goto err;
+    #####:  192:		if (BIO_write(bp,"            Not Before: ",24) <= 0) goto err;
+    #####:  193:		if (!ASN1_TIME_print(bp,X509_get_notBefore(x))) goto err;
+    #####:  194:		if (BIO_write(bp,"\n            Not After : ",25) <= 0) goto err;
+    #####:  195:		if (!ASN1_TIME_print(bp,X509_get_notAfter(x))) goto err;
+    #####:  196:		if (BIO_write(bp,"\n",1) <= 0) goto err;
+        -:  197:		}
+    #####:  198:	if(!(cflag & X509_FLAG_NO_SUBJECT))
+        -:  199:		{
+    #####:  200:		if (BIO_printf(bp,"        Subject:%c",mlch) <= 0) goto err;
+    #####:  201:		if (X509_NAME_print_ex(bp,X509_get_subject_name(x),nmindent, nmflags) < 0) goto err;
+    #####:  202:		if (BIO_write(bp,"\n",1) <= 0) goto err;
+        -:  203:		}
+    #####:  204:	if(!(cflag & X509_FLAG_NO_PUBKEY))
+        -:  205:		{
+    #####:  206:		if (BIO_write(bp,"        Subject Public Key Info:\n",33) <= 0)
+        -:  207:			goto err;
+    #####:  208:		if (BIO_printf(bp,"%12sPublic Key Algorithm: ","") <= 0)
+        -:  209:			goto err;
+    #####:  210:		if (i2a_ASN1_OBJECT(bp, ci->key->algor->algorithm) <= 0)
+        -:  211:			goto err;
+    #####:  212:		if (BIO_puts(bp, "\n") <= 0)
+        -:  213:			goto err;
+        -:  214:
+    #####:  215:		pkey=X509_get_pubkey(x);
+    #####:  216:		if (pkey == NULL)
+        -:  217:			{
+    #####:  218:			BIO_printf(bp,"%12sUnable to load Public Key\n","");
+    #####:  219:			ERR_print_errors(bp);
+        -:  220:			}
+        -:  221:		else
+        -:  222:			{
+    #####:  223:			EVP_PKEY_print_public(bp, pkey, 16, NULL);
+    #####:  224:			EVP_PKEY_free(pkey);
+        -:  225:			}
+        -:  226:		}
+        -:  227:
+    #####:  228:	if (!(cflag & X509_FLAG_NO_EXTENSIONS))
+    #####:  229:		X509V3_extensions_print(bp, "X509v3 extensions",
+        -:  230:					ci->extensions, cflag, 8);
+        -:  231:
+    #####:  232:	if(!(cflag & X509_FLAG_NO_SIGDUMP))
+        -:  233:		{
+    #####:  234:		if(X509_signature_print(bp, x->sig_alg, x->signature) <= 0) goto err;
+        -:  235:		}
+    #####:  236:	if(!(cflag & X509_FLAG_NO_AUX))
+        -:  237:		{
+    #####:  238:		if (!X509_CERT_AUX_print(bp, x->aux, 0)) goto err;
+        -:  239:		}
+        -:  240:	ret=1;
+        -:  241:err:
+        -:  242:	if (m != NULL) OPENSSL_free(m);
+    #####:  243:	return(ret);
+        -:  244:	}
+        -:  245:
+    #####:  246:int X509_ocspid_print (BIO *bp, X509 *x)
+        -:  247:	{
+        -:  248:	unsigned char *der=NULL ;
+        -:  249:	unsigned char *dertmp;
+        -:  250:	int derlen;
+        -:  251:	int i;
+        -:  252:	unsigned char SHA1md[SHA_DIGEST_LENGTH];
+        -:  253:
+        -:  254:	/* display the hash of the subject as it would appear
+        -:  255:	   in OCSP requests */
+    #####:  256:	if (BIO_printf(bp,"        Subject OCSP hash: ") <= 0)
+        -:  257:		goto err;
+    #####:  258:	derlen = i2d_X509_NAME(x->cert_info->subject, NULL);
+    #####:  259:	if ((der = dertmp = (unsigned char *)OPENSSL_malloc (derlen)) == NULL)
+        -:  260:		goto err;
+    #####:  261:	i2d_X509_NAME(x->cert_info->subject, &dertmp);
+        -:  262:
+    #####:  263:	if (!EVP_Digest(der, derlen, SHA1md, NULL, EVP_sha1(), NULL))
+        -:  264:		goto err;
+    #####:  265:	for (i=0; i < SHA_DIGEST_LENGTH; i++)
+        -:  266:		{
+    #####:  267:		if (BIO_printf(bp,"%02X",SHA1md[i]) <= 0) goto err;
+        -:  268:		}
+    #####:  269:	OPENSSL_free (der);
+        -:  270:	der=NULL;
+        -:  271:
+        -:  272:	/* display the hash of the public key as it would appear
+        -:  273:	   in OCSP requests */
+    #####:  274:	if (BIO_printf(bp,"\n        Public key OCSP hash: ") <= 0)
+        -:  275:		goto err;
+        -:  276:
+    #####:  277:	if (!EVP_Digest(x->cert_info->key->public_key->data,
+    #####:  278:			x->cert_info->key->public_key->length,
+        -:  279:			SHA1md, NULL, EVP_sha1(), NULL))
+        -:  280:		goto err;
+    #####:  281:	for (i=0; i < SHA_DIGEST_LENGTH; i++)
+        -:  282:		{
+    #####:  283:		if (BIO_printf(bp,"%02X",SHA1md[i]) <= 0)
+        -:  284:			goto err;
+        -:  285:		}
+    #####:  286:	BIO_printf(bp,"\n");
+        -:  287:
+    #####:  288:	return (1);
+        -:  289:err:
+    #####:  290:	if (der != NULL) OPENSSL_free(der);
+        -:  291:	return(0);
+        -:  292:	}
+        -:  293:
+    #####:  294:int X509_signature_dump(BIO *bp, const ASN1_STRING *sig, int indent)
+        -:  295:{
+        -:  296:	const unsigned char *s;
+        -:  297:	int i, n;
+        -:  298:
+    #####:  299:	n=sig->length;
+    #####:  300:	s=sig->data;
+    #####:  301:	for (i=0; i<n; i++)
+        -:  302:		{
+    #####:  303:		if ((i%18) == 0)
+        -:  304:			{
+    #####:  305:			if (BIO_write(bp,"\n",1) <= 0) return 0;
+    #####:  306:			if (BIO_indent(bp, indent, indent) <= 0) return 0;
+        -:  307:			}
+    #####:  308:			if (BIO_printf(bp,"%02x%s",s[i],
+    #####:  309:				((i+1) == n)?"":":") <= 0) return 0;
+        -:  310:		}
+    #####:  311:	if (BIO_write(bp,"\n",1) != 1) return 0;
+        -:  312:
+    #####:  313:	return 1;
+        -:  314:}
+        -:  315:
+    #####:  316:int X509_signature_print(BIO *bp, X509_ALGOR *sigalg, ASN1_STRING *sig)
+        -:  317:{
+        -:  318:	int sig_nid;
+    #####:  319:	if (BIO_puts(bp,"    Signature Algorithm: ") <= 0) return 0;
+    #####:  320:	if (i2a_ASN1_OBJECT(bp, sigalg->algorithm) <= 0) return 0;
+        -:  321:
+    #####:  322:	sig_nid = OBJ_obj2nid(sigalg->algorithm);
+    #####:  323:	if (sig_nid != NID_undef)
+        -:  324:		{
+        -:  325:		int pkey_nid, dig_nid;
+        -:  326:		const EVP_PKEY_ASN1_METHOD *ameth;
+    #####:  327:		if (OBJ_find_sigid_algs(sig_nid, &dig_nid, &pkey_nid))
+        -:  328:			{
+    #####:  329:			ameth = EVP_PKEY_asn1_find(NULL, pkey_nid);
+    #####:  330:			if (ameth && ameth->sig_print)
+    #####:  331:				return ameth->sig_print(bp, sigalg, sig, 9, 0);
+        -:  332:			}
+        -:  333:		}
+    #####:  334:	if (sig)
+    #####:  335:		return X509_signature_dump(bp, sig, 9);
+    #####:  336:	else if (BIO_puts(bp, "\n") <= 0)
+        -:  337:		return 0;
+    #####:  338:	return 1;
+        -:  339:}
+        -:  340:
+    #####:  341:int ASN1_STRING_print(BIO *bp, const ASN1_STRING *v)
+        -:  342:	{
+        -:  343:	int i,n;
+        -:  344:	char buf[80];
+        -:  345:	const char *p;
+        -:  346:
+    #####:  347:	if (v == NULL) return(0);
+        -:  348:	n=0;
+    #####:  349:	p=(const char *)v->data;
+    #####:  350:	for (i=0; i<v->length; i++)
+        -:  351:		{
+    #####:  352:		if ((p[i] > '~') || ((p[i] < ' ') &&
+    #####:  353:			(p[i] != '\n') && (p[i] != '\r')))
+    #####:  354:			buf[n]='.';
+        -:  355:		else
+    #####:  356:			buf[n]=p[i];
+    #####:  357:		n++;
+    #####:  358:		if (n >= 80)
+        -:  359:			{
+    #####:  360:			if (BIO_write(bp,buf,n) <= 0)
+        -:  361:				return(0);
+        -:  362:			n=0;
+        -:  363:			}
+        -:  364:		}
+    #####:  365:	if (n > 0)
+    #####:  366:		if (BIO_write(bp,buf,n) <= 0)
+        -:  367:			return(0);
+        -:  368:	return(1);
+        -:  369:	}
+        -:  370:
+     1679:  371:int ASN1_TIME_print(BIO *bp, const ASN1_TIME *tm)
+        -:  372:{
+     1679:  373:	if(tm->type == V_ASN1_UTCTIME) return ASN1_UTCTIME_print(bp, tm);
+     1679:  374:	if(tm->type == V_ASN1_GENERALIZEDTIME)
+     1679:  375:				return ASN1_GENERALIZEDTIME_print(bp, tm);
+    #####:  376:	BIO_write(bp,"Bad time value",14);
+    #####:  377:	return(0);
+        -:  378:}
+        -:  379:
+        -:  380:static const char *mon[12]=
+        -:  381:    {
+        -:  382:    "Jan","Feb","Mar","Apr","May","Jun",
+        -:  383:    "Jul","Aug","Sep","Oct","Nov","Dec"
+        -:  384:    };
+        -:  385:
+     1679:  386:int ASN1_GENERALIZEDTIME_print(BIO *bp, const ASN1_GENERALIZEDTIME *tm)
+        -:  387:	{
+        -:  388:	char *v;
+        -:  389:	int gmt=0;
+        -:  390:	int i;
+        -:  391:	int y=0,M=0,d=0,h=0,m=0,s=0;
+        -:  392:	char *f = NULL;
+        -:  393:	int f_len = 0;
+        -:  394:
+     1679:  395:	i=tm->length;
+     1679:  396:	v=(char *)tm->data;
+        -:  397:
+     1679:  398:	if (i < 12) goto err;
+     1679:  399:	if (v[i-1] == 'Z') gmt=1;
+    21827:  400:	for (i=0; i<12; i++)
+    20148:  401:		if ((v[i] > '9') || (v[i] < '0')) goto err;
+     1679:  402:	y= (v[0]-'0')*1000+(v[1]-'0')*100 + (v[2]-'0')*10+(v[3]-'0');
+     1679:  403:	M= (v[4]-'0')*10+(v[5]-'0');
+     1679:  404:	if ((M > 12) || (M < 1)) goto err;
+     1679:  405:	d= (v[6]-'0')*10+(v[7]-'0');
+     1679:  406:	h= (v[8]-'0')*10+(v[9]-'0');
+     1679:  407:	m=  (v[10]-'0')*10+(v[11]-'0');
+     3358:  408:	if (tm->length >= 14 &&
+     5037:  409:	    (v[12] >= '0') && (v[12] <= '9') &&
+     3358:  410:	    (v[13] >= '0') && (v[13] <= '9'))
+        -:  411:		{
+     1679:  412:		s=  (v[12]-'0')*10+(v[13]-'0');
+        -:  413:		/* Check for fractions of seconds. */
+     1679:  414:		if (tm->length >= 15 && v[14] == '.')
+        -:  415:			{
+        -:  416:			int l = tm->length;
+    #####:  417:			f = &v[14];	/* The decimal point. */
+        -:  418:			f_len = 1;
+    #####:  419:			while (14 + f_len < l && f[f_len] >= '0' && f[f_len] <= '9')
+    #####:  420:				++f_len;
+        -:  421:			}
+        -:  422:		}
+        -:  423:
+     3358:  424:	if (BIO_printf(bp,"%s %2d %02d:%02d:%02d%.*s %d%s",
+     1679:  425:		mon[M-1],d,h,m,s,f_len,f,y,(gmt)?" GMT":"") <= 0)
+        -:  426:		return(0);
+        -:  427:	else
+     1679:  428:		return(1);
+        -:  429:err:
+    #####:  430:	BIO_write(bp,"Bad time value",14);
+    #####:  431:	return(0);
+        -:  432:	}
+        -:  433:
+    #####:  434:int ASN1_UTCTIME_print(BIO *bp, const ASN1_UTCTIME *tm)
+        -:  435:	{
+        -:  436:	const char *v;
+        -:  437:	int gmt=0;
+        -:  438:	int i;
+        -:  439:	int y=0,M=0,d=0,h=0,m=0,s=0;
+        -:  440:
+    #####:  441:	i=tm->length;
+    #####:  442:	v=(const char *)tm->data;
+        -:  443:
+    #####:  444:	if (i < 10) goto err;
+    #####:  445:	if (v[i-1] == 'Z') gmt=1;
+    #####:  446:	for (i=0; i<10; i++)
+    #####:  447:		if ((v[i] > '9') || (v[i] < '0')) goto err;
+    #####:  448:	y= (v[0]-'0')*10+(v[1]-'0');
+    #####:  449:	if (y < 50) y+=100;
+    #####:  450:	M= (v[2]-'0')*10+(v[3]-'0');
+    #####:  451:	if ((M > 12) || (M < 1)) goto err;
+    #####:  452:	d= (v[4]-'0')*10+(v[5]-'0');
+    #####:  453:	h= (v[6]-'0')*10+(v[7]-'0');
+    #####:  454:	m=  (v[8]-'0')*10+(v[9]-'0');
+    #####:  455:	if (tm->length >=12 &&
+    #####:  456:	    (v[10] >= '0') && (v[10] <= '9') &&
+    #####:  457:	    (v[11] >= '0') && (v[11] <= '9'))
+    #####:  458:		s=  (v[10]-'0')*10+(v[11]-'0');
+        -:  459:
+    #####:  460:	if (BIO_printf(bp,"%s %2d %02d:%02d:%02d %d%s",
+    #####:  461:		mon[M-1],d,h,m,s,y+1900,(gmt)?" GMT":"") <= 0)
+        -:  462:		return(0);
+        -:  463:	else
+    #####:  464:		return(1);
+        -:  465:err:
+    #####:  466:	BIO_write(bp,"Bad time value",14);
+    #####:  467:	return(0);
+        -:  468:	}
+        -:  469:
+    #####:  470:int X509_NAME_print(BIO *bp, X509_NAME *name, int obase)
+        -:  471:	{
+        -:  472:	char *s,*c,*b;
+        -:  473:	int ret=0,l,i;
+        -:  474:
+        -:  475:	l=80-2-obase;
+        -:  476:
+    #####:  477:	b=X509_NAME_oneline(name,NULL,0);
+    #####:  478:	if (!*b)
+        -:  479:		{
+    #####:  480:		OPENSSL_free(b);
+    #####:  481:		return 1;
+        -:  482:		}
+    #####:  483:	s=b+1; /* skip the first slash */
+        -:  484:
+        -:  485:	c=s;
+        -:  486:	for (;;)
+        -:  487:		{
+        -:  488:#ifndef CHARSET_EBCDIC
+    #####:  489:		if (	((*s == '/') &&
+    #####:  490:				((s[1] >= 'A') && (s[1] <= 'Z') && (
+    #####:  491:					(s[2] == '=') ||
+    #####:  492:					((s[2] >= 'A') && (s[2] <= 'Z') &&
+    #####:  493:					(s[3] == '='))
+    #####:  494:				 ))) ||
+        -:  495:			(*s == '\0'))
+        -:  496:#else
+        -:  497:		if (	((*s == '/') &&
+        -:  498:				(isupper(s[1]) && (
+        -:  499:					(s[2] == '=') ||
+        -:  500:					(isupper(s[2]) &&
+        -:  501:					(s[3] == '='))
+        -:  502:				 ))) ||
+        -:  503:			(*s == '\0'))
+        -:  504:#endif
+        -:  505:			{
+    #####:  506:			i=s-c;
+    #####:  507:			if (BIO_write(bp,c,i) != i) goto err;
+    #####:  508:			c=s+1;	/* skip following slash */
+    #####:  509:			if (*s != '\0')
+        -:  510:				{
+    #####:  511:				if (BIO_write(bp,", ",2) != 2) goto err;
+        -:  512:				}
+        -:  513:			l--;
+        -:  514:			}
+    #####:  515:		if (*s == '\0') break;
+    #####:  516:		s++;
+        -:  517:		l--;
+    #####:  518:		}
+        -:  519:	
+        -:  520:	ret=1;
+        -:  521:	if (0)
+        -:  522:		{
+        -:  523:err:
+    #####:  524:		X509err(X509_F_X509_NAME_PRINT,ERR_R_BUF_LIB);
+        -:  525:		}
+    #####:  526:	OPENSSL_free(b);
+    #####:  527:	return(ret);
+        -:  528:	}

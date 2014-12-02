@@ -1,0 +1,831 @@
+        -:    0:Source:bn_lib.c
+        -:    0:Graph:bn_lib.gcno
+        -:    0:Data:bn_lib.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* crypto/bn/bn_lib.c */
+        -:    2:/* Copyright (C) 1995-1998 Eric Young (eay@cryptsoft.com)
+        -:    3: * All rights reserved.
+        -:    4: *
+        -:    5: * This package is an SSL implementation written
+        -:    6: * by Eric Young (eay@cryptsoft.com).
+        -:    7: * The implementation was written so as to conform with Netscapes SSL.
+        -:    8: * 
+        -:    9: * This library is free for commercial and non-commercial use as long as
+        -:   10: * the following conditions are aheared to.  The following conditions
+        -:   11: * apply to all code found in this distribution, be it the RC4, RSA,
+        -:   12: * lhash, DES, etc., code; not just the SSL code.  The SSL documentation
+        -:   13: * included with this distribution is covered by the same copyright terms
+        -:   14: * except that the holder is Tim Hudson (tjh@cryptsoft.com).
+        -:   15: * 
+        -:   16: * Copyright remains Eric Young's, and as such any Copyright notices in
+        -:   17: * the code are not to be removed.
+        -:   18: * If this package is used in a product, Eric Young should be given attribution
+        -:   19: * as the author of the parts of the library used.
+        -:   20: * This can be in the form of a textual message at program startup or
+        -:   21: * in documentation (online or textual) provided with the package.
+        -:   22: * 
+        -:   23: * Redistribution and use in source and binary forms, with or without
+        -:   24: * modification, are permitted provided that the following conditions
+        -:   25: * are met:
+        -:   26: * 1. Redistributions of source code must retain the copyright
+        -:   27: *    notice, this list of conditions and the following disclaimer.
+        -:   28: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   29: *    notice, this list of conditions and the following disclaimer in the
+        -:   30: *    documentation and/or other materials provided with the distribution.
+        -:   31: * 3. All advertising materials mentioning features or use of this software
+        -:   32: *    must display the following acknowledgement:
+        -:   33: *    "This product includes cryptographic software written by
+        -:   34: *     Eric Young (eay@cryptsoft.com)"
+        -:   35: *    The word 'cryptographic' can be left out if the rouines from the library
+        -:   36: *    being used are not cryptographic related :-).
+        -:   37: * 4. If you include any Windows specific code (or a derivative thereof) from 
+        -:   38: *    the apps directory (application code) you must include an acknowledgement:
+        -:   39: *    "This product includes software written by Tim Hudson (tjh@cryptsoft.com)"
+        -:   40: * 
+        -:   41: * THIS SOFTWARE IS PROVIDED BY ERIC YOUNG ``AS IS'' AND
+        -:   42: * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   43: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+        -:   44: * ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+        -:   45: * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+        -:   46: * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+        -:   47: * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   48: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+        -:   49: * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+        -:   50: * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+        -:   51: * SUCH DAMAGE.
+        -:   52: * 
+        -:   53: * The licence and distribution terms for any publically available version or
+        -:   54: * derivative of this code cannot be changed.  i.e. this code cannot simply be
+        -:   55: * copied and put under another distribution licence
+        -:   56: * [including the GNU Public Licence.]
+        -:   57: */
+        -:   58:
+        -:   59:#ifndef BN_DEBUG
+        -:   60:# undef NDEBUG /* avoid conflicting definitions */
+        -:   61:# define NDEBUG
+        -:   62:#endif
+        -:   63:
+        -:   64:#include <assert.h>
+        -:   65:#include <limits.h>
+        -:   66:#include <stdio.h>
+        -:   67:#include "cryptlib.h"
+        -:   68:#include "bn_lcl.h"
+        -:   69:
+        -:   70:const char BN_version[]="Big Number" OPENSSL_VERSION_PTEXT;
+        -:   71:
+        -:   72:/* This stuff appears to be completely unused, so is deprecated */
+        -:   73:#ifndef OPENSSL_NO_DEPRECATED
+        -:   74:/* For a 32 bit machine
+        -:   75: * 2 -   4 ==  128
+        -:   76: * 3 -   8 ==  256
+        -:   77: * 4 -  16 ==  512
+        -:   78: * 5 -  32 == 1024
+        -:   79: * 6 -  64 == 2048
+        -:   80: * 7 - 128 == 4096
+        -:   81: * 8 - 256 == 8192
+        -:   82: */
+        -:   83:static int bn_limit_bits=0;
+        -:   84:static int bn_limit_num=8;        /* (1<<bn_limit_bits) */
+        -:   85:static int bn_limit_bits_low=0;
+        -:   86:static int bn_limit_num_low=8;    /* (1<<bn_limit_bits_low) */
+        -:   87:static int bn_limit_bits_high=0;
+        -:   88:static int bn_limit_num_high=8;   /* (1<<bn_limit_bits_high) */
+        -:   89:static int bn_limit_bits_mont=0;
+        -:   90:static int bn_limit_num_mont=8;   /* (1<<bn_limit_bits_mont) */
+        -:   91:
+    #####:   92:void BN_set_params(int mult, int high, int low, int mont)
+        -:   93:	{
+    #####:   94:	if (mult >= 0)
+        -:   95:		{
+    #####:   96:		if (mult > (int)(sizeof(int)*8)-1)
+        -:   97:			mult=sizeof(int)*8-1;
+    #####:   98:		bn_limit_bits=mult;
+    #####:   99:		bn_limit_num=1<<mult;
+        -:  100:		}
+    #####:  101:	if (high >= 0)
+        -:  102:		{
+    #####:  103:		if (high > (int)(sizeof(int)*8)-1)
+        -:  104:			high=sizeof(int)*8-1;
+    #####:  105:		bn_limit_bits_high=high;
+    #####:  106:		bn_limit_num_high=1<<high;
+        -:  107:		}
+    #####:  108:	if (low >= 0)
+        -:  109:		{
+    #####:  110:		if (low > (int)(sizeof(int)*8)-1)
+        -:  111:			low=sizeof(int)*8-1;
+    #####:  112:		bn_limit_bits_low=low;
+    #####:  113:		bn_limit_num_low=1<<low;
+        -:  114:		}
+    #####:  115:	if (mont >= 0)
+        -:  116:		{
+    #####:  117:		if (mont > (int)(sizeof(int)*8)-1)
+        -:  118:			mont=sizeof(int)*8-1;
+    #####:  119:		bn_limit_bits_mont=mont;
+    #####:  120:		bn_limit_num_mont=1<<mont;
+        -:  121:		}
+    #####:  122:	}
+        -:  123:
+    #####:  124:int BN_get_params(int which)
+        -:  125:	{
+    #####:  126:	if      (which == 0) return(bn_limit_bits);
+    #####:  127:	else if (which == 1) return(bn_limit_bits_high);
+    #####:  128:	else if (which == 2) return(bn_limit_bits_low);
+    #####:  129:	else if (which == 3) return(bn_limit_bits_mont);
+        -:  130:	else return(0);
+        -:  131:	}
+        -:  132:#endif
+        -:  133:
+    11942:  134:const BIGNUM *BN_value_one(void)
+        -:  135:	{
+        -:  136:	static const BN_ULONG data_one=1L;
+        -:  137:	static const BIGNUM const_one={(BN_ULONG *)&data_one,1,1,0,BN_FLG_STATIC_DATA};
+        -:  138:
+    11942:  139:	return(&const_one);
+        -:  140:	}
+        -:  141:
+   940470:  142:int BN_num_bits_word(BN_ULONG l)
+        -:  143:	{
+        -:  144:	static const unsigned char bits[256]={
+        -:  145:		0,1,2,2,3,3,3,3,4,4,4,4,4,4,4,4,
+        -:  146:		5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,
+        -:  147:		6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,
+        -:  148:		6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,
+        -:  149:		7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,
+        -:  150:		7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,
+        -:  151:		7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,
+        -:  152:		7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,
+        -:  153:		8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,
+        -:  154:		8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,
+        -:  155:		8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,
+        -:  156:		8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,
+        -:  157:		8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,
+        -:  158:		8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,
+        -:  159:		8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,
+        -:  160:		8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,
+        -:  161:		};
+        -:  162:
+        -:  163:#if defined(SIXTY_FOUR_BIT_LONG)
+   940470:  164:	if (l & 0xffffffff00000000L)
+        -:  165:		{
+   546384:  166:		if (l & 0xffff000000000000L)
+        -:  167:			{
+   355562:  168:			if (l & 0xff00000000000000L)
+        -:  169:				{
+   259833:  170:				return(bits[(int)(l>>56)]+56);
+        -:  171:				}
+    95729:  172:			else	return(bits[(int)(l>>48)]+48);
+        -:  173:			}
+        -:  174:		else
+        -:  175:			{
+   190822:  176:			if (l & 0x0000ff0000000000L)
+        -:  177:				{
+    95286:  178:				return(bits[(int)(l>>40)]+40);
+        -:  179:				}
+    95536:  180:			else	return(bits[(int)(l>>32)]+32);
+        -:  181:			}
+        -:  182:		}
+        -:  183:	else
+        -:  184:#else
+        -:  185:#ifdef SIXTY_FOUR_BIT
+        -:  186:	if (l & 0xffffffff00000000LL)
+        -:  187:		{
+        -:  188:		if (l & 0xffff000000000000LL)
+        -:  189:			{
+        -:  190:			if (l & 0xff00000000000000LL)
+        -:  191:				{
+        -:  192:				return(bits[(int)(l>>56)]+56);
+        -:  193:				}
+        -:  194:			else	return(bits[(int)(l>>48)]+48);
+        -:  195:			}
+        -:  196:		else
+        -:  197:			{
+        -:  198:			if (l & 0x0000ff0000000000LL)
+        -:  199:				{
+        -:  200:				return(bits[(int)(l>>40)]+40);
+        -:  201:				}
+        -:  202:			else	return(bits[(int)(l>>32)]+32);
+        -:  203:			}
+        -:  204:		}
+        -:  205:	else
+        -:  206:#endif
+        -:  207:#endif
+        -:  208:		{
+        -:  209:#if defined(THIRTY_TWO_BIT) || defined(SIXTY_FOUR_BIT) || defined(SIXTY_FOUR_BIT_LONG)
+   394086:  210:		if (l & 0xffff0000L)
+        -:  211:			{
+   203014:  212:			if (l & 0xff000000L)
+    95536:  213:				return(bits[(int)(l>>24L)]+24);
+   107478:  214:			else	return(bits[(int)(l>>16L)]+16);
+        -:  215:			}
+        -:  216:		else
+        -:  217:#endif
+        -:  218:			{
+        -:  219:#if defined(THIRTY_TWO_BIT) || defined(SIXTY_FOUR_BIT) || defined(SIXTY_FOUR_BIT_LONG)
+   191072:  220:			if (l & 0xff00L)
+    95536:  221:				return(bits[(int)(l>>8)]+8);
+        -:  222:			else	
+        -:  223:#endif
+    95536:  224:				return(bits[(int)(l   )]  );
+        -:  225:			}
+        -:  226:		}
+        -:  227:	}
+        -:  228:
+   940470:  229:int BN_num_bits(const BIGNUM *a)
+        -:  230:	{
+   940470:  231:	int i = a->top - 1;
+        -:  232:	bn_check_top(a);
+        -:  233:
+   940470:  234:	if (BN_is_zero(a)) return 0;
+   940470:  235:	return ((i*BN_BITS2) + BN_num_bits_word(a->d[i]));
+        -:  236:	}
+        -:  237:
+   191072:  238:void BN_clear_free(BIGNUM *a)
+        -:  239:	{
+        -:  240:	int i;
+        -:  241:
+   382144:  242:	if (a == NULL) return;
+        -:  243:	bn_check_top(a);
+   191072:  244:	if (a->d != NULL)
+        -:  245:		{
+   191072:  246:		OPENSSL_cleanse(a->d,a->dmax*sizeof(a->d[0]));
+   191072:  247:		if (!(BN_get_flags(a,BN_FLG_STATIC_DATA)))
+   191072:  248:			OPENSSL_free(a->d);
+        -:  249:		}
+   191072:  250:	i=BN_get_flags(a,BN_FLG_MALLOCED);
+   191072:  251:	OPENSSL_cleanse(a,sizeof(BIGNUM));
+   191072:  252:	if (i)
+    23884:  253:		OPENSSL_free(a);
+        -:  254:	}
+        -:  255:
+   195826:  256:void BN_free(BIGNUM *a)
+        -:  257:	{
+   391652:  258:	if (a == NULL) return;
+        -:  259:	bn_check_top(a);
+    35826:  260:	if ((a->d != NULL) && !(BN_get_flags(a,BN_FLG_STATIC_DATA)))
+    23884:  261:		OPENSSL_free(a->d);
+    35826:  262:	if (a->flags & BN_FLG_MALLOCED)
+    #####:  263:		OPENSSL_free(a);
+        -:  264:	else
+        -:  265:		{
+        -:  266:#ifndef OPENSSL_NO_DEPRECATED
+    35826:  267:		a->flags|=BN_FLG_FREE;
+        -:  268:#endif
+    35826:  269:		a->d = NULL;
+        -:  270:		}
+        -:  271:	}
+        -:  272:
+   238840:  273:void BN_init(BIGNUM *a)
+        -:  274:	{
+        -:  275:	memset(a,0,sizeof(BIGNUM));
+        -:  276:	bn_check_top(a);
+   238840:  277:	}
+        -:  278:
+    23884:  279:BIGNUM *BN_new(void)
+        -:  280:	{
+        -:  281:	BIGNUM *ret;
+        -:  282:
+    23884:  283:	if ((ret=(BIGNUM *)OPENSSL_malloc(sizeof(BIGNUM))) == NULL)
+        -:  284:		{
+    #####:  285:		BNerr(BN_F_BN_NEW,ERR_R_MALLOC_FAILURE);
+    #####:  286:		return(NULL);
+        -:  287:		}
+    23884:  288:	ret->flags=BN_FLG_MALLOCED;
+    23884:  289:	ret->top=0;
+    23884:  290:	ret->neg=0;
+    23884:  291:	ret->dmax=0;
+    23884:  292:	ret->d=NULL;
+        -:  293:	bn_check_top(ret);
+    23884:  294:	return(ret);
+        -:  295:	}
+        -:  296:
+        -:  297:/* This is used both by bn_expand2() and bn_dup_expand() */
+        -:  298:/* The caller MUST check that words > b->dmax before calling this */
+   464880:  299:static BN_ULONG *bn_expand_internal(const BIGNUM *b, int words)
+        -:  300:	{
+        -:  301:	BN_ULONG *A,*a = NULL;
+        -:  302:	const BN_ULONG *B;
+        -:  303:	int i;
+        -:  304:
+        -:  305:	bn_check_top(b);
+        -:  306:
+   464880:  307:	if (words > (INT_MAX/(4*BN_BITS2)))
+        -:  308:		{
+    #####:  309:		BNerr(BN_F_BN_EXPAND_INTERNAL,BN_R_BIGNUM_TOO_LONG);
+    #####:  310:		return NULL;
+        -:  311:		}
+   464880:  312:	if (BN_get_flags(b,BN_FLG_STATIC_DATA))
+        -:  313:		{
+    #####:  314:		BNerr(BN_F_BN_EXPAND_INTERNAL,BN_R_EXPAND_ON_STATIC_BIGNUM_DATA);
+    #####:  315:		return(NULL);
+        -:  316:		}
+   464880:  317:	a=A=(BN_ULONG *)OPENSSL_malloc(sizeof(BN_ULONG)*words);
+   464880:  318:	if (A == NULL)
+        -:  319:		{
+    #####:  320:		BNerr(BN_F_BN_EXPAND_INTERNAL,ERR_R_MALLOC_FAILURE);
+    #####:  321:		return(NULL);
+        -:  322:		}
+        -:  323:#if 1
+   464880:  324:	B=b->d;
+        -:  325:	/* Check if the previous number needs to be copied */
+   464880:  326:	if (B != NULL)
+        -:  327:		{
+   297692:  328:		for (i=b->top>>2; i>0; i--,A+=4,B+=4)
+        -:  329:			{
+        -:  330:			/*
+        -:  331:			 * The fact that the loop is unrolled
+        -:  332:			 * 4-wise is a tribute to Intel. It's
+        -:  333:			 * the one that doesn't have enough
+        -:  334:			 * registers to accomodate more data.
+        -:  335:			 * I'd unroll it 8-wise otherwise:-)
+        -:  336:			 *
+        -:  337:			 *		<appro@fy.chalmers.se>
+        -:  338:			 */
+        -:  339:			BN_ULONG a0,a1,a2,a3;
+    47768:  340:			a0=B[0]; a1=B[1]; a2=B[2]; a3=B[3];
+    47768:  341:			A[0]=a0; A[1]=a1; A[2]=a2; A[3]=a3;
+        -:  342:			}
+   249924:  343:		switch (b->top&3)
+        -:  344:			{
+    #####:  345:		case 3:	A[2]=B[2];
+    19892:  346:		case 2:	A[1]=B[1];
+    46910:  347:		case 1:	A[0]=B[0];
+        -:  348:		case 0: /* workaround for ultrix cc: without 'case 0', the optimizer does
+        -:  349:		         * the switch table by doing a=top&3; a--; goto jump_table[a];
+        -:  350:		         * which fails for top== 0 */
+        -:  351:			;
+        -:  352:			}
+        -:  353:		}
+        -:  354:
+        -:  355:#else
+        -:  356:	memset(A,0,sizeof(BN_ULONG)*words);
+        -:  357:	memcpy(A,b->d,sizeof(b->d[0])*b->top);
+        -:  358:#endif
+        -:  359:		
+   464880:  360:	return(a);
+        -:  361:	}
+        -:  362:
+        -:  363:/* This is an internal function that can be used instead of bn_expand2()
+        -:  364: * when there is a need to copy BIGNUMs instead of only expanding the
+        -:  365: * data part, while still expanding them.
+        -:  366: * Especially useful when needing to expand BIGNUMs that are declared
+        -:  367: * 'const' and should therefore not be changed.
+        -:  368: * The reason to use this instead of a BN_dup() followed by a bn_expand2()
+        -:  369: * is memory allocation overhead.  A BN_dup() followed by a bn_expand2()
+        -:  370: * will allocate new memory for the BIGNUM data twice, and free it once,
+        -:  371: * while bn_dup_expand() makes sure allocation is made only once.
+        -:  372: */
+        -:  373:
+        -:  374:#ifndef OPENSSL_NO_DEPRECATED
+    #####:  375:BIGNUM *bn_dup_expand(const BIGNUM *b, int words)
+        -:  376:	{
+        -:  377:	BIGNUM *r = NULL;
+        -:  378:
+        -:  379:	bn_check_top(b);
+        -:  380:
+        -:  381:	/* This function does not work if
+        -:  382:	 *      words <= b->dmax && top < words
+        -:  383:	 * because BN_dup() does not preserve 'dmax'!
+        -:  384:	 * (But bn_dup_expand() is not used anywhere yet.)
+        -:  385:	 */
+        -:  386:
+    #####:  387:	if (words > b->dmax)
+        -:  388:		{
+    #####:  389:		BN_ULONG *a = bn_expand_internal(b, words);
+        -:  390:
+    #####:  391:		if (a)
+        -:  392:			{
+    #####:  393:			r = BN_new();
+    #####:  394:			if (r)
+        -:  395:				{
+    #####:  396:				r->top = b->top;
+    #####:  397:				r->dmax = words;
+    #####:  398:				r->neg = b->neg;
+    #####:  399:				r->d = a;
+        -:  400:				}
+        -:  401:			else
+        -:  402:				{
+        -:  403:				/* r == NULL, BN_new failure */
+    #####:  404:				OPENSSL_free(a);
+        -:  405:				}
+        -:  406:			}
+        -:  407:		/* If a == NULL, there was an error in allocation in
+        -:  408:		   bn_expand_internal(), and NULL should be returned */
+        -:  409:		}
+        -:  410:	else
+        -:  411:		{
+    #####:  412:		r = BN_dup(b);
+        -:  413:		}
+        -:  414:
+        -:  415:	bn_check_top(r);
+    #####:  416:	return r;
+        -:  417:	}
+        -:  418:#endif
+        -:  419:
+        -:  420:/* This is an internal function that should not be used in applications.
+        -:  421: * It ensures that 'b' has enough room for a 'words' word number
+        -:  422: * and initialises any unused part of b->d with leading zeros.
+        -:  423: * It is mostly used by the various BIGNUM routines. If there is an error,
+        -:  424: * NULL is returned. If not, 'b' is returned. */
+        -:  425:
+   464880:  426:BIGNUM *bn_expand2(BIGNUM *b, int words)
+        -:  427:	{
+        -:  428:	bn_check_top(b);
+        -:  429:
+   464880:  430:	if (words > b->dmax)
+        -:  431:		{
+   464880:  432:		BN_ULONG *a = bn_expand_internal(b, words);
+   464880:  433:		if(!a) return NULL;
+   464880:  434:		if(b->d) OPENSSL_free(b->d);
+   464880:  435:		b->d=a;
+   464880:  436:		b->dmax=words;
+        -:  437:		}
+        -:  438:
+        -:  439:/* None of this should be necessary because of what b->top means! */
+        -:  440:#if 0
+        -:  441:	/* NB: bn_wexpand() calls this only if the BIGNUM really has to grow */
+        -:  442:	if (b->top < b->dmax)
+        -:  443:		{
+        -:  444:		int i;
+        -:  445:		BN_ULONG *A = &(b->d[b->top]);
+        -:  446:		for (i=(b->dmax - b->top)>>3; i>0; i--,A+=8)
+        -:  447:			{
+        -:  448:			A[0]=0; A[1]=0; A[2]=0; A[3]=0;
+        -:  449:			A[4]=0; A[5]=0; A[6]=0; A[7]=0;
+        -:  450:			}
+        -:  451:		for (i=(b->dmax - b->top)&7; i>0; i--,A++)
+        -:  452:			A[0]=0;
+        -:  453:		assert(A == &(b->d[b->dmax]));
+        -:  454:		}
+        -:  455:#endif
+        -:  456:	bn_check_top(b);
+   464880:  457:	return b;
+        -:  458:	}
+        -:  459:
+    #####:  460:BIGNUM *BN_dup(const BIGNUM *a)
+        -:  461:	{
+        -:  462:	BIGNUM *t;
+        -:  463:
+    #####:  464:	if (a == NULL) return NULL;
+        -:  465:	bn_check_top(a);
+        -:  466:
+    #####:  467:	t = BN_new();
+    #####:  468:	if (t == NULL) return NULL;
+    #####:  469:	if(!BN_copy(t, a))
+        -:  470:		{
+    #####:  471:		BN_free(t);
+    #####:  472:		return NULL;
+        -:  473:		}
+        -:  474:	bn_check_top(t);
+        -:  475:	return t;
+        -:  476:	}
+        -:  477:
+    47768:  478:BIGNUM *BN_copy(BIGNUM *a, const BIGNUM *b)
+        -:  479:	{
+        -:  480:	int i;
+        -:  481:	BN_ULONG *A;
+        -:  482:	const BN_ULONG *B;
+        -:  483:
+        -:  484:	bn_check_top(b);
+        -:  485:
+    47768:  486:	if (a == b) return(a);
+    47768:  487:	if (bn_wexpand(a,b->top) == NULL) return(NULL);
+        -:  488:
+        -:  489:#if 1
+    47768:  490:	A=a->d;
+    47768:  491:	B=b->d;
+   143304:  492:	for (i=b->top>>2; i>0; i--,A+=4,B+=4)
+        -:  493:		{
+        -:  494:		BN_ULONG a0,a1,a2,a3;
+    95536:  495:		a0=B[0]; a1=B[1]; a2=B[2]; a3=B[3];
+    95536:  496:		A[0]=a0; A[1]=a1; A[2]=a2; A[3]=a3;
+        -:  497:		}
+    47768:  498:	switch (b->top&3)
+        -:  499:		{
+    #####:  500:		case 3: A[2]=B[2];
+    11942:  501:		case 2: A[1]=B[1];
+    23884:  502:		case 1: A[0]=B[0];
+        -:  503:		case 0: ; /* ultrix cc workaround, see comments in bn_expand_internal */
+        -:  504:		}
+        -:  505:#else
+        -:  506:	memcpy(a->d,b->d,sizeof(b->d[0])*b->top);
+        -:  507:#endif
+        -:  508:
+    47768:  509:	a->top=b->top;
+    47768:  510:	a->neg=b->neg;
+        -:  511:	bn_check_top(a);
+    47768:  512:	return(a);
+        -:  513:	}
+        -:  514:
+    #####:  515:void BN_swap(BIGNUM *a, BIGNUM *b)
+        -:  516:	{
+        -:  517:	int flags_old_a, flags_old_b;
+        -:  518:	BN_ULONG *tmp_d;
+        -:  519:	int tmp_top, tmp_dmax, tmp_neg;
+        -:  520:	
+        -:  521:	bn_check_top(a);
+        -:  522:	bn_check_top(b);
+        -:  523:
+    #####:  524:	flags_old_a = a->flags;
+    #####:  525:	flags_old_b = b->flags;
+        -:  526:
+    #####:  527:	tmp_d = a->d;
+    #####:  528:	tmp_top = a->top;
+    #####:  529:	tmp_dmax = a->dmax;
+    #####:  530:	tmp_neg = a->neg;
+        -:  531:	
+    #####:  532:	a->d = b->d;
+    #####:  533:	a->top = b->top;
+    #####:  534:	a->dmax = b->dmax;
+    #####:  535:	a->neg = b->neg;
+        -:  536:	
+    #####:  537:	b->d = tmp_d;
+    #####:  538:	b->top = tmp_top;
+    #####:  539:	b->dmax = tmp_dmax;
+    #####:  540:	b->neg = tmp_neg;
+        -:  541:	
+    #####:  542:	a->flags = (flags_old_a & BN_FLG_MALLOCED) | (flags_old_b & BN_FLG_STATIC_DATA);
+    #####:  543:	b->flags = (flags_old_b & BN_FLG_MALLOCED) | (flags_old_a & BN_FLG_STATIC_DATA);
+        -:  544:	bn_check_top(a);
+        -:  545:	bn_check_top(b);
+    #####:  546:	}
+        -:  547:
+    #####:  548:void BN_clear(BIGNUM *a)
+        -:  549:	{
+        -:  550:	bn_check_top(a);
+    #####:  551:	if (a->d != NULL)
+    #####:  552:		memset(a->d,0,a->dmax*sizeof(a->d[0]));
+    #####:  553:	a->top=0;
+    #####:  554:	a->neg=0;
+    #####:  555:	}
+        -:  556:
+    #####:  557:BN_ULONG BN_get_word(const BIGNUM *a)
+        -:  558:	{
+    #####:  559:	if (a->top > 1)
+        -:  560:		return BN_MASK2;
+    #####:  561:	else if (a->top == 1)
+    #####:  562:		return a->d[0];
+        -:  563:	/* a->top == 0 */
+        -:  564:	return 0;
+        -:  565:	}
+        -:  566:
+   406028:  567:int BN_set_word(BIGNUM *a, BN_ULONG w)
+        -:  568:	{
+        -:  569:	bn_check_top(a);
+   406028:  570:	if (bn_expand(a,(int)sizeof(BN_ULONG)*8) == NULL) return(0);
+   406028:  571:	a->neg = 0;
+   406028:  572:	a->d[0] = w;
+   406028:  573:	a->top = (w ? 1 : 0);
+        -:  574:	bn_check_top(a);
+   406028:  575:	return(1);
+        -:  576:	}
+        -:  577:
+    35826:  578:BIGNUM *BN_bin2bn(const unsigned char *s, int len, BIGNUM *ret)
+        -:  579:	{
+        -:  580:	unsigned int i,m;
+        -:  581:	unsigned int n;
+        -:  582:	BN_ULONG l;
+        -:  583:	BIGNUM  *bn = NULL;
+        -:  584:
+    35826:  585:	if (ret == NULL)
+    #####:  586:		ret = bn = BN_new();
+    35826:  587:	if (ret == NULL) return(NULL);
+        -:  588:	bn_check_top(ret);
+        -:  589:	l=0;
+    35826:  590:	n=len;
+    35826:  591:	if (n == 0)
+        -:  592:		{
+    #####:  593:		ret->top=0;
+    #####:  594:		return(ret);
+        -:  595:		}
+    35826:  596:	i=((n-1)/BN_BYTES)+1;
+    35826:  597:	m=((n-1)%(BN_BYTES));
+    35826:  598:	if (bn_wexpand(ret, (int)i) == NULL)
+        -:  599:		{
+    #####:  600:		if (bn) BN_free(bn);
+        -:  601:		return NULL;
+        -:  602:		}
+    35826:  603:	ret->top=i;
+    35826:  604:	ret->neg=0;
+  3176572:  605:	while (n--)
+        -:  606:		{
+  3104920:  607:		l=(l<<8L)| *(s++);
+  3104920:  608:		if (m-- == 0)
+        -:  609:			{
+   406028:  610:			ret->d[--i]=l;
+        -:  611:			l=0;
+        -:  612:			m=BN_BYTES-1;
+        -:  613:			}
+        -:  614:		}
+        -:  615:	/* need to call this due to clear byte at top if avoiding
+        -:  616:	 * having the top bit set (-ve number) */
+    35826:  617:	bn_correct_top(ret);
+    35826:  618:	return(ret);
+        -:  619:	}
+        -:  620:
+        -:  621:/* ignore negative */
+    11942:  622:int BN_bn2bin(const BIGNUM *a, unsigned char *to)
+        -:  623:	{
+        -:  624:	int n,i;
+        -:  625:	BN_ULONG l;
+        -:  626:
+        -:  627:	bn_check_top(a);
+    11942:  628:	n=i=BN_num_bytes(a);
+  1550464:  629:	while (i--)
+        -:  630:		{
+  1526580:  631:		l=a->d[i/BN_BYTES];
+  1526580:  632:		*(to++)=(unsigned char)(l>>(8*(i%BN_BYTES)))&0xff;
+        -:  633:		}
+    11942:  634:	return(n);
+        -:  635:	}
+        -:  636:
+   917212:  637:int BN_ucmp(const BIGNUM *a, const BIGNUM *b)
+        -:  638:	{
+        -:  639:	int i;
+        -:  640:	BN_ULONG t1,t2,*ap,*bp;
+        -:  641:
+        -:  642:	bn_check_top(a);
+        -:  643:	bn_check_top(b);
+        -:  644:
+   917212:  645:	i=a->top-b->top;
+   917212:  646:	if (i != 0) return(i);
+   835902:  647:	ap=a->d;
+   835902:  648:	bp=b->d;
+   847844:  649:	for (i=a->top-1; i>=0; i--)
+        -:  650:		{
+   835902:  651:		t1= ap[i];
+   835902:  652:		t2= bp[i];
+   835902:  653:		if (t1 != t2)
+   823960:  654:			return((t1 > t2) ? 1 : -1);
+        -:  655:		}
+        -:  656:	return(0);
+        -:  657:	}
+        -:  658:
+    #####:  659:int BN_cmp(const BIGNUM *a, const BIGNUM *b)
+        -:  660:	{
+        -:  661:	int i;
+        -:  662:	int gt,lt;
+        -:  663:	BN_ULONG t1,t2;
+        -:  664:
+    #####:  665:	if ((a == NULL) || (b == NULL))
+        -:  666:		{
+    #####:  667:		if (a != NULL)
+        -:  668:			return(-1);
+    #####:  669:		else if (b != NULL)
+        -:  670:			return(1);
+        -:  671:		else
+    #####:  672:			return(0);
+        -:  673:		}
+        -:  674:
+        -:  675:	bn_check_top(a);
+        -:  676:	bn_check_top(b);
+        -:  677:
+    #####:  678:	if (a->neg != b->neg)
+        -:  679:		{
+    #####:  680:		if (a->neg)
+        -:  681:			return(-1);
+    #####:  682:		else	return(1);
+        -:  683:		}
+    #####:  684:	if (a->neg == 0)
+        -:  685:		{ gt=1; lt= -1; }
+        -:  686:	else	{ gt= -1; lt=1; }
+        -:  687:
+    #####:  688:	if (a->top > b->top) return(gt);
+    #####:  689:	if (a->top < b->top) return(lt);
+    #####:  690:	for (i=a->top-1; i>=0; i--)
+        -:  691:		{
+    #####:  692:		t1=a->d[i];
+    #####:  693:		t2=b->d[i];
+    #####:  694:		if (t1 > t2) return(gt);
+    #####:  695:		if (t1 < t2) return(lt);
+        -:  696:		}
+        -:  697:	return(0);
+        -:  698:	}
+        -:  699:
+    23884:  700:int BN_set_bit(BIGNUM *a, int n)
+        -:  701:	{
+        -:  702:	int i,j,k;
+        -:  703:
+    23884:  704:	if (n < 0)
+        -:  705:		return 0;
+        -:  706:
+    23884:  707:	i=n/BN_BITS2;
+    23884:  708:	j=n%BN_BITS2;
+    23884:  709:	if (a->top <= i)
+        -:  710:		{
+    23884:  711:		if (bn_wexpand(a,i+1) == NULL) return(0);
+   441854:  712:		for(k=a->top; k<i+1; k++)
+   417970:  713:			a->d[k]=0;
+    23884:  714:		a->top=i+1;
+        -:  715:		}
+        -:  716:
+    23884:  717:	a->d[i]|=(((BN_ULONG)1)<<j);
+        -:  718:	bn_check_top(a);
+    23884:  719:	return(1);
+        -:  720:	}
+        -:  721:
+    #####:  722:int BN_clear_bit(BIGNUM *a, int n)
+        -:  723:	{
+        -:  724:	int i,j;
+        -:  725:
+        -:  726:	bn_check_top(a);
+    #####:  727:	if (n < 0) return 0;
+        -:  728:
+    #####:  729:	i=n/BN_BITS2;
+    #####:  730:	j=n%BN_BITS2;
+    #####:  731:	if (a->top <= i) return(0);
+        -:  732:
+    #####:  733:	a->d[i]&=(~(((BN_ULONG)1)<<j));
+    #####:  734:	bn_correct_top(a);
+        -:  735:	return(1);
+        -:  736:	}
+        -:  737:
+  2455408:  738:int BN_is_bit_set(const BIGNUM *a, int n)
+        -:  739:	{
+        -:  740:	int i,j;
+        -:  741:
+        -:  742:	bn_check_top(a);
+  2455408:  743:	if (n < 0) return 0;
+  2455408:  744:	i=n/BN_BITS2;
+  2455408:  745:	j=n%BN_BITS2;
+  2455408:  746:	if (a->top <= i) return 0;
+  2455408:  747:	return (int)(((a->d[i])>>j)&((BN_ULONG)1));
+        -:  748:	}
+        -:  749:
+    #####:  750:int BN_mask_bits(BIGNUM *a, int n)
+        -:  751:	{
+        -:  752:	int b,w;
+        -:  753:
+        -:  754:	bn_check_top(a);
+    #####:  755:	if (n < 0) return 0;
+        -:  756:
+    #####:  757:	w=n/BN_BITS2;
+    #####:  758:	b=n%BN_BITS2;
+    #####:  759:	if (w >= a->top) return 0;
+    #####:  760:	if (b == 0)
+    #####:  761:		a->top=w;
+        -:  762:	else
+        -:  763:		{
+    #####:  764:		a->top=w+1;
+    #####:  765:		a->d[w]&= ~(BN_MASK2<<b);
+        -:  766:		}
+    #####:  767:	bn_correct_top(a);
+        -:  768:	return(1);
+        -:  769:	}
+        -:  770:
+    #####:  771:void BN_set_negative(BIGNUM *a, int b)
+        -:  772:	{
+    #####:  773:	if (b && !BN_is_zero(a))
+    #####:  774:		a->neg = 1;
+        -:  775:	else
+    #####:  776:		a->neg = 0;
+    #####:  777:	}
+        -:  778:
+    #####:  779:int bn_cmp_words(const BN_ULONG *a, const BN_ULONG *b, int n)
+        -:  780:	{
+        -:  781:	int i;
+        -:  782:	BN_ULONG aa,bb;
+        -:  783:
+    #####:  784:	aa=a[n-1];
+    #####:  785:	bb=b[n-1];
+    #####:  786:	if (aa != bb) return((aa > bb)?1:-1);
+    #####:  787:	for (i=n-2; i>=0; i--)
+        -:  788:		{
+    #####:  789:		aa=a[i];
+    #####:  790:		bb=b[i];
+    #####:  791:		if (aa != bb) return((aa > bb)?1:-1);
+        -:  792:		}
+        -:  793:	return(0);
+        -:  794:	}
+        -:  795:
+        -:  796:/* Here follows a specialised variants of bn_cmp_words().  It has the
+        -:  797:   property of performing the operation on arrays of different sizes.
+        -:  798:   The sizes of those arrays is expressed through cl, which is the
+        -:  799:   common length ( basicall, min(len(a),len(b)) ), and dl, which is the
+        -:  800:   delta between the two lengths, calculated as len(a)-len(b).
+        -:  801:   All lengths are the number of BN_ULONGs...  */
+        -:  802:
+    #####:  803:int bn_cmp_part_words(const BN_ULONG *a, const BN_ULONG *b,
+        -:  804:	int cl, int dl)
+        -:  805:	{
+        -:  806:	int n,i;
+    #####:  807:	n = cl-1;
+        -:  808:
+    #####:  809:	if (dl < 0)
+        -:  810:		{
+    #####:  811:		for (i=dl; i<0; i++)
+        -:  812:			{
+    #####:  813:			if (b[n-i] != 0)
+        -:  814:				return -1; /* a < b */
+        -:  815:			}
+        -:  816:		}
+    #####:  817:	if (dl > 0)
+        -:  818:		{
+    #####:  819:		for (i=dl; i>0; i--)
+        -:  820:			{
+    #####:  821:			if (a[n+i] != 0)
+        -:  822:				return 1; /* a > b */
+        -:  823:			}
+        -:  824:		}
+    #####:  825:	return bn_cmp_words(a,b,cl);
+        -:  826:	}

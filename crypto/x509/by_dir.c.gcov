@@ -1,0 +1,487 @@
+        -:    0:Source:by_dir.c
+        -:    0:Graph:by_dir.gcno
+        -:    0:Data:by_dir.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* crypto/x509/by_dir.c */
+        -:    2:/* Copyright (C) 1995-1998 Eric Young (eay@cryptsoft.com)
+        -:    3: * All rights reserved.
+        -:    4: *
+        -:    5: * This package is an SSL implementation written
+        -:    6: * by Eric Young (eay@cryptsoft.com).
+        -:    7: * The implementation was written so as to conform with Netscapes SSL.
+        -:    8: * 
+        -:    9: * This library is free for commercial and non-commercial use as long as
+        -:   10: * the following conditions are aheared to.  The following conditions
+        -:   11: * apply to all code found in this distribution, be it the RC4, RSA,
+        -:   12: * lhash, DES, etc., code; not just the SSL code.  The SSL documentation
+        -:   13: * included with this distribution is covered by the same copyright terms
+        -:   14: * except that the holder is Tim Hudson (tjh@cryptsoft.com).
+        -:   15: * 
+        -:   16: * Copyright remains Eric Young's, and as such any Copyright notices in
+        -:   17: * the code are not to be removed.
+        -:   18: * If this package is used in a product, Eric Young should be given attribution
+        -:   19: * as the author of the parts of the library used.
+        -:   20: * This can be in the form of a textual message at program startup or
+        -:   21: * in documentation (online or textual) provided with the package.
+        -:   22: * 
+        -:   23: * Redistribution and use in source and binary forms, with or without
+        -:   24: * modification, are permitted provided that the following conditions
+        -:   25: * are met:
+        -:   26: * 1. Redistributions of source code must retain the copyright
+        -:   27: *    notice, this list of conditions and the following disclaimer.
+        -:   28: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   29: *    notice, this list of conditions and the following disclaimer in the
+        -:   30: *    documentation and/or other materials provided with the distribution.
+        -:   31: * 3. All advertising materials mentioning features or use of this software
+        -:   32: *    must display the following acknowledgement:
+        -:   33: *    "This product includes cryptographic software written by
+        -:   34: *     Eric Young (eay@cryptsoft.com)"
+        -:   35: *    The word 'cryptographic' can be left out if the rouines from the library
+        -:   36: *    being used are not cryptographic related :-).
+        -:   37: * 4. If you include any Windows specific code (or a derivative thereof) from 
+        -:   38: *    the apps directory (application code) you must include an acknowledgement:
+        -:   39: *    "This product includes software written by Tim Hudson (tjh@cryptsoft.com)"
+        -:   40: * 
+        -:   41: * THIS SOFTWARE IS PROVIDED BY ERIC YOUNG ``AS IS'' AND
+        -:   42: * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   43: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+        -:   44: * ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+        -:   45: * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+        -:   46: * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+        -:   47: * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   48: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+        -:   49: * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+        -:   50: * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+        -:   51: * SUCH DAMAGE.
+        -:   52: * 
+        -:   53: * The licence and distribution terms for any publically available version or
+        -:   54: * derivative of this code cannot be changed.  i.e. this code cannot simply be
+        -:   55: * copied and put under another distribution licence
+        -:   56: * [including the GNU Public Licence.]
+        -:   57: */
+        -:   58:
+        -:   59:#include <stdio.h>
+        -:   60:#include <time.h>
+        -:   61:#include <errno.h>
+        -:   62:
+        -:   63:#include "cryptlib.h"
+        -:   64:
+        -:   65:#ifndef NO_SYS_TYPES_H
+        -:   66:# include <sys/types.h>
+        -:   67:#endif
+        -:   68:#ifndef OPENSSL_NO_POSIX_IO
+        -:   69:# include <sys/stat.h>
+        -:   70:#endif
+        -:   71:
+        -:   72:#include <openssl/lhash.h>
+        -:   73:#include <openssl/x509.h>
+        -:   74:
+        -:   75:
+        -:   76:typedef struct lookup_dir_hashes_st
+        -:   77:	{
+        -:   78:	unsigned long hash;
+        -:   79:	int suffix;
+        -:   80:	} BY_DIR_HASH;
+        -:   81:
+        -:   82:typedef struct lookup_dir_entry_st
+        -:   83:	{
+        -:   84:	char *dir;
+        -:   85:	int dir_type;
+        -:   86:	STACK_OF(BY_DIR_HASH) *hashes;
+        -:   87:	} BY_DIR_ENTRY;
+        -:   88:
+        -:   89:typedef struct lookup_dir_st
+        -:   90:	{
+        -:   91:	BUF_MEM *buffer;
+        -:   92:	STACK_OF(BY_DIR_ENTRY) *dirs;
+        -:   93:	} BY_DIR;
+        -:   94:
+        -:   95:DECLARE_STACK_OF(BY_DIR_HASH)
+        -:   96:DECLARE_STACK_OF(BY_DIR_ENTRY)
+        -:   97:
+        -:   98:static int dir_ctrl(X509_LOOKUP *ctx, int cmd, const char *argp, long argl,
+        -:   99:	char **ret);
+        -:  100:static int new_dir(X509_LOOKUP *lu);
+        -:  101:static void free_dir(X509_LOOKUP *lu);
+        -:  102:static int add_cert_dir(BY_DIR *ctx,const char *dir,int type);
+        -:  103:static int get_cert_by_subject(X509_LOOKUP *xl,int type,X509_NAME *name,
+        -:  104:	X509_OBJECT *ret);
+        -:  105:X509_LOOKUP_METHOD x509_dir_lookup=
+        -:  106:	{
+        -:  107:	"Load certs from files in a directory",
+        -:  108:	new_dir,		/* new */
+        -:  109:	free_dir,		/* free */
+        -:  110:	NULL, 			/* init */
+        -:  111:	NULL,			/* shutdown */
+        -:  112:	dir_ctrl,		/* ctrl */
+        -:  113:	get_cert_by_subject,	/* get_by_subject */
+        -:  114:	NULL,			/* get_by_issuer_serial */
+        -:  115:	NULL,			/* get_by_fingerprint */
+        -:  116:	NULL,			/* get_by_alias */
+        -:  117:	};
+        -:  118:
+    10000:  119:X509_LOOKUP_METHOD *X509_LOOKUP_hash_dir(void)
+        -:  120:	{
+    10000:  121:	return(&x509_dir_lookup);
+        -:  122:	}
+        -:  123:
+    10000:  124:static int dir_ctrl(X509_LOOKUP *ctx, int cmd, const char *argp, long argl,
+        -:  125:	     char **retp)
+        -:  126:	{
+        -:  127:	int ret=0;
+        -:  128:	BY_DIR *ld;
+        -:  129:	char *dir = NULL;
+        -:  130:
+    10000:  131:	ld=(BY_DIR *)ctx->method_data;
+        -:  132:
+    10000:  133:	switch (cmd)
+        -:  134:		{
+        -:  135:	case X509_L_ADD_DIR:
+    10000:  136:		if (argl == X509_FILETYPE_DEFAULT)
+        -:  137:			{
+    10000:  138:			dir=(char *)getenv(X509_get_default_cert_dir_env());
+    10000:  139:			if (dir)
+    #####:  140:				ret=add_cert_dir(ld,dir,X509_FILETYPE_PEM);
+        -:  141:			else
+    10000:  142:				ret=add_cert_dir(ld,X509_get_default_cert_dir(),
+        -:  143:					X509_FILETYPE_PEM);
+    10000:  144:			if (!ret)
+        -:  145:				{
+    #####:  146:				X509err(X509_F_DIR_CTRL,X509_R_LOADING_CERT_DIR);
+        -:  147:				}
+        -:  148:			}
+        -:  149:		else
+    #####:  150:			ret=add_cert_dir(ld,argp,(int)argl);
+        -:  151:		break;
+        -:  152:		}
+    10000:  153:	return(ret);
+        -:  154:	}
+        -:  155:
+    10000:  156:static int new_dir(X509_LOOKUP *lu)
+        -:  157:	{
+        -:  158:	BY_DIR *a;
+        -:  159:
+    10000:  160:	if ((a=(BY_DIR *)OPENSSL_malloc(sizeof(BY_DIR))) == NULL)
+        -:  161:		return(0);
+    10000:  162:	if ((a->buffer=BUF_MEM_new()) == NULL)
+        -:  163:		{
+    #####:  164:		OPENSSL_free(a);
+    #####:  165:		return(0);
+        -:  166:		}
+    10000:  167:	a->dirs=NULL;
+    10000:  168:	lu->method_data=(char *)a;
+    10000:  169:	return(1);
+        -:  170:	}
+        -:  171:
+    #####:  172:static void by_dir_hash_free(BY_DIR_HASH *hash)
+        -:  173:	{
+    #####:  174:	OPENSSL_free(hash);
+    #####:  175:	}
+        -:  176:
+    #####:  177:static int by_dir_hash_cmp(const BY_DIR_HASH * const *a,
+        -:  178:			const BY_DIR_HASH * const *b)
+        -:  179:	{
+    #####:  180:	if ((*a)->hash > (*b)->hash)
+        -:  181:		return 1;
+    #####:  182:	if ((*a)->hash < (*b)->hash)
+        -:  183:		return -1;
+    #####:  184:	return 0;
+        -:  185:	}
+        -:  186:
+    10000:  187:static void by_dir_entry_free(BY_DIR_ENTRY *ent)
+        -:  188:	{
+    10000:  189:	if (ent->dir)
+    10000:  190:		OPENSSL_free(ent->dir);
+    10000:  191:	if (ent->hashes)
+    10000:  192:		sk_BY_DIR_HASH_pop_free(ent->hashes, by_dir_hash_free);
+    10000:  193:	OPENSSL_free(ent);
+    10000:  194:	}
+        -:  195:
+    10000:  196:static void free_dir(X509_LOOKUP *lu)
+        -:  197:	{
+        -:  198:	BY_DIR *a;
+        -:  199:
+    10000:  200:	a=(BY_DIR *)lu->method_data;
+    10000:  201:	if (a->dirs != NULL)
+    10000:  202:		sk_BY_DIR_ENTRY_pop_free(a->dirs, by_dir_entry_free);
+    10000:  203:	if (a->buffer != NULL)
+    10000:  204:		BUF_MEM_free(a->buffer);
+    10000:  205:	OPENSSL_free(a);
+    10000:  206:	}
+        -:  207:
+    10000:  208:static int add_cert_dir(BY_DIR *ctx, const char *dir, int type)
+        -:  209:	{
+        -:  210:	int j,len;
+        -:  211:	const char *s,*ss,*p;
+        -:  212:
+    10000:  213:	if (dir == NULL || !*dir)
+        -:  214:	    {
+    #####:  215:	    X509err(X509_F_ADD_CERT_DIR,X509_R_INVALID_DIRECTORY);
+        -:  216:	    return 0;
+        -:  217:	    }
+        -:  218:
+        -:  219:	s=dir;
+        -:  220:	p=s;
+   200000:  221:	for (;;p++)
+        -:  222:		{
+   210000:  223:		if ((*p == LIST_SEPARATOR_CHAR) || (*p == '\0'))
+        -:  224:			{
+        -:  225:			BY_DIR_ENTRY *ent;
+        -:  226:			ss=s;
+    10000:  227:			s=p+1;
+    10000:  228:			len=(int)(p-ss);
+    10000:  229:			if (len == 0) continue;
+    #####:  230:			for (j=0; j < sk_BY_DIR_ENTRY_num(ctx->dirs); j++)
+        -:  231:				{
+    #####:  232:				ent = sk_BY_DIR_ENTRY_value(ctx->dirs, j);
+    #####:  233:				if (strlen(ent->dir) == (size_t)len &&
+    #####:  234:				    strncmp(ent->dir,ss,(unsigned int)len) == 0)
+        -:  235:					break;
+        -:  236:				}
+    10000:  237:			if (j < sk_BY_DIR_ENTRY_num(ctx->dirs))
+    #####:  238:				continue;
+    10000:  239:			if (ctx->dirs == NULL)
+        -:  240:				{
+    10000:  241:				ctx->dirs = sk_BY_DIR_ENTRY_new_null();
+    10000:  242:				if (!ctx->dirs)
+        -:  243:					{
+    #####:  244:					X509err(X509_F_ADD_CERT_DIR,ERR_R_MALLOC_FAILURE);
+        -:  245:					return 0;
+        -:  246:					}
+        -:  247:				}
+    10000:  248:			ent = OPENSSL_malloc(sizeof(BY_DIR_ENTRY));
+    10000:  249:			if (!ent)
+        -:  250:				return 0;
+    10000:  251:			ent->dir_type = type;
+    10000:  252:			ent->hashes = sk_BY_DIR_HASH_new(by_dir_hash_cmp);
+    10000:  253:			ent->dir = OPENSSL_malloc((unsigned int)len+1);
+    10000:  254:			if (!ent->dir || !ent->hashes)
+        -:  255:				{
+    #####:  256:				by_dir_entry_free(ent);
+        -:  257:				return 0;
+        -:  258:				}
+    10000:  259:			strncpy(ent->dir,ss,(unsigned int)len);
+    10000:  260:			ent->dir[len] = '\0';
+    10000:  261:			if (!sk_BY_DIR_ENTRY_push(ctx->dirs, ent))
+        -:  262:				{
+    #####:  263:				by_dir_entry_free(ent);
+        -:  264:				return 0;
+        -:  265:				}
+        -:  266:			}
+   210000:  267:		if (*p == '\0')
+        -:  268:			break;
+        -:  269:		}
+        -:  270:	return 1;
+        -:  271:	}
+        -:  272:
+     2291:  273:static int get_cert_by_subject(X509_LOOKUP *xl, int type, X509_NAME *name,
+        -:  274:	     X509_OBJECT *ret)
+        -:  275:	{
+        -:  276:	BY_DIR *ctx;
+        -:  277:	union	{
+        -:  278:		struct	{
+        -:  279:			X509 st_x509;
+        -:  280:			X509_CINF st_x509_cinf;
+        -:  281:			} x509;
+        -:  282:		struct	{
+        -:  283:			X509_CRL st_crl;
+        -:  284:			X509_CRL_INFO st_crl_info;
+        -:  285:			} crl;
+        -:  286:		} data;
+        -:  287:	int ok=0;
+        -:  288:	int i,j,k;
+        -:  289:	unsigned long h;
+        -:  290:	BUF_MEM *b=NULL;
+        -:  291:	X509_OBJECT stmp,*tmp;
+        -:  292:	const char *postfix="";
+        -:  293:
+     2291:  294:	if (name == NULL) return(0);
+        -:  295:
+     2291:  296:	stmp.type=type;
+     2291:  297:	if (type == X509_LU_X509)
+        -:  298:		{
+     2291:  299:		data.x509.st_x509.cert_info= &data.x509.st_x509_cinf;
+     2291:  300:		data.x509.st_x509_cinf.subject=name;
+     2291:  301:		stmp.data.x509= &data.x509.st_x509;
+        -:  302:		postfix="";
+        -:  303:		}
+    #####:  304:	else if (type == X509_LU_CRL)
+        -:  305:		{
+    #####:  306:		data.crl.st_crl.crl= &data.crl.st_crl_info;
+    #####:  307:		data.crl.st_crl_info.issuer=name;
+    #####:  308:		stmp.data.crl= &data.crl.st_crl;
+        -:  309:		postfix="r";
+        -:  310:		}
+        -:  311:	else
+        -:  312:		{
+    #####:  313:		X509err(X509_F_GET_CERT_BY_SUBJECT,X509_R_WRONG_LOOKUP_TYPE);
+    #####:  314:		goto finish;
+        -:  315:		}
+        -:  316:
+     2291:  317:	if ((b=BUF_MEM_new()) == NULL)
+        -:  318:		{
+    #####:  319:		X509err(X509_F_GET_CERT_BY_SUBJECT,ERR_R_BUF_LIB);
+    #####:  320:		goto finish;
+        -:  321:		}
+        -:  322:	
+     2291:  323:	ctx=(BY_DIR *)xl->method_data;
+        -:  324:
+     2291:  325:	h=X509_NAME_hash(name);
+     4582:  326:	for (i=0; i < sk_BY_DIR_ENTRY_num(ctx->dirs); i++)
+        -:  327:		{
+        -:  328:		BY_DIR_ENTRY *ent;
+        -:  329:		int idx;
+        -:  330:		BY_DIR_HASH htmp, *hent;
+     2291:  331:		ent = sk_BY_DIR_ENTRY_value(ctx->dirs, i);
+     2291:  332:		j=strlen(ent->dir)+1+8+6+1+1;
+     2291:  333:		if (!BUF_MEM_grow(b,j))
+        -:  334:			{
+    #####:  335:			X509err(X509_F_GET_CERT_BY_SUBJECT,ERR_R_MALLOC_FAILURE);
+    #####:  336:			goto finish;
+        -:  337:			}
+     2291:  338:		if (type == X509_LU_CRL && ent->hashes)
+        -:  339:			{
+    #####:  340:			htmp.hash = h;
+    #####:  341:			CRYPTO_r_lock(CRYPTO_LOCK_X509_STORE);
+    #####:  342:			idx = sk_BY_DIR_HASH_find(ent->hashes, &htmp);
+    #####:  343:			if (idx >= 0)
+        -:  344:				{
+    #####:  345:				hent = sk_BY_DIR_HASH_value(ent->hashes, idx);
+    #####:  346:				k = hent->suffix;
+        -:  347:				}
+        -:  348:			else
+        -:  349:				{
+        -:  350:				hent = NULL;
+        -:  351:				k=0;
+        -:  352:				}
+    #####:  353:			CRYPTO_r_unlock(CRYPTO_LOCK_X509_STORE);
+        -:  354:			}
+        -:  355:		else
+        -:  356:			{
+        -:  357:			k = 0;
+        -:  358:			hent = NULL;
+        -:  359:			}
+        -:  360:		for (;;)
+        -:  361:			{
+        -:  362:			char c = '/';
+        -:  363:#ifdef OPENSSL_SYS_VMS
+        -:  364:			c = ent->dir[strlen(ent->dir)-1];
+        -:  365:			if (c != ':' && c != '>' && c != ']')
+        -:  366:				{
+        -:  367:				/* If no separator is present, we assume the
+        -:  368:				   directory specifier is a logical name, and
+        -:  369:				   add a colon.  We really should use better
+        -:  370:				   VMS routines for merging things like this,
+        -:  371:				   but this will do for now...
+        -:  372:				   -- Richard Levitte */
+        -:  373:				c = ':';
+        -:  374:				}
+        -:  375:			else
+        -:  376:				{
+        -:  377:				c = '\0';
+        -:  378:				}
+        -:  379:#endif
+        -:  380:			if (c == '\0')
+        -:  381:				{
+        -:  382:				/* This is special.  When c == '\0', no
+        -:  383:				   directory separator should be added. */
+        -:  384:				BIO_snprintf(b->data,b->max,
+        -:  385:					"%s%08lx.%s%d",ent->dir,h,
+        -:  386:					postfix,k);
+        -:  387:				}
+        -:  388:			else
+        -:  389:				{
+     2291:  390:				BIO_snprintf(b->data,b->max,
+        -:  391:					"%s%c%08lx.%s%d",ent->dir,c,h,
+        -:  392:					postfix,k);
+        -:  393:				}
+        -:  394:#ifndef OPENSSL_NO_POSIX_IO
+        -:  395:#ifdef _WIN32
+        -:  396:#define stat _stat
+        -:  397:#endif
+        -:  398:			{
+        -:  399:			struct stat st;
+     4582:  400:			if (stat(b->data,&st) < 0)
+        -:  401:				break;
+        -:  402:			}
+        -:  403:#endif
+        -:  404:			/* found one. */
+    #####:  405:			if (type == X509_LU_X509)
+        -:  406:				{
+    #####:  407:				if ((X509_load_cert_file(xl,b->data,
+        -:  408:					ent->dir_type)) == 0)
+        -:  409:					break;
+        -:  410:				}
+    #####:  411:			else if (type == X509_LU_CRL)
+        -:  412:				{
+    #####:  413:				if ((X509_load_crl_file(xl,b->data,
+        -:  414:					ent->dir_type)) == 0)
+        -:  415:					break;
+        -:  416:				}
+        -:  417:			/* else case will caught higher up */
+    #####:  418:			k++;
+    #####:  419:			}
+        -:  420:
+        -:  421:		/* we have added it to the cache so now pull
+        -:  422:		 * it out again */
+     2291:  423:		CRYPTO_w_lock(CRYPTO_LOCK_X509_STORE);
+     2291:  424:		j = sk_X509_OBJECT_find(xl->store_ctx->objs,&stmp);
+     2291:  425:		if(j != -1) tmp=sk_X509_OBJECT_value(xl->store_ctx->objs,j);
+        -:  426:		else tmp = NULL;
+     2291:  427:		CRYPTO_w_unlock(CRYPTO_LOCK_X509_STORE);
+        -:  428:
+        -:  429:
+        -:  430:		/* If a CRL, update the last file suffix added for this */
+        -:  431:
+     2291:  432:		if (type == X509_LU_CRL)
+        -:  433:			{
+    #####:  434:			CRYPTO_w_lock(CRYPTO_LOCK_X509_STORE);
+        -:  435:			/* Look for entry again in case another thread added
+        -:  436:			 * an entry first.
+        -:  437:			 */
+    #####:  438:			if (!hent)
+        -:  439:				{
+    #####:  440:				htmp.hash = h;
+    #####:  441:				idx = sk_BY_DIR_HASH_find(ent->hashes, &htmp);
+    #####:  442:				if (idx >= 0)
+    #####:  443:					hent =
+    #####:  444:					 sk_BY_DIR_HASH_value(ent->hashes, idx);
+        -:  445:				}
+    #####:  446:			if (!hent)
+        -:  447:				{
+    #####:  448:				hent = OPENSSL_malloc(sizeof(BY_DIR_HASH));
+    #####:  449:				hent->hash = h;
+    #####:  450:				hent->suffix = k;
+    #####:  451:				if (!sk_BY_DIR_HASH_push(ent->hashes, hent))
+        -:  452:					{
+    #####:  453:					CRYPTO_w_unlock(CRYPTO_LOCK_X509_STORE);
+    #####:  454:					OPENSSL_free(hent);
+        -:  455:					ok = 0;
+    #####:  456:					goto finish;
+        -:  457:					}
+        -:  458:				}
+    #####:  459:			else if (hent->suffix < k)
+    #####:  460:				hent->suffix = k;
+        -:  461:
+    #####:  462:			CRYPTO_w_unlock(CRYPTO_LOCK_X509_STORE);
+        -:  463:
+        -:  464:			}
+        -:  465:
+     2291:  466:		if (tmp != NULL)
+        -:  467:			{
+        -:  468:			ok=1;
+    #####:  469:			ret->type=tmp->type;
+    #####:  470:			memcpy(&ret->data,&tmp->data,sizeof(ret->data));
+        -:  471:			/* If we were going to up the reference count,
+        -:  472:			 * we would need to do it on a perl 'type'
+        -:  473:			 * basis */
+        -:  474:	/*		CRYPTO_add(&tmp->data.x509->references,1,
+        -:  475:				CRYPTO_LOCK_X509);*/
+        -:  476:			goto finish;
+        -:  477:			}
+        -:  478:		}
+        -:  479:finish:
+     2291:  480:	if (b != NULL) BUF_MEM_free(b);
+     2291:  481:	return(ok);
+        -:  482:	}

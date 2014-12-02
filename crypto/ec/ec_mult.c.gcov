@@ -1,0 +1,945 @@
+        -:    0:Source:ec_mult.c
+        -:    0:Graph:ec_mult.gcno
+        -:    0:Data:ec_mult.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* crypto/ec/ec_mult.c */
+        -:    2:/*
+        -:    3: * Originally written by Bodo Moeller and Nils Larsch for the OpenSSL project.
+        -:    4: */
+        -:    5:/* ====================================================================
+        -:    6: * Copyright (c) 1998-2007 The OpenSSL Project.  All rights reserved.
+        -:    7: *
+        -:    8: * Redistribution and use in source and binary forms, with or without
+        -:    9: * modification, are permitted provided that the following conditions
+        -:   10: * are met:
+        -:   11: *
+        -:   12: * 1. Redistributions of source code must retain the above copyright
+        -:   13: *    notice, this list of conditions and the following disclaimer. 
+        -:   14: *
+        -:   15: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   16: *    notice, this list of conditions and the following disclaimer in
+        -:   17: *    the documentation and/or other materials provided with the
+        -:   18: *    distribution.
+        -:   19: *
+        -:   20: * 3. All advertising materials mentioning features or use of this
+        -:   21: *    software must display the following acknowledgment:
+        -:   22: *    "This product includes software developed by the OpenSSL Project
+        -:   23: *    for use in the OpenSSL Toolkit. (http://www.openssl.org/)"
+        -:   24: *
+        -:   25: * 4. The names "OpenSSL Toolkit" and "OpenSSL Project" must not be used to
+        -:   26: *    endorse or promote products derived from this software without
+        -:   27: *    prior written permission. For written permission, please contact
+        -:   28: *    openssl-core@openssl.org.
+        -:   29: *
+        -:   30: * 5. Products derived from this software may not be called "OpenSSL"
+        -:   31: *    nor may "OpenSSL" appear in their names without prior written
+        -:   32: *    permission of the OpenSSL Project.
+        -:   33: *
+        -:   34: * 6. Redistributions of any form whatsoever must retain the following
+        -:   35: *    acknowledgment:
+        -:   36: *    "This product includes software developed by the OpenSSL Project
+        -:   37: *    for use in the OpenSSL Toolkit (http://www.openssl.org/)"
+        -:   38: *
+        -:   39: * THIS SOFTWARE IS PROVIDED BY THE OpenSSL PROJECT ``AS IS'' AND ANY
+        -:   40: * EXPRESSED OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   41: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+        -:   42: * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE OpenSSL PROJECT OR
+        -:   43: * ITS CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+        -:   44: * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+        -:   45: * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+        -:   46: * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   47: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+        -:   48: * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+        -:   49: * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+        -:   50: * OF THE POSSIBILITY OF SUCH DAMAGE.
+        -:   51: * ====================================================================
+        -:   52: *
+        -:   53: * This product includes cryptographic software written by Eric Young
+        -:   54: * (eay@cryptsoft.com).  This product includes software written by Tim
+        -:   55: * Hudson (tjh@cryptsoft.com).
+        -:   56: *
+        -:   57: */
+        -:   58:/* ====================================================================
+        -:   59: * Copyright 2002 Sun Microsystems, Inc. ALL RIGHTS RESERVED.
+        -:   60: * Portions of this software developed by SUN MICROSYSTEMS, INC.,
+        -:   61: * and contributed to the OpenSSL project.
+        -:   62: */
+        -:   63:
+        -:   64:#include <string.h>
+        -:   65:
+        -:   66:#include <openssl/err.h>
+        -:   67:
+        -:   68:#include "ec_lcl.h"
+        -:   69:
+        -:   70:
+        -:   71:/*
+        -:   72: * This file implements the wNAF-based interleaving multi-exponentation method
+        -:   73: * (<URL:http://www.informatik.tu-darmstadt.de/TI/Mitarbeiter/moeller.html#multiexp>);
+        -:   74: * for multiplication with precomputation, we use wNAF splitting
+        -:   75: * (<URL:http://www.informatik.tu-darmstadt.de/TI/Mitarbeiter/moeller.html#fastexp>).
+        -:   76: */
+        -:   77:
+        -:   78:
+        -:   79:
+        -:   80:
+        -:   81:/* structure for precomputed multiples of the generator */
+        -:   82:typedef struct ec_pre_comp_st {
+        -:   83:	const EC_GROUP *group; /* parent EC_GROUP object */
+        -:   84:	size_t blocksize;      /* block size for wNAF splitting */
+        -:   85:	size_t numblocks;      /* max. number of blocks for which we have precomputation */
+        -:   86:	size_t w;              /* window size */
+        -:   87:	EC_POINT **points;     /* array with pre-calculated multiples of generator:
+        -:   88:	                        * 'num' pointers to EC_POINT objects followed by a NULL */
+        -:   89:	size_t num;            /* numblocks * 2^(w-1) */
+        -:   90:	int references;
+        -:   91:} EC_PRE_COMP;
+        -:   92: 
+        -:   93:/* functions to manage EC_PRE_COMP within the EC_GROUP extra_data framework */
+        -:   94:static void *ec_pre_comp_dup(void *);
+        -:   95:static void ec_pre_comp_free(void *);
+        -:   96:static void ec_pre_comp_clear_free(void *);
+        -:   97:
+    #####:   98:static EC_PRE_COMP *ec_pre_comp_new(const EC_GROUP *group)
+        -:   99:	{
+        -:  100:	EC_PRE_COMP *ret = NULL;
+        -:  101:
+    #####:  102:	if (!group)
+        -:  103:		return NULL;
+        -:  104:
+    #####:  105:	ret = (EC_PRE_COMP *)OPENSSL_malloc(sizeof(EC_PRE_COMP));
+    #####:  106:	if (!ret)
+        -:  107:		{
+    #####:  108:		ECerr(EC_F_EC_PRE_COMP_NEW, ERR_R_MALLOC_FAILURE);
+    #####:  109:		return ret;
+        -:  110:		}
+    #####:  111:	ret->group = group;
+    #####:  112:	ret->blocksize = 8; /* default */
+    #####:  113:	ret->numblocks = 0;
+    #####:  114:	ret->w = 4; /* default */
+    #####:  115:	ret->points = NULL;
+    #####:  116:	ret->num = 0;
+    #####:  117:	ret->references = 1;
+    #####:  118:	return ret;
+        -:  119:	}
+        -:  120:
+    #####:  121:static void *ec_pre_comp_dup(void *src_)
+        -:  122:	{
+        -:  123:	EC_PRE_COMP *src = src_;
+        -:  124:
+        -:  125:	/* no need to actually copy, these objects never change! */
+        -:  126:
+    #####:  127:	CRYPTO_add(&src->references, 1, CRYPTO_LOCK_EC_PRE_COMP);
+        -:  128:
+    #####:  129:	return src_;
+        -:  130:	}
+        -:  131:
+    #####:  132:static void ec_pre_comp_free(void *pre_)
+        -:  133:	{
+        -:  134:	int i;
+        -:  135:	EC_PRE_COMP *pre = pre_;
+        -:  136:
+    #####:  137:	if (!pre)
+        -:  138:		return;
+        -:  139:
+    #####:  140:	i = CRYPTO_add(&pre->references, -1, CRYPTO_LOCK_EC_PRE_COMP);
+    #####:  141:	if (i > 0)
+        -:  142:		return;
+        -:  143:
+    #####:  144:	if (pre->points)
+        -:  145:		{
+        -:  146:		EC_POINT **p;
+        -:  147:
+    #####:  148:		for (p = pre->points; *p != NULL; p++)
+    #####:  149:			EC_POINT_free(*p);
+    #####:  150:		OPENSSL_free(pre->points);
+        -:  151:		}
+    #####:  152:	OPENSSL_free(pre);
+        -:  153:	}
+        -:  154:
+    #####:  155:static void ec_pre_comp_clear_free(void *pre_)
+        -:  156:	{
+        -:  157:	int i;
+        -:  158:	EC_PRE_COMP *pre = pre_;
+        -:  159:
+    #####:  160:	if (!pre)
+        -:  161:		return;
+        -:  162:
+    #####:  163:	i = CRYPTO_add(&pre->references, -1, CRYPTO_LOCK_EC_PRE_COMP);
+    #####:  164:	if (i > 0)
+        -:  165:		return;
+        -:  166:
+    #####:  167:	if (pre->points)
+        -:  168:		{
+        -:  169:		EC_POINT **p;
+        -:  170:
+    #####:  171:		for (p = pre->points; *p != NULL; p++)
+        -:  172:			{
+    #####:  173:			EC_POINT_clear_free(*p);
+    #####:  174:			OPENSSL_cleanse(p, sizeof *p);
+        -:  175:			}
+    #####:  176:		OPENSSL_free(pre->points);
+        -:  177:		}
+    #####:  178:	OPENSSL_cleanse(pre, sizeof *pre);
+    #####:  179:	OPENSSL_free(pre);
+        -:  180:	}
+        -:  181:
+        -:  182:
+        -:  183:
+        -:  184:
+        -:  185:/* Determine the modified width-(w+1) Non-Adjacent Form (wNAF) of 'scalar'.
+        -:  186: * This is an array  r[]  of values that are either zero or odd with an
+        -:  187: * absolute value less than  2^w  satisfying
+        -:  188: *     scalar = \sum_j r[j]*2^j
+        -:  189: * where at most one of any  w+1  consecutive digits is non-zero
+        -:  190: * with the exception that the most significant digit may be only
+        -:  191: * w-1 zeros away from that next non-zero digit.
+        -:  192: */
+    #####:  193:static signed char *compute_wNAF(const BIGNUM *scalar, int w, size_t *ret_len)
+        -:  194:	{
+        -:  195:	int window_val;
+        -:  196:	int ok = 0;
+        -:  197:	signed char *r = NULL;
+        -:  198:	int sign = 1;
+        -:  199:	int bit, next_bit, mask;
+        -:  200:	size_t len = 0, j;
+        -:  201:	
+    #####:  202:	if (BN_is_zero(scalar))
+        -:  203:		{
+    #####:  204:		r = OPENSSL_malloc(1);
+    #####:  205:		if (!r)
+        -:  206:			{
+    #####:  207:			ECerr(EC_F_COMPUTE_WNAF, ERR_R_MALLOC_FAILURE);
+    #####:  208:			goto err;
+        -:  209:			}
+    #####:  210:		r[0] = 0;
+    #####:  211:		*ret_len = 1;
+    #####:  212:		return r;
+        -:  213:		}
+        -:  214:		
+    #####:  215:	if (w <= 0 || w > 7) /* 'signed char' can represent integers with absolute values less than 2^7 */
+        -:  216:		{
+    #####:  217:		ECerr(EC_F_COMPUTE_WNAF, ERR_R_INTERNAL_ERROR);
+    #####:  218:		goto err;
+        -:  219:		}
+    #####:  220:	bit = 1 << w; /* at most 128 */
+    #####:  221:	next_bit = bit << 1; /* at most 256 */
+    #####:  222:	mask = next_bit - 1; /* at most 255 */
+        -:  223:
+    #####:  224:	if (BN_is_negative(scalar))
+        -:  225:		{
+        -:  226:		sign = -1;
+        -:  227:		}
+        -:  228:
+    #####:  229:	if (scalar->d == NULL || scalar->top == 0)
+        -:  230:		{
+    #####:  231:		ECerr(EC_F_COMPUTE_WNAF, ERR_R_INTERNAL_ERROR);
+    #####:  232:		goto err;
+        -:  233:		}
+        -:  234:
+    #####:  235:	len = BN_num_bits(scalar);
+    #####:  236:	r = OPENSSL_malloc(len + 1); /* modified wNAF may be one digit longer than binary representation
+        -:  237:	                              * (*ret_len will be set to the actual length, i.e. at most
+        -:  238:	                              * BN_num_bits(scalar) + 1) */
+    #####:  239:	if (r == NULL)
+        -:  240:		{
+    #####:  241:		ECerr(EC_F_COMPUTE_WNAF, ERR_R_MALLOC_FAILURE);
+    #####:  242:		goto err;
+        -:  243:		}
+    #####:  244:	window_val = scalar->d[0] & mask;
+        -:  245:	j = 0;
+    #####:  246:	while ((window_val != 0) || (j + w + 1 < len)) /* if j+w+1 >= len, window_val will not increase */
+        -:  247:		{
+        -:  248:		int digit = 0;
+        -:  249:
+        -:  250:		/* 0 <= window_val <= 2^(w+1) */
+        -:  251:
+    #####:  252:		if (window_val & 1)
+        -:  253:			{
+        -:  254:			/* 0 < window_val < 2^(w+1) */
+        -:  255:
+    #####:  256:			if (window_val & bit)
+        -:  257:				{
+    #####:  258:				digit = window_val - next_bit; /* -2^w < digit < 0 */
+        -:  259:
+        -:  260:#if 1 /* modified wNAF */
+    #####:  261:				if (j + w + 1 >= len)
+        -:  262:					{
+        -:  263:					/* special case for generating modified wNAFs:
+        -:  264:					 * no new bits will be added into window_val,
+        -:  265:					 * so using a positive digit here will decrease
+        -:  266:					 * the total length of the representation */
+        -:  267:					
+    #####:  268:					digit = window_val & (mask >> 1); /* 0 < digit < 2^w */
+        -:  269:					}
+        -:  270:#endif
+        -:  271:				}
+        -:  272:			else
+        -:  273:				{
+        -:  274:				digit = window_val; /* 0 < digit < 2^w */
+        -:  275:				}
+        -:  276:			
+    #####:  277:			if (digit <= -bit || digit >= bit || !(digit & 1))
+        -:  278:				{
+    #####:  279:				ECerr(EC_F_COMPUTE_WNAF, ERR_R_INTERNAL_ERROR);
+    #####:  280:				goto err;
+        -:  281:				}
+        -:  282:
+    #####:  283:			window_val -= digit;
+        -:  284:
+        -:  285:			/* now window_val is 0 or 2^(w+1) in standard wNAF generation;
+        -:  286:			 * for modified window NAFs, it may also be 2^w
+        -:  287:			 */
+    #####:  288:			if (window_val != 0 && window_val != next_bit && window_val != bit)
+        -:  289:				{
+    #####:  290:				ECerr(EC_F_COMPUTE_WNAF, ERR_R_INTERNAL_ERROR);
+    #####:  291:				goto err;
+        -:  292:				}
+        -:  293:			}
+        -:  294:
+    #####:  295:		r[j++] = sign * digit;
+        -:  296:
+    #####:  297:		window_val >>= 1;
+    #####:  298:		window_val += bit * BN_is_bit_set(scalar, j + w);
+        -:  299:
+    #####:  300:		if (window_val > next_bit)
+        -:  301:			{
+    #####:  302:			ECerr(EC_F_COMPUTE_WNAF, ERR_R_INTERNAL_ERROR);
+    #####:  303:			goto err;
+        -:  304:			}
+        -:  305:		}
+        -:  306:
+    #####:  307:	if (j > len + 1)
+        -:  308:		{
+    #####:  309:		ECerr(EC_F_COMPUTE_WNAF, ERR_R_INTERNAL_ERROR);
+    #####:  310:		goto err;
+        -:  311:		}
+        -:  312:	len = j;
+        -:  313:	ok = 1;
+        -:  314:
+        -:  315: err:
+    #####:  316:	if (!ok)
+        -:  317:		{
+    #####:  318:		OPENSSL_free(r);
+        -:  319:		r = NULL;
+        -:  320:		}
+    #####:  321:	if (ok)
+    #####:  322:		*ret_len = len;
+    #####:  323:	return r;
+        -:  324:	}
+        -:  325:
+        -:  326:
+        -:  327:/* TODO: table should be optimised for the wNAF-based implementation,
+        -:  328: *       sometimes smaller windows will give better performance
+        -:  329: *       (thus the boundaries should be increased)
+        -:  330: */
+        -:  331:#define EC_window_bits_for_scalar_size(b) \
+        -:  332:		((size_t) \
+        -:  333:		 ((b) >= 2000 ? 6 : \
+        -:  334:		  (b) >=  800 ? 5 : \
+        -:  335:		  (b) >=  300 ? 4 : \
+        -:  336:		  (b) >=   70 ? 3 : \
+        -:  337:		  (b) >=   20 ? 2 : \
+        -:  338:		  1))
+        -:  339:
+        -:  340:/* Compute
+        -:  341: *      \sum scalars[i]*points[i],
+        -:  342: * also including
+        -:  343: *      scalar*generator
+        -:  344: * in the addition if scalar != NULL
+        -:  345: */
+    #####:  346:int ec_wNAF_mul(const EC_GROUP *group, EC_POINT *r, const BIGNUM *scalar,
+        -:  347:	size_t num, const EC_POINT *points[], const BIGNUM *scalars[], BN_CTX *ctx)
+        -:  348:	{
+        -:  349:	BN_CTX *new_ctx = NULL;
+        -:  350:	const EC_POINT *generator = NULL;
+        -:  351:	EC_POINT *tmp = NULL;
+        -:  352:	size_t totalnum;
+        -:  353:	size_t blocksize = 0, numblocks = 0; /* for wNAF splitting */
+        -:  354:	size_t pre_points_per_block = 0;
+        -:  355:	size_t i, j;
+        -:  356:	int k;
+        -:  357:	int r_is_inverted = 0;
+        -:  358:	int r_is_at_infinity = 1;
+        -:  359:	size_t *wsize = NULL; /* individual window sizes */
+        -:  360:	signed char **wNAF = NULL; /* individual wNAFs */
+        -:  361:	size_t *wNAF_len = NULL;
+        -:  362:	size_t max_len = 0;
+        -:  363:	size_t num_val;
+        -:  364:	EC_POINT **val = NULL; /* precomputation */
+        -:  365:	EC_POINT **v;
+        -:  366:	EC_POINT ***val_sub = NULL; /* pointers to sub-arrays of 'val' or 'pre_comp->points' */
+        -:  367:	const EC_PRE_COMP *pre_comp = NULL;
+        -:  368:	int num_scalar = 0; /* flag: will be set to 1 if 'scalar' must be treated like other scalars,
+        -:  369:	                     * i.e. precomputation is not available */
+        -:  370:	int ret = 0;
+        -:  371:	
+    #####:  372:	if (group->meth != r->meth)
+        -:  373:		{
+    #####:  374:		ECerr(EC_F_EC_WNAF_MUL, EC_R_INCOMPATIBLE_OBJECTS);
+    #####:  375:		return 0;
+        -:  376:		}
+        -:  377:
+    #####:  378:	if ((scalar == NULL) && (num == 0))
+        -:  379:		{
+    #####:  380:		return EC_POINT_set_to_infinity(group, r);
+        -:  381:		}
+        -:  382:
+    #####:  383:	for (i = 0; i < num; i++)
+        -:  384:		{
+    #####:  385:		if (group->meth != points[i]->meth)
+        -:  386:			{
+    #####:  387:			ECerr(EC_F_EC_WNAF_MUL, EC_R_INCOMPATIBLE_OBJECTS);
+    #####:  388:			return 0;
+        -:  389:			}
+        -:  390:		}
+        -:  391:
+    #####:  392:	if (ctx == NULL)
+        -:  393:		{
+    #####:  394:		ctx = new_ctx = BN_CTX_new();
+    #####:  395:		if (ctx == NULL)
+        -:  396:			goto err;
+        -:  397:		}
+        -:  398:
+    #####:  399:	if (scalar != NULL)
+        -:  400:		{
+    #####:  401:		generator = EC_GROUP_get0_generator(group);
+    #####:  402:		if (generator == NULL)
+        -:  403:			{
+    #####:  404:			ECerr(EC_F_EC_WNAF_MUL, EC_R_UNDEFINED_GENERATOR);
+    #####:  405:			goto err;
+        -:  406:			}
+        -:  407:		
+        -:  408:		/* look if we can use precomputed multiples of generator */
+        -:  409:
+    #####:  410:		pre_comp = EC_EX_DATA_get_data(group->extra_data, ec_pre_comp_dup, ec_pre_comp_free, ec_pre_comp_clear_free);
+        -:  411:
+    #####:  412:		if (pre_comp && pre_comp->numblocks && (EC_POINT_cmp(group, generator, pre_comp->points[0], ctx) == 0))
+        -:  413:			{
+    #####:  414:			blocksize = pre_comp->blocksize;
+        -:  415:
+        -:  416:			/* determine maximum number of blocks that wNAF splitting may yield
+        -:  417:			 * (NB: maximum wNAF length is bit length plus one) */
+    #####:  418:			numblocks = (BN_num_bits(scalar) / blocksize) + 1;
+        -:  419:
+        -:  420:			/* we cannot use more blocks than we have precomputation for */
+    #####:  421:			if (numblocks > pre_comp->numblocks)
+        -:  422:				numblocks = pre_comp->numblocks;
+        -:  423:
+    #####:  424:			pre_points_per_block = (size_t)1 << (pre_comp->w - 1);
+        -:  425:
+        -:  426:			/* check that pre_comp looks sane */
+    #####:  427:			if (pre_comp->num != (pre_comp->numblocks * pre_points_per_block))
+        -:  428:				{
+    #####:  429:				ECerr(EC_F_EC_WNAF_MUL, ERR_R_INTERNAL_ERROR);
+    #####:  430:				goto err;
+        -:  431:				}
+        -:  432:			}
+        -:  433:		else
+        -:  434:			{
+        -:  435:			/* can't use precomputation */
+        -:  436:			pre_comp = NULL;
+        -:  437:			numblocks = 1;
+        -:  438:			num_scalar = 1; /* treat 'scalar' like 'num'-th element of 'scalars' */
+        -:  439:			}
+        -:  440:		}
+        -:  441:	
+    #####:  442:	totalnum = num + numblocks;
+        -:  443:
+    #####:  444:	wsize    = OPENSSL_malloc(totalnum * sizeof wsize[0]);
+    #####:  445:	wNAF_len = OPENSSL_malloc(totalnum * sizeof wNAF_len[0]);
+    #####:  446:	wNAF     = OPENSSL_malloc((totalnum + 1) * sizeof wNAF[0]); /* includes space for pivot */
+    #####:  447:	val_sub  = OPENSSL_malloc(totalnum * sizeof val_sub[0]);
+        -:  448:		 
+    #####:  449:	if (!wsize || !wNAF_len || !wNAF || !val_sub)
+        -:  450:		{
+    #####:  451:		ECerr(EC_F_EC_WNAF_MUL, ERR_R_MALLOC_FAILURE);
+    #####:  452:		goto err;
+        -:  453:		}
+        -:  454:
+    #####:  455:	wNAF[0] = NULL;	/* preliminary pivot */
+        -:  456:
+        -:  457:	/* num_val will be the total number of temporarily precomputed points */
+        -:  458:	num_val = 0;
+        -:  459:
+    #####:  460:	for (i = 0; i < num + num_scalar; i++)
+        -:  461:		{
+        -:  462:		size_t bits;
+        -:  463:
+    #####:  464:		bits = i < num ? BN_num_bits(scalars[i]) : BN_num_bits(scalar);
+    #####:  465:		wsize[i] = EC_window_bits_for_scalar_size(bits);
+    #####:  466:		num_val += (size_t)1 << (wsize[i] - 1);
+    #####:  467:		wNAF[i + 1] = NULL; /* make sure we always have a pivot */
+    #####:  468:		wNAF[i] = compute_wNAF((i < num ? scalars[i] : scalar), wsize[i], &wNAF_len[i]);
+    #####:  469:		if (wNAF[i] == NULL)
+        -:  470:			goto err;
+    #####:  471:		if (wNAF_len[i] > max_len)
+        -:  472:			max_len = wNAF_len[i];
+        -:  473:		}
+        -:  474:
+    #####:  475:	if (numblocks)
+        -:  476:		{
+        -:  477:		/* we go here iff scalar != NULL */
+        -:  478:		
+    #####:  479:		if (pre_comp == NULL)
+        -:  480:			{
+    #####:  481:			if (num_scalar != 1)
+        -:  482:				{
+    #####:  483:				ECerr(EC_F_EC_WNAF_MUL, ERR_R_INTERNAL_ERROR);
+    #####:  484:				goto err;
+        -:  485:				}
+        -:  486:			/* we have already generated a wNAF for 'scalar' */
+        -:  487:			}
+        -:  488:		else
+        -:  489:			{
+        -:  490:			signed char *tmp_wNAF = NULL;
+    #####:  491:			size_t tmp_len = 0;
+        -:  492:			
+    #####:  493:			if (num_scalar != 0)
+        -:  494:				{
+    #####:  495:				ECerr(EC_F_EC_WNAF_MUL, ERR_R_INTERNAL_ERROR);
+    #####:  496:				goto err;
+        -:  497:				}
+        -:  498:
+        -:  499:			/* use the window size for which we have precomputation */
+    #####:  500:			wsize[num] = pre_comp->w;
+    #####:  501:			tmp_wNAF = compute_wNAF(scalar, wsize[num], &tmp_len);
+    #####:  502:			if (!tmp_wNAF)
+        -:  503:				goto err;
+        -:  504:
+    #####:  505:			if (tmp_len <= max_len)
+        -:  506:				{
+        -:  507:				/* One of the other wNAFs is at least as long
+        -:  508:				 * as the wNAF belonging to the generator,
+        -:  509:				 * so wNAF splitting will not buy us anything. */
+        -:  510:
+        -:  511:				numblocks = 1;
+    #####:  512:				totalnum = num + 1; /* don't use wNAF splitting */
+    #####:  513:				wNAF[num] = tmp_wNAF;
+    #####:  514:				wNAF[num + 1] = NULL;
+    #####:  515:				wNAF_len[num] = tmp_len;
+    #####:  516:				if (tmp_len > max_len)
+        -:  517:					max_len = tmp_len;
+        -:  518:				/* pre_comp->points starts with the points that we need here: */
+    #####:  519:				val_sub[num] = pre_comp->points;
+        -:  520:				}
+        -:  521:			else
+        -:  522:				{
+        -:  523:				/* don't include tmp_wNAF directly into wNAF array
+        -:  524:				 * - use wNAF splitting and include the blocks */
+        -:  525:
+        -:  526:				signed char *pp;
+        -:  527:				EC_POINT **tmp_points;
+        -:  528:				
+    #####:  529:				if (tmp_len < numblocks * blocksize)
+        -:  530:					{
+        -:  531:					/* possibly we can do with fewer blocks than estimated */
+    #####:  532:					numblocks = (tmp_len + blocksize - 1) / blocksize;
+    #####:  533:					if (numblocks > pre_comp->numblocks)
+        -:  534:						{
+    #####:  535:						ECerr(EC_F_EC_WNAF_MUL, ERR_R_INTERNAL_ERROR);
+    #####:  536:						goto err;
+        -:  537:						}
+    #####:  538:					totalnum = num + numblocks;
+        -:  539:					}
+        -:  540:				
+        -:  541:				/* split wNAF in 'numblocks' parts */
+        -:  542:				pp = tmp_wNAF;
+    #####:  543:				tmp_points = pre_comp->points;
+        -:  544:
+    #####:  545:				for (i = num; i < totalnum; i++)
+        -:  546:					{
+    #####:  547:					if (i < totalnum - 1)
+        -:  548:						{
+    #####:  549:						wNAF_len[i] = blocksize;
+    #####:  550:						if (tmp_len < blocksize)
+        -:  551:							{
+    #####:  552:							ECerr(EC_F_EC_WNAF_MUL, ERR_R_INTERNAL_ERROR);
+    #####:  553:							goto err;
+        -:  554:							}
+    #####:  555:						tmp_len -= blocksize;
+        -:  556:						}
+        -:  557:					else
+        -:  558:						/* last block gets whatever is left
+        -:  559:						 * (this could be more or less than 'blocksize'!) */
+    #####:  560:						wNAF_len[i] = tmp_len;
+        -:  561:					
+    #####:  562:					wNAF[i + 1] = NULL;
+    #####:  563:					wNAF[i] = OPENSSL_malloc(wNAF_len[i]);
+    #####:  564:					if (wNAF[i] == NULL)
+        -:  565:						{
+    #####:  566:						ECerr(EC_F_EC_WNAF_MUL, ERR_R_MALLOC_FAILURE);
+    #####:  567:						OPENSSL_free(tmp_wNAF);
+    #####:  568:						goto err;
+        -:  569:						}
+    #####:  570:					memcpy(wNAF[i], pp, wNAF_len[i]);
+    #####:  571:					if (wNAF_len[i] > max_len)
+        -:  572:						max_len = wNAF_len[i];
+        -:  573:
+    #####:  574:					if (*tmp_points == NULL)
+        -:  575:						{
+    #####:  576:						ECerr(EC_F_EC_WNAF_MUL, ERR_R_INTERNAL_ERROR);
+    #####:  577:						OPENSSL_free(tmp_wNAF);
+    #####:  578:						goto err;
+        -:  579:						}
+    #####:  580:					val_sub[i] = tmp_points;
+    #####:  581:					tmp_points += pre_points_per_block;
+    #####:  582:					pp += blocksize;
+        -:  583:					}
+    #####:  584:				OPENSSL_free(tmp_wNAF);
+        -:  585:				}
+        -:  586:			}
+        -:  587:		}
+        -:  588:
+        -:  589:	/* All points we precompute now go into a single array 'val'.
+        -:  590:	 * 'val_sub[i]' is a pointer to the subarray for the i-th point,
+        -:  591:	 * or to a subarray of 'pre_comp->points' if we already have precomputation. */
+    #####:  592:	val = OPENSSL_malloc((num_val + 1) * sizeof val[0]);
+    #####:  593:	if (val == NULL)
+        -:  594:		{
+    #####:  595:		ECerr(EC_F_EC_WNAF_MUL, ERR_R_MALLOC_FAILURE);
+    #####:  596:		goto err;
+        -:  597:		}
+    #####:  598:	val[num_val] = NULL; /* pivot element */
+        -:  599:
+        -:  600:	/* allocate points for precomputation */
+        -:  601:	v = val;
+    #####:  602:	for (i = 0; i < num + num_scalar; i++)
+        -:  603:		{
+    #####:  604:		val_sub[i] = v;
+    #####:  605:		for (j = 0; j < ((size_t)1 << (wsize[i] - 1)); j++)
+        -:  606:			{
+    #####:  607:			*v = EC_POINT_new(group);
+    #####:  608:			if (*v == NULL) goto err;
+    #####:  609:			v++;
+        -:  610:			}
+        -:  611:		}
+    #####:  612:	if (!(v == val + num_val))
+        -:  613:		{
+    #####:  614:		ECerr(EC_F_EC_WNAF_MUL, ERR_R_INTERNAL_ERROR);
+    #####:  615:		goto err;
+        -:  616:		}
+        -:  617:
+    #####:  618:	if (!(tmp = EC_POINT_new(group)))
+        -:  619:		goto err;
+        -:  620:
+        -:  621:	/* prepare precomputed values:
+        -:  622:	 *    val_sub[i][0] :=     points[i]
+        -:  623:	 *    val_sub[i][1] := 3 * points[i]
+        -:  624:	 *    val_sub[i][2] := 5 * points[i]
+        -:  625:	 *    ...
+        -:  626:	 */
+    #####:  627:	for (i = 0; i < num + num_scalar; i++)
+        -:  628:		{
+    #####:  629:		if (i < num)
+        -:  630:			{
+    #####:  631:			if (!EC_POINT_copy(val_sub[i][0], points[i])) goto err;
+        -:  632:			}
+        -:  633:		else
+        -:  634:			{
+    #####:  635:			if (!EC_POINT_copy(val_sub[i][0], generator)) goto err;
+        -:  636:			}
+        -:  637:
+    #####:  638:		if (wsize[i] > 1)
+        -:  639:			{
+    #####:  640:			if (!EC_POINT_dbl(group, tmp, val_sub[i][0], ctx)) goto err;
+    #####:  641:			for (j = 1; j < ((size_t)1 << (wsize[i] - 1)); j++)
+        -:  642:				{
+    #####:  643:				if (!EC_POINT_add(group, val_sub[i][j], val_sub[i][j - 1], tmp, ctx)) goto err;
+        -:  644:				}
+        -:  645:			}
+        -:  646:		}
+        -:  647:
+        -:  648:#if 1 /* optional; EC_window_bits_for_scalar_size assumes we do this step */
+    #####:  649:	if (!EC_POINTs_make_affine(group, num_val, val, ctx))
+        -:  650:		goto err;
+        -:  651:#endif
+        -:  652:
+        -:  653:	r_is_at_infinity = 1;
+        -:  654:
+    #####:  655:	for (k = max_len - 1; k >= 0; k--)
+        -:  656:		{
+    #####:  657:		if (!r_is_at_infinity)
+        -:  658:			{
+    #####:  659:			if (!EC_POINT_dbl(group, r, r, ctx)) goto err;
+        -:  660:			}
+        -:  661:		
+    #####:  662:		for (i = 0; i < totalnum; i++)
+        -:  663:			{
+    #####:  664:			if (wNAF_len[i] > (size_t)k)
+        -:  665:				{
+    #####:  666:				int digit = wNAF[i][k];
+        -:  667:				int is_neg;
+        -:  668:
+    #####:  669:				if (digit) 
+        -:  670:					{
+    #####:  671:					is_neg = digit < 0;
+        -:  672:
+    #####:  673:					if (is_neg)
+    #####:  674:						digit = -digit;
+        -:  675:
+    #####:  676:					if (is_neg != r_is_inverted)
+        -:  677:						{
+    #####:  678:						if (!r_is_at_infinity)
+        -:  679:							{
+    #####:  680:							if (!EC_POINT_invert(group, r, ctx)) goto err;
+        -:  681:							}
+    #####:  682:						r_is_inverted = !r_is_inverted;
+        -:  683:						}
+        -:  684:
+        -:  685:					/* digit > 0 */
+        -:  686:
+    #####:  687:					if (r_is_at_infinity)
+        -:  688:						{
+    #####:  689:						if (!EC_POINT_copy(r, val_sub[i][digit >> 1])) goto err;
+        -:  690:						r_is_at_infinity = 0;
+        -:  691:						}
+        -:  692:					else
+        -:  693:						{
+    #####:  694:						if (!EC_POINT_add(group, r, r, val_sub[i][digit >> 1], ctx)) goto err;
+        -:  695:						}
+        -:  696:					}
+        -:  697:				}
+        -:  698:			}
+        -:  699:		}
+        -:  700:
+    #####:  701:	if (r_is_at_infinity)
+        -:  702:		{
+    #####:  703:		if (!EC_POINT_set_to_infinity(group, r)) goto err;
+        -:  704:		}
+        -:  705:	else
+        -:  706:		{
+    #####:  707:		if (r_is_inverted)
+    #####:  708:			if (!EC_POINT_invert(group, r, ctx)) goto err;
+        -:  709:		}
+        -:  710:	
+        -:  711:	ret = 1;
+        -:  712:
+        -:  713: err:
+    #####:  714:	if (new_ctx != NULL)
+    #####:  715:		BN_CTX_free(new_ctx);
+    #####:  716:	if (tmp != NULL)
+    #####:  717:		EC_POINT_free(tmp);
+    #####:  718:	if (wsize != NULL)
+    #####:  719:		OPENSSL_free(wsize);
+    #####:  720:	if (wNAF_len != NULL)
+    #####:  721:		OPENSSL_free(wNAF_len);
+    #####:  722:	if (wNAF != NULL)
+        -:  723:		{
+        -:  724:		signed char **w;
+        -:  725:		
+    #####:  726:		for (w = wNAF; *w != NULL; w++)
+    #####:  727:			OPENSSL_free(*w);
+        -:  728:		
+    #####:  729:		OPENSSL_free(wNAF);
+        -:  730:		}
+    #####:  731:	if (val != NULL)
+        -:  732:		{
+    #####:  733:		for (v = val; *v != NULL; v++)
+    #####:  734:			EC_POINT_clear_free(*v);
+        -:  735:
+    #####:  736:		OPENSSL_free(val);
+        -:  737:		}
+    #####:  738:	if (val_sub != NULL)
+        -:  739:		{
+    #####:  740:		OPENSSL_free(val_sub);
+        -:  741:		}
+    #####:  742:	return ret;
+        -:  743:	}
+        -:  744:
+        -:  745:
+        -:  746:/* ec_wNAF_precompute_mult()
+        -:  747: * creates an EC_PRE_COMP object with preprecomputed multiples of the generator
+        -:  748: * for use with wNAF splitting as implemented in ec_wNAF_mul().
+        -:  749: * 
+        -:  750: * 'pre_comp->points' is an array of multiples of the generator
+        -:  751: * of the following form:
+        -:  752: * points[0] =     generator;
+        -:  753: * points[1] = 3 * generator;
+        -:  754: * ...
+        -:  755: * points[2^(w-1)-1] =     (2^(w-1)-1) * generator;
+        -:  756: * points[2^(w-1)]   =     2^blocksize * generator;
+        -:  757: * points[2^(w-1)+1] = 3 * 2^blocksize * generator;
+        -:  758: * ...
+        -:  759: * points[2^(w-1)*(numblocks-1)-1] = (2^(w-1)) *  2^(blocksize*(numblocks-2)) * generator
+        -:  760: * points[2^(w-1)*(numblocks-1)]   =              2^(blocksize*(numblocks-1)) * generator
+        -:  761: * ...
+        -:  762: * points[2^(w-1)*numblocks-1]     = (2^(w-1)) *  2^(blocksize*(numblocks-1)) * generator
+        -:  763: * points[2^(w-1)*numblocks]       = NULL
+        -:  764: */
+    #####:  765:int ec_wNAF_precompute_mult(EC_GROUP *group, BN_CTX *ctx)
+        -:  766:	{
+        -:  767:	const EC_POINT *generator;
+        -:  768:	EC_POINT *tmp_point = NULL, *base = NULL, **var;
+        -:  769:	BN_CTX *new_ctx = NULL;
+        -:  770:	BIGNUM *order;
+        -:  771:	size_t i, bits, w, pre_points_per_block, blocksize, numblocks, num;
+        -:  772:	EC_POINT **points = NULL;
+        -:  773:	EC_PRE_COMP *pre_comp;
+        -:  774:	int ret = 0;
+        -:  775:
+        -:  776:	/* if there is an old EC_PRE_COMP object, throw it away */
+    #####:  777:	EC_EX_DATA_free_data(&group->extra_data, ec_pre_comp_dup, ec_pre_comp_free, ec_pre_comp_clear_free);
+        -:  778:
+    #####:  779:	if ((pre_comp = ec_pre_comp_new(group)) == NULL)
+        -:  780:		return 0;
+        -:  781:
+    #####:  782:	generator = EC_GROUP_get0_generator(group);
+    #####:  783:	if (generator == NULL)
+        -:  784:		{
+    #####:  785:		ECerr(EC_F_EC_WNAF_PRECOMPUTE_MULT, EC_R_UNDEFINED_GENERATOR);
+    #####:  786:		goto err;
+        -:  787:		}
+        -:  788:
+    #####:  789:	if (ctx == NULL)
+        -:  790:		{
+    #####:  791:		ctx = new_ctx = BN_CTX_new();
+    #####:  792:		if (ctx == NULL)
+        -:  793:			goto err;
+        -:  794:		}
+        -:  795:	
+    #####:  796:	BN_CTX_start(ctx);
+    #####:  797:	order = BN_CTX_get(ctx);
+    #####:  798:	if (order == NULL) goto err;
+        -:  799:	
+    #####:  800:	if (!EC_GROUP_get_order(group, order, ctx)) goto err;		
+    #####:  801:	if (BN_is_zero(order))
+        -:  802:		{
+    #####:  803:		ECerr(EC_F_EC_WNAF_PRECOMPUTE_MULT, EC_R_UNKNOWN_ORDER);
+    #####:  804:		goto err;
+        -:  805:		}
+        -:  806:
+    #####:  807:	bits = BN_num_bits(order);
+        -:  808:	/* The following parameters mean we precompute (approximately)
+        -:  809:	 * one point per bit.
+        -:  810:	 *
+        -:  811:	 * TBD: The combination  8, 4  is perfect for 160 bits; for other
+        -:  812:	 * bit lengths, other parameter combinations might provide better
+        -:  813:	 * efficiency.
+        -:  814:	 */
+        -:  815:	blocksize = 8;
+        -:  816:	w = 4;
+    #####:  817:	if (EC_window_bits_for_scalar_size(bits) > w)
+        -:  818:		{
+        -:  819:		/* let's not make the window too small ... */
+    #####:  820:		w = EC_window_bits_for_scalar_size(bits);
+        -:  821:		}
+        -:  822:
+    #####:  823:	numblocks = (bits + blocksize - 1) / blocksize; /* max. number of blocks to use for wNAF splitting */
+        -:  824:	
+    #####:  825:	pre_points_per_block = (size_t)1 << (w - 1);
+    #####:  826:	num = pre_points_per_block * numblocks; /* number of points to compute and store */
+        -:  827:
+    #####:  828:	points = OPENSSL_malloc(sizeof (EC_POINT*)*(num + 1));
+    #####:  829:	if (!points)
+        -:  830:		{
+    #####:  831:		ECerr(EC_F_EC_WNAF_PRECOMPUTE_MULT, ERR_R_MALLOC_FAILURE);
+    #####:  832:		goto err;
+        -:  833:		}
+        -:  834:
+        -:  835:	var = points;
+    #####:  836:	var[num] = NULL; /* pivot */
+    #####:  837:	for (i = 0; i < num; i++)
+        -:  838:		{
+    #####:  839:		if ((var[i] = EC_POINT_new(group)) == NULL)
+        -:  840:			{
+    #####:  841:			ECerr(EC_F_EC_WNAF_PRECOMPUTE_MULT, ERR_R_MALLOC_FAILURE);
+    #####:  842:			goto err;
+        -:  843:			}
+        -:  844:		}
+        -:  845:
+    #####:  846:	if (!(tmp_point = EC_POINT_new(group)) || !(base = EC_POINT_new(group)))
+        -:  847:		{
+    #####:  848:		ECerr(EC_F_EC_WNAF_PRECOMPUTE_MULT, ERR_R_MALLOC_FAILURE);
+    #####:  849:		goto err;
+        -:  850:		}	
+        -:  851:	
+    #####:  852:	if (!EC_POINT_copy(base, generator))
+        -:  853:		goto err;
+        -:  854:	
+        -:  855:	/* do the precomputation */
+    #####:  856:	for (i = 0; i < numblocks; i++)
+        -:  857:		{
+        -:  858:		size_t j;
+        -:  859:
+    #####:  860:		if (!EC_POINT_dbl(group, tmp_point, base, ctx))
+        -:  861:			goto err;
+        -:  862:
+    #####:  863:		if (!EC_POINT_copy(*var++, base))
+        -:  864:			goto err;
+        -:  865:
+    #####:  866:		for (j = 1; j < pre_points_per_block; j++, var++)
+        -:  867:			{
+        -:  868:			/* calculate odd multiples of the current base point */
+    #####:  869:			if (!EC_POINT_add(group, *var, tmp_point, *(var - 1), ctx))
+        -:  870:				goto err;
+        -:  871:			}
+        -:  872:
+    #####:  873:		if (i < numblocks - 1)
+        -:  874:			{
+        -:  875:			/* get the next base (multiply current one by 2^blocksize) */
+        -:  876:			size_t k;
+        -:  877:
+        -:  878:			if (blocksize <= 2)
+        -:  879:				{
+        -:  880:				ECerr(EC_F_EC_WNAF_PRECOMPUTE_MULT, ERR_R_INTERNAL_ERROR);
+        -:  881:				goto err;
+        -:  882:				}				
+        -:  883:
+    #####:  884:			if (!EC_POINT_dbl(group, base, tmp_point, ctx))
+        -:  885:				goto err;
+    #####:  886:			for (k = 2; k < blocksize; k++)
+        -:  887:				{
+    #####:  888:				if (!EC_POINT_dbl(group,base,base,ctx))
+        -:  889:					goto err;
+        -:  890:				}
+        -:  891:			}
+        -:  892: 		}
+        -:  893:
+    #####:  894:	if (!EC_POINTs_make_affine(group, num, points, ctx))
+        -:  895:		goto err;
+        -:  896:	
+    #####:  897:	pre_comp->group = group;
+    #####:  898:	pre_comp->blocksize = blocksize;
+    #####:  899:	pre_comp->numblocks = numblocks;
+    #####:  900:	pre_comp->w = w;
+    #####:  901:	pre_comp->points = points;
+        -:  902:	points = NULL;
+    #####:  903:	pre_comp->num = num;
+        -:  904:
+    #####:  905:	if (!EC_EX_DATA_set_data(&group->extra_data, pre_comp,
+        -:  906:		ec_pre_comp_dup, ec_pre_comp_free, ec_pre_comp_clear_free))
+        -:  907:		goto err;
+        -:  908:	pre_comp = NULL;
+        -:  909:
+        -:  910:	ret = 1;
+        -:  911: err:
+    #####:  912:	if (ctx != NULL)
+    #####:  913:		BN_CTX_end(ctx);
+    #####:  914:	if (new_ctx != NULL)
+    #####:  915:		BN_CTX_free(new_ctx);
+    #####:  916:	if (pre_comp)
+    #####:  917:		ec_pre_comp_free(pre_comp);
+    #####:  918:	if (points)
+        -:  919:		{
+        -:  920:		EC_POINT **p;
+        -:  921:
+    #####:  922:		for (p = points; *p != NULL; p++)
+    #####:  923:			EC_POINT_free(*p);
+    #####:  924:		OPENSSL_free(points);
+        -:  925:		}
+    #####:  926:	if (tmp_point)
+    #####:  927:		EC_POINT_free(tmp_point);
+    #####:  928:	if (base)
+    #####:  929:		EC_POINT_free(base);
+    #####:  930:	return ret;
+        -:  931:	}
+        -:  932:
+        -:  933:
+    #####:  934:int ec_wNAF_have_precompute_mult(const EC_GROUP *group)
+        -:  935:	{
+    #####:  936:	if (EC_EX_DATA_get_data(group->extra_data, ec_pre_comp_dup, ec_pre_comp_free, ec_pre_comp_clear_free) != NULL)
+        -:  937:		return 1;
+        -:  938:	else
+    #####:  939:		return 0;
+        -:  940:	}

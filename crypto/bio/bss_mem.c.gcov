@@ -1,0 +1,324 @@
+        -:    0:Source:bss_mem.c
+        -:    0:Graph:bss_mem.gcno
+        -:    0:Data:bss_mem.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* crypto/bio/bss_mem.c */
+        -:    2:/* Copyright (C) 1995-1998 Eric Young (eay@cryptsoft.com)
+        -:    3: * All rights reserved.
+        -:    4: *
+        -:    5: * This package is an SSL implementation written
+        -:    6: * by Eric Young (eay@cryptsoft.com).
+        -:    7: * The implementation was written so as to conform with Netscapes SSL.
+        -:    8: * 
+        -:    9: * This library is free for commercial and non-commercial use as long as
+        -:   10: * the following conditions are aheared to.  The following conditions
+        -:   11: * apply to all code found in this distribution, be it the RC4, RSA,
+        -:   12: * lhash, DES, etc., code; not just the SSL code.  The SSL documentation
+        -:   13: * included with this distribution is covered by the same copyright terms
+        -:   14: * except that the holder is Tim Hudson (tjh@cryptsoft.com).
+        -:   15: * 
+        -:   16: * Copyright remains Eric Young's, and as such any Copyright notices in
+        -:   17: * the code are not to be removed.
+        -:   18: * If this package is used in a product, Eric Young should be given attribution
+        -:   19: * as the author of the parts of the library used.
+        -:   20: * This can be in the form of a textual message at program startup or
+        -:   21: * in documentation (online or textual) provided with the package.
+        -:   22: * 
+        -:   23: * Redistribution and use in source and binary forms, with or without
+        -:   24: * modification, are permitted provided that the following conditions
+        -:   25: * are met:
+        -:   26: * 1. Redistributions of source code must retain the copyright
+        -:   27: *    notice, this list of conditions and the following disclaimer.
+        -:   28: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   29: *    notice, this list of conditions and the following disclaimer in the
+        -:   30: *    documentation and/or other materials provided with the distribution.
+        -:   31: * 3. All advertising materials mentioning features or use of this software
+        -:   32: *    must display the following acknowledgement:
+        -:   33: *    "This product includes cryptographic software written by
+        -:   34: *     Eric Young (eay@cryptsoft.com)"
+        -:   35: *    The word 'cryptographic' can be left out if the rouines from the library
+        -:   36: *    being used are not cryptographic related :-).
+        -:   37: * 4. If you include any Windows specific code (or a derivative thereof) from 
+        -:   38: *    the apps directory (application code) you must include an acknowledgement:
+        -:   39: *    "This product includes software written by Tim Hudson (tjh@cryptsoft.com)"
+        -:   40: * 
+        -:   41: * THIS SOFTWARE IS PROVIDED BY ERIC YOUNG ``AS IS'' AND
+        -:   42: * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   43: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+        -:   44: * ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+        -:   45: * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+        -:   46: * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+        -:   47: * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   48: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+        -:   49: * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+        -:   50: * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+        -:   51: * SUCH DAMAGE.
+        -:   52: * 
+        -:   53: * The licence and distribution terms for any publically available version or
+        -:   54: * derivative of this code cannot be changed.  i.e. this code cannot simply be
+        -:   55: * copied and put under another distribution licence
+        -:   56: * [including the GNU Public Licence.]
+        -:   57: */
+        -:   58:
+        -:   59:#include <stdio.h>
+        -:   60:#include <errno.h>
+        -:   61:#include "cryptlib.h"
+        -:   62:#include <openssl/bio.h>
+        -:   63:
+        -:   64:static int mem_write(BIO *h, const char *buf, int num);
+        -:   65:static int mem_read(BIO *h, char *buf, int size);
+        -:   66:static int mem_puts(BIO *h, const char *str);
+        -:   67:static int mem_gets(BIO *h, char *str, int size);
+        -:   68:static long mem_ctrl(BIO *h, int cmd, long arg1, void *arg2);
+        -:   69:static int mem_new(BIO *h);
+        -:   70:static int mem_free(BIO *data);
+        -:   71:static BIO_METHOD mem_method=
+        -:   72:	{
+        -:   73:	BIO_TYPE_MEM,
+        -:   74:	"memory buffer",
+        -:   75:	mem_write,
+        -:   76:	mem_read,
+        -:   77:	mem_puts,
+        -:   78:	mem_gets,
+        -:   79:	mem_ctrl,
+        -:   80:	mem_new,
+        -:   81:	mem_free,
+        -:   82:	NULL,
+        -:   83:	};
+        -:   84:
+        -:   85:/* bio->num is used to hold the value to return on 'empty', if it is
+        -:   86: * 0, should_retry is not set */
+        -:   87:
+    10000:   88:BIO_METHOD *BIO_s_mem(void)
+        -:   89:	{
+    10000:   90:	return(&mem_method);
+        -:   91:	}
+        -:   92:
+    #####:   93:BIO *BIO_new_mem_buf(void *buf, int len)
+        -:   94:{
+        -:   95:	BIO *ret;
+        -:   96:	BUF_MEM *b;
+        -:   97:	size_t sz;
+        -:   98:
+    #####:   99:	if (!buf) {
+    #####:  100:		BIOerr(BIO_F_BIO_NEW_MEM_BUF,BIO_R_NULL_PARAMETER);
+    #####:  101:		return NULL;
+        -:  102:	}
+    #####:  103:	sz = (len<0) ? strlen(buf) : (size_t)len;
+    #####:  104:	if(!(ret = BIO_new(BIO_s_mem())) ) return NULL;
+    #####:  105:	b = (BUF_MEM *)ret->ptr;
+    #####:  106:	b->data = buf;
+    #####:  107:	b->length = sz;
+    #####:  108:	b->max = sz;
+    #####:  109:	ret->flags |= BIO_FLAGS_MEM_RDONLY;
+        -:  110:	/* Since this is static data retrying wont help */
+    #####:  111:	ret->num = 0;
+    #####:  112:	return ret;
+        -:  113:}
+        -:  114:
+    10000:  115:static int mem_new(BIO *bi)
+        -:  116:	{
+        -:  117:	BUF_MEM *b;
+        -:  118:
+    10000:  119:	if ((b=BUF_MEM_new()) == NULL)
+        -:  120:		return(0);
+    10000:  121:	bi->shutdown=1;
+    10000:  122:	bi->init=1;
+    10000:  123:	bi->num= -1;
+    10000:  124:	bi->ptr=(char *)b;
+    10000:  125:	return(1);
+        -:  126:	}
+        -:  127:
+    10000:  128:static int mem_free(BIO *a)
+        -:  129:	{
+    10000:  130:	if (a == NULL) return(0);
+    10000:  131:	if (a->shutdown)
+        -:  132:		{
+    10000:  133:		if ((a->init) && (a->ptr != NULL))
+        -:  134:			{
+        -:  135:			BUF_MEM *b;
+        -:  136:			b = (BUF_MEM *)a->ptr;
+    10000:  137:			if(a->flags & BIO_FLAGS_MEM_RDONLY) b->data = NULL;
+    10000:  138:			BUF_MEM_free(b);
+    10000:  139:			a->ptr=NULL;
+        -:  140:			}
+        -:  141:		}
+        -:  142:	return(1);
+        -:  143:	}
+        -:  144:	
+    #####:  145:static int mem_read(BIO *b, char *out, int outl)
+        -:  146:	{
+        -:  147:	int ret= -1;
+        -:  148:	BUF_MEM *bm;
+        -:  149:
+    #####:  150:	bm=(BUF_MEM *)b->ptr;
+    #####:  151:	BIO_clear_retry_flags(b);
+    #####:  152:	ret=(outl >=0 && (size_t)outl > bm->length)?(int)bm->length:outl;
+    #####:  153:	if ((out != NULL) && (ret > 0)) {
+    #####:  154:		memcpy(out,bm->data,ret);
+    #####:  155:		bm->length-=ret;
+    #####:  156:		if(b->flags & BIO_FLAGS_MEM_RDONLY) bm->data += ret;
+        -:  157:		else {
+    #####:  158:			memmove(&(bm->data[0]),&(bm->data[ret]),bm->length);
+        -:  159:		}
+    #####:  160:	} else if (bm->length == 0)
+        -:  161:		{
+    #####:  162:		ret = b->num;
+    #####:  163:		if (ret != 0)
+    #####:  164:			BIO_set_retry_read(b);
+        -:  165:		}
+    #####:  166:	return(ret);
+        -:  167:	}
+        -:  168:
+    40000:  169:static int mem_write(BIO *b, const char *in, int inl)
+        -:  170:	{
+        -:  171:	int ret= -1;
+        -:  172:	int blen;
+        -:  173:	BUF_MEM *bm;
+        -:  174:
+    40000:  175:	bm=(BUF_MEM *)b->ptr;
+    40000:  176:	if (in == NULL)
+        -:  177:		{
+    #####:  178:		BIOerr(BIO_F_MEM_WRITE,BIO_R_NULL_PARAMETER);
+    #####:  179:		goto end;
+        -:  180:		}
+        -:  181:
+    40000:  182:	if(b->flags & BIO_FLAGS_MEM_RDONLY) {
+    #####:  183:		BIOerr(BIO_F_MEM_WRITE,BIO_R_WRITE_TO_READ_ONLY_BIO);
+    #####:  184:		goto end;
+        -:  185:	}
+        -:  186:
+    40000:  187:	BIO_clear_retry_flags(b);
+    40000:  188:	blen=bm->length;
+    40000:  189:	if (BUF_MEM_grow_clean(bm,blen+inl) != (blen+inl))
+        -:  190:		goto end;
+    40000:  191:	memcpy(&(bm->data[blen]),in,inl);
+        -:  192:	ret=inl;
+        -:  193:end:
+    40000:  194:	return(ret);
+        -:  195:	}
+        -:  196:
+    20000:  197:static long mem_ctrl(BIO *b, int cmd, long num, void *ptr)
+        -:  198:	{
+        -:  199:	long ret=1;
+        -:  200:	char **pptr;
+        -:  201:
+    20000:  202:	BUF_MEM *bm=(BUF_MEM *)b->ptr;
+        -:  203:
+    20000:  204:	switch (cmd)
+        -:  205:		{
+        -:  206:	case BIO_CTRL_RESET:
+    #####:  207:		if (bm->data != NULL)
+        -:  208:			{
+        -:  209:			/* For read only case reset to the start again */
+    #####:  210:			if(b->flags & BIO_FLAGS_MEM_RDONLY) 
+        -:  211:				{
+    #####:  212:				bm->data -= bm->max - bm->length;
+    #####:  213:				bm->length = bm->max;
+        -:  214:				}
+        -:  215:			else
+        -:  216:				{
+    #####:  217:				memset(bm->data,0,bm->max);
+    #####:  218:				bm->length=0;
+        -:  219:				}
+        -:  220:			}
+        -:  221:		break;
+        -:  222:	case BIO_CTRL_EOF:
+    #####:  223:		ret=(long)(bm->length == 0);
+    #####:  224:		break;
+        -:  225:	case BIO_C_SET_BUF_MEM_EOF_RETURN:
+    #####:  226:		b->num=(int)num;
+    #####:  227:		break;
+        -:  228:	case BIO_CTRL_INFO:
+    10000:  229:		ret=(long)bm->length;
+    10000:  230:		if (ptr != NULL)
+        -:  231:			{
+        -:  232:			pptr=(char **)ptr;
+    10000:  233:			*pptr=(char *)&(bm->data[0]);
+        -:  234:			}
+        -:  235:		break;
+        -:  236:	case BIO_C_SET_BUF_MEM:
+    #####:  237:		mem_free(b);
+    #####:  238:		b->shutdown=(int)num;
+    #####:  239:		b->ptr=ptr;
+    #####:  240:		break;
+        -:  241:	case BIO_C_GET_BUF_MEM_PTR:
+    #####:  242:		if (ptr != NULL)
+        -:  243:			{
+        -:  244:			pptr=(char **)ptr;
+    #####:  245:			*pptr=(char *)bm;
+        -:  246:			}
+        -:  247:		break;
+        -:  248:	case BIO_CTRL_GET_CLOSE:
+    #####:  249:		ret=(long)b->shutdown;
+    #####:  250:		break;
+        -:  251:	case BIO_CTRL_SET_CLOSE:
+    10000:  252:		b->shutdown=(int)num;
+    10000:  253:		break;
+        -:  254:
+        -:  255:	case BIO_CTRL_WPENDING:
+        -:  256:		ret=0L;
+        -:  257:		break;
+        -:  258:	case BIO_CTRL_PENDING:
+    #####:  259:		ret=(long)bm->length;
+    #####:  260:		break;
+        -:  261:	case BIO_CTRL_DUP:
+        -:  262:	case BIO_CTRL_FLUSH:
+        -:  263:		ret=1;
+    #####:  264:		break;
+        -:  265:	case BIO_CTRL_PUSH:
+        -:  266:	case BIO_CTRL_POP:
+        -:  267:	default:
+        -:  268:		ret=0;
+        -:  269:		break;
+        -:  270:		}
+    20000:  271:	return(ret);
+        -:  272:	}
+        -:  273:
+    #####:  274:static int mem_gets(BIO *bp, char *buf, int size)
+        -:  275:	{
+        -:  276:	int i,j;
+        -:  277:	int ret= -1;
+        -:  278:	char *p;
+    #####:  279:	BUF_MEM *bm=(BUF_MEM *)bp->ptr;
+        -:  280:
+    #####:  281:	BIO_clear_retry_flags(bp);
+    #####:  282:	j=bm->length;
+    #####:  283:	if ((size-1) < j) j=size-1;
+    #####:  284:	if (j <= 0)
+        -:  285:		{
+    #####:  286:		*buf='\0';
+    #####:  287:		return 0;
+        -:  288:		}
+    #####:  289:	p=bm->data;
+    #####:  290:	for (i=0; i<j; i++)
+        -:  291:		{
+    #####:  292:		if (p[i] == '\n')
+        -:  293:			{
+    #####:  294:			i++;
+    #####:  295:			break;
+        -:  296:			}
+        -:  297:		}
+        -:  298:
+        -:  299:	/*
+        -:  300:	 * i is now the max num of bytes to copy, either j or up to
+        -:  301:	 * and including the first newline
+        -:  302:	 */ 
+        -:  303:
+    #####:  304:	i=mem_read(bp,buf,i);
+    #####:  305:	if (i > 0) buf[i]='\0';
+        -:  306:	ret=i;
+    #####:  307:	return(ret);
+        -:  308:	}
+        -:  309:
+    #####:  310:static int mem_puts(BIO *bp, const char *str)
+        -:  311:	{
+        -:  312:	int n,ret;
+        -:  313:
+    #####:  314:	n=strlen(str);
+    #####:  315:	ret=mem_write(bp,str,n);
+        -:  316:	/* memory semantics is that it will always work */
+    #####:  317:	return(ret);
+        -:  318:	}
+        -:  319:

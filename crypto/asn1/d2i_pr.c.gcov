@@ -1,0 +1,175 @@
+        -:    0:Source:d2i_pr.c
+        -:    0:Graph:d2i_pr.gcno
+        -:    0:Data:d2i_pr.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* crypto/asn1/d2i_pr.c */
+        -:    2:/* Copyright (C) 1995-1998 Eric Young (eay@cryptsoft.com)
+        -:    3: * All rights reserved.
+        -:    4: *
+        -:    5: * This package is an SSL implementation written
+        -:    6: * by Eric Young (eay@cryptsoft.com).
+        -:    7: * The implementation was written so as to conform with Netscapes SSL.
+        -:    8: * 
+        -:    9: * This library is free for commercial and non-commercial use as long as
+        -:   10: * the following conditions are aheared to.  The following conditions
+        -:   11: * apply to all code found in this distribution, be it the RC4, RSA,
+        -:   12: * lhash, DES, etc., code; not just the SSL code.  The SSL documentation
+        -:   13: * included with this distribution is covered by the same copyright terms
+        -:   14: * except that the holder is Tim Hudson (tjh@cryptsoft.com).
+        -:   15: * 
+        -:   16: * Copyright remains Eric Young's, and as such any Copyright notices in
+        -:   17: * the code are not to be removed.
+        -:   18: * If this package is used in a product, Eric Young should be given attribution
+        -:   19: * as the author of the parts of the library used.
+        -:   20: * This can be in the form of a textual message at program startup or
+        -:   21: * in documentation (online or textual) provided with the package.
+        -:   22: * 
+        -:   23: * Redistribution and use in source and binary forms, with or without
+        -:   24: * modification, are permitted provided that the following conditions
+        -:   25: * are met:
+        -:   26: * 1. Redistributions of source code must retain the copyright
+        -:   27: *    notice, this list of conditions and the following disclaimer.
+        -:   28: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   29: *    notice, this list of conditions and the following disclaimer in the
+        -:   30: *    documentation and/or other materials provided with the distribution.
+        -:   31: * 3. All advertising materials mentioning features or use of this software
+        -:   32: *    must display the following acknowledgement:
+        -:   33: *    "This product includes cryptographic software written by
+        -:   34: *     Eric Young (eay@cryptsoft.com)"
+        -:   35: *    The word 'cryptographic' can be left out if the rouines from the library
+        -:   36: *    being used are not cryptographic related :-).
+        -:   37: * 4. If you include any Windows specific code (or a derivative thereof) from 
+        -:   38: *    the apps directory (application code) you must include an acknowledgement:
+        -:   39: *    "This product includes software written by Tim Hudson (tjh@cryptsoft.com)"
+        -:   40: * 
+        -:   41: * THIS SOFTWARE IS PROVIDED BY ERIC YOUNG ``AS IS'' AND
+        -:   42: * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   43: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+        -:   44: * ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+        -:   45: * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+        -:   46: * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+        -:   47: * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   48: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+        -:   49: * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+        -:   50: * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+        -:   51: * SUCH DAMAGE.
+        -:   52: * 
+        -:   53: * The licence and distribution terms for any publically available version or
+        -:   54: * derivative of this code cannot be changed.  i.e. this code cannot simply be
+        -:   55: * copied and put under another distribution licence
+        -:   56: * [including the GNU Public Licence.]
+        -:   57: */
+        -:   58:
+        -:   59:#include <stdio.h>
+        -:   60:#include "cryptlib.h"
+        -:   61:#include <openssl/bn.h>
+        -:   62:#include <openssl/evp.h>
+        -:   63:#include <openssl/objects.h>
+        -:   64:#ifndef OPENSSL_NO_ENGINE
+        -:   65:#include <openssl/engine.h>
+        -:   66:#endif
+        -:   67:#include <openssl/x509.h>
+        -:   68:#include <openssl/asn1.h>
+        -:   69:#include "asn1_locl.h"
+        -:   70:
+    #####:   71:EVP_PKEY *d2i_PrivateKey(int type, EVP_PKEY **a, const unsigned char **pp,
+        -:   72:	     long length)
+        -:   73:	{
+        -:   74:	EVP_PKEY *ret;
+        -:   75:
+    #####:   76:	if ((a == NULL) || (*a == NULL))
+        -:   77:		{
+    #####:   78:		if ((ret=EVP_PKEY_new()) == NULL)
+        -:   79:			{
+    #####:   80:			ASN1err(ASN1_F_D2I_PRIVATEKEY,ERR_R_EVP_LIB);
+    #####:   81:			return(NULL);
+        -:   82:			}
+        -:   83:		}
+        -:   84:	else
+        -:   85:		{
+        -:   86:		ret= *a;
+        -:   87:#ifndef OPENSSL_NO_ENGINE
+    #####:   88:		if (ret->engine)
+        -:   89:			{
+    #####:   90:			ENGINE_finish(ret->engine);
+    #####:   91:			ret->engine = NULL;
+        -:   92:			}
+        -:   93:#endif
+        -:   94:		}
+        -:   95:
+    #####:   96:	if (!EVP_PKEY_set_type(ret, type))
+        -:   97:		{
+    #####:   98:		ASN1err(ASN1_F_D2I_PRIVATEKEY,ASN1_R_UNKNOWN_PUBLIC_KEY_TYPE);
+    #####:   99:		goto err;
+        -:  100:		}
+        -:  101:
+    #####:  102:	if (!ret->ameth->old_priv_decode ||
+    #####:  103:			!ret->ameth->old_priv_decode(ret, pp, length))
+        -:  104:		{
+    #####:  105:		if (ret->ameth->priv_decode) 
+        -:  106:			{
+        -:  107:			PKCS8_PRIV_KEY_INFO *p8=NULL;
+    #####:  108:			p8=d2i_PKCS8_PRIV_KEY_INFO(NULL,pp,length);
+    #####:  109:			if (!p8) goto err;
+    #####:  110:			EVP_PKEY_free(ret);
+    #####:  111:			ret = EVP_PKCS82PKEY(p8);
+    #####:  112:			PKCS8_PRIV_KEY_INFO_free(p8);
+        -:  113:
+        -:  114:			} 
+        -:  115:		else 
+        -:  116:			{
+    #####:  117:			ASN1err(ASN1_F_D2I_PRIVATEKEY,ERR_R_ASN1_LIB);
+    #####:  118:			goto err;
+        -:  119:			}
+        -:  120:		}	
+    #####:  121:	if (a != NULL) (*a)=ret;
+    #####:  122:	return(ret);
+        -:  123:err:
+    #####:  124:	if ((ret != NULL) && ((a == NULL) || (*a != ret))) EVP_PKEY_free(ret);
+        -:  125:	return(NULL);
+        -:  126:	}
+        -:  127:
+        -:  128:/* This works like d2i_PrivateKey() except it automatically works out the type */
+        -:  129:
+    #####:  130:EVP_PKEY *d2i_AutoPrivateKey(EVP_PKEY **a, const unsigned char **pp,
+        -:  131:	     long length)
+        -:  132:{
+        -:  133:	STACK_OF(ASN1_TYPE) *inkey;
+        -:  134:	const unsigned char *p;
+        -:  135:	int keytype;
+    #####:  136:	p = *pp;
+        -:  137:	/* Dirty trick: read in the ASN1 data into a STACK_OF(ASN1_TYPE):
+        -:  138:	 * by analyzing it we can determine the passed structure: this
+        -:  139:	 * assumes the input is surrounded by an ASN1 SEQUENCE.
+        -:  140:	 */
+    #####:  141:	inkey = d2i_ASN1_SEQUENCE_ANY(NULL, &p, length);
+        -:  142:	/* Since we only need to discern "traditional format" RSA and DSA
+        -:  143:	 * keys we can just count the elements.
+        -:  144:         */
+    #####:  145:	if(sk_ASN1_TYPE_num(inkey) == 6) 
+        -:  146:		keytype = EVP_PKEY_DSA;
+    #####:  147:	else if (sk_ASN1_TYPE_num(inkey) == 4)
+        -:  148:		keytype = EVP_PKEY_EC;
+    #####:  149:	else if (sk_ASN1_TYPE_num(inkey) == 3)  
+        -:  150:		{ /* This seems to be PKCS8, not traditional format */
+    #####:  151:			PKCS8_PRIV_KEY_INFO *p8 = d2i_PKCS8_PRIV_KEY_INFO(NULL,pp,length);
+        -:  152:			EVP_PKEY *ret;
+        -:  153:
+    #####:  154:			sk_ASN1_TYPE_pop_free(inkey, ASN1_TYPE_free);
+    #####:  155:			if (!p8) 
+        -:  156:				{
+    #####:  157:				ASN1err(ASN1_F_D2I_AUTOPRIVATEKEY,ASN1_R_UNSUPPORTED_PUBLIC_KEY_TYPE);
+    #####:  158:				return NULL;
+        -:  159:				}
+    #####:  160:			ret = EVP_PKCS82PKEY(p8);
+    #####:  161:			PKCS8_PRIV_KEY_INFO_free(p8);
+    #####:  162:			if (a) {
+    #####:  163:				*a = ret;
+        -:  164:			}	
+    #####:  165:			return ret;
+        -:  166:		}
+        -:  167:	else keytype = EVP_PKEY_RSA;
+    #####:  168:	sk_ASN1_TYPE_pop_free(inkey, ASN1_TYPE_free);
+    #####:  169:	return d2i_PrivateKey(keytype, a, pp, length);
+        -:  170:}

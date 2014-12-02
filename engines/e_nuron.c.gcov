@@ -1,0 +1,439 @@
+        -:    0:Source:e_nuron.c
+        -:    0:Graph:e_nuron.gcno
+        -:    0:Data:e_nuron.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* crypto/engine/hw_nuron.c */
+        -:    2:/* Written by Ben Laurie for the OpenSSL Project, leaning heavily on Geoff
+        -:    3: * Thorpe's Atalla implementation.
+        -:    4: */
+        -:    5:/* ====================================================================
+        -:    6: * Copyright (c) 2000-2001 The OpenSSL Project.  All rights reserved.
+        -:    7: *
+        -:    8: * Redistribution and use in source and binary forms, with or without
+        -:    9: * modification, are permitted provided that the following conditions
+        -:   10: * are met:
+        -:   11: *
+        -:   12: * 1. Redistributions of source code must retain the above copyright
+        -:   13: *    notice, this list of conditions and the following disclaimer. 
+        -:   14: *
+        -:   15: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   16: *    notice, this list of conditions and the following disclaimer in
+        -:   17: *    the documentation and/or other materials provided with the
+        -:   18: *    distribution.
+        -:   19: *
+        -:   20: * 3. All advertising materials mentioning features or use of this
+        -:   21: *    software must display the following acknowledgment:
+        -:   22: *    "This product includes software developed by the OpenSSL Project
+        -:   23: *    for use in the OpenSSL Toolkit. (http://www.OpenSSL.org/)"
+        -:   24: *
+        -:   25: * 4. The names "OpenSSL Toolkit" and "OpenSSL Project" must not be used to
+        -:   26: *    endorse or promote products derived from this software without
+        -:   27: *    prior written permission. For written permission, please contact
+        -:   28: *    licensing@OpenSSL.org.
+        -:   29: *
+        -:   30: * 5. Products derived from this software may not be called "OpenSSL"
+        -:   31: *    nor may "OpenSSL" appear in their names without prior written
+        -:   32: *    permission of the OpenSSL Project.
+        -:   33: *
+        -:   34: * 6. Redistributions of any form whatsoever must retain the following
+        -:   35: *    acknowledgment:
+        -:   36: *    "This product includes software developed by the OpenSSL Project
+        -:   37: *    for use in the OpenSSL Toolkit (http://www.OpenSSL.org/)"
+        -:   38: *
+        -:   39: * THIS SOFTWARE IS PROVIDED BY THE OpenSSL PROJECT ``AS IS'' AND ANY
+        -:   40: * EXPRESSED OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   41: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+        -:   42: * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE OpenSSL PROJECT OR
+        -:   43: * ITS CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+        -:   44: * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+        -:   45: * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+        -:   46: * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   47: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+        -:   48: * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+        -:   49: * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+        -:   50: * OF THE POSSIBILITY OF SUCH DAMAGE.
+        -:   51: * ====================================================================
+        -:   52: *
+        -:   53: * This product includes cryptographic software written by Eric Young
+        -:   54: * (eay@cryptsoft.com).  This product includes software written by Tim
+        -:   55: * Hudson (tjh@cryptsoft.com).
+        -:   56: *
+        -:   57: */
+        -:   58:
+        -:   59:#include <stdio.h>
+        -:   60:#include <string.h>
+        -:   61:#include <openssl/crypto.h>
+        -:   62:#include <openssl/buffer.h>
+        -:   63:#include <openssl/dso.h>
+        -:   64:#include <openssl/engine.h>
+        -:   65:#ifndef OPENSSL_NO_RSA
+        -:   66:#include <openssl/rsa.h>
+        -:   67:#endif
+        -:   68:#ifndef OPENSSL_NO_DSA
+        -:   69:#include <openssl/dsa.h>
+        -:   70:#endif
+        -:   71:#ifndef OPENSSL_NO_DH
+        -:   72:#include <openssl/dh.h>
+        -:   73:#endif
+        -:   74:#include <openssl/bn.h>
+        -:   75:
+        -:   76:#ifndef OPENSSL_NO_HW
+        -:   77:#ifndef OPENSSL_NO_HW_NURON
+        -:   78:
+        -:   79:#define NURON_LIB_NAME "nuron engine"
+        -:   80:#include "e_nuron_err.c"
+        -:   81:
+        -:   82:static const char *NURON_LIBNAME = NULL;
+        -:   83:static const char *get_NURON_LIBNAME(void)
+        -:   84:	{
+    #####:   85:	if(NURON_LIBNAME)
+        -:   86:		return NURON_LIBNAME;
+        -:   87:	return "nuronssl";
+        -:   88:	}
+        -:   89:static void free_NURON_LIBNAME(void)
+        -:   90:	{
+    10000:   91:	if(NURON_LIBNAME)
+    #####:   92:		OPENSSL_free((void*)NURON_LIBNAME);
+    10000:   93:	NURON_LIBNAME = NULL;
+        -:   94:	}
+    #####:   95:static long set_NURON_LIBNAME(const char *name)
+        -:   96:	{
+        -:   97:	free_NURON_LIBNAME();
+    #####:   98:	return (((NURON_LIBNAME = BUF_strdup(name)) != NULL) ? 1 : 0);
+        -:   99:	}
+        -:  100:static const char *NURON_F1 = "nuron_mod_exp";
+        -:  101:
+        -:  102:/* The definitions for control commands specific to this engine */
+        -:  103:#define NURON_CMD_SO_PATH		ENGINE_CMD_BASE
+        -:  104:static const ENGINE_CMD_DEFN nuron_cmd_defns[] = {
+        -:  105:	{NURON_CMD_SO_PATH,
+        -:  106:		"SO_PATH",
+        -:  107:		"Specifies the path to the 'nuronssl' shared library",
+        -:  108:		ENGINE_CMD_FLAG_STRING},
+        -:  109:	{0, NULL, NULL, 0}
+        -:  110:	};
+        -:  111:
+        -:  112:typedef int tfnModExp(BIGNUM *r,const BIGNUM *a,const BIGNUM *p,const BIGNUM *m);
+        -:  113:static tfnModExp *pfnModExp = NULL;
+        -:  114:
+        -:  115:static DSO *pvDSOHandle = NULL;
+        -:  116:
+    10000:  117:static int nuron_destroy(ENGINE *e)
+        -:  118:	{
+        -:  119:	free_NURON_LIBNAME();
+    10000:  120:	ERR_unload_NURON_strings();
+    10000:  121:	return 1;
+        -:  122:	}
+        -:  123:
+    #####:  124:static int nuron_init(ENGINE *e)
+        -:  125:	{
+    #####:  126:	if(pvDSOHandle != NULL)
+        -:  127:		{
+    #####:  128:		NURONerr(NURON_F_NURON_INIT,NURON_R_ALREADY_LOADED);
+    #####:  129:		return 0;
+        -:  130:		}
+        -:  131:
+    #####:  132:	pvDSOHandle = DSO_load(NULL, get_NURON_LIBNAME(), NULL,
+        -:  133:		DSO_FLAG_NAME_TRANSLATION_EXT_ONLY);
+    #####:  134:	if(!pvDSOHandle)
+        -:  135:		{
+    #####:  136:		NURONerr(NURON_F_NURON_INIT,NURON_R_DSO_NOT_FOUND);
+    #####:  137:		return 0;
+        -:  138:		}
+        -:  139:
+    #####:  140:	pfnModExp = (tfnModExp *)DSO_bind_func(pvDSOHandle, NURON_F1);
+    #####:  141:	if(!pfnModExp)
+        -:  142:		{
+    #####:  143:		NURONerr(NURON_F_NURON_INIT,NURON_R_DSO_FUNCTION_NOT_FOUND);
+    #####:  144:		return 0;
+        -:  145:		}
+        -:  146:
+        -:  147:	return 1;
+        -:  148:	}
+        -:  149:
+    #####:  150:static int nuron_finish(ENGINE *e)
+        -:  151:	{
+        -:  152:	free_NURON_LIBNAME();
+    #####:  153:	if(pvDSOHandle == NULL)
+        -:  154:		{
+    #####:  155:		NURONerr(NURON_F_NURON_FINISH,NURON_R_NOT_LOADED);
+    #####:  156:		return 0;
+        -:  157:		}
+    #####:  158:	if(!DSO_free(pvDSOHandle))
+        -:  159:		{
+    #####:  160:		NURONerr(NURON_F_NURON_FINISH,NURON_R_DSO_FAILURE);
+    #####:  161:		return 0;
+        -:  162:		}
+    #####:  163:	pvDSOHandle=NULL;
+    #####:  164:	pfnModExp=NULL;
+    #####:  165:	return 1;
+        -:  166:	}
+        -:  167:
+    #####:  168:static int nuron_ctrl(ENGINE *e, int cmd, long i, void *p, void (*f)(void))
+        -:  169:	{
+    #####:  170:	int initialised = ((pvDSOHandle == NULL) ? 0 : 1);
+    #####:  171:	switch(cmd)
+        -:  172:		{
+        -:  173:	case NURON_CMD_SO_PATH:
+    #####:  174:		if(p == NULL)
+        -:  175:			{
+    #####:  176:			NURONerr(NURON_F_NURON_CTRL,ERR_R_PASSED_NULL_PARAMETER);
+    #####:  177:			return 0;
+        -:  178:			}
+    #####:  179:		if(initialised)
+        -:  180:			{
+    #####:  181:			NURONerr(NURON_F_NURON_CTRL,NURON_R_ALREADY_LOADED);
+    #####:  182:			return 0;
+        -:  183:			}
+    #####:  184:		return set_NURON_LIBNAME((const char *)p);
+        -:  185:	default:
+        -:  186:		break;
+        -:  187:		}
+    #####:  188:	NURONerr(NURON_F_NURON_CTRL,NURON_R_CTRL_COMMAND_NOT_IMPLEMENTED);
+    #####:  189:	return 0;
+        -:  190:}
+        -:  191:
+    #####:  192:static int nuron_mod_exp(BIGNUM *r,const BIGNUM *a,const BIGNUM *p,
+        -:  193:			 const BIGNUM *m,BN_CTX *ctx)
+        -:  194:	{
+    #####:  195:	if(!pvDSOHandle)
+        -:  196:		{
+    #####:  197:		NURONerr(NURON_F_NURON_MOD_EXP,NURON_R_NOT_LOADED);
+        -:  198:		return 0;
+        -:  199:		}
+    #####:  200:	return pfnModExp(r,a,p,m);
+        -:  201:	}
+        -:  202:
+        -:  203:#ifndef OPENSSL_NO_RSA
+    #####:  204:static int nuron_rsa_mod_exp(BIGNUM *r0, const BIGNUM *I, RSA *rsa, BN_CTX *ctx)
+        -:  205:	{
+    #####:  206:	return nuron_mod_exp(r0,I,rsa->d,rsa->n,ctx);
+        -:  207:	}
+        -:  208:#endif
+        -:  209:
+        -:  210:#ifndef OPENSSL_NO_DSA
+        -:  211:/* This code was liberated and adapted from the commented-out code in
+        -:  212: * dsa_ossl.c. Because of the unoptimised form of the Atalla acceleration
+        -:  213: * (it doesn't have a CRT form for RSA), this function means that an
+        -:  214: * Atalla system running with a DSA server certificate can handshake
+        -:  215: * around 5 or 6 times faster/more than an equivalent system running with
+        -:  216: * RSA. Just check out the "signs" statistics from the RSA and DSA parts
+        -:  217: * of "openssl speed -engine atalla dsa1024 rsa1024". */
+    #####:  218:static int nuron_dsa_mod_exp(DSA *dsa, BIGNUM *rr, BIGNUM *a1,
+        -:  219:			     BIGNUM *p1, BIGNUM *a2, BIGNUM *p2, BIGNUM *m,
+        -:  220:			     BN_CTX *ctx, BN_MONT_CTX *in_mont)
+        -:  221:	{
+        -:  222:	BIGNUM t;
+        -:  223:	int to_return = 0;
+        -:  224: 
+    #####:  225:	BN_init(&t);
+        -:  226:	/* let rr = a1 ^ p1 mod m */
+    #####:  227:	if (!nuron_mod_exp(rr,a1,p1,m,ctx))
+        -:  228:		goto end;
+        -:  229:	/* let t = a2 ^ p2 mod m */
+    #####:  230:	if (!nuron_mod_exp(&t,a2,p2,m,ctx))
+        -:  231:		goto end;
+        -:  232:	/* let rr = rr * t mod m */
+    #####:  233:	if (!BN_mod_mul(rr,rr,&t,m,ctx))
+        -:  234:		goto end;
+        -:  235:	to_return = 1;
+        -:  236:end:
+    #####:  237:	BN_free(&t);
+    #####:  238:	return to_return;
+        -:  239:	}
+        -:  240:
+        -:  241:
+    #####:  242:static int nuron_mod_exp_dsa(DSA *dsa, BIGNUM *r, BIGNUM *a,
+        -:  243:			     const BIGNUM *p, const BIGNUM *m, BN_CTX *ctx,
+        -:  244:			     BN_MONT_CTX *m_ctx)
+        -:  245:	{
+    #####:  246:	return nuron_mod_exp(r, a, p, m, ctx);
+        -:  247:	}
+        -:  248:#endif
+        -:  249:
+        -:  250:/* This function is aliased to mod_exp (with the mont stuff dropped). */
+        -:  251:#ifndef OPENSSL_NO_RSA
+    #####:  252:static int nuron_mod_exp_mont(BIGNUM *r, const BIGNUM *a, const BIGNUM *p,
+        -:  253:			      const BIGNUM *m, BN_CTX *ctx, BN_MONT_CTX *m_ctx)
+        -:  254:	{
+    #####:  255:	return nuron_mod_exp(r, a, p, m, ctx);
+        -:  256:	}
+        -:  257:#endif
+        -:  258:
+        -:  259:#ifndef OPENSSL_NO_DH
+        -:  260:/* This function is aliased to mod_exp (with the dh and mont dropped). */
+    #####:  261:static int nuron_mod_exp_dh(const DH *dh, BIGNUM *r,
+        -:  262:		const BIGNUM *a, const BIGNUM *p,
+        -:  263:		const BIGNUM *m, BN_CTX *ctx, BN_MONT_CTX *m_ctx)
+        -:  264:	{
+    #####:  265:	return nuron_mod_exp(r, a, p, m, ctx);
+        -:  266:	}
+        -:  267:#endif
+        -:  268:
+        -:  269:#ifndef OPENSSL_NO_RSA
+        -:  270:static RSA_METHOD nuron_rsa =
+        -:  271:	{
+        -:  272:	"Nuron RSA method",
+        -:  273:	NULL,
+        -:  274:	NULL,
+        -:  275:	NULL,
+        -:  276:	NULL,
+        -:  277:	nuron_rsa_mod_exp,
+        -:  278:	nuron_mod_exp_mont,
+        -:  279:	NULL,
+        -:  280:	NULL,
+        -:  281:	0,
+        -:  282:	NULL,
+        -:  283:	NULL,
+        -:  284:	NULL,
+        -:  285:	NULL
+        -:  286:	};
+        -:  287:#endif
+        -:  288:
+        -:  289:#ifndef OPENSSL_NO_DSA
+        -:  290:static DSA_METHOD nuron_dsa =
+        -:  291:	{
+        -:  292:	"Nuron DSA method",
+        -:  293:	NULL, /* dsa_do_sign */
+        -:  294:	NULL, /* dsa_sign_setup */
+        -:  295:	NULL, /* dsa_do_verify */
+        -:  296:	nuron_dsa_mod_exp, /* dsa_mod_exp */
+        -:  297:	nuron_mod_exp_dsa, /* bn_mod_exp */
+        -:  298:	NULL, /* init */
+        -:  299:	NULL, /* finish */
+        -:  300:	0, /* flags */
+        -:  301:	NULL, /* app_data */
+        -:  302:	NULL, /* dsa_paramgen */
+        -:  303:	NULL /* dsa_keygen */
+        -:  304:	};
+        -:  305:#endif
+        -:  306:
+        -:  307:#ifndef OPENSSL_NO_DH
+        -:  308:static DH_METHOD nuron_dh =
+        -:  309:	{
+        -:  310:	"Nuron DH method",
+        -:  311:	NULL,
+        -:  312:	NULL,
+        -:  313:	nuron_mod_exp_dh,
+        -:  314:	NULL,
+        -:  315:	NULL,
+        -:  316:	0,
+        -:  317:	NULL,
+        -:  318:	NULL
+        -:  319:	};
+        -:  320:#endif
+        -:  321:
+        -:  322:/* Constants used when creating the ENGINE */
+        -:  323:static const char *engine_nuron_id = "nuron";
+        -:  324:static const char *engine_nuron_name = "Nuron hardware engine support";
+        -:  325:
+        -:  326:/* This internal function is used by ENGINE_nuron() and possibly by the
+        -:  327: * "dynamic" ENGINE support too */
+    10000:  328:static int bind_helper(ENGINE *e)
+        -:  329:	{
+        -:  330:#ifndef OPENSSL_NO_RSA
+        -:  331:	const RSA_METHOD *meth1;
+        -:  332:#endif
+        -:  333:#ifndef OPENSSL_NO_DSA
+        -:  334:	const DSA_METHOD *meth2;
+        -:  335:#endif
+        -:  336:#ifndef OPENSSL_NO_DH
+        -:  337:	const DH_METHOD *meth3;
+        -:  338:#endif
+    20000:  339:	if(!ENGINE_set_id(e, engine_nuron_id) ||
+    20000:  340:			!ENGINE_set_name(e, engine_nuron_name) ||
+        -:  341:#ifndef OPENSSL_NO_RSA
+    20000:  342:			!ENGINE_set_RSA(e, &nuron_rsa) ||
+        -:  343:#endif
+        -:  344:#ifndef OPENSSL_NO_DSA
+    20000:  345:			!ENGINE_set_DSA(e, &nuron_dsa) ||
+        -:  346:#endif
+        -:  347:#ifndef OPENSSL_NO_DH
+    20000:  348:			!ENGINE_set_DH(e, &nuron_dh) ||
+        -:  349:#endif
+    20000:  350:			!ENGINE_set_destroy_function(e, nuron_destroy) ||
+    20000:  351:			!ENGINE_set_init_function(e, nuron_init) ||
+    20000:  352:			!ENGINE_set_finish_function(e, nuron_finish) ||
+    20000:  353:			!ENGINE_set_ctrl_function(e, nuron_ctrl) ||
+    10000:  354:			!ENGINE_set_cmd_defns(e, nuron_cmd_defns))
+        -:  355:		return 0;
+        -:  356:
+        -:  357:#ifndef OPENSSL_NO_RSA
+        -:  358:	/* We know that the "PKCS1_SSLeay()" functions hook properly
+        -:  359:	 * to the nuron-specific mod_exp and mod_exp_crt so we use
+        -:  360:	 * those functions. NB: We don't use ENGINE_openssl() or
+        -:  361:	 * anything "more generic" because something like the RSAref
+        -:  362:	 * code may not hook properly, and if you own one of these
+        -:  363:	 * cards then you have the right to do RSA operations on it
+        -:  364:	 * anyway! */ 
+    10000:  365:	meth1=RSA_PKCS1_SSLeay();
+    10000:  366:	nuron_rsa.rsa_pub_enc=meth1->rsa_pub_enc;
+    10000:  367:	nuron_rsa.rsa_pub_dec=meth1->rsa_pub_dec;
+    10000:  368:	nuron_rsa.rsa_priv_enc=meth1->rsa_priv_enc;
+    10000:  369:	nuron_rsa.rsa_priv_dec=meth1->rsa_priv_dec;
+        -:  370:#endif
+        -:  371:
+        -:  372:#ifndef OPENSSL_NO_DSA
+        -:  373:	/* Use the DSA_OpenSSL() method and just hook the mod_exp-ish
+        -:  374:	 * bits. */
+    10000:  375:	meth2=DSA_OpenSSL();
+    10000:  376:	nuron_dsa.dsa_do_sign=meth2->dsa_do_sign;
+    10000:  377:	nuron_dsa.dsa_sign_setup=meth2->dsa_sign_setup;
+    10000:  378:	nuron_dsa.dsa_do_verify=meth2->dsa_do_verify;
+        -:  379:#endif
+        -:  380:
+        -:  381:#ifndef OPENSSL_NO_DH
+        -:  382:	/* Much the same for Diffie-Hellman */
+    10000:  383:	meth3=DH_OpenSSL();
+    10000:  384:	nuron_dh.generate_key=meth3->generate_key;
+    10000:  385:	nuron_dh.compute_key=meth3->compute_key;
+        -:  386:#endif
+        -:  387:
+        -:  388:	/* Ensure the nuron error handling is set up */
+    10000:  389:	ERR_load_NURON_strings();
+    10000:  390:	return 1;
+        -:  391:	}
+        -:  392:
+        -:  393:#ifdef OPENSSL_NO_DYNAMIC_ENGINE
+    10000:  394:static ENGINE *engine_nuron(void)
+        -:  395:	{
+    10000:  396:	ENGINE *ret = ENGINE_new();
+    10000:  397:	if(!ret)
+        -:  398:		return NULL;
+    10000:  399:	if(!bind_helper(ret))
+        -:  400:		{
+    #####:  401:		ENGINE_free(ret);
+    #####:  402:		return NULL;
+        -:  403:		}
+        -:  404:	return ret;
+        -:  405:	}
+        -:  406:
+    10000:  407:void ENGINE_load_nuron(void)
+        -:  408:	{
+        -:  409:	/* Copied from eng_[openssl|dyn].c */
+    10000:  410:	ENGINE *toadd = engine_nuron();
+    20000:  411:	if(!toadd) return;
+    10000:  412:	ENGINE_add(toadd);
+    10000:  413:	ENGINE_free(toadd);
+    10000:  414:	ERR_clear_error();
+        -:  415:	}
+        -:  416:#endif
+        -:  417:
+        -:  418:/* This stuff is needed if this ENGINE is being compiled into a self-contained
+        -:  419: * shared-library. */	   
+        -:  420:#ifndef OPENSSL_NO_DYNAMIC_ENGINE
+        -:  421:static int bind_fn(ENGINE *e, const char *id)
+        -:  422:	{
+        -:  423:	if(id && (strcmp(id, engine_nuron_id) != 0))
+        -:  424:		return 0;
+        -:  425:	if(!bind_helper(e))
+        -:  426:		return 0;
+        -:  427:	return 1;
+        -:  428:	}       
+        -:  429:IMPLEMENT_DYNAMIC_CHECK_FN()
+        -:  430:IMPLEMENT_DYNAMIC_BIND_FN(bind_fn)
+        -:  431:#endif /* OPENSSL_NO_DYNAMIC_ENGINE */
+        -:  432:
+        -:  433:#endif /* !OPENSSL_NO_HW_NURON */
+        -:  434:#endif /* !OPENSSL_NO_HW */

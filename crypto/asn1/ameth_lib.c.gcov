@@ -1,0 +1,465 @@
+        -:    0:Source:ameth_lib.c
+        -:    0:Graph:ameth_lib.gcno
+        -:    0:Data:ameth_lib.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* Written by Dr Stephen N Henson (steve@openssl.org) for the OpenSSL
+        -:    2: * project 2006.
+        -:    3: */
+        -:    4:/* ====================================================================
+        -:    5: * Copyright (c) 2006 The OpenSSL Project.  All rights reserved.
+        -:    6: *
+        -:    7: * Redistribution and use in source and binary forms, with or without
+        -:    8: * modification, are permitted provided that the following conditions
+        -:    9: * are met:
+        -:   10: *
+        -:   11: * 1. Redistributions of source code must retain the above copyright
+        -:   12: *    notice, this list of conditions and the following disclaimer. 
+        -:   13: *
+        -:   14: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   15: *    notice, this list of conditions and the following disclaimer in
+        -:   16: *    the documentation and/or other materials provided with the
+        -:   17: *    distribution.
+        -:   18: *
+        -:   19: * 3. All advertising materials mentioning features or use of this
+        -:   20: *    software must display the following acknowledgment:
+        -:   21: *    "This product includes software developed by the OpenSSL Project
+        -:   22: *    for use in the OpenSSL Toolkit. (http://www.OpenSSL.org/)"
+        -:   23: *
+        -:   24: * 4. The names "OpenSSL Toolkit" and "OpenSSL Project" must not be used to
+        -:   25: *    endorse or promote products derived from this software without
+        -:   26: *    prior written permission. For written permission, please contact
+        -:   27: *    licensing@OpenSSL.org.
+        -:   28: *
+        -:   29: * 5. Products derived from this software may not be called "OpenSSL"
+        -:   30: *    nor may "OpenSSL" appear in their names without prior written
+        -:   31: *    permission of the OpenSSL Project.
+        -:   32: *
+        -:   33: * 6. Redistributions of any form whatsoever must retain the following
+        -:   34: *    acknowledgment:
+        -:   35: *    "This product includes software developed by the OpenSSL Project
+        -:   36: *    for use in the OpenSSL Toolkit (http://www.OpenSSL.org/)"
+        -:   37: *
+        -:   38: * THIS SOFTWARE IS PROVIDED BY THE OpenSSL PROJECT ``AS IS'' AND ANY
+        -:   39: * EXPRESSED OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   40: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+        -:   41: * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE OpenSSL PROJECT OR
+        -:   42: * ITS CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+        -:   43: * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+        -:   44: * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+        -:   45: * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   46: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+        -:   47: * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+        -:   48: * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+        -:   49: * OF THE POSSIBILITY OF SUCH DAMAGE.
+        -:   50: * ====================================================================
+        -:   51: *
+        -:   52: * This product includes cryptographic software written by Eric Young
+        -:   53: * (eay@cryptsoft.com).  This product includes software written by Tim
+        -:   54: * Hudson (tjh@cryptsoft.com).
+        -:   55: *
+        -:   56: */
+        -:   57:
+        -:   58:#include <stdio.h>
+        -:   59:#include "cryptlib.h"
+        -:   60:#include <openssl/asn1t.h>
+        -:   61:#include <openssl/x509.h>
+        -:   62:#ifndef OPENSSL_NO_ENGINE
+        -:   63:#include <openssl/engine.h>
+        -:   64:#endif
+        -:   65:#include "asn1_locl.h"
+        -:   66:
+        -:   67:extern const EVP_PKEY_ASN1_METHOD rsa_asn1_meths[];
+        -:   68:extern const EVP_PKEY_ASN1_METHOD dsa_asn1_meths[];
+        -:   69:extern const EVP_PKEY_ASN1_METHOD dh_asn1_meth;
+        -:   70:extern const EVP_PKEY_ASN1_METHOD eckey_asn1_meth;
+        -:   71:extern const EVP_PKEY_ASN1_METHOD hmac_asn1_meth;
+        -:   72:extern const EVP_PKEY_ASN1_METHOD cmac_asn1_meth;
+        -:   73:
+        -:   74:/* Keep this sorted in type order !! */
+        -:   75:static const EVP_PKEY_ASN1_METHOD *standard_methods[] = 
+        -:   76:	{
+        -:   77:#ifndef OPENSSL_NO_RSA
+        -:   78:	&rsa_asn1_meths[0],
+        -:   79:	&rsa_asn1_meths[1],
+        -:   80:#endif
+        -:   81:#ifndef OPENSSL_NO_DH
+        -:   82:	&dh_asn1_meth,
+        -:   83:#endif
+        -:   84:#ifndef OPENSSL_NO_DSA
+        -:   85:	&dsa_asn1_meths[0],
+        -:   86:	&dsa_asn1_meths[1],
+        -:   87:	&dsa_asn1_meths[2],
+        -:   88:	&dsa_asn1_meths[3],
+        -:   89:	&dsa_asn1_meths[4],
+        -:   90:#endif
+        -:   91:#ifndef OPENSSL_NO_EC
+        -:   92:	&eckey_asn1_meth,
+        -:   93:#endif
+        -:   94:	&hmac_asn1_meth,
+        -:   95:	&cmac_asn1_meth
+        -:   96:	};
+        -:   97:
+        -:   98:typedef int sk_cmp_fn_type(const char * const *a, const char * const *b);
+        -:   99:DECLARE_STACK_OF(EVP_PKEY_ASN1_METHOD)
+        -:  100:static STACK_OF(EVP_PKEY_ASN1_METHOD) *app_methods = NULL;
+        -:  101:
+        -:  102:
+        -:  103:
+        -:  104:#ifdef TEST
+        -:  105:void main()
+        -:  106:	{
+        -:  107:	int i;
+        -:  108:	for (i = 0;
+        -:  109:		i < sizeof(standard_methods)/sizeof(EVP_PKEY_ASN1_METHOD *);
+        -:  110:		i++)
+        -:  111:		fprintf(stderr, "Number %d id=%d (%s)\n", i,
+        -:  112:			standard_methods[i]->pkey_id,
+        -:  113:			OBJ_nid2sn(standard_methods[i]->pkey_id));
+        -:  114:	}
+        -:  115:#endif
+        -:  116:
+        -:  117:DECLARE_OBJ_BSEARCH_CMP_FN(const EVP_PKEY_ASN1_METHOD *,
+        -:  118:			   const EVP_PKEY_ASN1_METHOD *, ameth);
+        -:  119:
+    #####:  120:static int ameth_cmp(const EVP_PKEY_ASN1_METHOD * const *a,
+        -:  121:		     const EVP_PKEY_ASN1_METHOD * const *b)
+        -:  122:	{
+   255536:  123:        return ((*a)->pkey_id - (*b)->pkey_id);
+        -:  124:	}
+        -:  125:
+   574956:  126:IMPLEMENT_OBJ_BSEARCH_CMP_FN(const EVP_PKEY_ASN1_METHOD *,
+        -:  127:			     const EVP_PKEY_ASN1_METHOD *, ameth);
+        -:  128:
+    #####:  129:int EVP_PKEY_asn1_get_count(void)
+        -:  130:	{
+        -:  131:	int num = sizeof(standard_methods)/sizeof(EVP_PKEY_ASN1_METHOD *);
+   360000:  132:	if (app_methods)
+    #####:  133:		num += sk_EVP_PKEY_ASN1_METHOD_num(app_methods);
+    #####:  134:	return num;
+        -:  135:	}
+        -:  136:
+   330000:  137:const EVP_PKEY_ASN1_METHOD *EVP_PKEY_asn1_get0(int idx)
+        -:  138:	{
+        -:  139:	int num = sizeof(standard_methods)/sizeof(EVP_PKEY_ASN1_METHOD *);
+   330000:  140:	if (idx < 0)
+        -:  141:		return NULL; 
+   330000:  142:	if (idx < num)
+   330000:  143:		return standard_methods[idx];
+    #####:  144:	idx -= num;
+    #####:  145:	return sk_EVP_PKEY_ASN1_METHOD_value(app_methods, idx);
+        -:  146:	}
+        -:  147:
+    63884:  148:static const EVP_PKEY_ASN1_METHOD *pkey_asn1_find(int type)
+        -:  149:	{
+        -:  150:	EVP_PKEY_ASN1_METHOD tmp;
+    63884:  151:	const EVP_PKEY_ASN1_METHOD *t = &tmp, **ret;
+    63884:  152:	tmp.pkey_id = type;
+    63884:  153:	if (app_methods)
+        -:  154:		{
+        -:  155:		int idx;
+    #####:  156:		idx = sk_EVP_PKEY_ASN1_METHOD_find(app_methods, &tmp);
+    #####:  157:		if (idx >= 0)
+    #####:  158:			return sk_EVP_PKEY_ASN1_METHOD_value(app_methods, idx);
+        -:  159:		}
+        -:  160:	ret = OBJ_bsearch_ameth(&t, standard_methods,
+        -:  161:			  sizeof(standard_methods)
+        -:  162:			  /sizeof(EVP_PKEY_ASN1_METHOD *));
+    63884:  163:	if (!ret || !*ret)
+        -:  164:		return NULL;
+    63884:  165:	return *ret;
+        -:  166:	}
+        -:  167:
+        -:  168:/* Find an implementation of an ASN1 algorithm. If 'pe' is not NULL
+        -:  169: * also search through engines and set *pe to a functional reference
+        -:  170: * to the engine implementing 'type' or NULL if no engine implements 
+        -:  171: * it.
+        -:  172: */
+        -:  173:
+    63884:  174:const EVP_PKEY_ASN1_METHOD *EVP_PKEY_asn1_find(ENGINE **pe, int type)
+        -:  175:	{
+        -:  176:	const EVP_PKEY_ASN1_METHOD *t;
+        -:  177:
+        -:  178:	for (;;)
+        -:  179:		{
+    63884:  180:		t = pkey_asn1_find(type);
+    63884:  181:		if (!t || !(t->pkey_flags & ASN1_PKEY_ALIAS))
+        -:  182:			break;
+    #####:  183:		type = t->pkey_base_id;
+    #####:  184:		}
+    63884:  185:	if (pe)
+        -:  186:		{
+        -:  187:#ifndef OPENSSL_NO_ENGINE
+        -:  188:		ENGINE *e;
+        -:  189:		/* type will contain the final unaliased type */
+    63884:  190:		e = ENGINE_get_pkey_asn1_meth_engine(type);
+    63884:  191:		if (e)
+        -:  192:			{
+    #####:  193:			*pe = e;
+    #####:  194:			return ENGINE_get_pkey_asn1_meth(e, type);
+        -:  195:			}
+        -:  196:#endif
+    63884:  197:		*pe = NULL;
+        -:  198:		}
+    63884:  199:	return t;
+        -:  200:	}
+        -:  201:
+    30000:  202:const EVP_PKEY_ASN1_METHOD *EVP_PKEY_asn1_find_str(ENGINE **pe,
+        -:  203:					const char *str, int len)
+        -:  204:	{
+        -:  205:	int i;
+        -:  206:	const EVP_PKEY_ASN1_METHOD *ameth;
+    30000:  207:	if (len == -1)
+    30000:  208:		len = strlen(str);
+    30000:  209:	if (pe)
+        -:  210:		{
+        -:  211:#ifndef OPENSSL_NO_ENGINE
+        -:  212:		ENGINE *e;
+    30000:  213:		ameth = ENGINE_pkey_asn1_find_str(&e, str, len);
+    30000:  214:		if (ameth)
+        -:  215:			{
+        -:  216:			/* Convert structural into
+        -:  217:			 * functional reference
+        -:  218:			 */
+    #####:  219:			if (!ENGINE_init(e))
+        -:  220:				ameth = NULL;
+    #####:  221:			ENGINE_free(e);
+    #####:  222:			*pe = e;
+    #####:  223:			return ameth;
+        -:  224:			}
+        -:  225:#endif
+    30000:  226:		*pe = NULL;
+        -:  227:		}
+   690000:  228:	for (i = 0; i < EVP_PKEY_asn1_get_count(); i++)
+        -:  229:		{
+   330000:  230:		ameth = EVP_PKEY_asn1_get0(i);
+   330000:  231:		if (ameth->pkey_flags & ASN1_PKEY_ALIAS)
+   150000:  232:			continue;
+   180000:  233:		if (((int)strlen(ameth->pem_str) == len) && 
+    #####:  234:			!strncasecmp(ameth->pem_str, str, len))
+        -:  235:			return ameth;
+        -:  236:		}
+        -:  237:	return NULL;
+        -:  238:	}
+        -:  239:
+    #####:  240:int EVP_PKEY_asn1_add0(const EVP_PKEY_ASN1_METHOD *ameth)
+        -:  241:	{
+    #####:  242:	if (app_methods == NULL)
+        -:  243:		{
+    #####:  244:		app_methods = sk_EVP_PKEY_ASN1_METHOD_new(ameth_cmp);
+    #####:  245:		if (!app_methods)
+        -:  246:			return 0;
+        -:  247:		}
+    #####:  248:	if (!sk_EVP_PKEY_ASN1_METHOD_push(app_methods, ameth))
+        -:  249:		return 0;
+    #####:  250:	sk_EVP_PKEY_ASN1_METHOD_sort(app_methods);
+    #####:  251:	return 1;
+        -:  252:	}
+        -:  253:
+    #####:  254:int EVP_PKEY_asn1_add_alias(int to, int from)
+        -:  255:	{
+        -:  256:	EVP_PKEY_ASN1_METHOD *ameth;
+    #####:  257:	ameth = EVP_PKEY_asn1_new(from, ASN1_PKEY_ALIAS, NULL, NULL);
+    #####:  258:	if (!ameth)
+        -:  259:		return 0;
+    #####:  260:	ameth->pkey_base_id = to;
+    #####:  261:	return EVP_PKEY_asn1_add0(ameth);
+        -:  262:	}
+        -:  263:
+    #####:  264:int EVP_PKEY_asn1_get0_info(int *ppkey_id, int *ppkey_base_id, int *ppkey_flags,
+        -:  265:				const char **pinfo, const char **ppem_str,
+        -:  266:					const EVP_PKEY_ASN1_METHOD *ameth)
+        -:  267:	{
+    #####:  268:	if (!ameth)
+        -:  269:		return 0;
+    #####:  270:	if (ppkey_id)
+    #####:  271:		*ppkey_id = ameth->pkey_id;
+    #####:  272:	if (ppkey_base_id)
+    #####:  273:		*ppkey_base_id = ameth->pkey_base_id;
+    #####:  274:	if (ppkey_flags)
+    #####:  275:		*ppkey_flags = ameth->pkey_flags;
+    #####:  276:	if (pinfo)
+    #####:  277:		*pinfo = ameth->info;
+    #####:  278:	if (ppem_str)
+    #####:  279:		*ppem_str = ameth->pem_str;
+        -:  280:	return 1;
+        -:  281:	}
+        -:  282:
+    #####:  283:const EVP_PKEY_ASN1_METHOD* EVP_PKEY_get0_asn1(EVP_PKEY *pkey)
+        -:  284:	{
+    #####:  285:	return pkey->ameth;
+        -:  286:	}
+        -:  287:
+    30000:  288:EVP_PKEY_ASN1_METHOD* EVP_PKEY_asn1_new(int id, int flags,
+        -:  289:					const char *pem_str, const char *info)
+        -:  290:	{
+        -:  291:	EVP_PKEY_ASN1_METHOD *ameth;
+    30000:  292:	ameth = OPENSSL_malloc(sizeof(EVP_PKEY_ASN1_METHOD));
+    30000:  293:	if (!ameth)
+        -:  294:		return NULL;
+        -:  295:
+        -:  296:	memset(ameth, 0, sizeof(EVP_PKEY_ASN1_METHOD));
+        -:  297:
+    30000:  298:	ameth->pkey_id = id;
+    30000:  299:	ameth->pkey_base_id = id;
+    30000:  300:	ameth->pkey_flags = flags | ASN1_PKEY_DYNAMIC;
+        -:  301:
+    30000:  302:	if (info)
+        -:  303:		{
+    30000:  304:		ameth->info = BUF_strdup(info);
+    30000:  305:		if (!ameth->info)
+        -:  306:			goto err;
+        -:  307:		}
+        -:  308:	else
+    #####:  309:		ameth->info = NULL;
+        -:  310:
+    30000:  311:	if (pem_str)
+        -:  312:		{
+    30000:  313:		ameth->pem_str = BUF_strdup(pem_str);
+    30000:  314:		if (!ameth->pem_str)
+        -:  315:			goto err;
+        -:  316:		}
+        -:  317:	else
+    #####:  318:		ameth->pem_str = NULL;
+        -:  319:
+    30000:  320:	ameth->pub_decode = 0;
+    30000:  321:	ameth->pub_encode = 0;
+    30000:  322:	ameth->pub_cmp = 0;
+    30000:  323:	ameth->pub_print = 0;
+        -:  324:
+    30000:  325:	ameth->priv_decode = 0;
+    30000:  326:	ameth->priv_encode = 0;
+    30000:  327:	ameth->priv_print = 0;
+        -:  328:
+    30000:  329:	ameth->old_priv_encode = 0;
+    30000:  330:	ameth->old_priv_decode = 0;
+        -:  331:
+    30000:  332:	ameth->item_verify = 0;
+    30000:  333:	ameth->item_sign = 0;
+        -:  334:
+    30000:  335:	ameth->pkey_size = 0;
+    30000:  336:	ameth->pkey_bits = 0;
+        -:  337:
+    30000:  338:	ameth->param_decode = 0;
+    30000:  339:	ameth->param_encode = 0;
+    30000:  340:	ameth->param_missing = 0;
+    30000:  341:	ameth->param_copy = 0;
+    30000:  342:	ameth->param_cmp = 0;
+    30000:  343:	ameth->param_print = 0;
+        -:  344:
+    30000:  345:	ameth->pkey_free = 0;
+    30000:  346:	ameth->pkey_ctrl = 0;
+        -:  347:
+    30000:  348:	return ameth;
+        -:  349:
+        -:  350:	err:
+        -:  351:
+    #####:  352:	EVP_PKEY_asn1_free(ameth);
+    #####:  353:	return NULL;
+        -:  354:
+        -:  355:	}
+        -:  356:
+    #####:  357:void EVP_PKEY_asn1_copy(EVP_PKEY_ASN1_METHOD *dst, 
+        -:  358:			const EVP_PKEY_ASN1_METHOD *src)
+        -:  359:	{
+        -:  360:
+    #####:  361:	dst->pub_decode = src->pub_decode;
+    #####:  362:	dst->pub_encode = src->pub_encode;
+    #####:  363:	dst->pub_cmp = src->pub_cmp;
+    #####:  364:	dst->pub_print = src->pub_print;
+        -:  365:
+    #####:  366:	dst->priv_decode = src->priv_decode;
+    #####:  367:	dst->priv_encode = src->priv_encode;
+    #####:  368:	dst->priv_print = src->priv_print;
+        -:  369:
+    #####:  370:	dst->old_priv_encode = src->old_priv_encode;
+    #####:  371:	dst->old_priv_decode = src->old_priv_decode;
+        -:  372:
+    #####:  373:	dst->pkey_size = src->pkey_size;
+    #####:  374:	dst->pkey_bits = src->pkey_bits;
+        -:  375:
+    #####:  376:	dst->param_decode = src->param_decode;
+    #####:  377:	dst->param_encode = src->param_encode;
+    #####:  378:	dst->param_missing = src->param_missing;
+    #####:  379:	dst->param_copy = src->param_copy;
+    #####:  380:	dst->param_cmp = src->param_cmp;
+    #####:  381:	dst->param_print = src->param_print;
+        -:  382:
+    #####:  383:	dst->pkey_free = src->pkey_free;
+    #####:  384:	dst->pkey_ctrl = src->pkey_ctrl;
+        -:  385:
+    #####:  386:	dst->item_sign = src->item_sign;
+    #####:  387:	dst->item_verify = src->item_verify;
+        -:  388:
+    #####:  389:	}
+        -:  390:
+    30000:  391:void EVP_PKEY_asn1_free(EVP_PKEY_ASN1_METHOD *ameth)
+        -:  392:	{
+    30000:  393:	if (ameth && (ameth->pkey_flags & ASN1_PKEY_DYNAMIC))
+        -:  394:		{
+    30000:  395:		if (ameth->pem_str)
+    30000:  396:			OPENSSL_free(ameth->pem_str);
+    30000:  397:		if (ameth->info)
+    30000:  398:			OPENSSL_free(ameth->info);
+    30000:  399:		OPENSSL_free(ameth);
+        -:  400:		}
+    30000:  401:	}
+        -:  402:
+    20000:  403:void EVP_PKEY_asn1_set_public(EVP_PKEY_ASN1_METHOD *ameth,
+        -:  404:		int (*pub_decode)(EVP_PKEY *pk, X509_PUBKEY *pub),
+        -:  405:		int (*pub_encode)(X509_PUBKEY *pub, const EVP_PKEY *pk),
+        -:  406:		int (*pub_cmp)(const EVP_PKEY *a, const EVP_PKEY *b),
+        -:  407:		int (*pub_print)(BIO *out, const EVP_PKEY *pkey, int indent,
+        -:  408:							ASN1_PCTX *pctx),
+        -:  409:		int (*pkey_size)(const EVP_PKEY *pk),
+        -:  410:		int (*pkey_bits)(const EVP_PKEY *pk))
+        -:  411:	{
+    20000:  412:	ameth->pub_decode = pub_decode;
+    20000:  413:	ameth->pub_encode = pub_encode;
+    20000:  414:	ameth->pub_cmp = pub_cmp;
+    20000:  415:	ameth->pub_print = pub_print;
+    20000:  416:	ameth->pkey_size = pkey_size;
+    20000:  417:	ameth->pkey_bits = pkey_bits;
+    20000:  418:	}
+        -:  419:
+    20000:  420:void EVP_PKEY_asn1_set_private(EVP_PKEY_ASN1_METHOD *ameth,
+        -:  421:		int (*priv_decode)(EVP_PKEY *pk, PKCS8_PRIV_KEY_INFO *p8inf),
+        -:  422:		int (*priv_encode)(PKCS8_PRIV_KEY_INFO *p8, const EVP_PKEY *pk),
+        -:  423:		int (*priv_print)(BIO *out, const EVP_PKEY *pkey, int indent,
+        -:  424:							ASN1_PCTX *pctx))
+        -:  425:	{
+    20000:  426:	ameth->priv_decode = priv_decode;
+    20000:  427:	ameth->priv_encode = priv_encode;
+    20000:  428:	ameth->priv_print = priv_print;
+    20000:  429:	}
+        -:  430:
+    20000:  431:void EVP_PKEY_asn1_set_param(EVP_PKEY_ASN1_METHOD *ameth,
+        -:  432:		int (*param_decode)(EVP_PKEY *pkey,
+        -:  433:				const unsigned char **pder, int derlen),
+        -:  434:		int (*param_encode)(const EVP_PKEY *pkey, unsigned char **pder),
+        -:  435:		int (*param_missing)(const EVP_PKEY *pk),
+        -:  436:		int (*param_copy)(EVP_PKEY *to, const EVP_PKEY *from),
+        -:  437:		int (*param_cmp)(const EVP_PKEY *a, const EVP_PKEY *b),
+        -:  438:		int (*param_print)(BIO *out, const EVP_PKEY *pkey, int indent,
+        -:  439:							ASN1_PCTX *pctx))
+        -:  440:	{
+    20000:  441:	ameth->param_decode = param_decode;
+    20000:  442:	ameth->param_encode = param_encode;
+    20000:  443:	ameth->param_missing = param_missing;
+    20000:  444:	ameth->param_copy = param_copy;
+    20000:  445:	ameth->param_cmp = param_cmp;
+    20000:  446:	ameth->param_print = param_print;
+    20000:  447:	}
+        -:  448:
+    30000:  449:void EVP_PKEY_asn1_set_free(EVP_PKEY_ASN1_METHOD *ameth,
+        -:  450:		void (*pkey_free)(EVP_PKEY *pkey))
+        -:  451:	{
+    30000:  452:	ameth->pkey_free = pkey_free;
+    30000:  453:	}
+        -:  454:
+    30000:  455:void EVP_PKEY_asn1_set_ctrl(EVP_PKEY_ASN1_METHOD *ameth,
+        -:  456:		int (*pkey_ctrl)(EVP_PKEY *pkey, int op,
+        -:  457:							long arg1, void *arg2))
+        -:  458:	{
+    30000:  459:	ameth->pkey_ctrl = pkey_ctrl;
+    30000:  460:	}

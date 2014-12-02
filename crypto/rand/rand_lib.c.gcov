@@ -1,0 +1,303 @@
+        -:    0:Source:rand_lib.c
+        -:    0:Graph:rand_lib.gcno
+        -:    0:Data:rand_lib.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* crypto/rand/rand_lib.c */
+        -:    2:/* Copyright (C) 1995-1998 Eric Young (eay@cryptsoft.com)
+        -:    3: * All rights reserved.
+        -:    4: *
+        -:    5: * This package is an SSL implementation written
+        -:    6: * by Eric Young (eay@cryptsoft.com).
+        -:    7: * The implementation was written so as to conform with Netscapes SSL.
+        -:    8: * 
+        -:    9: * This library is free for commercial and non-commercial use as long as
+        -:   10: * the following conditions are aheared to.  The following conditions
+        -:   11: * apply to all code found in this distribution, be it the RC4, RSA,
+        -:   12: * lhash, DES, etc., code; not just the SSL code.  The SSL documentation
+        -:   13: * included with this distribution is covered by the same copyright terms
+        -:   14: * except that the holder is Tim Hudson (tjh@cryptsoft.com).
+        -:   15: * 
+        -:   16: * Copyright remains Eric Young's, and as such any Copyright notices in
+        -:   17: * the code are not to be removed.
+        -:   18: * If this package is used in a product, Eric Young should be given attribution
+        -:   19: * as the author of the parts of the library used.
+        -:   20: * This can be in the form of a textual message at program startup or
+        -:   21: * in documentation (online or textual) provided with the package.
+        -:   22: * 
+        -:   23: * Redistribution and use in source and binary forms, with or without
+        -:   24: * modification, are permitted provided that the following conditions
+        -:   25: * are met:
+        -:   26: * 1. Redistributions of source code must retain the copyright
+        -:   27: *    notice, this list of conditions and the following disclaimer.
+        -:   28: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   29: *    notice, this list of conditions and the following disclaimer in the
+        -:   30: *    documentation and/or other materials provided with the distribution.
+        -:   31: * 3. All advertising materials mentioning features or use of this software
+        -:   32: *    must display the following acknowledgement:
+        -:   33: *    "This product includes cryptographic software written by
+        -:   34: *     Eric Young (eay@cryptsoft.com)"
+        -:   35: *    The word 'cryptographic' can be left out if the rouines from the library
+        -:   36: *    being used are not cryptographic related :-).
+        -:   37: * 4. If you include any Windows specific code (or a derivative thereof) from 
+        -:   38: *    the apps directory (application code) you must include an acknowledgement:
+        -:   39: *    "This product includes software written by Tim Hudson (tjh@cryptsoft.com)"
+        -:   40: * 
+        -:   41: * THIS SOFTWARE IS PROVIDED BY ERIC YOUNG ``AS IS'' AND
+        -:   42: * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   43: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+        -:   44: * ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+        -:   45: * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+        -:   46: * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+        -:   47: * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   48: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+        -:   49: * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+        -:   50: * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+        -:   51: * SUCH DAMAGE.
+        -:   52: * 
+        -:   53: * The licence and distribution terms for any publically available version or
+        -:   54: * derivative of this code cannot be changed.  i.e. this code cannot simply be
+        -:   55: * copied and put under another distribution licence
+        -:   56: * [including the GNU Public Licence.]
+        -:   57: */
+        -:   58:
+        -:   59:#include <stdio.h>
+        -:   60:#include <time.h>
+        -:   61:#include "cryptlib.h"
+        -:   62:#include <openssl/rand.h>
+        -:   63:
+        -:   64:#ifndef OPENSSL_NO_ENGINE
+        -:   65:#include <openssl/engine.h>
+        -:   66:#endif
+        -:   67:
+        -:   68:#ifdef OPENSSL_FIPS
+        -:   69:#include <openssl/fips.h>
+        -:   70:#include <openssl/fips_rand.h>
+        -:   71:#endif
+        -:   72:
+        -:   73:#ifndef OPENSSL_NO_ENGINE
+        -:   74:/* non-NULL if default_RAND_meth is ENGINE-provided */
+        -:   75:static ENGINE *funct_ref =NULL;
+        -:   76:#endif
+        -:   77:static const RAND_METHOD *default_RAND_meth = NULL;
+        -:   78:
+    10000:   79:int RAND_set_rand_method(const RAND_METHOD *meth)
+        -:   80:	{
+        -:   81:#ifndef OPENSSL_NO_ENGINE
+    10000:   82:	if(funct_ref)
+        -:   83:		{
+    10000:   84:		ENGINE_finish(funct_ref);
+    10000:   85:		funct_ref = NULL;
+        -:   86:		}
+        -:   87:#endif
+    10000:   88:	default_RAND_meth = meth;
+    10000:   89:	return 1;
+        -:   90:	}
+        -:   91:
+   112914:   92:const RAND_METHOD *RAND_get_rand_method(void)
+        -:   93:	{
+   112914:   94:	if (!default_RAND_meth)
+        -:   95:		{
+        -:   96:#ifndef OPENSSL_NO_ENGINE
+    10000:   97:		ENGINE *e = ENGINE_get_default_RAND();
+    10000:   98:		if(e)
+        -:   99:			{
+    10000:  100:			default_RAND_meth = ENGINE_get_RAND(e);
+    10000:  101:			if(!default_RAND_meth)
+        -:  102:				{
+    #####:  103:				ENGINE_finish(e);
+        -:  104:				e = NULL;
+        -:  105:				}
+        -:  106:			}
+    10000:  107:		if(e)
+    10000:  108:			funct_ref = e;
+        -:  109:		else
+        -:  110:#endif
+    #####:  111:			default_RAND_meth = RAND_SSLeay();
+        -:  112:		}
+   112914:  113:	return default_RAND_meth;
+        -:  114:	}
+        -:  115:
+        -:  116:#ifndef OPENSSL_NO_ENGINE
+    #####:  117:int RAND_set_rand_engine(ENGINE *engine)
+        -:  118:	{
+        -:  119:	const RAND_METHOD *tmp_meth = NULL;
+    #####:  120:	if(engine)
+        -:  121:		{
+    #####:  122:		if(!ENGINE_init(engine))
+        -:  123:			return 0;
+    #####:  124:		tmp_meth = ENGINE_get_RAND(engine);
+    #####:  125:		if(!tmp_meth)
+        -:  126:			{
+    #####:  127:			ENGINE_finish(engine);
+    #####:  128:			return 0;
+        -:  129:			}
+        -:  130:		}
+        -:  131:	/* This function releases any prior ENGINE so call it first */
+        -:  132:	RAND_set_rand_method(tmp_meth);
+    #####:  133:	funct_ref = engine;
+    #####:  134:	return 1;
+        -:  135:	}
+        -:  136:#endif
+        -:  137:
+    #####:  138:void RAND_cleanup(void)
+        -:  139:	{
+    #####:  140:	const RAND_METHOD *meth = RAND_get_rand_method();
+    #####:  141:	if (meth && meth->cleanup)
+    #####:  142:		meth->cleanup();
+        -:  143:	RAND_set_rand_method(NULL);
+    #####:  144:	}
+        -:  145:
+    #####:  146:void RAND_seed(const void *buf, int num)
+        -:  147:	{
+    #####:  148:	const RAND_METHOD *meth = RAND_get_rand_method();
+    #####:  149:	if (meth && meth->seed)
+    #####:  150:		meth->seed(buf,num);
+    #####:  151:	}
+        -:  152:
+    40000:  153:void RAND_add(const void *buf, int num, double entropy)
+        -:  154:	{
+    40000:  155:	const RAND_METHOD *meth = RAND_get_rand_method();
+    40000:  156:	if (meth && meth->add)
+    #####:  157:		meth->add(buf,num,entropy);
+    40000:  158:	}
+        -:  159:
+    52914:  160:int RAND_bytes(unsigned char *buf, int num)
+        -:  161:	{
+    52914:  162:	const RAND_METHOD *meth = RAND_get_rand_method();
+    52914:  163:	if (meth && meth->bytes)
+    52914:  164:		return meth->bytes(buf,num);
+        -:  165:	return(-1);
+        -:  166:	}
+        -:  167:
+    20000:  168:int RAND_pseudo_bytes(unsigned char *buf, int num)
+        -:  169:	{
+    20000:  170:	const RAND_METHOD *meth = RAND_get_rand_method();
+    20000:  171:	if (meth && meth->pseudorand)
+    20000:  172:		return meth->pseudorand(buf,num);
+        -:  173:	return(-1);
+        -:  174:	}
+        -:  175:
+    #####:  176:int RAND_status(void)
+        -:  177:	{
+    #####:  178:	const RAND_METHOD *meth = RAND_get_rand_method();
+    #####:  179:	if (meth && meth->status)
+    #####:  180:		return meth->status();
+        -:  181:	return 0;
+        -:  182:	}
+        -:  183:
+        -:  184:#ifdef OPENSSL_FIPS
+        -:  185:
+        -:  186:/* FIPS DRBG initialisation code. This sets up the DRBG for use by the
+        -:  187: * rest of OpenSSL. 
+        -:  188: */
+        -:  189:
+        -:  190:/* Entropy gatherer: use standard OpenSSL PRNG to seed (this will gather
+        -:  191: * entropy internally through RAND_poll().
+        -:  192: */
+        -:  193:
+        -:  194:static size_t drbg_get_entropy(DRBG_CTX *ctx, unsigned char **pout,
+        -:  195:                                int entropy, size_t min_len, size_t max_len)
+        -:  196:        {
+        -:  197:	/* Round up request to multiple of block size */
+        -:  198:	min_len = ((min_len + 19) / 20) * 20;
+        -:  199:	*pout = OPENSSL_malloc(min_len);
+        -:  200:	if (!*pout)
+        -:  201:		return 0;
+        -:  202:	if (RAND_SSLeay()->bytes(*pout, min_len) <= 0)
+        -:  203:		{
+        -:  204:		OPENSSL_free(*pout);
+        -:  205:		*pout = NULL;
+        -:  206:		return 0;
+        -:  207:		}
+        -:  208:        return min_len;
+        -:  209:        }
+        -:  210:
+        -:  211:static void drbg_free_entropy(DRBG_CTX *ctx, unsigned char *out, size_t olen)
+        -:  212:	{
+        -:  213:	if (out)
+        -:  214:		{
+        -:  215:		OPENSSL_cleanse(out, olen);
+        -:  216:		OPENSSL_free(out);
+        -:  217:		}
+        -:  218:	}
+        -:  219:
+        -:  220:/* Set "additional input" when generating random data. This uses the
+        -:  221: * current PID, a time value and a counter.
+        -:  222: */
+        -:  223:
+        -:  224:static size_t drbg_get_adin(DRBG_CTX *ctx, unsigned char **pout)
+        -:  225:    	{
+        -:  226:	/* Use of static variables is OK as this happens under a lock */
+        -:  227:	static unsigned char buf[16];
+        -:  228:	static unsigned long counter;
+        -:  229:	FIPS_get_timevec(buf, &counter);
+        -:  230:	*pout = buf;
+        -:  231:	return sizeof(buf);
+        -:  232:	}
+        -:  233:
+        -:  234:/* RAND_add() and RAND_seed() pass through to OpenSSL PRNG so it is 
+        -:  235: * correctly seeded by RAND_poll().
+        -:  236: */
+        -:  237:
+        -:  238:static int drbg_rand_add(DRBG_CTX *ctx, const void *in, int inlen,
+        -:  239:				double entropy)
+        -:  240:	{
+        -:  241:	RAND_SSLeay()->add(in, inlen, entropy);
+        -:  242:	return 1;
+        -:  243:	}
+        -:  244:
+        -:  245:static int drbg_rand_seed(DRBG_CTX *ctx, const void *in, int inlen)
+        -:  246:	{
+        -:  247:	RAND_SSLeay()->seed(in, inlen);
+        -:  248:	return 1;
+        -:  249:	}
+        -:  250:
+        -:  251:#ifndef OPENSSL_DRBG_DEFAULT_TYPE
+        -:  252:#define OPENSSL_DRBG_DEFAULT_TYPE	NID_aes_256_ctr
+        -:  253:#endif
+        -:  254:#ifndef OPENSSL_DRBG_DEFAULT_FLAGS
+        -:  255:#define OPENSSL_DRBG_DEFAULT_FLAGS	DRBG_FLAG_CTR_USE_DF
+        -:  256:#endif 
+        -:  257:
+        -:  258:static int fips_drbg_type = OPENSSL_DRBG_DEFAULT_TYPE;
+        -:  259:static int fips_drbg_flags = OPENSSL_DRBG_DEFAULT_FLAGS;
+        -:  260:
+        -:  261:void RAND_set_fips_drbg_type(int type, int flags)
+        -:  262:	{
+        -:  263:	fips_drbg_type = type;
+        -:  264:	fips_drbg_flags = flags;
+        -:  265:	}
+        -:  266:
+        -:  267:int RAND_init_fips(void)
+        -:  268:	{
+        -:  269:	DRBG_CTX *dctx;
+        -:  270:	size_t plen;
+        -:  271:	unsigned char pers[32], *p;
+        -:  272:	dctx = FIPS_get_default_drbg();
+        -:  273:        if (FIPS_drbg_init(dctx, fips_drbg_type, fips_drbg_flags) <= 0)
+        -:  274:		{
+        -:  275:		RANDerr(RAND_F_RAND_INIT_FIPS, RAND_R_ERROR_INITIALISING_DRBG);
+        -:  276:		return 0;
+        -:  277:		}
+        -:  278:		
+        -:  279:        FIPS_drbg_set_callbacks(dctx,
+        -:  280:				drbg_get_entropy, drbg_free_entropy, 20,
+        -:  281:				drbg_get_entropy, drbg_free_entropy);
+        -:  282:	FIPS_drbg_set_rand_callbacks(dctx, drbg_get_adin, 0,
+        -:  283:					drbg_rand_seed, drbg_rand_add);
+        -:  284:	/* Personalisation string: a string followed by date time vector */
+        -:  285:	strcpy((char *)pers, "OpenSSL DRBG2.0");
+        -:  286:	plen = drbg_get_adin(dctx, &p);
+        -:  287:	memcpy(pers + 16, p, plen);
+        -:  288:
+        -:  289:        if (FIPS_drbg_instantiate(dctx, pers, sizeof(pers)) <= 0)
+        -:  290:		{
+        -:  291:		RANDerr(RAND_F_RAND_INIT_FIPS, RAND_R_ERROR_INSTANTIATING_DRBG);
+        -:  292:		return 0;
+        -:  293:		}
+        -:  294:        FIPS_rand_set_method(FIPS_drbg_method());
+        -:  295:	return 1;
+        -:  296:	}
+        -:  297:
+        -:  298:#endif

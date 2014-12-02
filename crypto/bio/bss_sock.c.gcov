@@ -1,0 +1,299 @@
+        -:    0:Source:bss_sock.c
+        -:    0:Graph:bss_sock.gcno
+        -:    0:Data:bss_sock.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* crypto/bio/bss_sock.c */
+        -:    2:/* Copyright (C) 1995-1998 Eric Young (eay@cryptsoft.com)
+        -:    3: * All rights reserved.
+        -:    4: *
+        -:    5: * This package is an SSL implementation written
+        -:    6: * by Eric Young (eay@cryptsoft.com).
+        -:    7: * The implementation was written so as to conform with Netscapes SSL.
+        -:    8: * 
+        -:    9: * This library is free for commercial and non-commercial use as long as
+        -:   10: * the following conditions are aheared to.  The following conditions
+        -:   11: * apply to all code found in this distribution, be it the RC4, RSA,
+        -:   12: * lhash, DES, etc., code; not just the SSL code.  The SSL documentation
+        -:   13: * included with this distribution is covered by the same copyright terms
+        -:   14: * except that the holder is Tim Hudson (tjh@cryptsoft.com).
+        -:   15: * 
+        -:   16: * Copyright remains Eric Young's, and as such any Copyright notices in
+        -:   17: * the code are not to be removed.
+        -:   18: * If this package is used in a product, Eric Young should be given attribution
+        -:   19: * as the author of the parts of the library used.
+        -:   20: * This can be in the form of a textual message at program startup or
+        -:   21: * in documentation (online or textual) provided with the package.
+        -:   22: * 
+        -:   23: * Redistribution and use in source and binary forms, with or without
+        -:   24: * modification, are permitted provided that the following conditions
+        -:   25: * are met:
+        -:   26: * 1. Redistributions of source code must retain the copyright
+        -:   27: *    notice, this list of conditions and the following disclaimer.
+        -:   28: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   29: *    notice, this list of conditions and the following disclaimer in the
+        -:   30: *    documentation and/or other materials provided with the distribution.
+        -:   31: * 3. All advertising materials mentioning features or use of this software
+        -:   32: *    must display the following acknowledgement:
+        -:   33: *    "This product includes cryptographic software written by
+        -:   34: *     Eric Young (eay@cryptsoft.com)"
+        -:   35: *    The word 'cryptographic' can be left out if the rouines from the library
+        -:   36: *    being used are not cryptographic related :-).
+        -:   37: * 4. If you include any Windows specific code (or a derivative thereof) from 
+        -:   38: *    the apps directory (application code) you must include an acknowledgement:
+        -:   39: *    "This product includes software written by Tim Hudson (tjh@cryptsoft.com)"
+        -:   40: * 
+        -:   41: * THIS SOFTWARE IS PROVIDED BY ERIC YOUNG ``AS IS'' AND
+        -:   42: * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   43: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+        -:   44: * ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+        -:   45: * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+        -:   46: * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+        -:   47: * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   48: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+        -:   49: * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+        -:   50: * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+        -:   51: * SUCH DAMAGE.
+        -:   52: * 
+        -:   53: * The licence and distribution terms for any publically available version or
+        -:   54: * derivative of this code cannot be changed.  i.e. this code cannot simply be
+        -:   55: * copied and put under another distribution licence
+        -:   56: * [including the GNU Public Licence.]
+        -:   57: */
+        -:   58:
+        -:   59:#include <stdio.h>
+        -:   60:#include <errno.h>
+        -:   61:#define USE_SOCKETS
+        -:   62:#include "cryptlib.h"
+        -:   63:
+        -:   64:#ifndef OPENSSL_NO_SOCK
+        -:   65:
+        -:   66:#include <openssl/bio.h>
+        -:   67:
+        -:   68:#ifdef WATT32
+        -:   69:#define sock_write SockWrite  /* Watt-32 uses same names */
+        -:   70:#define sock_read  SockRead
+        -:   71:#define sock_puts  SockPuts
+        -:   72:#endif
+        -:   73:
+        -:   74:static int sock_write(BIO *h, const char *buf, int num);
+        -:   75:static int sock_read(BIO *h, char *buf, int size);
+        -:   76:static int sock_puts(BIO *h, const char *str);
+        -:   77:static long sock_ctrl(BIO *h, int cmd, long arg1, void *arg2);
+        -:   78:static int sock_new(BIO *h);
+        -:   79:static int sock_free(BIO *data);
+        -:   80:int BIO_sock_should_retry(int s);
+        -:   81:
+        -:   82:static BIO_METHOD methods_sockp=
+        -:   83:	{
+        -:   84:	BIO_TYPE_SOCKET,
+        -:   85:	"socket",
+        -:   86:	sock_write,
+        -:   87:	sock_read,
+        -:   88:	sock_puts,
+        -:   89:	NULL, /* sock_gets, */
+        -:   90:	sock_ctrl,
+        -:   91:	sock_new,
+        -:   92:	sock_free,
+        -:   93:	NULL,
+        -:   94:	};
+        -:   95:
+    #####:   96:BIO_METHOD *BIO_s_socket(void)
+        -:   97:	{
+    #####:   98:	return(&methods_sockp);
+        -:   99:	}
+        -:  100:
+    10000:  101:BIO *BIO_new_socket(int fd, int close_flag)
+        -:  102:	{
+        -:  103:	BIO *ret;
+        -:  104:
+    10000:  105:	ret=BIO_new(BIO_s_socket());
+    10000:  106:	if (ret == NULL) return(NULL);
+    10000:  107:	BIO_set_fd(ret,fd,close_flag);
+    10000:  108:	return(ret);
+        -:  109:	}
+        -:  110:
+    10000:  111:static int sock_new(BIO *bi)
+        -:  112:	{
+    10000:  113:	bi->init=0;
+    10000:  114:	bi->num=0;
+    10000:  115:	bi->ptr=NULL;
+    10000:  116:	bi->flags=0;
+    10000:  117:	return(1);
+        -:  118:	}
+        -:  119:
+    20000:  120:static int sock_free(BIO *a)
+        -:  121:	{
+    20000:  122:	if (a == NULL) return(0);
+    20000:  123:	if (a->shutdown)
+        -:  124:		{
+    10000:  125:		if (a->init)
+        -:  126:			{
+    #####:  127:			SHUTDOWN2(a->num);
+        -:  128:			}
+    10000:  129:		a->init=0;
+    10000:  130:		a->flags=0;
+        -:  131:		}
+        -:  132:	return(1);
+        -:  133:	}
+        -:  134:	
+   130000:  135:static int sock_read(BIO *b, char *out, int outl)
+        -:  136:	{
+        -:  137:	int ret=0;
+        -:  138:
+   130000:  139:	if (out != NULL)
+        -:  140:		{
+   130000:  141:		clear_socket_error();
+   260000:  142:		ret=readsocket(b->num,out,outl);
+   130000:  143:		BIO_clear_retry_flags(b);
+   130000:  144:		if (ret <= 0)
+        -:  145:			{
+    10000:  146:			if (BIO_sock_should_retry(ret))
+    #####:  147:				BIO_set_retry_read(b);
+        -:  148:			}
+        -:  149:		}
+   130000:  150:	return(ret);
+        -:  151:	}
+        -:  152:
+    30000:  153:static int sock_write(BIO *b, const char *in, int inl)
+        -:  154:	{
+        -:  155:	int ret;
+        -:  156:	
+    30000:  157:	clear_socket_error();
+    30000:  158:	ret=writesocket(b->num,in,inl);
+    30000:  159:	BIO_clear_retry_flags(b);
+    30000:  160:	if (ret <= 0)
+        -:  161:		{
+    #####:  162:		if (BIO_sock_should_retry(ret))
+    #####:  163:			BIO_set_retry_write(b);
+        -:  164:		}
+    30000:  165:	return(ret);
+        -:  166:	}
+        -:  167:
+   190000:  168:static long sock_ctrl(BIO *b, int cmd, long num, void *ptr)
+        -:  169:	{
+        -:  170:	long ret=1;
+        -:  171:	int *ip;
+        -:  172:
+   190000:  173:	switch (cmd)
+        -:  174:		{
+        -:  175:	case BIO_C_SET_FD:
+    10000:  176:		sock_free(b);
+    10000:  177:		b->num= *((int *)ptr);
+    10000:  178:		b->shutdown=(int)num;
+    10000:  179:		b->init=1;
+    10000:  180:		break;
+        -:  181:	case BIO_C_GET_FD:
+   150000:  182:		if (b->init)
+        -:  183:			{
+        -:  184:			ip=(int *)ptr;
+   150000:  185:			if (ip != NULL) *ip=b->num;
+   150000:  186:			ret=b->num;
+        -:  187:			}
+        -:  188:		else
+        -:  189:			ret= -1;
+        -:  190:		break;
+        -:  191:	case BIO_CTRL_GET_CLOSE:
+    #####:  192:		ret=b->shutdown;
+    #####:  193:		break;
+        -:  194:	case BIO_CTRL_SET_CLOSE:
+    #####:  195:		b->shutdown=(int)num;
+    #####:  196:		break;
+        -:  197:	case BIO_CTRL_DUP:
+        -:  198:	case BIO_CTRL_FLUSH:
+        -:  199:		ret=1;
+        -:  200:		break;
+        -:  201:	default:
+        -:  202:		ret=0;
+    20000:  203:		break;
+        -:  204:		}
+   190000:  205:	return(ret);
+        -:  206:	}
+        -:  207:
+    #####:  208:static int sock_puts(BIO *bp, const char *str)
+        -:  209:	{
+        -:  210:	int n,ret;
+        -:  211:
+    #####:  212:	n=strlen(str);
+    #####:  213:	ret=sock_write(bp,str,n);
+    #####:  214:	return(ret);
+        -:  215:	}
+        -:  216:
+    10000:  217:int BIO_sock_should_retry(int i)
+        -:  218:	{
+        -:  219:	int err;
+        -:  220:
+    10000:  221:	if ((i == 0) || (i == -1))
+        -:  222:		{
+    10000:  223:		err=get_last_socket_error();
+        -:  224:
+        -:  225:#if defined(OPENSSL_SYS_WINDOWS) && 0 /* more microsoft stupidity? perhaps not? Ben 4/1/99 */
+        -:  226:		if ((i == -1) && (err == 0))
+        -:  227:			return(1);
+        -:  228:#endif
+        -:  229:
+    10000:  230:		return(BIO_sock_non_fatal_error(err));
+        -:  231:		}
+        -:  232:	return(0);
+        -:  233:	}
+        -:  234:
+    #####:  235:int BIO_sock_non_fatal_error(int err)
+        -:  236:	{
+    10000:  237:	switch (err)
+        -:  238:		{
+        -:  239:#if defined(OPENSSL_SYS_WINDOWS) || defined(OPENSSL_SYS_NETWARE)
+        -:  240:# if defined(WSAEWOULDBLOCK)
+        -:  241:	case WSAEWOULDBLOCK:
+        -:  242:# endif
+        -:  243:
+        -:  244:# if 0 /* This appears to always be an error */
+        -:  245:#  if defined(WSAENOTCONN)
+        -:  246:	case WSAENOTCONN:
+        -:  247:#  endif
+        -:  248:# endif
+        -:  249:#endif
+        -:  250:
+        -:  251:#ifdef EWOULDBLOCK
+        -:  252:# ifdef WSAEWOULDBLOCK
+        -:  253:#  if WSAEWOULDBLOCK != EWOULDBLOCK
+        -:  254:	case EWOULDBLOCK:
+        -:  255:#  endif
+        -:  256:# else
+        -:  257:	case EWOULDBLOCK:
+        -:  258:# endif
+        -:  259:#endif
+        -:  260:
+        -:  261:#if defined(ENOTCONN)
+        -:  262:	case ENOTCONN:
+        -:  263:#endif
+        -:  264:
+        -:  265:#ifdef EINTR
+        -:  266:	case EINTR:
+        -:  267:#endif
+        -:  268:
+        -:  269:#ifdef EAGAIN
+        -:  270:# if EWOULDBLOCK != EAGAIN
+        -:  271:	case EAGAIN:
+        -:  272:# endif
+        -:  273:#endif
+        -:  274:
+        -:  275:#ifdef EPROTO
+        -:  276:	case EPROTO:
+        -:  277:#endif
+        -:  278:
+        -:  279:#ifdef EINPROGRESS
+        -:  280:	case EINPROGRESS:
+        -:  281:#endif
+        -:  282:
+        -:  283:#ifdef EALREADY
+        -:  284:	case EALREADY:
+        -:  285:#endif
+        -:  286:		return(1);
+        -:  287:		/* break; */
+        -:  288:	default:
+        -:  289:		break;
+        -:  290:		}
+    #####:  291:	return(0);
+        -:  292:	}
+        -:  293:
+        -:  294:#endif  /* #ifndef OPENSSL_NO_SOCK */

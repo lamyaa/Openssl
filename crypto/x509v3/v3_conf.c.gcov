@@ -1,0 +1,530 @@
+        -:    0:Source:v3_conf.c
+        -:    0:Graph:v3_conf.gcno
+        -:    0:Data:v3_conf.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* v3_conf.c */
+        -:    2:/* Written by Dr Stephen N Henson (steve@openssl.org) for the OpenSSL
+        -:    3: * project 1999.
+        -:    4: */
+        -:    5:/* ====================================================================
+        -:    6: * Copyright (c) 1999-2002 The OpenSSL Project.  All rights reserved.
+        -:    7: *
+        -:    8: * Redistribution and use in source and binary forms, with or without
+        -:    9: * modification, are permitted provided that the following conditions
+        -:   10: * are met:
+        -:   11: *
+        -:   12: * 1. Redistributions of source code must retain the above copyright
+        -:   13: *    notice, this list of conditions and the following disclaimer. 
+        -:   14: *
+        -:   15: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   16: *    notice, this list of conditions and the following disclaimer in
+        -:   17: *    the documentation and/or other materials provided with the
+        -:   18: *    distribution.
+        -:   19: *
+        -:   20: * 3. All advertising materials mentioning features or use of this
+        -:   21: *    software must display the following acknowledgment:
+        -:   22: *    "This product includes software developed by the OpenSSL Project
+        -:   23: *    for use in the OpenSSL Toolkit. (http://www.OpenSSL.org/)"
+        -:   24: *
+        -:   25: * 4. The names "OpenSSL Toolkit" and "OpenSSL Project" must not be used to
+        -:   26: *    endorse or promote products derived from this software without
+        -:   27: *    prior written permission. For written permission, please contact
+        -:   28: *    licensing@OpenSSL.org.
+        -:   29: *
+        -:   30: * 5. Products derived from this software may not be called "OpenSSL"
+        -:   31: *    nor may "OpenSSL" appear in their names without prior written
+        -:   32: *    permission of the OpenSSL Project.
+        -:   33: *
+        -:   34: * 6. Redistributions of any form whatsoever must retain the following
+        -:   35: *    acknowledgment:
+        -:   36: *    "This product includes software developed by the OpenSSL Project
+        -:   37: *    for use in the OpenSSL Toolkit (http://www.OpenSSL.org/)"
+        -:   38: *
+        -:   39: * THIS SOFTWARE IS PROVIDED BY THE OpenSSL PROJECT ``AS IS'' AND ANY
+        -:   40: * EXPRESSED OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   41: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+        -:   42: * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE OpenSSL PROJECT OR
+        -:   43: * ITS CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+        -:   44: * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+        -:   45: * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+        -:   46: * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   47: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+        -:   48: * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+        -:   49: * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+        -:   50: * OF THE POSSIBILITY OF SUCH DAMAGE.
+        -:   51: * ====================================================================
+        -:   52: *
+        -:   53: * This product includes cryptographic software written by Eric Young
+        -:   54: * (eay@cryptsoft.com).  This product includes software written by Tim
+        -:   55: * Hudson (tjh@cryptsoft.com).
+        -:   56: *
+        -:   57: */
+        -:   58:/* extension creation utilities */
+        -:   59:
+        -:   60:
+        -:   61:
+        -:   62:#include <stdio.h>
+        -:   63:#include <ctype.h>
+        -:   64:#include "cryptlib.h"
+        -:   65:#include <openssl/conf.h>
+        -:   66:#include <openssl/x509.h>
+        -:   67:#include <openssl/x509v3.h>
+        -:   68:
+        -:   69:static int v3_check_critical(char **value);
+        -:   70:static int v3_check_generic(char **value);
+        -:   71:static X509_EXTENSION *do_ext_nconf(CONF *conf, X509V3_CTX *ctx, int ext_nid, int crit, char *value);
+        -:   72:static X509_EXTENSION *v3_generic_extension(const char *ext, char *value, int crit, int type, X509V3_CTX *ctx);
+        -:   73:static char *conf_lhash_get_string(void *db, char *section, char *value);
+        -:   74:static STACK_OF(CONF_VALUE) *conf_lhash_get_section(void *db, char *section);
+        -:   75:static X509_EXTENSION *do_ext_i2d(const X509V3_EXT_METHOD *method, int ext_nid,
+        -:   76:				  int crit, void *ext_struc);
+        -:   77:static unsigned char *generic_asn1(char *value, X509V3_CTX *ctx, long *ext_len);
+        -:   78:/* CONF *conf:  Config file    */
+        -:   79:/* char *name:  Name    */
+        -:   80:/* char *value:  Value    */
+    #####:   81:X509_EXTENSION *X509V3_EXT_nconf(CONF *conf, X509V3_CTX *ctx, char *name,
+        -:   82:				 char *value)
+        -:   83:	{
+        -:   84:	int crit;
+        -:   85:	int ext_type;
+        -:   86:	X509_EXTENSION *ret;
+    #####:   87:	crit = v3_check_critical(&value);
+    #####:   88:	if ((ext_type = v3_check_generic(&value))) 
+    #####:   89:		return v3_generic_extension(name, value, crit, ext_type, ctx);
+    #####:   90:	ret = do_ext_nconf(conf, ctx, OBJ_sn2nid(name), crit, value);
+    #####:   91:	if (!ret)
+        -:   92:		{
+    #####:   93:		X509V3err(X509V3_F_X509V3_EXT_NCONF,X509V3_R_ERROR_IN_EXTENSION);
+    #####:   94:		ERR_add_error_data(4,"name=", name, ", value=", value);
+        -:   95:		}
+    #####:   96:	return ret;
+        -:   97:	}
+        -:   98:
+        -:   99:/* CONF *conf:  Config file    */
+        -:  100:/* char *value:  Value    */
+    #####:  101:X509_EXTENSION *X509V3_EXT_nconf_nid(CONF *conf, X509V3_CTX *ctx, int ext_nid,
+        -:  102:				     char *value)
+        -:  103:	{
+        -:  104:	int crit;
+        -:  105:	int ext_type;
+    #####:  106:	crit = v3_check_critical(&value);
+    #####:  107:	if ((ext_type = v3_check_generic(&value))) 
+    #####:  108:		return v3_generic_extension(OBJ_nid2sn(ext_nid),
+        -:  109:						 value, crit, ext_type, ctx);
+    #####:  110:	return do_ext_nconf(conf, ctx, ext_nid, crit, value);
+        -:  111:	}
+        -:  112:
+        -:  113:/* CONF *conf:  Config file    */
+        -:  114:/* char *value:  Value    */
+    #####:  115:static X509_EXTENSION *do_ext_nconf(CONF *conf, X509V3_CTX *ctx, int ext_nid,
+        -:  116:				    int crit, char *value)
+        -:  117:	{
+    #####:  118:	const X509V3_EXT_METHOD *method;
+        -:  119:	X509_EXTENSION *ext;
+        -:  120:	STACK_OF(CONF_VALUE) *nval;
+        -:  121:	void *ext_struc;
+    #####:  122:	if (ext_nid == NID_undef)
+        -:  123:		{
+    #####:  124:		X509V3err(X509V3_F_DO_EXT_NCONF,X509V3_R_UNKNOWN_EXTENSION_NAME);
+    #####:  125:		return NULL;
+        -:  126:		}
+    #####:  127:	if (!(method = X509V3_EXT_get_nid(ext_nid)))
+        -:  128:		{
+    #####:  129:		X509V3err(X509V3_F_DO_EXT_NCONF,X509V3_R_UNKNOWN_EXTENSION);
+    #####:  130:		return NULL;
+        -:  131:		}
+        -:  132:	/* Now get internal extension representation based on type */
+    #####:  133:	if (method->v2i)
+        -:  134:		{
+    #####:  135:		if(*value == '@') nval = NCONF_get_section(conf, value + 1);
+    #####:  136:		else nval = X509V3_parse_list(value);
+    #####:  137:		if(sk_CONF_VALUE_num(nval) <= 0)
+        -:  138:			{
+    #####:  139:			X509V3err(X509V3_F_DO_EXT_NCONF,X509V3_R_INVALID_EXTENSION_STRING);
+    #####:  140:			ERR_add_error_data(4, "name=", OBJ_nid2sn(ext_nid), ",section=", value);
+    #####:  141:			return NULL;
+        -:  142:			}
+    #####:  143:		ext_struc = method->v2i(method, ctx, nval);
+    #####:  144:		if(*value != '@') sk_CONF_VALUE_pop_free(nval,
+        -:  145:							 X509V3_conf_free);
+    #####:  146:		if(!ext_struc) return NULL;
+        -:  147:		}
+    #####:  148:	else if(method->s2i)
+        -:  149:		{
+    #####:  150:		if(!(ext_struc = method->s2i(method, ctx, value))) return NULL;
+        -:  151:		}
+    #####:  152:	else if(method->r2i)
+        -:  153:		{
+    #####:  154:		if(!ctx->db || !ctx->db_meth)
+        -:  155:			{
+    #####:  156:			X509V3err(X509V3_F_DO_EXT_NCONF,X509V3_R_NO_CONFIG_DATABASE);
+    #####:  157:			return NULL;
+        -:  158:			}
+    #####:  159:		if(!(ext_struc = method->r2i(method, ctx, value))) return NULL;
+        -:  160:		}
+        -:  161:	else
+        -:  162:		{
+    #####:  163:		X509V3err(X509V3_F_DO_EXT_NCONF,X509V3_R_EXTENSION_SETTING_NOT_SUPPORTED);
+    #####:  164:		ERR_add_error_data(2, "name=", OBJ_nid2sn(ext_nid));
+    #####:  165:		return NULL;
+        -:  166:		}
+        -:  167:
+    #####:  168:	ext  = do_ext_i2d(method, ext_nid, crit, ext_struc);
+    #####:  169:	if(method->it) ASN1_item_free(ext_struc, ASN1_ITEM_ptr(method->it));
+    #####:  170:	else method->ext_free(ext_struc);
+    #####:  171:	return ext;
+        -:  172:
+        -:  173:	}
+        -:  174:
+    #####:  175:static X509_EXTENSION *do_ext_i2d(const X509V3_EXT_METHOD *method, int ext_nid,
+        -:  176:				  int crit, void *ext_struc)
+        -:  177:	{
+        -:  178:	unsigned char *ext_der;
+        -:  179:	int ext_len;
+        -:  180:	ASN1_OCTET_STRING *ext_oct;
+        -:  181:	X509_EXTENSION *ext;
+        -:  182:	/* Convert internal representation to DER */
+    #####:  183:	if (method->it)
+        -:  184:		{
+    #####:  185:		ext_der = NULL;
+    #####:  186:		ext_len = ASN1_item_i2d(ext_struc, &ext_der, ASN1_ITEM_ptr(method->it));
+    #####:  187:		if (ext_len < 0) goto merr;
+        -:  188:		}
+        -:  189:	 else
+        -:  190:		{
+        -:  191:		unsigned char *p;
+    #####:  192:		ext_len = method->i2d(ext_struc, NULL);
+    #####:  193:		if(!(ext_der = OPENSSL_malloc(ext_len))) goto merr;
+    #####:  194:		p = ext_der;
+    #####:  195:		method->i2d(ext_struc, &p);
+        -:  196:		}
+    #####:  197:	if (!(ext_oct = M_ASN1_OCTET_STRING_new())) goto merr;
+    #####:  198:	ext_oct->data = ext_der;
+    #####:  199:	ext_oct->length = ext_len;
+        -:  200:
+    #####:  201:	ext = X509_EXTENSION_create_by_NID(NULL, ext_nid, crit, ext_oct);
+    #####:  202:	if (!ext) goto merr;
+    #####:  203:	M_ASN1_OCTET_STRING_free(ext_oct);
+        -:  204:
+        -:  205:	return ext;
+        -:  206:
+        -:  207:	merr:
+    #####:  208:	X509V3err(X509V3_F_DO_EXT_I2D,ERR_R_MALLOC_FAILURE);
+        -:  209:	return NULL;
+        -:  210:
+        -:  211:	}
+        -:  212:
+        -:  213:/* Given an internal structure, nid and critical flag create an extension */
+        -:  214:
+    #####:  215:X509_EXTENSION *X509V3_EXT_i2d(int ext_nid, int crit, void *ext_struc)
+        -:  216:	{
+    #####:  217:	const X509V3_EXT_METHOD *method;
+    #####:  218:	if (!(method = X509V3_EXT_get_nid(ext_nid))) {
+    #####:  219:		X509V3err(X509V3_F_X509V3_EXT_I2D,X509V3_R_UNKNOWN_EXTENSION);
+    #####:  220:		return NULL;
+        -:  221:	}
+    #####:  222:	return do_ext_i2d(method, ext_nid, crit, ext_struc);
+        -:  223:}
+        -:  224:
+        -:  225:/* Check the extension string for critical flag */
+    #####:  226:static int v3_check_critical(char **value)
+        -:  227:{
+    #####:  228:	char *p = *value;
+    #####:  229:	if ((strlen(p) < 9) || strncmp(p, "critical,", 9)) return 0;
+    #####:  230:	p+=9;
+    #####:  231:	while(isspace((unsigned char)*p)) p++;
+    #####:  232:	*value = p;
+    #####:  233:	return 1;
+        -:  234:}
+        -:  235:
+        -:  236:/* Check extension string for generic extension and return the type */
+    #####:  237:static int v3_check_generic(char **value)
+        -:  238:{
+        -:  239:	int gen_type = 0;
+    #####:  240:	char *p = *value;
+    #####:  241:	if ((strlen(p) >= 4) && !strncmp(p, "DER:", 4))
+        -:  242:		{
+    #####:  243:		p+=4;
+    #####:  244:		gen_type = 1;
+        -:  245:		}
+    #####:  246:	else if ((strlen(p) >= 5) && !strncmp(p, "ASN1:", 5))
+        -:  247:		{
+    #####:  248:		p+=5;
+    #####:  249:		gen_type = 2;
+        -:  250:		}
+        -:  251:	else
+        -:  252:		return 0;
+        -:  253:
+    #####:  254:	while (isspace((unsigned char)*p)) p++;
+    #####:  255:	*value = p;
+    #####:  256:	return gen_type;
+        -:  257:}
+        -:  258:
+        -:  259:/* Create a generic extension: for now just handle DER type */
+    #####:  260:static X509_EXTENSION *v3_generic_extension(const char *ext, char *value,
+        -:  261:					    int crit, int gen_type,
+        -:  262:					    X509V3_CTX *ctx)
+        -:  263:	{
+        -:  264:	unsigned char *ext_der=NULL;
+        -:  265:	long ext_len;
+        -:  266:	ASN1_OBJECT *obj=NULL;
+        -:  267:	ASN1_OCTET_STRING *oct=NULL;
+        -:  268:	X509_EXTENSION *extension=NULL;
+    #####:  269:	if (!(obj = OBJ_txt2obj(ext, 0)))
+        -:  270:		{
+    #####:  271:		X509V3err(X509V3_F_V3_GENERIC_EXTENSION,X509V3_R_EXTENSION_NAME_ERROR);
+    #####:  272:		ERR_add_error_data(2, "name=", ext);
+    #####:  273:		goto err;
+        -:  274:		}
+        -:  275:
+    #####:  276:	if (gen_type == 1)
+    #####:  277:		ext_der = string_to_hex(value, &ext_len);
+    #####:  278:	else if (gen_type == 2)
+    #####:  279:		ext_der = generic_asn1(value, ctx, &ext_len);
+        -:  280:
+    #####:  281:	if (ext_der == NULL)
+        -:  282:		{
+    #####:  283:		X509V3err(X509V3_F_V3_GENERIC_EXTENSION,X509V3_R_EXTENSION_VALUE_ERROR);
+    #####:  284:		ERR_add_error_data(2, "value=", value);
+    #####:  285:		goto err;
+        -:  286:		}
+        -:  287:
+    #####:  288:	if (!(oct = M_ASN1_OCTET_STRING_new()))
+        -:  289:		{
+    #####:  290:		X509V3err(X509V3_F_V3_GENERIC_EXTENSION,ERR_R_MALLOC_FAILURE);
+    #####:  291:		goto err;
+        -:  292:		}
+        -:  293:
+    #####:  294:	oct->data = ext_der;
+    #####:  295:	oct->length = ext_len;
+        -:  296:	ext_der = NULL;
+        -:  297:
+    #####:  298:	extension = X509_EXTENSION_create_by_OBJ(NULL, obj, crit, oct);
+        -:  299:
+        -:  300:	err:
+    #####:  301:	ASN1_OBJECT_free(obj);
+    #####:  302:	M_ASN1_OCTET_STRING_free(oct);
+    #####:  303:	if(ext_der) OPENSSL_free(ext_der);
+    #####:  304:	return extension;
+        -:  305:
+        -:  306:	}
+        -:  307:
+    #####:  308:static unsigned char *generic_asn1(char *value, X509V3_CTX *ctx, long *ext_len)
+        -:  309:	{
+        -:  310:	ASN1_TYPE *typ;
+    #####:  311:	unsigned char *ext_der = NULL;
+    #####:  312:	typ = ASN1_generate_v3(value, ctx);
+    #####:  313:	if (typ == NULL)
+        -:  314:		return NULL;
+    #####:  315:	*ext_len = i2d_ASN1_TYPE(typ, &ext_der);
+    #####:  316:	ASN1_TYPE_free(typ);
+    #####:  317:	return ext_der;
+        -:  318:	}
+        -:  319:
+        -:  320:/* This is the main function: add a bunch of extensions based on a config file
+        -:  321: * section to an extension STACK.
+        -:  322: */
+        -:  323:
+        -:  324:
+    #####:  325:int X509V3_EXT_add_nconf_sk(CONF *conf, X509V3_CTX *ctx, char *section,
+        -:  326:			    STACK_OF(X509_EXTENSION) **sk)
+        -:  327:	{
+        -:  328:	X509_EXTENSION *ext;
+        -:  329:	STACK_OF(CONF_VALUE) *nval;
+        -:  330:	CONF_VALUE *val;	
+        -:  331:	int i;
+    #####:  332:	if (!(nval = NCONF_get_section(conf, section))) return 0;
+    #####:  333:	for (i = 0; i < sk_CONF_VALUE_num(nval); i++)
+        -:  334:		{
+    #####:  335:		val = sk_CONF_VALUE_value(nval, i);
+    #####:  336:		if (!(ext = X509V3_EXT_nconf(conf, ctx, val->name, val->value)))
+        -:  337:								return 0;
+    #####:  338:		if (sk) X509v3_add_ext(sk, ext, -1);
+    #####:  339:		X509_EXTENSION_free(ext);
+        -:  340:		}
+        -:  341:	return 1;
+        -:  342:	}
+        -:  343:
+        -:  344:/* Convenience functions to add extensions to a certificate, CRL and request */
+        -:  345:
+    #####:  346:int X509V3_EXT_add_nconf(CONF *conf, X509V3_CTX *ctx, char *section,
+        -:  347:			 X509 *cert)
+        -:  348:	{
+        -:  349:	STACK_OF(X509_EXTENSION) **sk = NULL;
+    #####:  350:	if (cert)
+    #####:  351:		sk = &cert->cert_info->extensions;
+    #####:  352:	return X509V3_EXT_add_nconf_sk(conf, ctx, section, sk);
+        -:  353:	}
+        -:  354:
+        -:  355:/* Same as above but for a CRL */
+        -:  356:
+    #####:  357:int X509V3_EXT_CRL_add_nconf(CONF *conf, X509V3_CTX *ctx, char *section,
+        -:  358:			     X509_CRL *crl)
+        -:  359:	{
+        -:  360:	STACK_OF(X509_EXTENSION) **sk = NULL;
+    #####:  361:	if (crl)
+    #####:  362:		sk = &crl->crl->extensions;
+    #####:  363:	return X509V3_EXT_add_nconf_sk(conf, ctx, section, sk);
+        -:  364:	}
+        -:  365:
+        -:  366:/* Add extensions to certificate request */
+        -:  367:
+    #####:  368:int X509V3_EXT_REQ_add_nconf(CONF *conf, X509V3_CTX *ctx, char *section,
+        -:  369:	     X509_REQ *req)
+        -:  370:	{
+    #####:  371:	STACK_OF(X509_EXTENSION) *extlist = NULL, **sk = NULL;
+        -:  372:	int i;
+    #####:  373:	if (req)
+        -:  374:		sk = &extlist;
+    #####:  375:	i = X509V3_EXT_add_nconf_sk(conf, ctx, section, sk);
+    #####:  376:	if (!i || !sk)
+        -:  377:		return i;
+    #####:  378:	i = X509_REQ_add_extensions(req, extlist);
+    #####:  379:	sk_X509_EXTENSION_pop_free(extlist, X509_EXTENSION_free);
+    #####:  380:	return i;
+        -:  381:	}
+        -:  382:
+        -:  383:/* Config database functions */
+        -:  384:
+    #####:  385:char * X509V3_get_string(X509V3_CTX *ctx, char *name, char *section)
+        -:  386:	{
+    #####:  387:	if(!ctx->db || !ctx->db_meth || !ctx->db_meth->get_string)
+        -:  388:		{
+    #####:  389:		X509V3err(X509V3_F_X509V3_GET_STRING,X509V3_R_OPERATION_NOT_DEFINED);
+    #####:  390:		return NULL;
+        -:  391:		}
+    #####:  392:	if (ctx->db_meth->get_string)
+    #####:  393:			return ctx->db_meth->get_string(ctx->db, name, section);
+        -:  394:	return NULL;
+        -:  395:	}
+        -:  396:
+    #####:  397:STACK_OF(CONF_VALUE) * X509V3_get_section(X509V3_CTX *ctx, char *section)
+        -:  398:	{
+    #####:  399:	if(!ctx->db || !ctx->db_meth || !ctx->db_meth->get_section)
+        -:  400:		{
+    #####:  401:		X509V3err(X509V3_F_X509V3_GET_SECTION,X509V3_R_OPERATION_NOT_DEFINED);
+    #####:  402:		return NULL;
+        -:  403:		}
+    #####:  404:	if (ctx->db_meth->get_section)
+    #####:  405:			return ctx->db_meth->get_section(ctx->db, section);
+        -:  406:	return NULL;
+        -:  407:	}
+        -:  408:
+    #####:  409:void X509V3_string_free(X509V3_CTX *ctx, char *str)
+        -:  410:	{
+    #####:  411:	if (!str) return;
+    #####:  412:	if (ctx->db_meth->free_string)
+    #####:  413:			ctx->db_meth->free_string(ctx->db, str);
+        -:  414:	}
+        -:  415:
+    #####:  416:void X509V3_section_free(X509V3_CTX *ctx, STACK_OF(CONF_VALUE) *section)
+        -:  417:	{
+    #####:  418:	if (!section) return;
+    #####:  419:	if (ctx->db_meth->free_section)
+    #####:  420:			ctx->db_meth->free_section(ctx->db, section);
+        -:  421:	}
+        -:  422:
+    #####:  423:static char *nconf_get_string(void *db, char *section, char *value)
+        -:  424:	{
+    #####:  425:	return NCONF_get_string(db, section, value);
+        -:  426:	}
+        -:  427:
+    #####:  428:static STACK_OF(CONF_VALUE) *nconf_get_section(void *db, char *section)
+        -:  429:	{
+    #####:  430:	return NCONF_get_section(db, section);
+        -:  431:	}
+        -:  432:
+        -:  433:static X509V3_CONF_METHOD nconf_method = {
+        -:  434:nconf_get_string,
+        -:  435:nconf_get_section,
+        -:  436:NULL,
+        -:  437:NULL
+        -:  438:};
+        -:  439:
+    #####:  440:void X509V3_set_nconf(X509V3_CTX *ctx, CONF *conf)
+        -:  441:	{
+    #####:  442:	ctx->db_meth = &nconf_method;
+    #####:  443:	ctx->db = conf;
+    #####:  444:	}
+        -:  445:
+    #####:  446:void X509V3_set_ctx(X509V3_CTX *ctx, X509 *issuer, X509 *subj, X509_REQ *req,
+        -:  447:		    X509_CRL *crl, int flags)
+        -:  448:	{
+    #####:  449:	ctx->issuer_cert = issuer;
+    #####:  450:	ctx->subject_cert = subj;
+    #####:  451:	ctx->crl = crl;
+    #####:  452:	ctx->subject_req = req;
+    #####:  453:	ctx->flags = flags;
+    #####:  454:	}
+        -:  455:
+        -:  456:/* Old conf compatibility functions */
+        -:  457:
+    #####:  458:X509_EXTENSION *X509V3_EXT_conf(LHASH_OF(CONF_VALUE) *conf, X509V3_CTX *ctx,
+        -:  459:				char *name, char *value)
+        -:  460:	{
+        -:  461:	CONF ctmp;
+    #####:  462:	CONF_set_nconf(&ctmp, conf);
+    #####:  463:	return X509V3_EXT_nconf(&ctmp, ctx, name, value);
+        -:  464:	}
+        -:  465:
+        -:  466:/* LHASH *conf:  Config file    */
+        -:  467:/* char *value:  Value    */
+    #####:  468:X509_EXTENSION *X509V3_EXT_conf_nid(LHASH_OF(CONF_VALUE) *conf, X509V3_CTX *ctx,
+        -:  469:				    int ext_nid, char *value)
+        -:  470:	{
+        -:  471:	CONF ctmp;
+    #####:  472:	CONF_set_nconf(&ctmp, conf);
+    #####:  473:	return X509V3_EXT_nconf_nid(&ctmp, ctx, ext_nid, value);
+        -:  474:	}
+        -:  475:
+    #####:  476:static char *conf_lhash_get_string(void *db, char *section, char *value)
+        -:  477:	{
+    #####:  478:	return CONF_get_string(db, section, value);
+        -:  479:	}
+        -:  480:
+    #####:  481:static STACK_OF(CONF_VALUE) *conf_lhash_get_section(void *db, char *section)
+        -:  482:	{
+    #####:  483:	return CONF_get_section(db, section);
+        -:  484:	}
+        -:  485:
+        -:  486:static X509V3_CONF_METHOD conf_lhash_method = {
+        -:  487:conf_lhash_get_string,
+        -:  488:conf_lhash_get_section,
+        -:  489:NULL,
+        -:  490:NULL
+        -:  491:};
+        -:  492:
+    #####:  493:void X509V3_set_conf_lhash(X509V3_CTX *ctx, LHASH_OF(CONF_VALUE) *lhash)
+        -:  494:	{
+    #####:  495:	ctx->db_meth = &conf_lhash_method;
+    #####:  496:	ctx->db = lhash;
+    #####:  497:	}
+        -:  498:
+    #####:  499:int X509V3_EXT_add_conf(LHASH_OF(CONF_VALUE) *conf, X509V3_CTX *ctx,
+        -:  500:			char *section, X509 *cert)
+        -:  501:	{
+        -:  502:	CONF ctmp;
+    #####:  503:	CONF_set_nconf(&ctmp, conf);
+    #####:  504:	return X509V3_EXT_add_nconf(&ctmp, ctx, section, cert);
+        -:  505:	}
+        -:  506:
+        -:  507:/* Same as above but for a CRL */
+        -:  508:
+    #####:  509:int X509V3_EXT_CRL_add_conf(LHASH_OF(CONF_VALUE) *conf, X509V3_CTX *ctx,
+        -:  510:			    char *section, X509_CRL *crl)
+        -:  511:	{
+        -:  512:	CONF ctmp;
+    #####:  513:	CONF_set_nconf(&ctmp, conf);
+    #####:  514:	return X509V3_EXT_CRL_add_nconf(&ctmp, ctx, section, crl);
+        -:  515:	}
+        -:  516:
+        -:  517:/* Add extensions to certificate request */
+        -:  518:
+    #####:  519:int X509V3_EXT_REQ_add_conf(LHASH_OF(CONF_VALUE) *conf, X509V3_CTX *ctx,
+        -:  520:			    char *section, X509_REQ *req)
+        -:  521:	{
+        -:  522:	CONF ctmp;
+    #####:  523:	CONF_set_nconf(&ctmp, conf);
+    #####:  524:	return X509V3_EXT_REQ_add_nconf(&ctmp, ctx, section, req);
+        -:  525:	}

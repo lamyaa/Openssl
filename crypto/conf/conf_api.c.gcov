@@ -1,0 +1,306 @@
+        -:    0:Source:conf_api.c
+        -:    0:Graph:conf_api.gcno
+        -:    0:Data:conf_api.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* conf_api.c */
+        -:    2:/* Copyright (C) 1995-1998 Eric Young (eay@cryptsoft.com)
+        -:    3: * All rights reserved.
+        -:    4: *
+        -:    5: * This package is an SSL implementation written
+        -:    6: * by Eric Young (eay@cryptsoft.com).
+        -:    7: * The implementation was written so as to conform with Netscapes SSL.
+        -:    8: * 
+        -:    9: * This library is free for commercial and non-commercial use as long as
+        -:   10: * the following conditions are aheared to.  The following conditions
+        -:   11: * apply to all code found in this distribution, be it the RC4, RSA,
+        -:   12: * lhash, DES, etc., code; not just the SSL code.  The SSL documentation
+        -:   13: * included with this distribution is covered by the same copyright terms
+        -:   14: * except that the holder is Tim Hudson (tjh@cryptsoft.com).
+        -:   15: * 
+        -:   16: * Copyright remains Eric Young's, and as such any Copyright notices in
+        -:   17: * the code are not to be removed.
+        -:   18: * If this package is used in a product, Eric Young should be given attribution
+        -:   19: * as the author of the parts of the library used.
+        -:   20: * This can be in the form of a textual message at program startup or
+        -:   21: * in documentation (online or textual) provided with the package.
+        -:   22: * 
+        -:   23: * Redistribution and use in source and binary forms, with or without
+        -:   24: * modification, are permitted provided that the following conditions
+        -:   25: * are met:
+        -:   26: * 1. Redistributions of source code must retain the copyright
+        -:   27: *    notice, this list of conditions and the following disclaimer.
+        -:   28: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   29: *    notice, this list of conditions and the following disclaimer in the
+        -:   30: *    documentation and/or other materials provided with the distribution.
+        -:   31: * 3. All advertising materials mentioning features or use of this software
+        -:   32: *    must display the following acknowledgement:
+        -:   33: *    "This product includes cryptographic software written by
+        -:   34: *     Eric Young (eay@cryptsoft.com)"
+        -:   35: *    The word 'cryptographic' can be left out if the rouines from the library
+        -:   36: *    being used are not cryptographic related :-).
+        -:   37: * 4. If you include any Windows specific code (or a derivative thereof) from 
+        -:   38: *    the apps directory (application code) you must include an acknowledgement:
+        -:   39: *    "This product includes software written by Tim Hudson (tjh@cryptsoft.com)"
+        -:   40: * 
+        -:   41: * THIS SOFTWARE IS PROVIDED BY ERIC YOUNG ``AS IS'' AND
+        -:   42: * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   43: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+        -:   44: * ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+        -:   45: * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+        -:   46: * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+        -:   47: * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   48: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+        -:   49: * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+        -:   50: * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+        -:   51: * SUCH DAMAGE.
+        -:   52: * 
+        -:   53: * The licence and distribution terms for any publically available version or
+        -:   54: * derivative of this code cannot be changed.  i.e. this code cannot simply be
+        -:   55: * copied and put under another distribution licence
+        -:   56: * [including the GNU Public Licence.]
+        -:   57: */
+        -:   58:
+        -:   59:/* Part of the code in here was originally in conf.c, which is now removed */
+        -:   60:
+        -:   61:#ifndef CONF_DEBUG
+        -:   62:# undef NDEBUG /* avoid conflicting definitions */
+        -:   63:# define NDEBUG
+        -:   64:#endif
+        -:   65:
+        -:   66:#include <assert.h>
+        -:   67:#include <stdlib.h>
+        -:   68:#include <string.h>
+        -:   69:#include <openssl/conf.h>
+        -:   70:#include <openssl/conf_api.h>
+        -:   71:#include "e_os.h"
+        -:   72:
+        -:   73:static void value_free_hash_doall_arg(CONF_VALUE *a,
+        -:   74:				      LHASH_OF(CONF_VALUE) *conf);
+        -:   75:static void value_free_stack_doall(CONF_VALUE *a);
+  2180000:   76:static IMPLEMENT_LHASH_DOALL_ARG_FN(value_free_hash, CONF_VALUE,
+        -:   77:				    LHASH_OF(CONF_VALUE))
+   160000:   78:static IMPLEMENT_LHASH_DOALL_FN(value_free_stack, CONF_VALUE)
+        -:   79:
+        -:   80:/* Up until OpenSSL 0.9.5a, this was get_section */
+   150000:   81:CONF_VALUE *_CONF_get_section(const CONF *conf, const char *section)
+        -:   82:	{
+        -:   83:	CONF_VALUE *v,vv;
+        -:   84:
+   150000:   85:	if ((conf == NULL) || (section == NULL)) return(NULL);
+   150000:   86:	vv.name=NULL;
+   150000:   87:	vv.section=(char *)section;
+   150000:   88:	v=lh_CONF_VALUE_retrieve(conf->data,&vv);
+   150000:   89:	return(v);
+        -:   90:	}
+        -:   91:
+        -:   92:/* Up until OpenSSL 0.9.5a, this was CONF_get_section */
+    #####:   93:STACK_OF(CONF_VALUE) *_CONF_get_section_values(const CONF *conf,
+        -:   94:					       const char *section)
+        -:   95:	{
+        -:   96:	CONF_VALUE *v;
+        -:   97:
+    #####:   98:	v=_CONF_get_section(conf,section);
+    #####:   99:	if (v != NULL)
+    #####:  100:		return((STACK_OF(CONF_VALUE) *)v->value);
+        -:  101:	else
+        -:  102:		return(NULL);
+        -:  103:	}
+        -:  104:
+   930000:  105:int _CONF_add_string(CONF *conf, CONF_VALUE *section, CONF_VALUE *value)
+        -:  106:	{
+        -:  107:	CONF_VALUE *v = NULL;
+        -:  108:	STACK_OF(CONF_VALUE) *ts;
+        -:  109:
+   930000:  110:	ts = (STACK_OF(CONF_VALUE) *)section->value;
+        -:  111:
+   930000:  112:	value->section=section->section;	
+   930000:  113:	if (!sk_CONF_VALUE_push(ts,value))
+        -:  114:		{
+        -:  115:		return 0;
+        -:  116:		}
+        -:  117:
+   930000:  118:	v = lh_CONF_VALUE_insert(conf->data, value);
+   930000:  119:	if (v != NULL)
+        -:  120:		{
+    #####:  121:		(void)sk_CONF_VALUE_delete_ptr(ts,v);
+    #####:  122:		OPENSSL_free(v->name);
+    #####:  123:		OPENSSL_free(v->value);
+    #####:  124:		OPENSSL_free(v);
+        -:  125:		}
+        -:  126:	return 1;
+        -:  127:	}
+        -:  128:
+   160000:  129:char *_CONF_get_string(const CONF *conf, const char *section, const char *name)
+        -:  130:	{
+        -:  131:	CONF_VALUE *v,vv;
+        -:  132:	char *p;
+        -:  133:
+   160000:  134:	if (name == NULL) return(NULL);
+   160000:  135:	if (conf != NULL)
+        -:  136:		{
+   160000:  137:		if (section != NULL)
+        -:  138:			{
+   150000:  139:			vv.name=(char *)name;
+   150000:  140:			vv.section=(char *)section;
+   150000:  141:			v=lh_CONF_VALUE_retrieve(conf->data,&vv);
+   150000:  142:			if (v != NULL) return(v->value);
+    10000:  143:			if (strcmp(section,"ENV") == 0)
+        -:  144:				{
+    10000:  145:				p=getenv(name);
+    10000:  146:				if (p != NULL) return(p);
+        -:  147:				}
+        -:  148:			}
+    10000:  149:		vv.section="default";
+    10000:  150:		vv.name=(char *)name;
+    10000:  151:		v=lh_CONF_VALUE_retrieve(conf->data,&vv);
+    10000:  152:		if (v != NULL)
+    #####:  153:			return(v->value);
+        -:  154:		else
+        -:  155:			return(NULL);
+        -:  156:		}
+        -:  157:	else
+    #####:  158:		return(getenv(name));
+        -:  159:	}
+        -:  160:
+        -:  161:#if 0 /* There's no way to provide error checking with this function, so
+        -:  162:	 force implementors of the higher levels to get a string and read
+        -:  163:	 the number themselves. */
+        -:  164:long _CONF_get_number(CONF *conf, char *section, char *name)
+        -:  165:	{
+        -:  166:	char *str;
+        -:  167:	long ret=0;
+        -:  168:
+        -:  169:	str=_CONF_get_string(conf,section,name);
+        -:  170:	if (str == NULL) return(0);
+        -:  171:	for (;;)
+        -:  172:		{
+        -:  173:		if (conf->meth->is_number(conf, *str))
+        -:  174:			ret=ret*10+conf->meth->to_int(conf, *str);
+        -:  175:		else
+        -:  176:			return(ret);
+        -:  177:		str++;
+        -:  178:		}
+        -:  179:	}
+        -:  180:#endif
+        -:  181:
+  2330000:  182:static unsigned long conf_value_hash(const CONF_VALUE *v)
+        -:  183:	{
+  2330000:  184:	return (lh_strhash(v->section)<<2)^lh_strhash(v->name);
+        -:  185:	}
+  2330000:  186:static IMPLEMENT_LHASH_HASH_FN(conf_value, CONF_VALUE)
+        -:  187:
+  1070000:  188:static int conf_value_cmp(const CONF_VALUE *a, const CONF_VALUE *b)
+        -:  189:	{
+        -:  190:	int i;
+        -:  191:
+  1070000:  192:	if (a->section != b->section)
+        -:  193:		{
+   140000:  194:		i=strcmp(a->section,b->section);
+   140000:  195:		if (i) return(i);
+        -:  196:		}
+        -:  197:
+  1070000:  198:	if ((a->name != NULL) && (b->name != NULL))
+        -:  199:		{
+  1070000:  200:		i=strcmp(a->name,b->name);
+        -:  201:		return(i);
+        -:  202:		}
+    #####:  203:	else if (a->name == b->name)
+        -:  204:		return(0);
+        -:  205:	else
+    #####:  206:		return((a->name == NULL)?-1:1);
+        -:  207:	}
+  1070000:  208:static IMPLEMENT_LHASH_COMP_FN(conf_value, CONF_VALUE)
+        -:  209:
+    10000:  210:int _CONF_new_data(CONF *conf)
+        -:  211:	{
+    10000:  212:	if (conf == NULL)
+        -:  213:		{
+        -:  214:		return 0;
+        -:  215:		}
+    10000:  216:	if (conf->data == NULL)
+    10000:  217:		if ((conf->data = lh_CONF_VALUE_new()) == NULL)
+        -:  218:			{
+        -:  219:			return 0;
+        -:  220:			}
+        -:  221:	return 1;
+        -:  222:	}
+        -:  223:
+    10000:  224:void _CONF_free_data(CONF *conf)
+        -:  225:	{
+    20000:  226:	if (conf == NULL || conf->data == NULL) return;
+        -:  227:
+    10000:  228:	lh_CONF_VALUE_down_load(conf->data)=0; /* evil thing to make
+        -:  229:				  * sure the 'OPENSSL_free()' works as
+        -:  230:				  * expected */
+    10000:  231:	lh_CONF_VALUE_doall_arg(conf->data,
+        -:  232:				LHASH_DOALL_ARG_FN(value_free_hash),
+        -:  233:				LHASH_OF(CONF_VALUE), conf->data);
+        -:  234:
+        -:  235:	/* We now have only 'section' entries in the hash table.
+        -:  236:	 * Due to problems with */
+        -:  237:
+    10000:  238:	lh_CONF_VALUE_doall(conf->data, LHASH_DOALL_FN(value_free_stack));
+    10000:  239:	lh_CONF_VALUE_free(conf->data);
+        -:  240:	}
+        -:  241:
+        -:  242:static void value_free_hash_doall_arg(CONF_VALUE *a, LHASH_OF(CONF_VALUE) *conf)
+        -:  243:	{
+  1090000:  244:	if (a->name != NULL)
+   930000:  245:		(void)lh_CONF_VALUE_delete(conf,a);
+        -:  246:	}
+        -:  247:
+   160000:  248:static void value_free_stack_doall(CONF_VALUE *a)
+        -:  249:	{
+        -:  250:	CONF_VALUE *vv;
+        -:  251:	STACK_OF(CONF_VALUE) *sk;
+        -:  252:	int i;
+        -:  253:
+   320000:  254:	if (a->name != NULL) return;
+        -:  255:
+   160000:  256:	sk=(STACK_OF(CONF_VALUE) *)a->value;
+  1090000:  257:	for (i=sk_CONF_VALUE_num(sk)-1; i>=0; i--)
+        -:  258:		{
+   930000:  259:		vv=sk_CONF_VALUE_value(sk,i);
+   930000:  260:		OPENSSL_free(vv->value);
+   930000:  261:		OPENSSL_free(vv->name);
+   930000:  262:		OPENSSL_free(vv);
+        -:  263:		}
+   160000:  264:	if (sk != NULL) sk_CONF_VALUE_free(sk);
+   160000:  265:	OPENSSL_free(a->section);
+   160000:  266:	OPENSSL_free(a);
+        -:  267:	}
+        -:  268:
+        -:  269:/* Up until OpenSSL 0.9.5a, this was new_section */
+   160000:  270:CONF_VALUE *_CONF_new_section(CONF *conf, const char *section)
+        -:  271:	{
+        -:  272:	STACK_OF(CONF_VALUE) *sk=NULL;
+        -:  273:	int ok=0,i;
+        -:  274:	CONF_VALUE *v=NULL,*vv;
+        -:  275:
+   160000:  276:	if ((sk=sk_CONF_VALUE_new_null()) == NULL)
+        -:  277:		goto err;
+   160000:  278:	if ((v=OPENSSL_malloc(sizeof(CONF_VALUE))) == NULL)
+        -:  279:		goto err;
+   160000:  280:	i=strlen(section)+1;
+   160000:  281:	if ((v->section=OPENSSL_malloc(i)) == NULL)
+        -:  282:		goto err;
+        -:  283:
+   160000:  284:	memcpy(v->section,section,i);
+   160000:  285:	v->name=NULL;
+   160000:  286:	v->value=(char *)sk;
+        -:  287:	
+   160000:  288:	vv=lh_CONF_VALUE_insert(conf->data,v);
+   160000:  289:	OPENSSL_assert(vv == NULL);
+        -:  290:	ok=1;
+        -:  291:err:
+   160000:  292:	if (!ok)
+        -:  293:		{
+    #####:  294:		if (sk != NULL) sk_CONF_VALUE_free(sk);
+    #####:  295:		if (v != NULL) OPENSSL_free(v);
+        -:  296:		v=NULL;
+        -:  297:		}
+   160000:  298:	return(v);
+        -:  299:	}
+        -:  300:
+        -:  301:IMPLEMENT_STACK_OF(CONF_VALUE)

@@ -1,0 +1,633 @@
+        -:    0:Source:gost_pmeth.c
+        -:    0:Graph:gost_pmeth.gcno
+        -:    0:Data:gost_pmeth.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/**********************************************************************
+        -:    2: *                          gost_pmeth.c                              *
+        -:    3: *             Copyright (c) 2005-2006 Cryptocom LTD                  *
+        -:    4: *         This file is distributed under the same license as OpenSSL *
+        -:    5: *                                                                    *
+        -:    6: *   Implementation of RFC 4357 (GOST R 34.10) Publick key method     *
+        -:    7: *       for OpenSSL                                                  *
+        -:    8: *          Requires OpenSSL 0.9.9 for compilation                    *
+        -:    9: **********************************************************************/
+        -:   10:#include <openssl/evp.h>
+        -:   11:#include <openssl/objects.h>
+        -:   12:#include <openssl/ec.h>
+        -:   13:#include <openssl/x509v3.h> /*For string_to_hex */
+        -:   14:#include <stdlib.h>
+        -:   15:#include <string.h>
+        -:   16:#include <ctype.h>
+        -:   17:#include "gost_params.h"
+        -:   18:#include "gost_lcl.h"
+        -:   19:#include "e_gost_err.h"
+        -:   20:/*-------init, cleanup, copy - uniform for all algs  ---------------*/
+        -:   21:/* Allocates new gost_pmeth_data structure and assigns it as data */
+    #####:   22:static int pkey_gost_init(EVP_PKEY_CTX *ctx)
+        -:   23:	{
+        -:   24:	struct gost_pmeth_data *data;
+    #####:   25:	EVP_PKEY *pkey = EVP_PKEY_CTX_get0_pkey(ctx);
+    #####:   26:	data = OPENSSL_malloc(sizeof(struct gost_pmeth_data));
+    #####:   27:	if (!data) return 0;
+        -:   28:	memset(data,0,sizeof(struct gost_pmeth_data));
+    #####:   29:	if (pkey && EVP_PKEY_get0(pkey)) 
+        -:   30:		{
+    #####:   31:		switch (EVP_PKEY_base_id(pkey)) {
+        -:   32:		case NID_id_GostR3410_94:
+    #####:   33:		  data->sign_param_nid = gost94_nid_by_params(EVP_PKEY_get0(pkey));
+    #####:   34:		  break;
+        -:   35:		case NID_id_GostR3410_2001:
+    #####:   36:		   data->sign_param_nid = EC_GROUP_get_curve_name(EC_KEY_get0_group(EVP_PKEY_get0((EVP_PKEY *)pkey)));
+    #####:   37:		break;
+        -:   38:		default:
+        -:   39:			return 0;
+        -:   40:		}	  
+        -:   41:		}
+    #####:   42:	EVP_PKEY_CTX_set_data(ctx,data);
+    #####:   43:	return 1;
+        -:   44:	}
+        -:   45:
+        -:   46:/* Copies contents of gost_pmeth_data structure */
+    #####:   47:static int pkey_gost_copy(EVP_PKEY_CTX *dst, EVP_PKEY_CTX *src)
+        -:   48:	{
+        -:   49:	struct gost_pmeth_data *dst_data,*src_data;
+    #####:   50:	if (!pkey_gost_init(dst))
+        -:   51:		{
+        -:   52:		return 0;
+        -:   53:		}
+    #####:   54:	src_data = EVP_PKEY_CTX_get_data(src);
+    #####:   55:	dst_data = EVP_PKEY_CTX_get_data(dst);
+    #####:   56:	*dst_data = *src_data;
+    #####:   57:	if (src_data -> shared_ukm) {
+    #####:   58:		dst_data->shared_ukm=NULL;
+        -:   59:	}	
+        -:   60:	return 1;
+        -:   61:	}
+        -:   62:
+        -:   63:/* Frees up gost_pmeth_data structure */
+    #####:   64:static void pkey_gost_cleanup (EVP_PKEY_CTX *ctx)
+        -:   65:	{
+    #####:   66:	struct gost_pmeth_data *data = EVP_PKEY_CTX_get_data(ctx);
+    #####:   67:	if (data->shared_ukm) OPENSSL_free(data->shared_ukm);
+    #####:   68:	OPENSSL_free(data);
+    #####:   69:	}	
+        -:   70:
+        -:   71:/* --------------------- control functions  ------------------------------*/
+    #####:   72:static int pkey_gost_ctrl(EVP_PKEY_CTX *ctx, int type, int p1, void *p2)
+        -:   73:	{
+    #####:   74:	struct gost_pmeth_data *pctx = (struct gost_pmeth_data*)EVP_PKEY_CTX_get_data(ctx);
+    #####:   75:	switch (type)
+        -:   76:		{
+        -:   77:		case EVP_PKEY_CTRL_MD:
+        -:   78:		{
+    #####:   79:		if (EVP_MD_type((const EVP_MD *)p2) != NID_id_GostR3411_94)
+        -:   80:			{
+    #####:   81:			GOSTerr(GOST_F_PKEY_GOST_CTRL, GOST_R_INVALID_DIGEST_TYPE);
+    #####:   82:			return 0;
+        -:   83:			}
+    #####:   84:		pctx->md = (EVP_MD *)p2;
+    #####:   85:		return 1;
+        -:   86:		}
+        -:   87:		break;
+        -:   88:
+        -:   89:		case EVP_PKEY_CTRL_PKCS7_ENCRYPT:
+        -:   90:		case EVP_PKEY_CTRL_PKCS7_DECRYPT:
+        -:   91:		case EVP_PKEY_CTRL_PKCS7_SIGN:
+        -:   92:		case EVP_PKEY_CTRL_DIGESTINIT:
+        -:   93:#ifndef OPENSSL_NO_CMS		
+        -:   94:		case EVP_PKEY_CTRL_CMS_ENCRYPT:
+        -:   95:		case EVP_PKEY_CTRL_CMS_DECRYPT:
+        -:   96:		case EVP_PKEY_CTRL_CMS_SIGN:
+        -:   97:#endif		
+        -:   98:			return 1;
+        -:   99:
+        -:  100:		case EVP_PKEY_CTRL_GOST_PARAMSET:
+    #####:  101:			pctx->sign_param_nid = (int)p1;
+    #####:  102:			return 1;
+        -:  103:		case EVP_PKEY_CTRL_SET_IV:
+    #####:  104:			pctx->shared_ukm=OPENSSL_malloc((int)p1);
+    #####:  105:			memcpy(pctx->shared_ukm,p2,(int) p1);
+    #####:  106:			return 1;
+        -:  107:		case EVP_PKEY_CTRL_PEER_KEY:
+    #####:  108:			if (p1 == 0 || p1 == 1) /* call from EVP_PKEY_derive_set_peer */
+        -:  109:				return 1;
+    #####:  110:			if (p1 == 2)		/* TLS: peer key used? */
+    #####:  111:				return pctx->peer_key_used;
+    #####:  112:			if (p1 == 3)		/* TLS: peer key used! */
+    #####:  113:				return (pctx->peer_key_used = 1);
+        -:  114:			return -2;
+        -:  115:		}
+    #####:  116:	return -2;
+        -:  117:	}
+        -:  118:
+        -:  119:
+    #####:  120:static int pkey_gost_ctrl94_str(EVP_PKEY_CTX *ctx,
+        -:  121:	const char *type, const char *value)
+        -:  122:	{
+        -:  123:	int param_nid=0;
+    #####:  124:	if(!strcmp(type, param_ctrl_string))
+        -:  125:		{
+    #####:  126:		if (!value)
+        -:  127:			{
+        -:  128:			return 0;
+        -:  129:			}
+    #####:  130:		if (strlen(value) == 1)
+        -:  131:			{
+    #####:  132:			switch(toupper((unsigned char)value[0]))
+        -:  133:				{
+        -:  134:				case 'A':
+        -:  135:					param_nid = NID_id_GostR3410_94_CryptoPro_A_ParamSet;
+        -:  136:					break;
+        -:  137:				case 'B':
+        -:  138:					param_nid = NID_id_GostR3410_94_CryptoPro_B_ParamSet;
+    #####:  139:					break;
+        -:  140:				case 'C':
+        -:  141:					param_nid = NID_id_GostR3410_94_CryptoPro_C_ParamSet;
+    #####:  142:					break;
+        -:  143:				case 'D':
+        -:  144:					param_nid = NID_id_GostR3410_94_CryptoPro_D_ParamSet;
+    #####:  145:					break;
+        -:  146:				default:
+        -:  147:					return 0;
+        -:  148:					break;
+        -:  149:				}
+        -:  150:			}
+    #####:  151:		else if ((strlen(value) == 2) && (toupper((unsigned char)value[0]) == 'X'))
+        -:  152:			{
+    #####:  153:			switch (toupper((unsigned char)value[1]))
+        -:  154:				{
+        -:  155:				case 'A':
+        -:  156:					param_nid = NID_id_GostR3410_94_CryptoPro_XchA_ParamSet;
+        -:  157:					break;
+        -:  158:				case 'B':
+        -:  159:					param_nid = NID_id_GostR3410_94_CryptoPro_XchB_ParamSet;
+    #####:  160:					break;
+        -:  161:				case 'C':
+        -:  162:					param_nid = NID_id_GostR3410_94_CryptoPro_XchC_ParamSet;
+    #####:  163:					break;
+        -:  164:				default:
+        -:  165:					return 0;
+        -:  166:					break;
+        -:  167:				}
+        -:  168:			}
+        -:  169:		else
+        -:  170:			{
+        -:  171:			R3410_params *p = R3410_paramset;
+    #####:  172:			param_nid = OBJ_txt2nid(value);
+    #####:  173:			if (param_nid == NID_undef)
+        -:  174:				{
+        -:  175:				return 0;
+        -:  176:				}
+    #####:  177:			for (;p->nid != NID_undef;p++)
+        -:  178:				{
+    #####:  179:				if (p->nid == param_nid) break;
+        -:  180:				}
+    #####:  181:			if (p->nid == NID_undef)
+        -:  182:				{
+    #####:  183:				GOSTerr(GOST_F_PKEY_GOST_CTRL94_STR,
+        -:  184:					GOST_R_INVALID_PARAMSET);
+    #####:  185:				return 0;
+        -:  186:				}
+        -:  187:			}
+        -:  188:
+    #####:  189:		return pkey_gost_ctrl(ctx, EVP_PKEY_CTRL_GOST_PARAMSET,
+        -:  190:			param_nid, NULL);
+        -:  191:		}
+        -:  192:	return -2;
+        -:  193:	}
+        -:  194:
+    #####:  195:static int pkey_gost_ctrl01_str(EVP_PKEY_CTX *ctx,
+        -:  196:	const char *type, const char *value)
+        -:  197:	{
+        -:  198:	int param_nid=0;
+    #####:  199:	if(!strcmp(type, param_ctrl_string))
+        -:  200:		{
+    #####:  201:		if (!value)
+        -:  202:			{
+        -:  203:			return 0;
+        -:  204:			}
+    #####:  205:		if (strlen(value) == 1)
+        -:  206:			{
+    #####:  207:			switch(toupper((unsigned char)value[0]))
+        -:  208:				{
+        -:  209:				case 'A':
+        -:  210:					param_nid = NID_id_GostR3410_2001_CryptoPro_A_ParamSet;
+        -:  211:					break;	
+        -:  212:				case 'B':
+        -:  213:					param_nid = NID_id_GostR3410_2001_CryptoPro_B_ParamSet;
+    #####:  214:					break;
+        -:  215:				case 'C':
+        -:  216:					param_nid = NID_id_GostR3410_2001_CryptoPro_C_ParamSet;
+    #####:  217:					break;
+        -:  218:				case '0':
+        -:  219:					param_nid = NID_id_GostR3410_2001_TestParamSet;
+    #####:  220:					break;
+        -:  221:				default:
+        -:  222:					return 0;
+        -:  223:					break;
+        -:  224:				}
+        -:  225:			}
+    #####:  226:		else if ((strlen(value) == 2) && (toupper((unsigned char)value[0]) == 'X'))
+        -:  227:			{
+    #####:  228:			switch (toupper((unsigned char)value[1]))
+        -:  229:				{
+        -:  230:				case 'A':
+        -:  231:					param_nid = NID_id_GostR3410_2001_CryptoPro_XchA_ParamSet;
+        -:  232:					break;
+        -:  233:				case 'B':
+        -:  234:					param_nid = NID_id_GostR3410_2001_CryptoPro_XchB_ParamSet;
+    #####:  235:					break;
+        -:  236:				default:
+        -:  237:					return 0;
+        -:  238:					break;
+        -:  239:				}
+        -:  240:			}
+        -:  241:		else
+        -:  242:			{
+        -:  243:			R3410_2001_params *p = R3410_2001_paramset;
+    #####:  244:			param_nid = OBJ_txt2nid(value);
+    #####:  245:			if (param_nid == NID_undef)
+        -:  246:				{
+        -:  247:				return 0;
+        -:  248:				}
+    #####:  249:			for (;p->nid != NID_undef;p++)
+        -:  250:				{
+    #####:  251:				if (p->nid == param_nid) break;
+        -:  252:				}
+    #####:  253:			if (p->nid == NID_undef)
+        -:  254:				{
+    #####:  255:				GOSTerr(GOST_F_PKEY_GOST_CTRL01_STR,
+        -:  256:					GOST_R_INVALID_PARAMSET);
+    #####:  257:				return 0;
+        -:  258:				}
+        -:  259:			}
+        -:  260:
+    #####:  261:		return pkey_gost_ctrl(ctx, EVP_PKEY_CTRL_GOST_PARAMSET,
+        -:  262:			param_nid, NULL);
+        -:  263:		}
+        -:  264:	return -2;
+        -:  265:	}
+        -:  266:
+        -:  267:/* --------------------- key generation  --------------------------------*/
+        -:  268:
+    #####:  269:static int pkey_gost_paramgen_init(EVP_PKEY_CTX *ctx) {
+    #####:  270:	return 1;
+        -:  271:}	
+    #####:  272:static int pkey_gost94_paramgen(EVP_PKEY_CTX *ctx, EVP_PKEY *pkey) 
+        -:  273:	{
+    #####:  274:	struct gost_pmeth_data *data = EVP_PKEY_CTX_get_data(ctx);
+        -:  275:	DSA *dsa=NULL;
+    #####:  276:	if (data->sign_param_nid == NID_undef)
+        -:  277:		{
+    #####:  278:			GOSTerr(GOST_F_PKEY_GOST94_PARAMGEN,
+        -:  279:				GOST_R_NO_PARAMETERS_SET);
+    #####:  280:			return 0;
+        -:  281:		}
+    #####:  282:	dsa = DSA_new();
+    #####:  283:	if (!fill_GOST94_params(dsa,data->sign_param_nid))
+        -:  284:		{
+    #####:  285:		DSA_free(dsa);
+    #####:  286:		return 0;
+        -:  287:		}
+    #####:  288:	EVP_PKEY_assign(pkey,NID_id_GostR3410_94,dsa);
+    #####:  289:	return 1;
+        -:  290:	}
+    #####:  291:static int pkey_gost01_paramgen(EVP_PKEY_CTX *ctx, EVP_PKEY *pkey)
+        -:  292:	{
+    #####:  293:	struct gost_pmeth_data *data = EVP_PKEY_CTX_get_data(ctx);
+        -:  294:	EC_KEY *ec=NULL;
+        -:  295:
+    #####:  296:	if (data->sign_param_nid == NID_undef)
+        -:  297:		{
+    #####:  298:			GOSTerr(GOST_F_PKEY_GOST01_PARAMGEN,
+        -:  299:				GOST_R_NO_PARAMETERS_SET);
+    #####:  300:			return 0;
+        -:  301:		}
+        -:  302:	if (!ec) 	
+    #####:  303:		ec = EC_KEY_new();
+    #####:  304:	if (!fill_GOST2001_params(ec,data->sign_param_nid))
+        -:  305:		{
+    #####:  306:		EC_KEY_free(ec);
+    #####:  307:		return 0;
+        -:  308:		}
+    #####:  309:	EVP_PKEY_assign(pkey,NID_id_GostR3410_2001,ec);
+    #####:  310:	return 1;
+        -:  311:	}
+        -:  312:
+        -:  313:/* Generates Gost_R3410_94_cp key */
+    #####:  314:static int pkey_gost94cp_keygen(EVP_PKEY_CTX *ctx, EVP_PKEY *pkey)
+        -:  315:	{
+        -:  316:	DSA *dsa;
+    #####:  317:	if (!pkey_gost94_paramgen(ctx,pkey)) return 0;
+    #####:  318:	dsa = EVP_PKEY_get0(pkey);
+    #####:  319:	gost_sign_keygen(dsa);
+    #####:  320:	return 1;
+        -:  321:	}
+        -:  322:
+        -:  323:/* Generates GOST_R3410 2001 key and assigns it using specified type */
+    #####:  324:static int pkey_gost01cp_keygen(EVP_PKEY_CTX *ctx, EVP_PKEY *pkey)
+        -:  325:	{
+        -:  326:	EC_KEY *ec;
+    #####:  327:    if (!pkey_gost01_paramgen(ctx,pkey)) return 0;
+    #####:  328:	ec = EVP_PKEY_get0(pkey);
+    #####:  329:	gost2001_keygen(ec);
+    #####:  330:	return 1;
+        -:  331:	}
+        -:  332:
+        -:  333:
+        -:  334:
+        -:  335:/* ----------- sign callbacks --------------------------------------*/
+        -:  336:
+    #####:  337:static int pkey_gost94_cp_sign(EVP_PKEY_CTX *ctx, unsigned char *sig, size_t *siglen,
+        -:  338:	const unsigned char *tbs, size_t tbs_len)
+        -:  339:	{
+        -:  340:	DSA_SIG *unpacked_sig=NULL;
+    #####:  341:	EVP_PKEY *pkey = EVP_PKEY_CTX_get0_pkey(ctx);
+    #####:  342:	if (!siglen) return 0;
+    #####:  343:	if (!sig)
+        -:  344:		{
+    #####:  345:		*siglen= 64; /* better to check size of pkey->pkey.dsa-q */
+    #####:  346:		return 1;
+        -:  347:		}	
+    #####:  348:	unpacked_sig = gost_do_sign(tbs,tbs_len,EVP_PKEY_get0(pkey));
+    #####:  349:	if (!unpacked_sig)
+        -:  350:		{
+        -:  351:		return 0;
+        -:  352:		}
+    #####:  353:	return pack_sign_cp(unpacked_sig,32,sig,siglen);
+        -:  354:	}
+        -:  355:
+    #####:  356:static int pkey_gost01_cp_sign(EVP_PKEY_CTX *ctx, unsigned char *sig, size_t *siglen,
+        -:  357:	const unsigned char *tbs, size_t tbs_len)
+        -:  358:	{
+        -:  359:	DSA_SIG *unpacked_sig=NULL;
+    #####:  360:	EVP_PKEY *pkey = EVP_PKEY_CTX_get0_pkey(ctx);
+    #####:  361:	if (!siglen) return 0;
+    #####:  362:	if (!sig)
+        -:  363:		{
+    #####:  364:		*siglen= 64; /* better to check size of curve order*/
+    #####:  365:		return 1;
+        -:  366:		}	
+    #####:  367:	unpacked_sig = gost2001_do_sign(tbs,tbs_len,EVP_PKEY_get0(pkey));
+    #####:  368:	if (!unpacked_sig)
+        -:  369:		{
+        -:  370:		return 0;
+        -:  371:		}
+    #####:  372:	return pack_sign_cp(unpacked_sig,32,sig,siglen);
+        -:  373:	}
+        -:  374:
+        -:  375:/* ------------------- verify callbacks ---------------------------*/
+        -:  376:
+    #####:  377:static int pkey_gost94_cp_verify(EVP_PKEY_CTX *ctx, const unsigned char *sig,
+        -:  378:	size_t siglen, const unsigned char *tbs, size_t tbs_len)
+        -:  379:	{
+        -:  380:	int ok = 0;
+    #####:  381:	EVP_PKEY* pub_key = EVP_PKEY_CTX_get0_pkey(ctx);
+    #####:  382:	DSA_SIG *s=unpack_cp_signature(sig,siglen);
+    #####:  383:	if (!s) return 0;
+    #####:  384:	if (pub_key) ok = gost_do_verify(tbs,tbs_len,s,EVP_PKEY_get0(pub_key));
+    #####:  385:	DSA_SIG_free(s);
+    #####:  386:	return ok;
+        -:  387:	}
+        -:  388:
+        -:  389:
+    #####:  390:static int pkey_gost01_cp_verify(EVP_PKEY_CTX *ctx, const unsigned char *sig,
+        -:  391:	size_t siglen, const unsigned char *tbs, size_t tbs_len)
+        -:  392:	{
+        -:  393:	int ok = 0;
+    #####:  394:	EVP_PKEY* pub_key = EVP_PKEY_CTX_get0_pkey(ctx);
+    #####:  395:	DSA_SIG *s=unpack_cp_signature(sig,siglen);
+    #####:  396:	if (!s) return 0;
+        -:  397:#ifdef DEBUG_SIGN	
+        -:  398:	fprintf(stderr,"R=");
+        -:  399:	BN_print_fp(stderr,s->r);
+        -:  400:	fprintf(stderr,"\nS=");
+        -:  401:	BN_print_fp(stderr,s->s);
+        -:  402:	fprintf(stderr,"\n");
+        -:  403:#endif	
+    #####:  404:	if (pub_key) ok = gost2001_do_verify(tbs,tbs_len,s,EVP_PKEY_get0(pub_key));
+    #####:  405:	DSA_SIG_free(s);
+    #####:  406:	return ok;
+        -:  407:	}
+        -:  408:
+        -:  409:/* ------------- encrypt init -------------------------------------*/
+        -:  410:/* Generates ephermeral key */
+    #####:  411:static int pkey_gost_encrypt_init(EVP_PKEY_CTX *ctx)
+        -:  412:	{
+    #####:  413:	return 1;
+        -:  414:	}
+        -:  415:/* --------------- Derive init ------------------------------------*/
+    #####:  416:static int pkey_gost_derive_init(EVP_PKEY_CTX *ctx)
+        -:  417:{
+    #####:  418:	return 1;
+        -:  419:}
+        -:  420:/* -------- PKEY_METHOD for GOST MAC algorithm --------------------*/
+    #####:  421:static int pkey_gost_mac_init(EVP_PKEY_CTX *ctx)
+        -:  422:	{
+        -:  423:	struct gost_mac_pmeth_data *data;
+    #####:  424:	data = OPENSSL_malloc(sizeof(struct gost_mac_pmeth_data));
+    #####:  425:	if (!data) return 0;
+        -:  426:	memset(data,0,sizeof(struct gost_mac_pmeth_data));
+    #####:  427:	EVP_PKEY_CTX_set_data(ctx,data);
+    #####:  428:	return 1;
+        -:  429:	}	
+    #####:  430:static void pkey_gost_mac_cleanup (EVP_PKEY_CTX *ctx)
+        -:  431:	{
+    #####:  432:	struct gost_mac_pmeth_data *data = EVP_PKEY_CTX_get_data(ctx);
+    #####:  433:	OPENSSL_free(data);
+    #####:  434:	}	
+    #####:  435:static int pkey_gost_mac_copy(EVP_PKEY_CTX *dst, EVP_PKEY_CTX *src)
+        -:  436:	{
+        -:  437:	struct gost_mac_pmeth_data *dst_data,*src_data;
+    #####:  438:	if (!pkey_gost_mac_init(dst))
+        -:  439:		{
+        -:  440:		return 0;
+        -:  441:		}
+    #####:  442:	src_data = EVP_PKEY_CTX_get_data(src);
+    #####:  443:	dst_data = EVP_PKEY_CTX_get_data(dst);
+    #####:  444:	*dst_data = *src_data;
+    #####:  445:	return 1;
+        -:  446:	}
+        -:  447:	
+    #####:  448:static int pkey_gost_mac_ctrl(EVP_PKEY_CTX *ctx, int type, int p1, void *p2)
+        -:  449:	{
+    #####:  450:	struct gost_mac_pmeth_data *data =
+        -:  451:(struct gost_mac_pmeth_data*)EVP_PKEY_CTX_get_data(ctx);
+        -:  452:
+    #####:  453:	switch (type)
+        -:  454:		{
+        -:  455:		case EVP_PKEY_CTRL_MD:
+        -:  456:		{
+    #####:  457:		if (EVP_MD_type((const EVP_MD *)p2) != NID_id_Gost28147_89_MAC)
+        -:  458:			{
+    #####:  459:			GOSTerr(GOST_F_PKEY_GOST_MAC_CTRL, GOST_R_INVALID_DIGEST_TYPE);
+    #####:  460:			return 0;
+        -:  461:			}
+    #####:  462:		data->md = (EVP_MD *)p2;
+    #####:  463:		return 1;
+        -:  464:		}
+        -:  465:		break;
+        -:  466:
+        -:  467:		case EVP_PKEY_CTRL_PKCS7_ENCRYPT:
+        -:  468:		case EVP_PKEY_CTRL_PKCS7_DECRYPT:
+        -:  469:		case EVP_PKEY_CTRL_PKCS7_SIGN:
+        -:  470:			return 1;
+        -:  471:		case EVP_PKEY_CTRL_SET_MAC_KEY:
+    #####:  472:			if (p1 != 32) 
+        -:  473:				{
+    #####:  474:				GOSTerr(GOST_F_PKEY_GOST_MAC_CTRL,
+        -:  475:					GOST_R_INVALID_MAC_KEY_LENGTH);
+    #####:  476:				return 0;
+        -:  477:				}
+        -:  478:
+    #####:  479:			memcpy(data->key,p2,32);
+    #####:  480:			data->key_set = 1;
+    #####:  481:			return 1;
+        -:  482:		case EVP_PKEY_CTRL_DIGESTINIT:
+        -:  483:			{ 
+        -:  484:			EVP_MD_CTX *mctx = p2;
+        -:  485:			void *key;
+    #####:  486:			if (!data->key_set)
+        -:  487:				{ 
+    #####:  488:				EVP_PKEY *pkey = EVP_PKEY_CTX_get0_pkey(ctx);
+    #####:  489:				if (!pkey) 
+        -:  490:					{
+    #####:  491:					GOSTerr(GOST_F_PKEY_GOST_MAC_CTRL,GOST_R_MAC_KEY_NOT_SET);
+    #####:  492:					return 0;
+        -:  493:					}
+    #####:  494:				key = EVP_PKEY_get0(pkey);
+    #####:  495:				if (!key) 
+        -:  496:					{
+    #####:  497:					GOSTerr(GOST_F_PKEY_GOST_MAC_CTRL,GOST_R_MAC_KEY_NOT_SET);
+    #####:  498:					return 0;
+        -:  499:					}
+        -:  500:				} else {
+    #####:  501:				key = &(data->key);
+        -:  502:				}
+    #####:  503:			return mctx->digest->md_ctrl(mctx,EVP_MD_CTRL_SET_KEY,32,key);
+        -:  504:			}  
+        -:  505:		}	
+    #####:  506:	return -2;
+        -:  507:	}
+    #####:  508:static int pkey_gost_mac_ctrl_str(EVP_PKEY_CTX *ctx,
+        -:  509:	const char *type, const char *value)
+        -:  510:	{
+    #####:  511:	if (!strcmp(type, key_ctrl_string)) 
+        -:  512:		{
+    #####:  513:		if (strlen(value)!=32) 
+        -:  514:			{
+    #####:  515:			GOSTerr(GOST_F_PKEY_GOST_MAC_CTRL_STR,
+        -:  516:				GOST_R_INVALID_MAC_KEY_LENGTH);
+    #####:  517:			return 0;	
+        -:  518:			}
+    #####:  519:		return pkey_gost_mac_ctrl(ctx, EVP_PKEY_CTRL_SET_MAC_KEY,
+        -:  520:			32,(char *)value);
+        -:  521:		}
+    #####:  522:	if (!strcmp(type, hexkey_ctrl_string)) 
+        -:  523:		{
+        -:  524:			long keylen; int ret;
+    #####:  525:			unsigned char *keybuf=string_to_hex(value,&keylen);
+    #####:  526:			if (keylen != 32) 
+        -:  527:				{
+    #####:  528:				GOSTerr(GOST_F_PKEY_GOST_MAC_CTRL_STR,
+        -:  529:					GOST_R_INVALID_MAC_KEY_LENGTH);
+    #####:  530:				OPENSSL_free(keybuf);
+    #####:  531:				return 0;	
+        -:  532:				}
+    #####:  533:			ret= pkey_gost_mac_ctrl(ctx, EVP_PKEY_CTRL_SET_MAC_KEY,
+        -:  534:				32,keybuf);
+    #####:  535:			OPENSSL_free(keybuf);
+    #####:  536:			return ret;
+        -:  537:	
+        -:  538:		}
+        -:  539:	return -2;
+        -:  540:	}	
+        -:  541:
+    #####:  542:static int pkey_gost_mac_keygen(EVP_PKEY_CTX *ctx, EVP_PKEY *pkey)
+        -:  543:	{
+    #####:  544:		struct gost_mac_pmeth_data *data = EVP_PKEY_CTX_get_data(ctx);
+        -:  545:		unsigned char *keydata;
+    #####:  546:		if (!data->key_set) 
+        -:  547:		{
+    #####:  548:			GOSTerr(GOST_F_PKEY_GOST_MAC_KEYGEN,GOST_R_MAC_KEY_NOT_SET);
+    #####:  549:			return 0;
+        -:  550:		}
+    #####:  551:		keydata = OPENSSL_malloc(32);
+    #####:  552:		memcpy(keydata,data->key,32);
+    #####:  553:		EVP_PKEY_assign(pkey, NID_id_Gost28147_89_MAC, keydata);
+    #####:  554:		return 1;
+        -:  555:	}
+        -:  556:
+    #####:  557:static int pkey_gost_mac_signctx_init(EVP_PKEY_CTX *ctx, EVP_MD_CTX *mctx)
+        -:  558:	{
+    #####:  559:	return 1;
+        -:  560:}
+        -:  561:
+    #####:  562:static int pkey_gost_mac_signctx(EVP_PKEY_CTX *ctx, unsigned char *sig, size_t *siglen, EVP_MD_CTX *mctx)
+        -:  563:	{
+    #####:  564:		unsigned int tmpsiglen=*siglen; /* for platforms where sizeof(int)!=sizeof(size_t)*/
+        -:  565:		int ret;
+    #####:  566:		if (!sig) 
+        -:  567:			{
+    #####:  568:			*siglen = 4;
+    #####:  569:			return 1;
+        -:  570:			}
+    #####:  571:		ret=EVP_DigestFinal_ex(mctx,sig,&tmpsiglen);
+    #####:  572:		*siglen = tmpsiglen;
+    #####:  573:		return ret;
+        -:  574:	}
+        -:  575:/* ----------------------------------------------------------------*/
+    30000:  576:int register_pmeth_gost(int id, EVP_PKEY_METHOD **pmeth,int flags)
+        -:  577:	{
+    30000:  578:	*pmeth = EVP_PKEY_meth_new(id, flags);
+    30000:  579:	if (!*pmeth) return 0;
+        -:  580:
+    30000:  581:	switch (id)
+        -:  582:		{
+        -:  583:		case NID_id_GostR3410_94:
+    10000:  584:			EVP_PKEY_meth_set_ctrl(*pmeth,pkey_gost_ctrl, pkey_gost_ctrl94_str);
+    10000:  585:			EVP_PKEY_meth_set_keygen(*pmeth,NULL,pkey_gost94cp_keygen);
+    10000:  586:			EVP_PKEY_meth_set_sign(*pmeth, NULL, pkey_gost94_cp_sign);
+    10000:  587:			EVP_PKEY_meth_set_verify(*pmeth, NULL, pkey_gost94_cp_verify);
+    10000:  588:			EVP_PKEY_meth_set_encrypt(*pmeth,
+        -:  589:				pkey_gost_encrypt_init, pkey_GOST94cp_encrypt);
+    10000:  590:			EVP_PKEY_meth_set_decrypt(*pmeth, NULL, pkey_GOST94cp_decrypt);
+    10000:  591:			EVP_PKEY_meth_set_derive(*pmeth,
+        -:  592:				pkey_gost_derive_init, pkey_gost94_derive);
+    10000:  593:			EVP_PKEY_meth_set_paramgen(*pmeth, pkey_gost_paramgen_init,pkey_gost94_paramgen);	
+    10000:  594:			break;
+        -:  595:		case NID_id_GostR3410_2001:
+    10000:  596:			EVP_PKEY_meth_set_ctrl(*pmeth,pkey_gost_ctrl, pkey_gost_ctrl01_str);
+    10000:  597:			EVP_PKEY_meth_set_sign(*pmeth, NULL, pkey_gost01_cp_sign);
+    10000:  598:			EVP_PKEY_meth_set_verify(*pmeth, NULL, pkey_gost01_cp_verify);
+        -:  599:
+    10000:  600:			EVP_PKEY_meth_set_keygen(*pmeth, NULL, pkey_gost01cp_keygen);
+        -:  601:
+    10000:  602:			EVP_PKEY_meth_set_encrypt(*pmeth,
+        -:  603:				pkey_gost_encrypt_init, pkey_GOST01cp_encrypt);
+    10000:  604:			EVP_PKEY_meth_set_decrypt(*pmeth, NULL, pkey_GOST01cp_decrypt);
+    10000:  605:			EVP_PKEY_meth_set_derive(*pmeth,
+        -:  606:				pkey_gost_derive_init, pkey_gost2001_derive);
+    10000:  607:			EVP_PKEY_meth_set_paramgen(*pmeth, pkey_gost_paramgen_init,pkey_gost01_paramgen);	
+    10000:  608:			break;
+        -:  609:		case NID_id_Gost28147_89_MAC:
+    10000:  610:			EVP_PKEY_meth_set_ctrl(*pmeth,pkey_gost_mac_ctrl, pkey_gost_mac_ctrl_str);
+    10000:  611:			EVP_PKEY_meth_set_signctx(*pmeth,pkey_gost_mac_signctx_init, pkey_gost_mac_signctx);
+    10000:  612:			EVP_PKEY_meth_set_keygen(*pmeth,NULL, pkey_gost_mac_keygen);
+    10000:  613:			EVP_PKEY_meth_set_init(*pmeth,pkey_gost_mac_init);
+    10000:  614:			EVP_PKEY_meth_set_cleanup(*pmeth,pkey_gost_mac_cleanup);
+    10000:  615:			EVP_PKEY_meth_set_copy(*pmeth,pkey_gost_mac_copy);
+    10000:  616:			return 1;
+        -:  617:		default: /*Unsupported method*/
+        -:  618:			return 0;
+        -:  619:		}
+    20000:  620:	EVP_PKEY_meth_set_init(*pmeth, pkey_gost_init);
+    20000:  621:	EVP_PKEY_meth_set_cleanup(*pmeth, pkey_gost_cleanup);
+        -:  622:
+    20000:  623:	EVP_PKEY_meth_set_copy(*pmeth, pkey_gost_copy);
+        -:  624:	/*FIXME derive etc...*/
+        -:  625:	
+    20000:  626:	return 1;
+        -:  627:	}
+        -:  628:

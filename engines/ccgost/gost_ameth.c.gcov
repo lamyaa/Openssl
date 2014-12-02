@@ -1,0 +1,950 @@
+        -:    0:Source:gost_ameth.c
+        -:    0:Graph:gost_ameth.gcno
+        -:    0:Data:gost_ameth.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/**********************************************************************
+        -:    2: *                          gost_ameth.c                              *
+        -:    3: *             Copyright (c) 2005-2006 Cryptocom LTD                  *
+        -:    4: *         This file is distributed under the same license as OpenSSL *
+        -:    5: *                                                                    *
+        -:    6: *       Implementation of RFC 4490/4491 ASN1 method                  *
+        -:    7: *       for OpenSSL                                                  *
+        -:    8: *          Requires OpenSSL 0.9.9 for compilation                    *
+        -:    9: **********************************************************************/
+        -:   10:#include <string.h>
+        -:   11:#include <openssl/crypto.h>
+        -:   12:#include <openssl/err.h>
+        -:   13:#include <openssl/engine.h>
+        -:   14:#include <openssl/evp.h>
+        -:   15:#include <openssl/asn1.h>
+        -:   16:#ifndef OPENSSL_NO_CMS
+        -:   17:#include <openssl/cms.h>
+        -:   18:#endif
+        -:   19:#include "gost_params.h"
+        -:   20:#include "gost_lcl.h"
+        -:   21:#include "e_gost_err.h"
+        -:   22:
+    #####:   23:int gost94_nid_by_params(DSA *p) 
+        -:   24:	{
+        -:   25:	R3410_params *gost_params;
+    #####:   26:	BIGNUM *q=BN_new();
+    #####:   27:	for (gost_params = R3410_paramset;gost_params->q!=NULL; gost_params++) 
+        -:   28:		{
+    #####:   29:		BN_dec2bn(&q,gost_params->q);
+    #####:   30:		if (!BN_cmp(q,p->q)) 
+        -:   31:			{
+    #####:   32:			BN_free(q);
+    #####:   33:			return gost_params->nid;
+        -:   34:			}
+        -:   35:		}	
+    #####:   36:	BN_free(q);
+    #####:   37:	return NID_undef;
+        -:   38:	}
+        -:   39:
+    #####:   40:static ASN1_STRING  *encode_gost_algor_params(const EVP_PKEY *key)
+        -:   41:	{
+    #####:   42:	ASN1_STRING *params = ASN1_STRING_new();
+    #####:   43:	GOST_KEY_PARAMS *gkp = GOST_KEY_PARAMS_new();
+        -:   44:	int pkey_param_nid = NID_undef;
+        -:   45:
+    #####:   46:	if (!params || !gkp) 
+        -:   47:		{
+    #####:   48:		GOSTerr(GOST_F_ENCODE_GOST_ALGOR_PARAMS,
+        -:   49:			ERR_R_MALLOC_FAILURE);
+    #####:   50:		ASN1_STRING_free(params);
+        -:   51:		params = NULL;
+    #####:   52:		goto err;
+        -:   53:		}	
+    #####:   54:	switch (EVP_PKEY_base_id(key)) 
+        -:   55:		{
+        -:   56:		case NID_id_GostR3410_2001:
+    #####:   57:			pkey_param_nid = EC_GROUP_get_curve_name(EC_KEY_get0_group(EVP_PKEY_get0((EVP_PKEY *)key)));
+    #####:   58:			break;
+        -:   59:		case NID_id_GostR3410_94:
+    #####:   60:			pkey_param_nid = (int) gost94_nid_by_params(EVP_PKEY_get0((EVP_PKEY *)key));
+    #####:   61:			if (pkey_param_nid == NID_undef) 
+        -:   62:				{
+    #####:   63:				GOSTerr(GOST_F_ENCODE_GOST_ALGOR_PARAMS,
+        -:   64:					GOST_R_INVALID_GOST94_PARMSET);
+    #####:   65:				ASN1_STRING_free(params);
+        -:   66:				params=NULL;
+    #####:   67:				goto err;
+        -:   68:				}	
+        -:   69:			break;
+        -:   70:		}	
+    #####:   71:	gkp->key_params = OBJ_nid2obj(pkey_param_nid);
+    #####:   72:	gkp->hash_params = OBJ_nid2obj(NID_id_GostR3411_94_CryptoProParamSet);
+        -:   73:	/*gkp->cipher_params = OBJ_nid2obj(cipher_param_nid);*/
+    #####:   74:	params->length = i2d_GOST_KEY_PARAMS(gkp, &params->data);
+    #####:   75:	if (params->length <=0 ) 
+        -:   76:		{
+    #####:   77:		GOSTerr(GOST_F_ENCODE_GOST_ALGOR_PARAMS,
+        -:   78:			ERR_R_MALLOC_FAILURE);
+    #####:   79:		ASN1_STRING_free(params);
+        -:   80:		params = NULL;
+    #####:   81:		goto err;
+        -:   82:		}
+    #####:   83:	params ->type = V_ASN1_SEQUENCE;
+        -:   84:	err:
+    #####:   85:	GOST_KEY_PARAMS_free(gkp);
+    #####:   86:	return params;
+        -:   87:	}
+        -:   88:
+        -:   89:/* Parses GOST algorithm parameters from X509_ALGOR and
+        -:   90: * modifies pkey setting NID and parameters
+        -:   91: */
+    #####:   92:static int decode_gost_algor_params(EVP_PKEY *pkey, X509_ALGOR *palg) 
+        -:   93:	{
+    #####:   94:	ASN1_OBJECT *palg_obj =NULL;
+    #####:   95:	int ptype = V_ASN1_UNDEF;
+        -:   96:	int pkey_nid = NID_undef,param_nid = NID_undef;
+        -:   97:        void *_pval;
+        -:   98:	ASN1_STRING *pval = NULL;
+        -:   99:	const unsigned char  *p;
+        -:  100:	GOST_KEY_PARAMS *gkp = NULL;
+        -:  101:
+    #####:  102:	X509_ALGOR_get0(&palg_obj, &ptype, &_pval, palg);
+    #####:  103:        pval = _pval;
+    #####:  104:	if (ptype != V_ASN1_SEQUENCE) 
+        -:  105:		{
+    #####:  106:		GOSTerr(GOST_F_DECODE_GOST_ALGOR_PARAMS,
+        -:  107:			GOST_R_BAD_KEY_PARAMETERS_FORMAT);
+    #####:  108:		return 0;
+        -:  109:		}	
+    #####:  110:	p=pval->data;
+    #####:  111:	pkey_nid = OBJ_obj2nid(palg_obj);
+        -:  112:
+    #####:  113:	gkp = d2i_GOST_KEY_PARAMS(NULL,&p,pval->length);
+    #####:  114:	if (!gkp) 
+        -:  115:		{
+    #####:  116:		GOSTerr(GOST_F_DECODE_GOST_ALGOR_PARAMS,
+        -:  117:			GOST_R_BAD_PKEY_PARAMETERS_FORMAT);
+    #####:  118:		return 0;
+        -:  119:		}	
+    #####:  120:	param_nid = OBJ_obj2nid(gkp->key_params);
+    #####:  121:	GOST_KEY_PARAMS_free(gkp);
+    #####:  122:	EVP_PKEY_set_type(pkey,pkey_nid);
+    #####:  123:	switch (pkey_nid) 
+        -:  124:		{
+        -:  125:		case NID_id_GostR3410_94:
+        -:  126:		{
+    #####:  127:		DSA *dsa= EVP_PKEY_get0(pkey);
+    #####:  128:		if (!dsa) 
+        -:  129:			{
+    #####:  130:			dsa = DSA_new();
+    #####:  131:			if (!EVP_PKEY_assign(pkey,pkey_nid,dsa)) return 0;
+        -:  132:			}
+    #####:  133:		if (!fill_GOST94_params(dsa,param_nid)) return 0;
+        -:  134:		break;
+        -:  135:		}
+        -:  136:		case NID_id_GostR3410_2001:
+        -:  137:		{
+    #####:  138:		EC_KEY *ec = EVP_PKEY_get0(pkey);
+    #####:  139:		if (!ec) 
+        -:  140:			{
+    #####:  141:			ec = EC_KEY_new();
+    #####:  142:			if (!EVP_PKEY_assign(pkey,pkey_nid,ec)) return 0;
+        -:  143:			}
+    #####:  144:		if (!fill_GOST2001_params(ec,param_nid)) return 0;
+        -:  145:		}
+        -:  146:		}
+        -:  147:
+        -:  148:	return 1;
+        -:  149:	}
+        -:  150:
+    #####:  151:static int gost_set_priv_key(EVP_PKEY *pkey,BIGNUM *priv) 
+        -:  152:	{
+    #####:  153:	switch (EVP_PKEY_base_id(pkey)) 
+        -:  154:		{
+        -:  155:		case NID_id_GostR3410_94:
+        -:  156:		{
+    #####:  157:		DSA *dsa = EVP_PKEY_get0(pkey);
+    #####:  158:		if (!dsa) 
+        -:  159:			{
+    #####:  160:			dsa = DSA_new();
+    #####:  161:			EVP_PKEY_assign(pkey,EVP_PKEY_base_id(pkey),dsa);
+        -:  162:			}	
+    #####:  163:		dsa->priv_key = BN_dup(priv);
+    #####:  164:		if (!EVP_PKEY_missing_parameters(pkey)) 
+    #####:  165:			gost94_compute_public(dsa);
+        -:  166:		break;
+        -:  167:		}	
+        -:  168:		case NID_id_GostR3410_2001:
+        -:  169:		{
+    #####:  170:		EC_KEY *ec = EVP_PKEY_get0(pkey);
+    #####:  171:		if (!ec) 
+        -:  172:			{
+    #####:  173:			ec = EC_KEY_new();
+    #####:  174:			EVP_PKEY_assign(pkey,EVP_PKEY_base_id(pkey),ec);
+        -:  175:			}	
+    #####:  176:		if (!EC_KEY_set_private_key(ec,priv)) return 0;
+    #####:  177:		if (!EVP_PKEY_missing_parameters(pkey)) 
+    #####:  178:			gost2001_compute_public(ec);
+        -:  179:		break;
+        -:  180:		}
+        -:  181:		}
+        -:  182:	return 1;		
+        -:  183:	}
+    #####:  184:BIGNUM* gost_get0_priv_key(const EVP_PKEY *pkey) 
+        -:  185:	{
+    #####:  186:	switch (EVP_PKEY_base_id(pkey)) 
+        -:  187:		{
+        -:  188:		case NID_id_GostR3410_94:
+        -:  189:		{
+    #####:  190:		DSA *dsa = EVP_PKEY_get0((EVP_PKEY *)pkey);
+    #####:  191:		if (!dsa) 
+        -:  192:			{
+        -:  193:			return NULL;
+        -:  194:			}	
+    #####:  195:		if (!dsa->priv_key) return NULL;
+    #####:  196:		return dsa->priv_key;
+        -:  197:		break;
+        -:  198:		}	
+        -:  199:		case NID_id_GostR3410_2001:
+        -:  200:		{
+    #####:  201:		EC_KEY *ec = EVP_PKEY_get0((EVP_PKEY *)pkey);
+        -:  202:		const BIGNUM* priv;
+    #####:  203:		if (!ec) 
+        -:  204:			{
+        -:  205:			return NULL;
+        -:  206:			}	
+    #####:  207:		if (!(priv=EC_KEY_get0_private_key(ec))) return NULL;
+    #####:  208:		return (BIGNUM *)priv;
+        -:  209:		break;
+        -:  210:		}
+        -:  211:		}
+        -:  212:	return NULL;		
+        -:  213:	}
+        -:  214:
+    #####:  215:static int pkey_ctrl_gost(EVP_PKEY *pkey, int op,
+        -:  216:	long arg1, void *arg2)
+        -:  217:	{
+    #####:  218:	switch (op)
+        -:  219:		{
+        -:  220:		case ASN1_PKEY_CTRL_PKCS7_SIGN:
+    #####:  221:			if (arg1 == 0) 
+        -:  222:				{
+    #####:  223:				X509_ALGOR *alg1 = NULL, *alg2 = NULL;
+    #####:  224:				int nid = EVP_PKEY_base_id(pkey);
+    #####:  225:				PKCS7_SIGNER_INFO_get0_algs((PKCS7_SIGNER_INFO*)arg2, 
+        -:  226:					NULL, &alg1, &alg2);
+    #####:  227:				X509_ALGOR_set0(alg1, OBJ_nid2obj(NID_id_GostR3411_94),
+        -:  228:					V_ASN1_NULL, 0);
+    #####:  229:				if (nid == NID_undef) 
+        -:  230:					{
+    #####:  231:					return (-1);
+        -:  232:					}
+    #####:  233:				X509_ALGOR_set0(alg2, OBJ_nid2obj(nid), V_ASN1_NULL, 0);
+        -:  234:				}
+        -:  235:			return 1;
+        -:  236:#ifndef OPENSSL_NO_CMS
+        -:  237:		case ASN1_PKEY_CTRL_CMS_SIGN:
+    #####:  238:			if (arg1 == 0) 
+        -:  239:				{
+    #####:  240:				X509_ALGOR *alg1 = NULL, *alg2 = NULL;
+    #####:  241:				int nid = EVP_PKEY_base_id(pkey);
+    #####:  242:				CMS_SignerInfo_get0_algs((CMS_SignerInfo *)arg2, 
+        -:  243:					NULL, NULL, &alg1, &alg2);
+    #####:  244:				X509_ALGOR_set0(alg1, OBJ_nid2obj(NID_id_GostR3411_94),
+        -:  245:					V_ASN1_NULL, 0);
+    #####:  246:				if (nid == NID_undef) 
+        -:  247:					{
+    #####:  248:					return (-1);
+        -:  249:					}
+    #####:  250:				X509_ALGOR_set0(alg2, OBJ_nid2obj(nid), V_ASN1_NULL, 0);
+        -:  251:				}
+        -:  252:			return 1;
+        -:  253:#endif
+        -:  254:		case ASN1_PKEY_CTRL_PKCS7_ENCRYPT:
+    #####:  255:			if (arg1 == 0)
+        -:  256:				{
+        -:  257:				X509_ALGOR *alg;
+    #####:  258:				ASN1_STRING * params = encode_gost_algor_params(pkey);
+    #####:  259:				if (!params) 
+        -:  260:					{
+    #####:  261:					return -1;
+        -:  262:					}
+    #####:  263:				PKCS7_RECIP_INFO_get0_alg((PKCS7_RECIP_INFO*)arg2, &alg);
+    #####:  264:				X509_ALGOR_set0(alg, OBJ_nid2obj(pkey->type),
+        -:  265:					V_ASN1_SEQUENCE, params);
+        -:  266:				}
+        -:  267:			return 1;
+        -:  268:#ifndef OPENSSL_NO_CMS
+        -:  269:		case ASN1_PKEY_CTRL_CMS_ENVELOPE:
+    #####:  270:			if (arg1 == 0)
+        -:  271:				{
+        -:  272:				X509_ALGOR *alg;
+    #####:  273:				ASN1_STRING * params = encode_gost_algor_params(pkey);
+    #####:  274:				if (!params) 
+        -:  275:					{
+    #####:  276:					return -1;
+        -:  277:					}
+    #####:  278:				CMS_RecipientInfo_ktri_get0_algs((CMS_RecipientInfo *)arg2, NULL, NULL, &alg);
+    #####:  279:				X509_ALGOR_set0(alg, OBJ_nid2obj(pkey->type),
+        -:  280:					V_ASN1_SEQUENCE, params);
+        -:  281:				}
+        -:  282:			return 1;
+        -:  283:#endif
+        -:  284:		case ASN1_PKEY_CTRL_DEFAULT_MD_NID:
+    #####:  285:			*(int *)arg2 = NID_id_GostR3411_94;
+    #####:  286:			return 2;
+        -:  287:		}
+        -:  288:	
+        -:  289:	return -2;
+        -:  290:	}
+        -:  291:/*----------------------- free functions * ------------------------------*/
+    #####:  292:static void pkey_free_gost94(EVP_PKEY *key) 
+        -:  293:	{
+    #####:  294:	if (key->pkey.dsa) 
+        -:  295:		{
+    #####:  296:		DSA_free(key->pkey.dsa);
+        -:  297:		}
+    #####:  298:	}
+        -:  299:
+    #####:  300:static void pkey_free_gost01(EVP_PKEY *key) 
+        -:  301:	{
+    #####:  302:	if (key->pkey.ec) 
+        -:  303:		{
+    #####:  304:		EC_KEY_free(key->pkey.ec);
+        -:  305:		}
+    #####:  306:	}	
+        -:  307:
+        -:  308:/* ------------------ private key functions  -----------------------------*/
+    #####:  309:static int priv_decode_gost( EVP_PKEY *pk, PKCS8_PRIV_KEY_INFO *p8inf) 
+        -:  310:	{
+    #####:  311:	const unsigned char *pkey_buf = NULL,*p=NULL;
+    #####:  312:	int priv_len = 0;
+        -:  313:	BIGNUM *pk_num=NULL;
+        -:  314:	int ret =0;
+    #####:  315:	X509_ALGOR *palg =NULL;
+    #####:  316:	ASN1_OBJECT *palg_obj = NULL;
+        -:  317:	ASN1_INTEGER *priv_key=NULL;
+        -:  318:
+    #####:  319:	if (!PKCS8_pkey_get0(&palg_obj,&pkey_buf,&priv_len,&palg,p8inf)) 
+        -:  320:		return 0;
+    #####:  321:	p = pkey_buf;
+    #####:  322:	if (!decode_gost_algor_params(pk,palg)) 
+        -:  323:		{
+        -:  324:		return 0;
+        -:  325:		}
+    #####:  326:	if (V_ASN1_OCTET_STRING == *p) 
+        -:  327:		{
+        -:  328:		/* New format - Little endian octet string */
+        -:  329:		unsigned char rev_buf[32];
+        -:  330:		int i;
+    #####:  331:		ASN1_OCTET_STRING *s = d2i_ASN1_OCTET_STRING(NULL,&p,priv_len);
+    #####:  332:		if (!s||s->length !=32) 
+        -:  333:			{
+    #####:  334:			GOSTerr(GOST_F_PRIV_DECODE_GOST,
+        -:  335:				EVP_R_DECODE_ERROR);
+    #####:  336:			return 0;	
+        -:  337:			}
+    #####:  338:		for (i=0;i<32;i++)
+        -:  339:			{
+    #####:  340:			rev_buf[31-i]=s->data[i];
+        -:  341:			}
+    #####:  342:		ASN1_STRING_free(s);
+    #####:  343:		pk_num = getbnfrombuf(rev_buf,32);
+        -:  344:		} 
+        -:  345:	else
+        -:  346:		{
+    #####:  347:		priv_key=d2i_ASN1_INTEGER(NULL,&p,priv_len);
+    #####:  348:		if (!priv_key) return 0;
+    #####:  349:		ret= ((pk_num =  ASN1_INTEGER_to_BN(priv_key, NULL))!=NULL) ;
+    #####:  350:		ASN1_INTEGER_free(priv_key);
+    #####:  351:		if (!ret)
+        -:  352:			{
+    #####:  353:			GOSTerr(GOST_F_PRIV_DECODE_GOST,
+        -:  354:				EVP_R_DECODE_ERROR);
+    #####:  355:			return 0;	
+        -:  356:			}
+        -:  357:		}
+        -:  358:
+    #####:  359:	ret= gost_set_priv_key(pk,pk_num);
+    #####:  360:	BN_free(pk_num);
+    #####:  361:	return ret;
+        -:  362:	}
+        -:  363:
+        -:  364:/* ----------------------------------------------------------------------*/
+    #####:  365:static int priv_encode_gost(PKCS8_PRIV_KEY_INFO *p8, const EVP_PKEY *pk)
+        -:  366:	{
+    #####:  367:	ASN1_OBJECT *algobj = OBJ_nid2obj(EVP_PKEY_base_id(pk));
+    #####:  368:	ASN1_STRING *params = encode_gost_algor_params(pk);
+    #####:  369:	unsigned char *priv_buf = NULL;
+        -:  370:	int priv_len;
+        -:  371:
+        -:  372:	ASN1_INTEGER *asn1key=NULL;
+    #####:  373:	if (!params) 
+        -:  374:		{
+        -:  375:		return 0;
+        -:  376:		}
+    #####:  377:	asn1key = BN_to_ASN1_INTEGER(gost_get0_priv_key(pk),NULL);
+    #####:  378:	priv_len = i2d_ASN1_INTEGER(asn1key,&priv_buf);
+    #####:  379:	ASN1_INTEGER_free(asn1key);
+    #####:  380:	return PKCS8_pkey_set0(p8,algobj,0,V_ASN1_SEQUENCE,params,
+        -:  381:		priv_buf,priv_len);
+        -:  382:	}
+        -:  383:/* --------- printing keys --------------------------------*/
+    #####:  384:static int print_gost_94(BIO *out, const EVP_PKEY *pkey, int indent,
+        -:  385:	ASN1_PCTX *pctx, int type) 
+        -:  386:	{
+        -:  387:	int param_nid = NID_undef;
+        -:  388:
+    #####:  389:	if (type == 2) 
+        -:  390:		{
+        -:  391:		BIGNUM *key;
+        -:  392:
+    #####:  393:		if (!BIO_indent(out,indent,128)) return 0;
+    #####:  394:		BIO_printf(out,"Private key: ");
+    #####:  395:		key = gost_get0_priv_key(pkey);
+    #####:  396:		if (!key) 
+    #####:  397:			BIO_printf(out,"<undefined>");
+        -:  398:		else 
+    #####:  399:			BN_print(out,key);
+    #####:  400:		BIO_printf(out,"\n");
+        -:  401:		}
+    #####:  402:	if (type >= 1)
+        -:  403:		{
+        -:  404:		BIGNUM *pubkey;
+        -:  405:		
+    #####:  406:		pubkey = ((DSA *)EVP_PKEY_get0((EVP_PKEY *)pkey))->pub_key;
+    #####:  407:		BIO_indent(out,indent,128);
+    #####:  408:		BIO_printf(out,"Public key: ");
+    #####:  409:		BN_print(out,pubkey);
+    #####:  410:		BIO_printf(out,"\n");
+        -:  411:	}	
+        -:  412:
+    #####:  413:	param_nid = gost94_nid_by_params(EVP_PKEY_get0((EVP_PKEY *)pkey));
+    #####:  414:	BIO_indent(out,indent,128);
+    #####:  415:	BIO_printf(out, "Parameter set: %s\n",OBJ_nid2ln(param_nid));
+        -:  416:	return 1;
+        -:  417:}
+        -:  418:
+    #####:  419:static int param_print_gost94(BIO *out, const EVP_PKEY *pkey, int indent,
+        -:  420:	ASN1_PCTX *pctx) 
+        -:  421:	{
+    #####:  422:	return print_gost_94(out, pkey, indent, pctx,0);
+        -:  423:	}
+        -:  424:
+    #####:  425:static int pub_print_gost94(BIO *out, const EVP_PKEY *pkey, int indent,
+        -:  426:	ASN1_PCTX *pctx)
+        -:  427:	{
+    #####:  428:	return print_gost_94(out,pkey, indent, pctx,1);
+        -:  429:	}
+    #####:  430:static int priv_print_gost94(BIO *out,const EVP_PKEY *pkey, int indent,
+        -:  431:	ASN1_PCTX *pctx) 
+        -:  432:	{
+    #####:  433:	return print_gost_94(out,pkey,indent,pctx,2);
+        -:  434:	}
+        -:  435:
+    #####:  436:static int print_gost_01(BIO *out, const EVP_PKEY *pkey, int indent,
+        -:  437:	ASN1_PCTX *pctx, int type)
+        -:  438:	{
+        -:  439:	int param_nid = NID_undef;
+    #####:  440:	if (type == 2) 
+        -:  441:		{
+        -:  442:		BIGNUM *key;
+        -:  443:
+    #####:  444:		if (!BIO_indent(out,indent,128)) return 0;
+    #####:  445:		BIO_printf(out,"Private key: ");
+    #####:  446:		key = gost_get0_priv_key(pkey);
+    #####:  447:		if (!key) 
+    #####:  448:			BIO_printf(out,"<undefined)");
+        -:  449:		else 
+    #####:  450:			BN_print(out,key);
+    #####:  451:		BIO_printf(out,"\n");
+        -:  452:		}
+    #####:  453:	if (type >= 1) 
+        -:  454:		{
+    #####:  455:		BN_CTX *ctx = BN_CTX_new();
+        -:  456:		BIGNUM *X,*Y;
+        -:  457:		const EC_POINT *pubkey;
+        -:  458:		const EC_GROUP *group;
+        -:  459:
+    #####:  460:		if (!ctx) 
+        -:  461:			{
+    #####:  462:			GOSTerr(GOST_F_PRINT_GOST_01,ERR_R_MALLOC_FAILURE);
+        -:  463:			return 0;
+        -:  464:			}
+    #####:  465:		BN_CTX_start(ctx);
+    #####:  466:		X = BN_CTX_get(ctx);
+    #####:  467:		Y = BN_CTX_get(ctx);
+    #####:  468:		pubkey = EC_KEY_get0_public_key((EC_KEY *)EVP_PKEY_get0((EVP_PKEY *)pkey));
+    #####:  469:		group = EC_KEY_get0_group((EC_KEY *)EVP_PKEY_get0((EVP_PKEY *)pkey));
+    #####:  470:		if (!EC_POINT_get_affine_coordinates_GFp(group,pubkey,X,Y,ctx)) 
+        -:  471:			{
+    #####:  472:			GOSTerr(GOST_F_PRINT_GOST_01,ERR_R_EC_LIB);
+    #####:  473:			BN_CTX_free(ctx);
+        -:  474:			return 0;
+        -:  475:			}
+    #####:  476:		if (!BIO_indent(out,indent,128)) return 0;
+    #####:  477:		BIO_printf(out,"Public key:\n");
+    #####:  478:		if (!BIO_indent(out,indent+3,128)) return 0;
+    #####:  479:		BIO_printf(out,"X:");
+    #####:  480:		BN_print(out,X);
+    #####:  481:		BIO_printf(out,"\n");
+    #####:  482:		BIO_indent(out,indent+3,128);
+    #####:  483:		BIO_printf(out,"Y:");
+    #####:  484:		BN_print(out,Y);
+    #####:  485:		BIO_printf(out,"\n");
+    #####:  486:		BN_CTX_end(ctx);
+    #####:  487:		BN_CTX_free(ctx);
+        -:  488:		}
+        -:  489:
+    #####:  490:	param_nid = EC_GROUP_get_curve_name(EC_KEY_get0_group(EVP_PKEY_get0((EVP_PKEY *)pkey)));
+    #####:  491:	if (!BIO_indent(out,indent,128)) return 0;
+    #####:  492:	BIO_printf(out,"Parameter set: %s\n",OBJ_nid2ln(param_nid));
+        -:  493:	return 1;
+        -:  494:}
+    #####:  495:static int param_print_gost01(BIO *out, const EVP_PKEY *pkey, int indent,
+        -:  496:	ASN1_PCTX *pctx) 
+        -:  497:	{	
+    #####:  498:	return print_gost_01(out,pkey,indent,pctx,0);
+        -:  499:	}
+    #####:  500:static int pub_print_gost01(BIO *out, const EVP_PKEY *pkey, int indent,
+        -:  501:	ASN1_PCTX *pctx)
+        -:  502:	{
+    #####:  503:	return print_gost_01(out,pkey, indent, pctx,1);
+        -:  504:	}
+    #####:  505:static int priv_print_gost01(BIO *out,const EVP_PKEY *pkey, int indent,
+        -:  506:	ASN1_PCTX *pctx) 
+        -:  507:	{
+    #####:  508:	return print_gost_01(out,pkey,indent,pctx,2);
+        -:  509:	}
+        -:  510:/* ---------------------------------------------------------------------*/
+    #####:  511:static int param_missing_gost94(const EVP_PKEY *pk) 
+        -:  512:	{
+    #####:  513:	const DSA *dsa = EVP_PKEY_get0((EVP_PKEY *)pk);
+    #####:  514:	if (!dsa) return 1;
+    #####:  515:	if (!dsa->q) return 1;
+    #####:  516:	return 0;
+        -:  517:	}
+        -:  518:
+    #####:  519:static int param_missing_gost01(const EVP_PKEY *pk) 
+        -:  520:	{
+    #####:  521:	const EC_KEY *ec = EVP_PKEY_get0((EVP_PKEY *)pk);
+    #####:  522:	if (!ec) return 1;
+    #####:  523:	if (!EC_KEY_get0_group(ec)) return 1;
+    #####:  524:	return 0;
+        -:  525:	}
+        -:  526:
+    #####:  527:static int param_copy_gost94(EVP_PKEY *to, const EVP_PKEY *from) 
+        -:  528:	{
+    #####:  529:	const DSA *dfrom = EVP_PKEY_get0((EVP_PKEY *)from);
+    #####:  530:	DSA *dto = EVP_PKEY_get0(to);
+    #####:  531:	if (EVP_PKEY_base_id(from) != EVP_PKEY_base_id(to)) 
+        -:  532:		{
+    #####:  533:		GOSTerr(GOST_F_PARAM_COPY_GOST94,
+        -:  534:			GOST_R_INCOMPATIBLE_ALGORITHMS);
+    #####:  535:		return 0;
+        -:  536:		}	
+    #####:  537:	if (!dfrom) 
+        -:  538:		{
+    #####:  539:		GOSTerr(GOST_F_PARAM_COPY_GOST94,
+        -:  540:			GOST_R_KEY_PARAMETERS_MISSING);
+    #####:  541:		return 0;
+        -:  542:		}	
+    #####:  543:	if (!dto) 
+        -:  544:		{
+    #####:  545:		dto = DSA_new();
+    #####:  546:		EVP_PKEY_assign(to,EVP_PKEY_base_id(from),dto);
+        -:  547:		}	
+        -:  548:#define COPYBIGNUM(a,b,x) if (a->x) BN_free(a->x); a->x=BN_dup(b->x);	
+    #####:  549:	COPYBIGNUM(dto,dfrom,p)
+    #####:  550:		COPYBIGNUM(dto,dfrom,q)
+    #####:  551:		COPYBIGNUM(dto,dfrom,g)
+        -:  552:
+    #####:  553:		if (dto->priv_key) 
+    #####:  554:			gost94_compute_public(dto);
+        -:  555:	return 1;	
+        -:  556:	}
+    #####:  557:static int param_copy_gost01(EVP_PKEY *to, const EVP_PKEY *from) 
+        -:  558:	{
+    #####:  559:	EC_KEY *eto = EVP_PKEY_get0(to);
+    #####:  560:	const EC_KEY *efrom = EVP_PKEY_get0((EVP_PKEY *)from);
+    #####:  561:	if (EVP_PKEY_base_id(from) != EVP_PKEY_base_id(to)) 
+        -:  562:		{
+    #####:  563:		GOSTerr(GOST_F_PARAM_COPY_GOST01,
+        -:  564:			GOST_R_INCOMPATIBLE_ALGORITHMS);
+    #####:  565:		return 0;
+        -:  566:		}	
+    #####:  567:	if (!efrom) 
+        -:  568:		{
+    #####:  569:		GOSTerr(GOST_F_PARAM_COPY_GOST01,
+        -:  570:			GOST_R_KEY_PARAMETERS_MISSING);
+    #####:  571:		return 0;
+        -:  572:		}	
+    #####:  573:	if (!eto) 
+        -:  574:		{
+    #####:  575:		eto = EC_KEY_new();
+    #####:  576:		EVP_PKEY_assign(to,EVP_PKEY_base_id(from),eto);
+        -:  577:		}	
+    #####:  578:	EC_KEY_set_group(eto,EC_KEY_get0_group(efrom));
+    #####:  579:	if (EC_KEY_get0_private_key(eto)) 
+        -:  580:		{
+    #####:  581:		gost2001_compute_public(eto);
+        -:  582:		}
+        -:  583:	return 1;
+        -:  584:	}
+        -:  585:
+    #####:  586:static int param_cmp_gost94(const EVP_PKEY *a, const EVP_PKEY *b) 
+        -:  587:	{
+    #####:  588:	const DSA *da = EVP_PKEY_get0((EVP_PKEY *)a);
+    #####:  589:	const DSA *db = EVP_PKEY_get0((EVP_PKEY *)b);
+    #####:  590:	if (!BN_cmp(da->q,db->q)) return 1;
+    #####:  591:	return 0;
+        -:  592:	}
+        -:  593:
+    #####:  594:static int param_cmp_gost01(const EVP_PKEY *a, const EVP_PKEY *b) 
+        -:  595:	{
+    #####:  596:	if (EC_GROUP_get_curve_name(EC_KEY_get0_group(EVP_PKEY_get0((EVP_PKEY *)a)))==
+    #####:  597:		EC_GROUP_get_curve_name(EC_KEY_get0_group(EVP_PKEY_get0((EVP_PKEY *)b)))) 
+        -:  598:		{
+        -:  599:		return 1;
+        -:  600:		}
+    #####:  601:	return 0;
+        -:  602:
+        -:  603:	}
+        -:  604:
+        -:  605:/* ---------- Public key functions * --------------------------------------*/
+    #####:  606:static int pub_decode_gost94(EVP_PKEY *pk, X509_PUBKEY *pub)
+        -:  607:	{
+    #####:  608:	X509_ALGOR *palg = NULL;
+    #####:  609:	const unsigned char *pubkey_buf = NULL;
+        -:  610:	unsigned char *databuf;
+    #####:  611:	ASN1_OBJECT *palgobj = NULL;
+        -:  612:	int pub_len,i,j;
+        -:  613:	DSA *dsa;
+        -:  614:	ASN1_OCTET_STRING *octet= NULL;
+        -:  615:
+    #####:  616:	if (!X509_PUBKEY_get0_param(&palgobj,&pubkey_buf,&pub_len,
+        -:  617:			&palg, pub)) return 0;
+    #####:  618:	EVP_PKEY_assign(pk,OBJ_obj2nid(palgobj),NULL);	
+    #####:  619:	if (!decode_gost_algor_params(pk,palg)) return 0;
+    #####:  620:	octet = d2i_ASN1_OCTET_STRING(NULL,&pubkey_buf,pub_len);
+    #####:  621:	if (!octet) 
+        -:  622:		{
+    #####:  623:		GOSTerr(GOST_F_PUB_DECODE_GOST94,ERR_R_MALLOC_FAILURE);
+    #####:  624:		return 0;
+        -:  625:		}	
+    #####:  626:	databuf = OPENSSL_malloc(octet->length);
+    #####:  627:	for (i=0,j=octet->length-1;i<octet->length;i++,j--)
+        -:  628:		{
+    #####:  629:		databuf[j]=octet->data[i];
+        -:  630:		}	
+    #####:  631:	dsa = EVP_PKEY_get0(pk);
+    #####:  632:	dsa->pub_key=BN_bin2bn(databuf,octet->length,NULL);
+    #####:  633:	ASN1_OCTET_STRING_free(octet);
+    #####:  634:	OPENSSL_free(databuf);
+    #####:  635:	return 1;
+        -:  636:
+        -:  637:	}
+        -:  638:
+    #####:  639:static int pub_encode_gost94(X509_PUBKEY *pub,const EVP_PKEY *pk)
+        -:  640:	{
+        -:  641:	ASN1_OBJECT *algobj = NULL;
+        -:  642:	ASN1_OCTET_STRING *octet = NULL;
+        -:  643:	void *pval = NULL;
+    #####:  644:	unsigned char *buf=NULL,*databuf,*sptr;
+        -:  645:	int i,j,data_len,ret=0;
+        -:  646:
+        -:  647:	int ptype = V_ASN1_UNDEF;
+    #####:  648:	DSA *dsa = EVP_PKEY_get0((EVP_PKEY *)pk);
+    #####:  649:	algobj = OBJ_nid2obj(EVP_PKEY_base_id(pk));
+    #####:  650:	if (pk->save_parameters) 
+        -:  651:		{
+    #####:  652:		ASN1_STRING *params = encode_gost_algor_params(pk);
+        -:  653:		pval = params;
+        -:  654:		ptype = V_ASN1_SEQUENCE;
+        -:  655:		}	
+    #####:  656:	data_len = BN_num_bytes(dsa->pub_key);
+    #####:  657:	databuf = OPENSSL_malloc(data_len);
+    #####:  658:	BN_bn2bin(dsa->pub_key,databuf);
+    #####:  659:	octet = ASN1_OCTET_STRING_new();
+    #####:  660:	ASN1_STRING_set(octet,NULL,data_len);
+    #####:  661:	sptr = ASN1_STRING_data(octet);
+    #####:  662:	for (i=0,j=data_len-1; i< data_len;i++,j--)
+        -:  663:		{
+    #####:  664:		sptr[i]=databuf[j];
+        -:  665:		}
+    #####:  666:	OPENSSL_free(databuf);
+    #####:  667:	ret = i2d_ASN1_OCTET_STRING(octet,&buf);
+    #####:  668:	ASN1_BIT_STRING_free(octet);
+    #####:  669:	if (ret <0)  return 0;
+    #####:  670:	return X509_PUBKEY_set0_param(pub,algobj,ptype,pval,buf,ret);
+        -:  671:	}
+        -:  672:
+    #####:  673:static int pub_decode_gost01(EVP_PKEY *pk,X509_PUBKEY *pub)
+        -:  674:	{
+    #####:  675:	X509_ALGOR *palg = NULL;
+    #####:  676:	const unsigned char *pubkey_buf = NULL;
+        -:  677:	unsigned char *databuf;
+    #####:  678:	ASN1_OBJECT *palgobj = NULL;
+        -:  679:	int pub_len,i,j;
+        -:  680:	EC_POINT *pub_key;
+        -:  681:	BIGNUM *X,*Y;
+        -:  682:	ASN1_OCTET_STRING *octet= NULL;
+        -:  683:	int len;
+        -:  684:	const EC_GROUP *group;
+        -:  685:
+    #####:  686:	if (!X509_PUBKEY_get0_param(&palgobj,&pubkey_buf,&pub_len,
+        -:  687:			&palg, pub)) return 0;
+    #####:  688:	EVP_PKEY_assign(pk,OBJ_obj2nid(palgobj),NULL);	
+    #####:  689:	if (!decode_gost_algor_params(pk,palg)) return 0;
+    #####:  690:	group = EC_KEY_get0_group(EVP_PKEY_get0(pk));
+    #####:  691:	octet = d2i_ASN1_OCTET_STRING(NULL,&pubkey_buf,pub_len);
+    #####:  692:	if (!octet) 
+        -:  693:		{
+    #####:  694:		GOSTerr(GOST_F_PUB_DECODE_GOST01,ERR_R_MALLOC_FAILURE);
+    #####:  695:		return 0;
+        -:  696:		}	
+    #####:  697:	databuf = OPENSSL_malloc(octet->length);
+    #####:  698:	for (i=0,j=octet->length-1;i<octet->length;i++,j--)
+        -:  699:		{
+    #####:  700:		databuf[j]=octet->data[i];
+        -:  701:		}
+    #####:  702:	len=octet->length/2;
+    #####:  703:	ASN1_OCTET_STRING_free(octet);	
+        -:  704:	
+    #####:  705:	Y= getbnfrombuf(databuf,len);
+    #####:  706:	X= getbnfrombuf(databuf+len,len);
+    #####:  707:	OPENSSL_free(databuf);
+    #####:  708:	pub_key = EC_POINT_new(group);
+    #####:  709:	if (!EC_POINT_set_affine_coordinates_GFp(group
+        -:  710:			,pub_key,X,Y,NULL))
+        -:  711:		{
+    #####:  712:		GOSTerr(GOST_F_PUB_DECODE_GOST01,
+        -:  713:			ERR_R_EC_LIB);
+    #####:  714:		EC_POINT_free(pub_key);
+    #####:  715:		BN_free(X);
+    #####:  716:		BN_free(Y);
+    #####:  717:		return 0;
+        -:  718:		}	
+    #####:  719:	BN_free(X);
+    #####:  720:	BN_free(Y);
+    #####:  721:	if (!EC_KEY_set_public_key(EVP_PKEY_get0(pk),pub_key))
+        -:  722:		{
+    #####:  723:		GOSTerr(GOST_F_PUB_DECODE_GOST01,
+        -:  724:			ERR_R_EC_LIB);
+    #####:  725:		EC_POINT_free(pub_key);
+    #####:  726:		return 0;
+        -:  727:		}	
+    #####:  728:	EC_POINT_free(pub_key);
+    #####:  729:	return 1;
+        -:  730:
+        -:  731:	}
+        -:  732:
+    #####:  733:static int pub_encode_gost01(X509_PUBKEY *pub,const EVP_PKEY *pk)
+        -:  734:	{
+        -:  735:	ASN1_OBJECT *algobj = NULL;
+        -:  736:	ASN1_OCTET_STRING *octet = NULL;
+        -:  737:	void *pval = NULL;
+    #####:  738:	unsigned char *buf=NULL,*databuf,*sptr;
+        -:  739:	int i,j,data_len,ret=0;
+        -:  740:	const EC_POINT *pub_key;
+        -:  741:	BIGNUM *X,*Y,*order;
+    #####:  742:	const EC_KEY *ec = EVP_PKEY_get0((EVP_PKEY *)pk);
+        -:  743:	int ptype = V_ASN1_UNDEF;
+        -:  744:
+    #####:  745:	algobj = OBJ_nid2obj(EVP_PKEY_base_id(pk));
+    #####:  746:	if (pk->save_parameters) 
+        -:  747:		{
+    #####:  748:		ASN1_STRING *params = encode_gost_algor_params(pk);
+        -:  749:		pval = params;
+        -:  750:		ptype = V_ASN1_SEQUENCE;
+        -:  751:		}
+    #####:  752:	order = BN_new();
+    #####:  753:	EC_GROUP_get_order(EC_KEY_get0_group(ec),order,NULL);
+    #####:  754:	pub_key=EC_KEY_get0_public_key(ec);
+    #####:  755:	if (!pub_key) 
+        -:  756:		{
+    #####:  757:		GOSTerr(GOST_F_PUB_ENCODE_GOST01,
+        -:  758:			GOST_R_PUBLIC_KEY_UNDEFINED);
+    #####:  759:		return 0;
+        -:  760:		}	
+    #####:  761:	X=BN_new();
+    #####:  762:	Y=BN_new();
+    #####:  763:	EC_POINT_get_affine_coordinates_GFp(EC_KEY_get0_group(ec),
+        -:  764:		pub_key,X,Y,NULL);
+    #####:  765:	data_len = 2*BN_num_bytes(order);
+    #####:  766:	BN_free(order);
+    #####:  767:	databuf = OPENSSL_malloc(data_len);
+    #####:  768:	memset(databuf,0,data_len);
+        -:  769:	
+    #####:  770:	store_bignum(X,databuf+data_len/2,data_len/2);
+    #####:  771:	store_bignum(Y,databuf,data_len/2);
+        -:  772:
+    #####:  773:	BN_free(X);
+    #####:  774:	BN_free(Y);
+    #####:  775:	octet = ASN1_OCTET_STRING_new();
+    #####:  776:	ASN1_STRING_set(octet,NULL,data_len);
+    #####:  777:	sptr=ASN1_STRING_data(octet);
+    #####:  778:    for (i=0,j=data_len-1;i<data_len;i++,j--) 
+        -:  779:		{
+    #####:  780:        sptr[i]=databuf[j];
+        -:  781:		}
+    #####:  782:    OPENSSL_free(databuf);
+    #####:  783:	ret = i2d_ASN1_OCTET_STRING(octet,&buf);
+    #####:  784:	ASN1_BIT_STRING_free(octet);
+    #####:  785:	if (ret <0)  return 0;
+    #####:  786:	return X509_PUBKEY_set0_param(pub,algobj,ptype,pval,buf,ret);
+        -:  787:	}
+        -:  788:
+    #####:  789:static int pub_cmp_gost94(const EVP_PKEY *a, const EVP_PKEY *b)
+        -:  790:	{
+    #####:  791:	const DSA *da = EVP_PKEY_get0((EVP_PKEY *)a);
+    #####:  792:	const DSA *db = EVP_PKEY_get0((EVP_PKEY *)b);
+    #####:  793:	if (da && db && da->pub_key && db->pub_key
+    #####:  794:		&& !BN_cmp(da->pub_key,db->pub_key)) 
+        -:  795:		{
+        -:  796:		return 1;
+        -:  797:		}		
+        -:  798:	return 0;
+        -:  799:	}
+        -:  800:
+    #####:  801:static int pub_cmp_gost01(const EVP_PKEY *a,const EVP_PKEY *b)
+        -:  802:	{
+    #####:  803:	const EC_KEY *ea = EVP_PKEY_get0((EVP_PKEY *)a);
+    #####:  804:	const EC_KEY *eb = EVP_PKEY_get0((EVP_PKEY *)b);
+        -:  805:	const EC_POINT *ka,*kb;
+        -:  806:	int ret=0;
+    #####:  807:	if (!ea || !eb) return 0;
+    #####:  808:	ka = EC_KEY_get0_public_key(ea);
+    #####:  809:	kb = EC_KEY_get0_public_key(eb);
+    #####:  810:	if (!ka || !kb) return 0;
+    #####:  811:	ret = (0==EC_POINT_cmp(EC_KEY_get0_group(ea),ka,kb,NULL)) ;
+    #####:  812:	return ret;
+        -:  813:	}
+        -:  814:
+        -:  815:
+        -:  816:
+        -:  817:
+    #####:  818:static int pkey_size_gost(const EVP_PKEY *pk)
+        -:  819:	{
+    #####:  820:	return 64;
+        -:  821:	}
+        -:  822:
+    #####:  823:static int pkey_bits_gost(const EVP_PKEY *pk)
+        -:  824:	{
+    #####:  825:	return 256;
+        -:  826:	}
+        -:  827:/*------------------------ ASN1 METHOD for GOST MAC  -------------------*/
+    #####:  828:static void  mackey_free_gost(EVP_PKEY *pk)
+        -:  829:	{
+    #####:  830:		if (pk->pkey.ptr) {
+    #####:  831:			OPENSSL_free(pk->pkey.ptr);
+        -:  832:		}	
+    #####:  833:	}
+    #####:  834:static int mac_ctrl_gost(EVP_PKEY *pkey, int op, long arg1, void *arg2)
+        -:  835:{
+    #####:  836:	switch (op)
+        -:  837:		{
+        -:  838:		case ASN1_PKEY_CTRL_DEFAULT_MD_NID:
+    #####:  839:			*(int *)arg2 = NID_id_Gost28147_89_MAC;
+    #####:  840:			return 2;
+        -:  841:		}
+        -:  842:	return -2;
+        -:  843:}	
+        -:  844:
+    #####:  845:static int gost94_param_encode(const EVP_PKEY *pkey, unsigned char **pder) 
+        -:  846:{
+    #####:  847:   int nid=gost94_nid_by_params(EVP_PKEY_get0((EVP_PKEY *)pkey));
+    #####:  848:   return i2d_ASN1_OBJECT(OBJ_nid2obj(nid),pder);
+        -:  849:}
+    #####:  850:static int gost2001_param_encode(const EVP_PKEY *pkey, unsigned char **pder) 
+        -:  851:{
+    #####:  852:   int nid = EC_GROUP_get_curve_name(EC_KEY_get0_group(EVP_PKEY_get0((EVP_PKEY *)pkey)));
+    #####:  853:   return i2d_ASN1_OBJECT(OBJ_nid2obj(nid),pder);
+        -:  854:}
+        -:  855:
+    #####:  856:static int gost94_param_decode(EVP_PKEY *pkey, const unsigned char **pder, int derlen)
+        -:  857:{
+    #####:  858:	ASN1_OBJECT *obj=NULL;
+    #####:  859:	DSA *dsa = EVP_PKEY_get0(pkey);
+        -:  860:	int nid;
+    #####:  861:	if (d2i_ASN1_OBJECT(&obj,pder,derlen)==NULL) {
+        -:  862:		return 0;
+        -:  863:	}
+    #####:  864:	nid = OBJ_obj2nid(obj);
+    #####:  865:	ASN1_OBJECT_free(obj);
+    #####:  866:	if (!dsa) 
+        -:  867:		{
+    #####:  868:		dsa=DSA_new();
+    #####:  869:		if (!EVP_PKEY_assign(pkey,NID_id_GostR3410_94,dsa)) return 0;
+        -:  870:		}
+    #####:  871:	if (!fill_GOST94_params(dsa,nid)) return 0;
+    #####:  872:	return 1;
+        -:  873:}	
+        -:  874:
+    #####:  875:static int gost2001_param_decode(EVP_PKEY *pkey, const unsigned char **pder, int derlen) {
+    #####:  876:	ASN1_OBJECT *obj=NULL;
+        -:  877:	int nid;
+    #####:  878:	EC_KEY *ec = EVP_PKEY_get0(pkey);
+    #####:  879:	if (d2i_ASN1_OBJECT(&obj,pder,derlen)==NULL) {
+        -:  880:		return 0;
+        -:  881:	}
+    #####:  882:	nid = OBJ_obj2nid(obj);
+    #####:  883:	ASN1_OBJECT_free(obj);
+    #####:  884:	if (!ec) 
+        -:  885:		{
+    #####:  886:		ec = EC_KEY_new();
+    #####:  887:		if (!EVP_PKEY_assign(pkey,NID_id_GostR3410_2001,ec)) return 0;
+        -:  888:		}	
+    #####:  889:	if (!fill_GOST2001_params(ec, nid)) return 0;
+    #####:  890:	return 1;
+        -:  891:}	
+        -:  892:
+        -:  893:
+        -:  894:
+        -:  895:
+        -:  896:
+        -:  897:/* ----------------------------------------------------------------------*/
+    30000:  898:int register_ameth_gost (int nid, EVP_PKEY_ASN1_METHOD **ameth, const char* pemstr, const char* info) 
+        -:  899:	{
+    30000:  900:	*ameth =	EVP_PKEY_asn1_new(nid, 
+        -:  901:		ASN1_PKEY_SIGPARAM_NULL, pemstr, info); 
+    30000:  902:	if (!*ameth) return 0;
+    30000:  903:	switch (nid) 
+        -:  904:		{
+        -:  905:		case NID_id_GostR3410_94:
+    10000:  906:			EVP_PKEY_asn1_set_free (*ameth, pkey_free_gost94);
+    10000:  907:			EVP_PKEY_asn1_set_private (*ameth, 
+        -:  908:				priv_decode_gost, priv_encode_gost, 
+        -:  909:				priv_print_gost94);
+        -:  910:
+    10000:  911:			EVP_PKEY_asn1_set_param (*ameth, 
+        -:  912:				gost94_param_decode, gost94_param_encode,
+        -:  913:				param_missing_gost94, param_copy_gost94, 
+        -:  914:				param_cmp_gost94,param_print_gost94 );
+    10000:  915:			EVP_PKEY_asn1_set_public (*ameth,
+        -:  916:				pub_decode_gost94, pub_encode_gost94,
+        -:  917:				pub_cmp_gost94, pub_print_gost94,
+        -:  918:				pkey_size_gost, pkey_bits_gost);
+        -:  919:	
+    10000:  920:			EVP_PKEY_asn1_set_ctrl (*ameth, pkey_ctrl_gost);
+    10000:  921:			break;
+        -:  922:		case NID_id_GostR3410_2001:
+    10000:  923:			EVP_PKEY_asn1_set_free (*ameth, pkey_free_gost01);
+    10000:  924:			EVP_PKEY_asn1_set_private (*ameth, 
+        -:  925:				priv_decode_gost, priv_encode_gost, 
+        -:  926:				priv_print_gost01);
+        -:  927:
+    10000:  928:			EVP_PKEY_asn1_set_param (*ameth, 
+        -:  929:				gost2001_param_decode, gost2001_param_encode,
+        -:  930:				param_missing_gost01, param_copy_gost01, 
+        -:  931:				param_cmp_gost01, param_print_gost01);
+    10000:  932:			EVP_PKEY_asn1_set_public (*ameth,
+        -:  933:				pub_decode_gost01, pub_encode_gost01,
+        -:  934:				pub_cmp_gost01, pub_print_gost01,
+        -:  935:				pkey_size_gost, pkey_bits_gost);
+        -:  936:	
+    10000:  937:			EVP_PKEY_asn1_set_ctrl (*ameth, pkey_ctrl_gost);
+    10000:  938:			break;
+        -:  939:		case NID_id_Gost28147_89_MAC:
+    10000:  940:			EVP_PKEY_asn1_set_free(*ameth, mackey_free_gost);
+    10000:  941:			EVP_PKEY_asn1_set_ctrl(*ameth,mac_ctrl_gost);	
+    10000:  942:			break;
+        -:  943:		}		
+        -:  944:	return 1;
+        -:  945:	}

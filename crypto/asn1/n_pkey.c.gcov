@@ -1,0 +1,358 @@
+        -:    0:Source:n_pkey.c
+        -:    0:Graph:n_pkey.gcno
+        -:    0:Data:n_pkey.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* crypto/asn1/n_pkey.c */
+        -:    2:/* Copyright (C) 1995-1998 Eric Young (eay@cryptsoft.com)
+        -:    3: * All rights reserved.
+        -:    4: *
+        -:    5: * This package is an SSL implementation written
+        -:    6: * by Eric Young (eay@cryptsoft.com).
+        -:    7: * The implementation was written so as to conform with Netscapes SSL.
+        -:    8: * 
+        -:    9: * This library is free for commercial and non-commercial use as long as
+        -:   10: * the following conditions are aheared to.  The following conditions
+        -:   11: * apply to all code found in this distribution, be it the RC4, RSA,
+        -:   12: * lhash, DES, etc., code; not just the SSL code.  The SSL documentation
+        -:   13: * included with this distribution is covered by the same copyright terms
+        -:   14: * except that the holder is Tim Hudson (tjh@cryptsoft.com).
+        -:   15: * 
+        -:   16: * Copyright remains Eric Young's, and as such any Copyright notices in
+        -:   17: * the code are not to be removed.
+        -:   18: * If this package is used in a product, Eric Young should be given attribution
+        -:   19: * as the author of the parts of the library used.
+        -:   20: * This can be in the form of a textual message at program startup or
+        -:   21: * in documentation (online or textual) provided with the package.
+        -:   22: * 
+        -:   23: * Redistribution and use in source and binary forms, with or without
+        -:   24: * modification, are permitted provided that the following conditions
+        -:   25: * are met:
+        -:   26: * 1. Redistributions of source code must retain the copyright
+        -:   27: *    notice, this list of conditions and the following disclaimer.
+        -:   28: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   29: *    notice, this list of conditions and the following disclaimer in the
+        -:   30: *    documentation and/or other materials provided with the distribution.
+        -:   31: * 3. All advertising materials mentioning features or use of this software
+        -:   32: *    must display the following acknowledgement:
+        -:   33: *    "This product includes cryptographic software written by
+        -:   34: *     Eric Young (eay@cryptsoft.com)"
+        -:   35: *    The word 'cryptographic' can be left out if the rouines from the library
+        -:   36: *    being used are not cryptographic related :-).
+        -:   37: * 4. If you include any Windows specific code (or a derivative thereof) from 
+        -:   38: *    the apps directory (application code) you must include an acknowledgement:
+        -:   39: *    "This product includes software written by Tim Hudson (tjh@cryptsoft.com)"
+        -:   40: * 
+        -:   41: * THIS SOFTWARE IS PROVIDED BY ERIC YOUNG ``AS IS'' AND
+        -:   42: * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   43: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+        -:   44: * ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+        -:   45: * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+        -:   46: * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+        -:   47: * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   48: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+        -:   49: * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+        -:   50: * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+        -:   51: * SUCH DAMAGE.
+        -:   52: * 
+        -:   53: * The licence and distribution terms for any publically available version or
+        -:   54: * derivative of this code cannot be changed.  i.e. this code cannot simply be
+        -:   55: * copied and put under another distribution licence
+        -:   56: * [including the GNU Public Licence.]
+        -:   57: */
+        -:   58:
+        -:   59:#include <stdio.h>
+        -:   60:#include "cryptlib.h"
+        -:   61:#ifndef OPENSSL_NO_RSA
+        -:   62:#include <openssl/rsa.h>
+        -:   63:#include <openssl/objects.h>
+        -:   64:#include <openssl/asn1t.h>
+        -:   65:#include <openssl/asn1_mac.h>
+        -:   66:#include <openssl/evp.h>
+        -:   67:#include <openssl/x509.h>
+        -:   68:
+        -:   69:
+        -:   70:#ifndef OPENSSL_NO_RC4
+        -:   71:
+        -:   72:typedef struct netscape_pkey_st
+        -:   73:	{
+        -:   74:	long version;
+        -:   75:	X509_ALGOR *algor;
+        -:   76:	ASN1_OCTET_STRING *private_key;
+        -:   77:	} NETSCAPE_PKEY;
+        -:   78:
+        -:   79:typedef struct netscape_encrypted_pkey_st
+        -:   80:	{
+        -:   81:	ASN1_OCTET_STRING *os;
+        -:   82:	/* This is the same structure as DigestInfo so use it:
+        -:   83:	 * although this isn't really anything to do with
+        -:   84:	 * digests.
+        -:   85:	 */
+        -:   86:	X509_SIG *enckey;
+        -:   87:	} NETSCAPE_ENCRYPTED_PKEY;
+        -:   88:
+        -:   89:
+        -:   90:ASN1_BROKEN_SEQUENCE(NETSCAPE_ENCRYPTED_PKEY) = {
+        -:   91:	ASN1_SIMPLE(NETSCAPE_ENCRYPTED_PKEY, os, ASN1_OCTET_STRING),
+        -:   92:	ASN1_SIMPLE(NETSCAPE_ENCRYPTED_PKEY, enckey, X509_SIG)
+        -:   93:} ASN1_BROKEN_SEQUENCE_END(NETSCAPE_ENCRYPTED_PKEY)
+        -:   94:
+        -:   95:DECLARE_ASN1_FUNCTIONS_const(NETSCAPE_ENCRYPTED_PKEY)
+        -:   96:DECLARE_ASN1_ENCODE_FUNCTIONS_const(NETSCAPE_ENCRYPTED_PKEY,NETSCAPE_ENCRYPTED_PKEY)
+    #####:   97:IMPLEMENT_ASN1_FUNCTIONS_const(NETSCAPE_ENCRYPTED_PKEY)
+        -:   98:
+        -:   99:ASN1_SEQUENCE(NETSCAPE_PKEY) = {
+        -:  100:	ASN1_SIMPLE(NETSCAPE_PKEY, version, LONG),
+        -:  101:	ASN1_SIMPLE(NETSCAPE_PKEY, algor, X509_ALGOR),
+        -:  102:	ASN1_SIMPLE(NETSCAPE_PKEY, private_key, ASN1_OCTET_STRING)
+        -:  103:} ASN1_SEQUENCE_END(NETSCAPE_PKEY)
+        -:  104:
+        -:  105:DECLARE_ASN1_FUNCTIONS_const(NETSCAPE_PKEY)
+        -:  106:DECLARE_ASN1_ENCODE_FUNCTIONS_const(NETSCAPE_PKEY,NETSCAPE_PKEY)
+    #####:  107:IMPLEMENT_ASN1_FUNCTIONS_const(NETSCAPE_PKEY)
+        -:  108:
+        -:  109:static RSA *d2i_RSA_NET_2(RSA **a, ASN1_OCTET_STRING *os,
+        -:  110:			  int (*cb)(char *buf, int len, const char *prompt,
+        -:  111:				    int verify),
+        -:  112:			  int sgckey);
+        -:  113:
+    #####:  114:int i2d_Netscape_RSA(const RSA *a, unsigned char **pp,
+        -:  115:		     int (*cb)(char *buf, int len, const char *prompt,
+        -:  116:			       int verify))
+        -:  117:{
+    #####:  118:	return i2d_RSA_NET(a, pp, cb, 0);
+        -:  119:}
+        -:  120:
+    #####:  121:int i2d_RSA_NET(const RSA *a, unsigned char **pp,
+        -:  122:		int (*cb)(char *buf, int len, const char *prompt, int verify),
+        -:  123:		int sgckey)
+        -:  124:	{
+        -:  125:	int i, j, ret = 0;
+        -:  126:	int rsalen, pkeylen, olen;
+        -:  127:	NETSCAPE_PKEY *pkey = NULL;
+        -:  128:	NETSCAPE_ENCRYPTED_PKEY *enckey = NULL;
+        -:  129:	unsigned char buf[256],*zz;
+        -:  130:	unsigned char key[EVP_MAX_KEY_LENGTH];
+        -:  131:	EVP_CIPHER_CTX ctx;
+    #####:  132:	EVP_CIPHER_CTX_init(&ctx);
+        -:  133:
+    #####:  134:	if (a == NULL) return(0);
+        -:  135:
+    #####:  136:	if ((pkey=NETSCAPE_PKEY_new()) == NULL) goto err;
+    #####:  137:	if ((enckey=NETSCAPE_ENCRYPTED_PKEY_new()) == NULL) goto err;
+    #####:  138:	pkey->version = 0;
+        -:  139:
+    #####:  140:	pkey->algor->algorithm=OBJ_nid2obj(NID_rsaEncryption);
+    #####:  141:	if ((pkey->algor->parameter=ASN1_TYPE_new()) == NULL) goto err;
+    #####:  142:	pkey->algor->parameter->type=V_ASN1_NULL;
+        -:  143:
+    #####:  144:	rsalen = i2d_RSAPrivateKey(a, NULL);
+        -:  145:
+        -:  146:	/* Fake some octet strings just for the initial length
+        -:  147:	 * calculation.
+        -:  148: 	 */
+        -:  149:
+    #####:  150:	pkey->private_key->length=rsalen;
+        -:  151:
+        -:  152:	pkeylen=i2d_NETSCAPE_PKEY(pkey,NULL);
+        -:  153:
+    #####:  154:	enckey->enckey->digest->length = pkeylen;
+        -:  155:
+    #####:  156:	enckey->os->length = 11;	/* "private-key" */
+        -:  157:
+    #####:  158:	enckey->enckey->algor->algorithm=OBJ_nid2obj(NID_rc4);
+    #####:  159:	if ((enckey->enckey->algor->parameter=ASN1_TYPE_new()) == NULL) goto err;
+    #####:  160:	enckey->enckey->algor->parameter->type=V_ASN1_NULL;
+        -:  161:
+    #####:  162:	if (pp == NULL)
+        -:  163:		{
+        -:  164:		olen = i2d_NETSCAPE_ENCRYPTED_PKEY(enckey, NULL);
+        -:  165:		NETSCAPE_PKEY_free(pkey);
+        -:  166:		NETSCAPE_ENCRYPTED_PKEY_free(enckey);
+    #####:  167:		return olen;
+        -:  168:		}
+        -:  169:
+        -:  170:
+        -:  171:	/* Since its RC4 encrypted length is actual length */
+    #####:  172:	if ((zz=(unsigned char *)OPENSSL_malloc(rsalen)) == NULL)
+        -:  173:		{
+    #####:  174:		ASN1err(ASN1_F_I2D_RSA_NET,ERR_R_MALLOC_FAILURE);
+    #####:  175:		goto err;
+        -:  176:		}
+        -:  177:
+    #####:  178:	pkey->private_key->data = zz;
+        -:  179:	/* Write out private key encoding */
+    #####:  180:	i2d_RSAPrivateKey(a,&zz);
+        -:  181:
+    #####:  182:	if ((zz=OPENSSL_malloc(pkeylen)) == NULL)
+        -:  183:		{
+    #####:  184:		ASN1err(ASN1_F_I2D_RSA_NET,ERR_R_MALLOC_FAILURE);
+    #####:  185:		goto err;
+        -:  186:		}
+        -:  187:
+    #####:  188:	if (!ASN1_STRING_set(enckey->os, "private-key", -1)) 
+        -:  189:		{
+    #####:  190:		ASN1err(ASN1_F_I2D_RSA_NET,ERR_R_MALLOC_FAILURE);
+    #####:  191:		goto err;
+        -:  192:		}
+    #####:  193:	enckey->enckey->digest->data = zz;
+        -:  194:	i2d_NETSCAPE_PKEY(pkey,&zz);
+        -:  195:
+        -:  196:	/* Wipe the private key encoding */
+    #####:  197:	OPENSSL_cleanse(pkey->private_key->data, rsalen);
+        -:  198:		
+    #####:  199:	if (cb == NULL)
+        -:  200:		cb=EVP_read_pw_string;
+    #####:  201:	i=cb((char *)buf,256,"Enter Private Key password:",1);
+    #####:  202:	if (i != 0)
+        -:  203:		{
+    #####:  204:		ASN1err(ASN1_F_I2D_RSA_NET,ASN1_R_BAD_PASSWORD_READ);
+    #####:  205:		goto err;
+        -:  206:		}
+    #####:  207:	i = strlen((char *)buf);
+        -:  208:	/* If the key is used for SGC the algorithm is modified a little. */
+    #####:  209:	if(sgckey) {
+    #####:  210:		if (!EVP_Digest(buf, i, buf, NULL, EVP_md5(), NULL))
+        -:  211:			goto err;
+        -:  212:		memcpy(buf + 16, "SGCKEYSALT", 10);
+    #####:  213:		i = 26;
+        -:  214:	}
+        -:  215:
+    #####:  216:	if (!EVP_BytesToKey(EVP_rc4(),EVP_md5(),NULL,buf,i,1,key,NULL))
+        -:  217:		goto err;
+    #####:  218:	OPENSSL_cleanse(buf,256);
+        -:  219:
+        -:  220:	/* Encrypt private key in place */
+    #####:  221:	zz = enckey->enckey->digest->data;
+    #####:  222:	if (!EVP_EncryptInit_ex(&ctx,EVP_rc4(),NULL,key,NULL))
+        -:  223:		goto err;
+    #####:  224:	if (!EVP_EncryptUpdate(&ctx,zz,&i,zz,pkeylen))
+        -:  225:		goto err;
+    #####:  226:	if (!EVP_EncryptFinal_ex(&ctx,zz + i,&j))
+        -:  227:		goto err;
+        -:  228:
+        -:  229:	ret = i2d_NETSCAPE_ENCRYPTED_PKEY(enckey, pp);
+        -:  230:err:
+    #####:  231:	EVP_CIPHER_CTX_cleanup(&ctx);
+        -:  232:	NETSCAPE_ENCRYPTED_PKEY_free(enckey);
+        -:  233:	NETSCAPE_PKEY_free(pkey);
+    #####:  234:	return(ret);
+        -:  235:	}
+        -:  236:
+        -:  237:
+    #####:  238:RSA *d2i_Netscape_RSA(RSA **a, const unsigned char **pp, long length,
+        -:  239:		      int (*cb)(char *buf, int len, const char *prompt,
+        -:  240:				int verify))
+        -:  241:{
+    #####:  242:	return d2i_RSA_NET(a, pp, length, cb, 0);
+        -:  243:}
+        -:  244:
+    #####:  245:RSA *d2i_RSA_NET(RSA **a, const unsigned char **pp, long length,
+        -:  246:		 int (*cb)(char *buf, int len, const char *prompt, int verify),
+        -:  247:		 int sgckey)
+        -:  248:	{
+        -:  249:	RSA *ret=NULL;
+        -:  250:	const unsigned char *p;
+        -:  251:	NETSCAPE_ENCRYPTED_PKEY *enckey = NULL;
+        -:  252:
+    #####:  253:	p = *pp;
+        -:  254:
+        -:  255:	enckey = d2i_NETSCAPE_ENCRYPTED_PKEY(NULL, &p, length);
+    #####:  256:	if(!enckey) {
+    #####:  257:		ASN1err(ASN1_F_D2I_RSA_NET,ASN1_R_DECODING_ERROR);
+    #####:  258:		return NULL;
+        -:  259:	}
+        -:  260:
+    #####:  261:	if ((enckey->os->length != 11) || (strncmp("private-key",
+        -:  262:		(char *)enckey->os->data,11) != 0))
+        -:  263:		{
+    #####:  264:		ASN1err(ASN1_F_D2I_RSA_NET,ASN1_R_PRIVATE_KEY_HEADER_MISSING);
+        -:  265:		NETSCAPE_ENCRYPTED_PKEY_free(enckey);
+    #####:  266:		return NULL;
+        -:  267:		}
+    #####:  268:	if (OBJ_obj2nid(enckey->enckey->algor->algorithm) != NID_rc4)
+        -:  269:		{
+    #####:  270:		ASN1err(ASN1_F_D2I_RSA_NET,ASN1_R_UNSUPPORTED_ENCRYPTION_ALGORITHM);
+    #####:  271:		goto err;
+        -:  272:	}
+    #####:  273:	if (cb == NULL)
+        -:  274:		cb=EVP_read_pw_string;
+    #####:  275:	if ((ret=d2i_RSA_NET_2(a, enckey->enckey->digest,cb, sgckey)) == NULL) goto err;
+        -:  276:
+    #####:  277:	*pp = p;
+        -:  278:
+        -:  279:	err:
+        -:  280:	NETSCAPE_ENCRYPTED_PKEY_free(enckey);
+    #####:  281:	return ret;
+        -:  282:
+        -:  283:	}
+        -:  284:
+    #####:  285:static RSA *d2i_RSA_NET_2(RSA **a, ASN1_OCTET_STRING *os,
+        -:  286:			  int (*cb)(char *buf, int len, const char *prompt,
+        -:  287:				    int verify), int sgckey)
+        -:  288:	{
+        -:  289:	NETSCAPE_PKEY *pkey=NULL;
+        -:  290:	RSA *ret=NULL;
+        -:  291:	int i,j;
+        -:  292:	unsigned char buf[256];
+        -:  293:	const unsigned char *zz;
+        -:  294:	unsigned char key[EVP_MAX_KEY_LENGTH];
+        -:  295:	EVP_CIPHER_CTX ctx;
+    #####:  296:	EVP_CIPHER_CTX_init(&ctx);
+        -:  297:
+    #####:  298:	i=cb((char *)buf,256,"Enter Private Key password:",0);
+    #####:  299:	if (i != 0)
+        -:  300:		{
+    #####:  301:		ASN1err(ASN1_F_D2I_RSA_NET_2,ASN1_R_BAD_PASSWORD_READ);
+        -:  302:		goto err;
+        -:  303:		}
+        -:  304:
+    #####:  305:	i = strlen((char *)buf);
+    #####:  306:	if(sgckey){
+    #####:  307:		if (!EVP_Digest(buf, i, buf, NULL, EVP_md5(), NULL))
+        -:  308:			goto err;
+        -:  309:		memcpy(buf + 16, "SGCKEYSALT", 10);
+    #####:  310:		i = 26;
+        -:  311:	}
+        -:  312:		
+    #####:  313:	if (!EVP_BytesToKey(EVP_rc4(),EVP_md5(),NULL,buf,i,1,key,NULL))
+        -:  314:		goto err;
+    #####:  315:	OPENSSL_cleanse(buf,256);
+        -:  316:
+    #####:  317:	if (!EVP_DecryptInit_ex(&ctx,EVP_rc4(),NULL, key,NULL))
+        -:  318:		goto err;
+    #####:  319:	if (!EVP_DecryptUpdate(&ctx,os->data,&i,os->data,os->length))
+        -:  320:		goto err;
+    #####:  321:	if (!EVP_DecryptFinal_ex(&ctx,&(os->data[i]),&j))
+        -:  322:		goto err;
+    #####:  323:	os->length=i+j;
+        -:  324:
+    #####:  325:	zz=os->data;
+        -:  326:
+    #####:  327:	if ((pkey=d2i_NETSCAPE_PKEY(NULL,&zz,os->length)) == NULL)
+        -:  328:		{
+    #####:  329:		ASN1err(ASN1_F_D2I_RSA_NET_2,ASN1_R_UNABLE_TO_DECODE_RSA_PRIVATE_KEY);
+        -:  330:		goto err;
+        -:  331:		}
+        -:  332:		
+    #####:  333:	zz=pkey->private_key->data;
+    #####:  334:	if ((ret=d2i_RSAPrivateKey(a,&zz,pkey->private_key->length)) == NULL)
+        -:  335:		{
+    #####:  336:		ASN1err(ASN1_F_D2I_RSA_NET_2,ASN1_R_UNABLE_TO_DECODE_RSA_KEY);
+        -:  337:		goto err;
+        -:  338:		}
+        -:  339:err:
+    #####:  340:	EVP_CIPHER_CTX_cleanup(&ctx);
+        -:  341:	NETSCAPE_PKEY_free(pkey);
+    #####:  342:	return(ret);
+        -:  343:	}
+        -:  344:
+        -:  345:#endif /* OPENSSL_NO_RC4 */
+        -:  346:
+        -:  347:#else /* !OPENSSL_NO_RSA */
+        -:  348:
+        -:  349:# if PEDANTIC
+        -:  350:static void *dummy=&dummy;
+        -:  351:# endif
+        -:  352:
+        -:  353:#endif

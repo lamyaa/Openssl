@@ -1,0 +1,433 @@
+        -:    0:Source:bio_enc.c
+        -:    0:Graph:bio_enc.gcno
+        -:    0:Data:bio_enc.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* crypto/evp/bio_enc.c */
+        -:    2:/* Copyright (C) 1995-1998 Eric Young (eay@cryptsoft.com)
+        -:    3: * All rights reserved.
+        -:    4: *
+        -:    5: * This package is an SSL implementation written
+        -:    6: * by Eric Young (eay@cryptsoft.com).
+        -:    7: * The implementation was written so as to conform with Netscapes SSL.
+        -:    8: * 
+        -:    9: * This library is free for commercial and non-commercial use as long as
+        -:   10: * the following conditions are aheared to.  The following conditions
+        -:   11: * apply to all code found in this distribution, be it the RC4, RSA,
+        -:   12: * lhash, DES, etc., code; not just the SSL code.  The SSL documentation
+        -:   13: * included with this distribution is covered by the same copyright terms
+        -:   14: * except that the holder is Tim Hudson (tjh@cryptsoft.com).
+        -:   15: * 
+        -:   16: * Copyright remains Eric Young's, and as such any Copyright notices in
+        -:   17: * the code are not to be removed.
+        -:   18: * If this package is used in a product, Eric Young should be given attribution
+        -:   19: * as the author of the parts of the library used.
+        -:   20: * This can be in the form of a textual message at program startup or
+        -:   21: * in documentation (online or textual) provided with the package.
+        -:   22: * 
+        -:   23: * Redistribution and use in source and binary forms, with or without
+        -:   24: * modification, are permitted provided that the following conditions
+        -:   25: * are met:
+        -:   26: * 1. Redistributions of source code must retain the copyright
+        -:   27: *    notice, this list of conditions and the following disclaimer.
+        -:   28: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   29: *    notice, this list of conditions and the following disclaimer in the
+        -:   30: *    documentation and/or other materials provided with the distribution.
+        -:   31: * 3. All advertising materials mentioning features or use of this software
+        -:   32: *    must display the following acknowledgement:
+        -:   33: *    "This product includes cryptographic software written by
+        -:   34: *     Eric Young (eay@cryptsoft.com)"
+        -:   35: *    The word 'cryptographic' can be left out if the rouines from the library
+        -:   36: *    being used are not cryptographic related :-).
+        -:   37: * 4. If you include any Windows specific code (or a derivative thereof) from 
+        -:   38: *    the apps directory (application code) you must include an acknowledgement:
+        -:   39: *    "This product includes software written by Tim Hudson (tjh@cryptsoft.com)"
+        -:   40: * 
+        -:   41: * THIS SOFTWARE IS PROVIDED BY ERIC YOUNG ``AS IS'' AND
+        -:   42: * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   43: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+        -:   44: * ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+        -:   45: * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+        -:   46: * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+        -:   47: * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   48: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+        -:   49: * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+        -:   50: * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+        -:   51: * SUCH DAMAGE.
+        -:   52: * 
+        -:   53: * The licence and distribution terms for any publically available version or
+        -:   54: * derivative of this code cannot be changed.  i.e. this code cannot simply be
+        -:   55: * copied and put under another distribution licence
+        -:   56: * [including the GNU Public Licence.]
+        -:   57: */
+        -:   58:
+        -:   59:#include <stdio.h>
+        -:   60:#include <errno.h>
+        -:   61:#include "cryptlib.h"
+        -:   62:#include <openssl/buffer.h>
+        -:   63:#include <openssl/evp.h>
+        -:   64:
+        -:   65:static int enc_write(BIO *h, const char *buf, int num);
+        -:   66:static int enc_read(BIO *h, char *buf, int size);
+        -:   67:/*static int enc_puts(BIO *h, const char *str); */
+        -:   68:/*static int enc_gets(BIO *h, char *str, int size); */
+        -:   69:static long enc_ctrl(BIO *h, int cmd, long arg1, void *arg2);
+        -:   70:static int enc_new(BIO *h);
+        -:   71:static int enc_free(BIO *data);
+        -:   72:static long enc_callback_ctrl(BIO *h, int cmd, bio_info_cb *fps);
+        -:   73:#define ENC_BLOCK_SIZE	(1024*4)
+        -:   74:#define BUF_OFFSET	(EVP_MAX_BLOCK_LENGTH*2)
+        -:   75:
+        -:   76:typedef struct enc_struct
+        -:   77:	{
+        -:   78:	int buf_len;
+        -:   79:	int buf_off;
+        -:   80:	int cont;		/* <= 0 when finished */
+        -:   81:	int finished;
+        -:   82:	int ok;			/* bad decrypt */
+        -:   83:	EVP_CIPHER_CTX cipher;
+        -:   84:	/* buf is larger than ENC_BLOCK_SIZE because EVP_DecryptUpdate
+        -:   85:	 * can return up to a block more data than is presented to it
+        -:   86:	 */
+        -:   87:	char buf[ENC_BLOCK_SIZE+BUF_OFFSET+2];
+        -:   88:	} BIO_ENC_CTX;
+        -:   89:
+        -:   90:static BIO_METHOD methods_enc=
+        -:   91:	{
+        -:   92:	BIO_TYPE_CIPHER,"cipher",
+        -:   93:	enc_write,
+        -:   94:	enc_read,
+        -:   95:	NULL, /* enc_puts, */
+        -:   96:	NULL, /* enc_gets, */
+        -:   97:	enc_ctrl,
+        -:   98:	enc_new,
+        -:   99:	enc_free,
+        -:  100:	enc_callback_ctrl,
+        -:  101:	};
+        -:  102:
+    #####:  103:BIO_METHOD *BIO_f_cipher(void)
+        -:  104:	{
+    #####:  105:	return(&methods_enc);
+        -:  106:	}
+        -:  107:
+    #####:  108:static int enc_new(BIO *bi)
+        -:  109:	{
+        -:  110:	BIO_ENC_CTX *ctx;
+        -:  111:
+    #####:  112:	ctx=(BIO_ENC_CTX *)OPENSSL_malloc(sizeof(BIO_ENC_CTX));
+    #####:  113:	if (ctx == NULL) return(0);
+    #####:  114:	EVP_CIPHER_CTX_init(&ctx->cipher);
+        -:  115:
+    #####:  116:	ctx->buf_len=0;
+    #####:  117:	ctx->buf_off=0;
+    #####:  118:	ctx->cont=1;
+    #####:  119:	ctx->finished=0;
+    #####:  120:	ctx->ok=1;
+        -:  121:
+    #####:  122:	bi->init=0;
+    #####:  123:	bi->ptr=(char *)ctx;
+    #####:  124:	bi->flags=0;
+    #####:  125:	return(1);
+        -:  126:	}
+        -:  127:
+    #####:  128:static int enc_free(BIO *a)
+        -:  129:	{
+        -:  130:	BIO_ENC_CTX *b;
+        -:  131:
+    #####:  132:	if (a == NULL) return(0);
+    #####:  133:	b=(BIO_ENC_CTX *)a->ptr;
+    #####:  134:	EVP_CIPHER_CTX_cleanup(&(b->cipher));
+    #####:  135:	OPENSSL_cleanse(a->ptr,sizeof(BIO_ENC_CTX));
+    #####:  136:	OPENSSL_free(a->ptr);
+    #####:  137:	a->ptr=NULL;
+    #####:  138:	a->init=0;
+    #####:  139:	a->flags=0;
+    #####:  140:	return(1);
+        -:  141:	}
+        -:  142:	
+    #####:  143:static int enc_read(BIO *b, char *out, int outl)
+        -:  144:	{
+        -:  145:	int ret=0,i;
+        -:  146:	BIO_ENC_CTX *ctx;
+        -:  147:
+    #####:  148:	if (out == NULL) return(0);
+    #####:  149:	ctx=(BIO_ENC_CTX *)b->ptr;
+        -:  150:
+    #####:  151:	if ((ctx == NULL) || (b->next_bio == NULL)) return(0);
+        -:  152:
+        -:  153:	/* First check if there are bytes decoded/encoded */
+    #####:  154:	if (ctx->buf_len > 0)
+        -:  155:		{
+    #####:  156:		i=ctx->buf_len-ctx->buf_off;
+    #####:  157:		if (i > outl) i=outl;
+    #####:  158:		memcpy(out,&(ctx->buf[ctx->buf_off]),i);
+        -:  159:		ret=i;
+    #####:  160:		out+=i;
+    #####:  161:		outl-=i;
+    #####:  162:		ctx->buf_off+=i;
+    #####:  163:		if (ctx->buf_len == ctx->buf_off)
+        -:  164:			{
+    #####:  165:			ctx->buf_len=0;
+    #####:  166:			ctx->buf_off=0;
+        -:  167:			}
+        -:  168:		}
+        -:  169:
+        -:  170:	/* At this point, we have room of outl bytes and an empty
+        -:  171:	 * buffer, so we should read in some more. */
+        -:  172:
+    #####:  173:	while (outl > 0)
+        -:  174:		{
+    #####:  175:		if (ctx->cont <= 0) break;
+        -:  176:
+        -:  177:		/* read in at IV offset, read the EVP_Cipher
+        -:  178:		 * documentation about why */
+    #####:  179:		i=BIO_read(b->next_bio,&(ctx->buf[BUF_OFFSET]),ENC_BLOCK_SIZE);
+        -:  180:
+    #####:  181:		if (i <= 0)
+        -:  182:			{
+        -:  183:			/* Should be continue next time we are called? */
+    #####:  184:			if (!BIO_should_retry(b->next_bio))
+        -:  185:				{
+    #####:  186:				ctx->cont=i;
+    #####:  187:				i=EVP_CipherFinal_ex(&(ctx->cipher),
+    #####:  188:					(unsigned char *)ctx->buf,
+        -:  189:					&(ctx->buf_len));
+    #####:  190:				ctx->ok=i;
+    #####:  191:				ctx->buf_off=0;
+        -:  192:				}
+        -:  193:			else 
+        -:  194:				{
+    #####:  195:				ret=(ret == 0)?i:ret;
+    #####:  196:				break;
+        -:  197:				}
+        -:  198:			}
+        -:  199:		else
+        -:  200:			{
+    #####:  201:			EVP_CipherUpdate(&(ctx->cipher),
+    #####:  202:				(unsigned char *)ctx->buf,&ctx->buf_len,
+        -:  203:				(unsigned char *)&(ctx->buf[BUF_OFFSET]),i);
+    #####:  204:			ctx->cont=1;
+        -:  205:			/* Note: it is possible for EVP_CipherUpdate to
+        -:  206:			 * decrypt zero bytes because this is or looks like
+        -:  207:			 * the final block: if this happens we should retry
+        -:  208:			 * and either read more data or decrypt the final
+        -:  209:			 * block
+        -:  210:			 */
+    #####:  211:			if(ctx->buf_len == 0) continue;
+        -:  212:			}
+        -:  213:
+    #####:  214:		if (ctx->buf_len <= outl)
+        -:  215:			i=ctx->buf_len;
+        -:  216:		else
+        -:  217:			i=outl;
+    #####:  218:		if (i <= 0) break;
+    #####:  219:		memcpy(out,ctx->buf,i);
+    #####:  220:		ret+=i;
+    #####:  221:		ctx->buf_off=i;
+    #####:  222:		outl-=i;
+    #####:  223:		out+=i;
+        -:  224:		}
+        -:  225:
+    #####:  226:	BIO_clear_retry_flags(b);
+    #####:  227:	BIO_copy_next_retry(b);
+    #####:  228:	return((ret == 0)?ctx->cont:ret);
+        -:  229:	}
+        -:  230:
+    #####:  231:static int enc_write(BIO *b, const char *in, int inl)
+        -:  232:	{
+        -:  233:	int ret=0,n,i;
+        -:  234:	BIO_ENC_CTX *ctx;
+        -:  235:
+    #####:  236:	ctx=(BIO_ENC_CTX *)b->ptr;
+        -:  237:	ret=inl;
+        -:  238:
+    #####:  239:	BIO_clear_retry_flags(b);
+    #####:  240:	n=ctx->buf_len-ctx->buf_off;
+    #####:  241:	while (n > 0)
+        -:  242:		{
+    #####:  243:		i=BIO_write(b->next_bio,&(ctx->buf[ctx->buf_off]),n);
+    #####:  244:		if (i <= 0)
+        -:  245:			{
+    #####:  246:			BIO_copy_next_retry(b);
+    #####:  247:			return(i);
+        -:  248:			}
+    #####:  249:		ctx->buf_off+=i;
+    #####:  250:		n-=i;
+        -:  251:		}
+        -:  252:	/* at this point all pending data has been written */
+        -:  253:
+    #####:  254:	if ((in == NULL) || (inl <= 0)) return(0);
+        -:  255:
+    #####:  256:	ctx->buf_off=0;
+    #####:  257:	while (inl > 0)
+        -:  258:		{
+    #####:  259:		n=(inl > ENC_BLOCK_SIZE)?ENC_BLOCK_SIZE:inl;
+    #####:  260:		EVP_CipherUpdate(&(ctx->cipher),
+    #####:  261:			(unsigned char *)ctx->buf,&ctx->buf_len,
+        -:  262:			(unsigned char *)in,n);
+    #####:  263:		inl-=n;
+    #####:  264:		in+=n;
+        -:  265:
+    #####:  266:		ctx->buf_off=0;
+    #####:  267:		n=ctx->buf_len;
+    #####:  268:		while (n > 0)
+        -:  269:			{
+    #####:  270:			i=BIO_write(b->next_bio,&(ctx->buf[ctx->buf_off]),n);
+    #####:  271:			if (i <= 0)
+        -:  272:				{
+    #####:  273:				BIO_copy_next_retry(b);
+    #####:  274:				return (ret == inl) ? i : ret - inl;
+        -:  275:				}
+    #####:  276:			n-=i;
+    #####:  277:			ctx->buf_off+=i;
+        -:  278:			}
+    #####:  279:		ctx->buf_len=0;
+    #####:  280:		ctx->buf_off=0;
+        -:  281:		}
+    #####:  282:	BIO_copy_next_retry(b);
+    #####:  283:	return(ret);
+        -:  284:	}
+        -:  285:
+    #####:  286:static long enc_ctrl(BIO *b, int cmd, long num, void *ptr)
+        -:  287:	{
+        -:  288:	BIO *dbio;
+        -:  289:	BIO_ENC_CTX *ctx,*dctx;
+        -:  290:	long ret=1;
+        -:  291:	int i;
+        -:  292:	EVP_CIPHER_CTX **c_ctx;
+        -:  293:
+    #####:  294:	ctx=(BIO_ENC_CTX *)b->ptr;
+        -:  295:
+    #####:  296:	switch (cmd)
+        -:  297:		{
+        -:  298:	case BIO_CTRL_RESET:
+    #####:  299:		ctx->ok=1;
+    #####:  300:		ctx->finished=0;
+    #####:  301:		EVP_CipherInit_ex(&(ctx->cipher),NULL,NULL,NULL,NULL,
+        -:  302:			ctx->cipher.encrypt);
+    #####:  303:		ret=BIO_ctrl(b->next_bio,cmd,num,ptr);
+    #####:  304:		break;
+        -:  305:	case BIO_CTRL_EOF:	/* More to read */
+    #####:  306:		if (ctx->cont <= 0)
+        -:  307:			ret=1;
+        -:  308:		else
+    #####:  309:			ret=BIO_ctrl(b->next_bio,cmd,num,ptr);
+        -:  310:		break;
+        -:  311:	case BIO_CTRL_WPENDING:
+    #####:  312:		ret=ctx->buf_len-ctx->buf_off;
+    #####:  313:		if (ret <= 0)
+    #####:  314:			ret=BIO_ctrl(b->next_bio,cmd,num,ptr);
+        -:  315:		break;
+        -:  316:	case BIO_CTRL_PENDING: /* More to read in buffer */
+    #####:  317:		ret=ctx->buf_len-ctx->buf_off;
+    #####:  318:		if (ret <= 0)
+    #####:  319:			ret=BIO_ctrl(b->next_bio,cmd,num,ptr);
+        -:  320:		break;
+        -:  321:	case BIO_CTRL_FLUSH:
+        -:  322:		/* do a final write */
+        -:  323:again:
+    #####:  324:		while (ctx->buf_len != ctx->buf_off)
+        -:  325:			{
+    #####:  326:			i=enc_write(b,NULL,0);
+    #####:  327:			if (i < 0)
+    #####:  328:				return i;
+        -:  329:			}
+        -:  330:
+    #####:  331:		if (!ctx->finished)
+        -:  332:			{
+    #####:  333:			ctx->finished=1;
+    #####:  334:			ctx->buf_off=0;
+    #####:  335:			ret=EVP_CipherFinal_ex(&(ctx->cipher),
+    #####:  336:				(unsigned char *)ctx->buf,
+        -:  337:				&(ctx->buf_len));
+    #####:  338:			ctx->ok=(int)ret;
+    #####:  339:			if (ret <= 0) break;
+        -:  340:
+        -:  341:			/* push out the bytes */
+        -:  342:			goto again;
+        -:  343:			}
+        -:  344:		
+        -:  345:		/* Finally flush the underlying BIO */
+    #####:  346:		ret=BIO_ctrl(b->next_bio,cmd,num,ptr);
+    #####:  347:		break;
+        -:  348:	case BIO_C_GET_CIPHER_STATUS:
+    #####:  349:		ret=(long)ctx->ok;
+    #####:  350:		break;
+        -:  351:	case BIO_C_DO_STATE_MACHINE:
+    #####:  352:		BIO_clear_retry_flags(b);
+    #####:  353:		ret=BIO_ctrl(b->next_bio,cmd,num,ptr);
+    #####:  354:		BIO_copy_next_retry(b);
+    #####:  355:		break;
+        -:  356:	case BIO_C_GET_CIPHER_CTX:
+        -:  357:		c_ctx=(EVP_CIPHER_CTX **)ptr;
+    #####:  358:		(*c_ctx)= &(ctx->cipher);
+    #####:  359:		b->init=1;
+    #####:  360:		break;
+        -:  361:	case BIO_CTRL_DUP:
+        -:  362:		dbio=(BIO *)ptr;
+    #####:  363:		dctx=(BIO_ENC_CTX *)dbio->ptr;
+    #####:  364:		EVP_CIPHER_CTX_init(&dctx->cipher);
+    #####:  365:		ret = EVP_CIPHER_CTX_copy(&dctx->cipher,&ctx->cipher);
+    #####:  366:		if (ret)
+    #####:  367:			dbio->init=1;
+        -:  368:		break;
+        -:  369:	default:
+    #####:  370:		ret=BIO_ctrl(b->next_bio,cmd,num,ptr);
+    #####:  371:		break;
+        -:  372:		}
+    #####:  373:	return(ret);
+        -:  374:	}
+        -:  375:
+    #####:  376:static long enc_callback_ctrl(BIO *b, int cmd, bio_info_cb *fp)
+        -:  377:	{
+        -:  378:	long ret=1;
+        -:  379:
+    #####:  380:	if (b->next_bio == NULL) return(0);
+        -:  381:	switch (cmd)
+        -:  382:		{
+        -:  383:	default:
+    #####:  384:		ret=BIO_callback_ctrl(b->next_bio,cmd,fp);
+        -:  385:		break;
+        -:  386:		}
+    #####:  387:	return(ret);
+        -:  388:	}
+        -:  389:
+        -:  390:/*
+        -:  391:void BIO_set_cipher_ctx(b,c)
+        -:  392:BIO *b;
+        -:  393:EVP_CIPHER_ctx *c;
+        -:  394:	{
+        -:  395:	if (b == NULL) return;
+        -:  396:
+        -:  397:	if ((b->callback != NULL) &&
+        -:  398:		(b->callback(b,BIO_CB_CTRL,(char *)c,BIO_CTRL_SET,e,0L) <= 0))
+        -:  399:		return;
+        -:  400:
+        -:  401:	b->init=1;
+        -:  402:	ctx=(BIO_ENC_CTX *)b->ptr;
+        -:  403:	memcpy(ctx->cipher,c,sizeof(EVP_CIPHER_CTX));
+        -:  404:	
+        -:  405:	if (b->callback != NULL)
+        -:  406:		b->callback(b,BIO_CB_CTRL,(char *)c,BIO_CTRL_SET,e,1L);
+        -:  407:	}
+        -:  408:*/
+        -:  409:
+    #####:  410:void BIO_set_cipher(BIO *b, const EVP_CIPHER *c, const unsigned char *k,
+        -:  411:	     const unsigned char *i, int e)
+        -:  412:	{
+        -:  413:	BIO_ENC_CTX *ctx;
+        -:  414:
+    #####:  415:	if (b == NULL) return;
+        -:  416:
+    #####:  417:	if ((b->callback != NULL) &&
+    #####:  418:		(b->callback(b,BIO_CB_CTRL,(const char *)c,BIO_CTRL_SET,e,0L) <= 0))
+        -:  419:		return;
+        -:  420:
+    #####:  421:	b->init=1;
+    #####:  422:	ctx=(BIO_ENC_CTX *)b->ptr;
+    #####:  423:	EVP_CipherInit_ex(&(ctx->cipher),c,NULL, k,i,e);
+        -:  424:	
+    #####:  425:	if (b->callback != NULL)
+    #####:  426:		b->callback(b,BIO_CB_CTRL,(const char *)c,BIO_CTRL_SET,e,1L);
+        -:  427:	}
+        -:  428:

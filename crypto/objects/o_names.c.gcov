@@ -1,0 +1,377 @@
+        -:    0:Source:o_names.c
+        -:    0:Graph:o_names.gcno
+        -:    0:Data:o_names.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:#include <stdio.h>
+        -:    2:#include <stdlib.h>
+        -:    3:#include <string.h>
+        -:    4:
+        -:    5:#include <openssl/err.h>
+        -:    6:#include <openssl/lhash.h>
+        -:    7:#include <openssl/objects.h>
+        -:    8:#include <openssl/safestack.h>
+        -:    9:#include <openssl/e_os2.h>
+        -:   10:
+        -:   11:/* Later versions of DEC C has started to add lnkage information to certain
+        -:   12: * functions, which makes it tricky to use them as values to regular function
+        -:   13: * pointers.  One way is to define a macro that takes care of casting them
+        -:   14: * correctly.
+        -:   15: */
+        -:   16:#ifdef OPENSSL_SYS_VMS_DECC
+        -:   17:# define OPENSSL_strcmp (int (*)(const char *,const char *))strcmp
+        -:   18:#else
+        -:   19:# define OPENSSL_strcmp strcmp
+        -:   20:#endif
+        -:   21:
+        -:   22:/* I use the ex_data stuff to manage the identifiers for the obj_name_types
+        -:   23: * that applications may define.  I only really use the free function field.
+        -:   24: */
+        -:   25:DECLARE_LHASH_OF(OBJ_NAME);
+        -:   26:static LHASH_OF(OBJ_NAME) *names_lh=NULL;
+        -:   27:static int names_type_num=OBJ_NAME_TYPE_NUM;
+        -:   28:
+        -:   29:typedef struct name_funcs_st
+        -:   30:	{
+        -:   31:	unsigned long (*hash_func)(const char *name);
+        -:   32:	int (*cmp_func)(const char *a,const char *b);
+        -:   33:	void (*free_func)(const char *, int, const char *);
+        -:   34:	} NAME_FUNCS;
+        -:   35:
+        -:   36:DECLARE_STACK_OF(NAME_FUNCS)
+        -:   37:IMPLEMENT_STACK_OF(NAME_FUNCS)
+        -:   38:
+        -:   39:static STACK_OF(NAME_FUNCS) *name_funcs_stack;
+        -:   40:
+        -:   41:/* The LHASH callbacks now use the raw "void *" prototypes and do per-variable
+        -:   42: * casting in the functions. This prevents function pointer casting without the
+        -:   43: * need for macro-generated wrapper functions. */
+        -:   44:
+        -:   45:/* static unsigned long obj_name_hash(OBJ_NAME *a); */
+        -:   46:static unsigned long obj_name_hash(const void *a_void);
+        -:   47:/* static int obj_name_cmp(OBJ_NAME *a,OBJ_NAME *b); */
+        -:   48:static int obj_name_cmp(const void *a_void,const void *b_void);
+        -:   49:
+  6411942:   50:static IMPLEMENT_LHASH_HASH_FN(obj_name, OBJ_NAME)
+  3701942:   51:static IMPLEMENT_LHASH_COMP_FN(obj_name, OBJ_NAME)
+        -:   52:
+    10000:   53:int OBJ_NAME_init(void)
+        -:   54:	{
+    10000:   55:	if (names_lh != NULL) return(1);
+    10000:   56:	MemCheck_off();
+    10000:   57:	names_lh=lh_OBJ_NAME_new();
+    10000:   58:	MemCheck_on();
+    10000:   59:	return(names_lh != NULL);
+        -:   60:	}
+        -:   61:
+    #####:   62:int OBJ_NAME_new_index(unsigned long (*hash_func)(const char *),
+        -:   63:	int (*cmp_func)(const char *, const char *),
+        -:   64:	void (*free_func)(const char *, int, const char *))
+        -:   65:	{
+        -:   66:	int ret;
+        -:   67:	int i;
+        -:   68:	NAME_FUNCS *name_funcs;
+        -:   69:
+    #####:   70:	if (name_funcs_stack == NULL)
+        -:   71:		{
+    #####:   72:		MemCheck_off();
+    #####:   73:		name_funcs_stack=sk_NAME_FUNCS_new_null();
+    #####:   74:		MemCheck_on();
+        -:   75:		}
+    #####:   76:	if (name_funcs_stack == NULL)
+        -:   77:		{
+        -:   78:		/* ERROR */
+        -:   79:		return(0);
+        -:   80:		}
+    #####:   81:	ret=names_type_num;
+    #####:   82:	names_type_num++;
+    #####:   83:	for (i=sk_NAME_FUNCS_num(name_funcs_stack); i<names_type_num; i++)
+        -:   84:		{
+    #####:   85:		MemCheck_off();
+    #####:   86:		name_funcs = OPENSSL_malloc(sizeof(NAME_FUNCS));
+    #####:   87:		MemCheck_on();
+    #####:   88:		if (!name_funcs)
+        -:   89:			{
+    #####:   90:			OBJerr(OBJ_F_OBJ_NAME_NEW_INDEX,ERR_R_MALLOC_FAILURE);
+    #####:   91:			return(0);
+        -:   92:			}
+    #####:   93:		name_funcs->hash_func = lh_strhash;
+    #####:   94:		name_funcs->cmp_func = OPENSSL_strcmp;
+    #####:   95:		name_funcs->free_func = 0; /* NULL is often declared to
+        -:   96:						* ((void *)0), which according
+        -:   97:						* to Compaq C is not really
+        -:   98:						* compatible with a function
+        -:   99:						* pointer.	-- Richard Levitte*/
+    #####:  100:		MemCheck_off();
+    #####:  101:		sk_NAME_FUNCS_push(name_funcs_stack,name_funcs);
+    #####:  102:		MemCheck_on();
+        -:  103:		}
+    #####:  104:	name_funcs = sk_NAME_FUNCS_value(name_funcs_stack, ret);
+    #####:  105:	if (hash_func != NULL)
+    #####:  106:		name_funcs->hash_func = hash_func;
+    #####:  107:	if (cmp_func != NULL)
+    #####:  108:		name_funcs->cmp_func = cmp_func;
+    #####:  109:	if (free_func != NULL)
+    #####:  110:		name_funcs->free_func = free_func;
+    #####:  111:	return(ret);
+        -:  112:	}
+        -:  113:
+        -:  114:/* static int obj_name_cmp(OBJ_NAME *a, OBJ_NAME *b) */
+  3701942:  115:static int obj_name_cmp(const void *a_void, const void *b_void)
+        -:  116:	{
+        -:  117:	int ret;
+        -:  118:	const OBJ_NAME *a = (const OBJ_NAME *)a_void;
+        -:  119:	const OBJ_NAME *b = (const OBJ_NAME *)b_void;
+        -:  120:
+  3701942:  121:	ret=a->type-b->type;
+  3701942:  122:	if (ret == 0)
+        -:  123:		{
+  3701942:  124:		if ((name_funcs_stack != NULL)
+    #####:  125:			&& (sk_NAME_FUNCS_num(name_funcs_stack) > a->type))
+        -:  126:			{
+    #####:  127:			ret=sk_NAME_FUNCS_value(name_funcs_stack,
+    #####:  128:				a->type)->cmp_func(a->name,b->name);
+        -:  129:			}
+        -:  130:		else
+  3701942:  131:			ret=strcmp(a->name,b->name);
+        -:  132:		}
+  3701942:  133:	return(ret);
+        -:  134:	}
+        -:  135:
+        -:  136:/* static unsigned long obj_name_hash(OBJ_NAME *a) */
+  6411942:  137:static unsigned long obj_name_hash(const void *a_void)
+        -:  138:	{
+        -:  139:	unsigned long ret;
+        -:  140:	const OBJ_NAME *a = (const OBJ_NAME *)a_void;
+        -:  141:
+  6411942:  142:	if ((name_funcs_stack != NULL) && (sk_NAME_FUNCS_num(name_funcs_stack) > a->type))
+        -:  143:		{
+    #####:  144:		ret=sk_NAME_FUNCS_value(name_funcs_stack,
+    #####:  145:			a->type)->hash_func(a->name);
+        -:  146:		}
+        -:  147:	else
+        -:  148:		{
+  6411942:  149:		ret=lh_strhash(a->name);
+        -:  150:		}
+  6411942:  151:	ret^=a->type;
+  6411942:  152:	return(ret);
+        -:  153:	}
+        -:  154:
+   221942:  155:const char *OBJ_NAME_get(const char *name, int type)
+        -:  156:	{
+        -:  157:	OBJ_NAME on,*ret;
+        -:  158:	int num=0,alias;
+        -:  159:
+   221942:  160:	if (name == NULL) return(NULL);
+   221942:  161:	if ((names_lh == NULL) && !OBJ_NAME_init()) return(NULL);
+        -:  162:
+   221942:  163:	alias=type&OBJ_NAME_ALIAS;
+   221942:  164:	type&= ~OBJ_NAME_ALIAS;
+        -:  165:
+   221942:  166:	on.name=name;
+   221942:  167:	on.type=type;
+        -:  168:
+        -:  169:	for (;;)
+        -:  170:	{
+   251942:  171:		ret=lh_OBJ_NAME_retrieve(names_lh,&on);
+   251942:  172:		if (ret == NULL) return(NULL);
+   251942:  173:		if ((ret->alias) && !alias)
+        -:  174:			{
+    30000:  175:			if (++num > 10) return(NULL);
+    30000:  176:			on.name=ret->data;
+        -:  177:			}
+        -:  178:		else
+        -:  179:			{
+   221942:  180:			return(ret->data);
+        -:  181:			}
+    30000:  182:		}
+        -:  183:	}
+        -:  184:
+  3450000:  185:int OBJ_NAME_add(const char *name, int type, const char *data)
+        -:  186:	{
+        -:  187:	OBJ_NAME *onp,*ret;
+        -:  188:	int alias;
+        -:  189:
+  3450000:  190:	if ((names_lh == NULL) && !OBJ_NAME_init()) return(0);
+        -:  191:
+  3450000:  192:	alias=type&OBJ_NAME_ALIAS;
+  3450000:  193:	type&= ~OBJ_NAME_ALIAS;
+        -:  194:
+  3450000:  195:	onp=(OBJ_NAME *)OPENSSL_malloc(sizeof(OBJ_NAME));
+  3450000:  196:	if (onp == NULL)
+        -:  197:		{
+        -:  198:		/* ERROR */
+        -:  199:		return(0);
+        -:  200:		}
+        -:  201:
+  3450000:  202:	onp->name=name;
+  3450000:  203:	onp->alias=alias;
+  3450000:  204:	onp->type=type;
+  3450000:  205:	onp->data=data;
+        -:  206:
+  3450000:  207:	ret=lh_OBJ_NAME_insert(names_lh,onp);
+  3450000:  208:	if (ret != NULL)
+        -:  209:		{
+        -:  210:		/* free things */
+   740000:  211:		if ((name_funcs_stack != NULL) && (sk_NAME_FUNCS_num(name_funcs_stack) > ret->type))
+        -:  212:			{
+        -:  213:			/* XXX: I'm not sure I understand why the free
+        -:  214:			 * function should get three arguments...
+        -:  215:			 * -- Richard Levitte
+        -:  216:			 */
+    #####:  217:			sk_NAME_FUNCS_value(name_funcs_stack,
+    #####:  218:				ret->type)->free_func(ret->name,ret->type,ret->data);
+        -:  219:			}
+   740000:  220:		OPENSSL_free(ret);
+        -:  221:		}
+        -:  222:	else
+        -:  223:		{
+  2710000:  224:		if (lh_OBJ_NAME_error(names_lh))
+        -:  225:			{
+        -:  226:			/* ERROR */
+        -:  227:			return(0);
+        -:  228:			}
+        -:  229:		}
+        -:  230:	return(1);
+        -:  231:	}
+        -:  232:
+  2710000:  233:int OBJ_NAME_remove(const char *name, int type)
+        -:  234:	{
+        -:  235:	OBJ_NAME on,*ret;
+        -:  236:
+  2710000:  237:	if (names_lh == NULL) return(0);
+        -:  238:
+  2710000:  239:	type&= ~OBJ_NAME_ALIAS;
+  2710000:  240:	on.name=name;
+  2710000:  241:	on.type=type;
+  2710000:  242:	ret=lh_OBJ_NAME_delete(names_lh,&on);
+  2710000:  243:	if (ret != NULL)
+        -:  244:		{
+        -:  245:		/* free things */
+  2710000:  246:		if ((name_funcs_stack != NULL) && (sk_NAME_FUNCS_num(name_funcs_stack) > ret->type))
+        -:  247:			{
+        -:  248:			/* XXX: I'm not sure I understand why the free
+        -:  249:			 * function should get three arguments...
+        -:  250:			 * -- Richard Levitte
+        -:  251:			 */
+    #####:  252:			sk_NAME_FUNCS_value(name_funcs_stack,
+    #####:  253:				ret->type)->free_func(ret->name,ret->type,ret->data);
+        -:  254:			}
+  2710000:  255:		OPENSSL_free(ret);
+  2710000:  256:		return(1);
+        -:  257:		}
+        -:  258:	else
+        -:  259:		return(0);
+        -:  260:	}
+        -:  261:
+        -:  262:struct doall
+        -:  263:	{
+        -:  264:	int type;
+        -:  265:	void (*fn)(const OBJ_NAME *,void *arg);
+        -:  266:	void *arg;
+        -:  267:	};
+        -:  268:
+        -:  269:static void do_all_fn_doall_arg(const OBJ_NAME *name,struct doall *d)
+        -:  270:	{
+    #####:  271:	if(name->type == d->type)
+    #####:  272:		d->fn(name,d->arg);
+        -:  273:	}
+        -:  274:
+    #####:  275:static IMPLEMENT_LHASH_DOALL_ARG_FN(do_all_fn, const OBJ_NAME, struct doall)
+        -:  276:
+    #####:  277:void OBJ_NAME_do_all(int type,void (*fn)(const OBJ_NAME *,void *arg),void *arg)
+        -:  278:	{
+        -:  279:	struct doall d;
+        -:  280:
+    #####:  281:	d.type=type;
+    #####:  282:	d.fn=fn;
+    #####:  283:	d.arg=arg;
+        -:  284:
+    #####:  285:	lh_OBJ_NAME_doall_arg(names_lh, LHASH_DOALL_ARG_FN(do_all_fn),
+        -:  286:			      struct doall, &d);
+    #####:  287:	}
+        -:  288:
+        -:  289:struct doall_sorted
+        -:  290:	{
+        -:  291:	int type;
+        -:  292:	int n;
+        -:  293:	const OBJ_NAME **names;
+        -:  294:	};
+        -:  295:
+    #####:  296:static void do_all_sorted_fn(const OBJ_NAME *name,void *d_)
+        -:  297:	{
+        -:  298:	struct doall_sorted *d=d_;
+        -:  299:
+    #####:  300:	if(name->type != d->type)
+    #####:  301:		return;
+        -:  302:
+    #####:  303:	d->names[d->n++]=name;
+        -:  304:	}
+        -:  305:
+    #####:  306:static int do_all_sorted_cmp(const void *n1_,const void *n2_)
+        -:  307:	{
+        -:  308:	const OBJ_NAME * const *n1=n1_;
+        -:  309:	const OBJ_NAME * const *n2=n2_;
+        -:  310:
+    #####:  311:	return strcmp((*n1)->name,(*n2)->name);
+        -:  312:	}
+        -:  313:
+    #####:  314:void OBJ_NAME_do_all_sorted(int type,void (*fn)(const OBJ_NAME *,void *arg),
+        -:  315:				void *arg)
+        -:  316:	{
+        -:  317:	struct doall_sorted d;
+        -:  318:	int n;
+        -:  319:
+    #####:  320:	d.type=type;
+    #####:  321:	d.names=OPENSSL_malloc(lh_OBJ_NAME_num_items(names_lh)*sizeof *d.names);
+    #####:  322:	d.n=0;
+        -:  323:	OBJ_NAME_do_all(type,do_all_sorted_fn,&d);
+        -:  324:
+    #####:  325:	qsort((void *)d.names,d.n,sizeof *d.names,do_all_sorted_cmp);
+        -:  326:
+    #####:  327:	for(n=0 ; n < d.n ; ++n)
+    #####:  328:		fn(d.names[n],arg);
+        -:  329:
+    #####:  330:	OPENSSL_free((void *)d.names);
+    #####:  331:	}
+        -:  332:
+        -:  333:static int free_type;
+        -:  334:
+  3320000:  335:static void names_lh_free_doall(OBJ_NAME *onp)
+        -:  336:	{
+  3320000:  337:	if (onp == NULL)
+  3320000:  338:		return;
+        -:  339:
+  3320000:  340:	if (free_type < 0 || free_type == onp->type)
+  2710000:  341:		OBJ_NAME_remove(onp->name,onp->type);
+        -:  342:	}
+        -:  343:
+  3320000:  344:static IMPLEMENT_LHASH_DOALL_FN(names_lh_free, OBJ_NAME)
+        -:  345:
+    #####:  346:static void name_funcs_free(NAME_FUNCS *ptr)
+        -:  347:	{
+    #####:  348:	OPENSSL_free(ptr);
+    #####:  349:	}
+        -:  350:
+    30000:  351:void OBJ_NAME_cleanup(int type)
+        -:  352:	{
+        -:  353:	unsigned long down_load;
+        -:  354:
+    60000:  355:	if (names_lh == NULL) return;
+        -:  356:
+    30000:  357:	free_type=type;
+    30000:  358:	down_load=lh_OBJ_NAME_down_load(names_lh);
+    30000:  359:	lh_OBJ_NAME_down_load(names_lh)=0;
+        -:  360:
+    30000:  361:	lh_OBJ_NAME_doall(names_lh,LHASH_DOALL_FN(names_lh_free));
+    30000:  362:	if (type < 0)
+        -:  363:		{
+    10000:  364:		lh_OBJ_NAME_free(names_lh);
+    10000:  365:		sk_NAME_FUNCS_pop_free(name_funcs_stack,name_funcs_free);
+    10000:  366:		names_lh=NULL;
+    10000:  367:		name_funcs_stack = NULL;
+        -:  368:		}
+        -:  369:	else
+    20000:  370:		lh_OBJ_NAME_down_load(names_lh)=down_load;
+        -:  371:	}
+        -:  372:

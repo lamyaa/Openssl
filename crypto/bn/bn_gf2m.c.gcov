@@ -1,0 +1,1118 @@
+        -:    0:Source:bn_gf2m.c
+        -:    0:Graph:bn_gf2m.gcno
+        -:    0:Data:bn_gf2m.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* crypto/bn/bn_gf2m.c */
+        -:    2:/* ====================================================================
+        -:    3: * Copyright 2002 Sun Microsystems, Inc. ALL RIGHTS RESERVED.
+        -:    4: *
+        -:    5: * The Elliptic Curve Public-Key Crypto Library (ECC Code) included
+        -:    6: * herein is developed by SUN MICROSYSTEMS, INC., and is contributed
+        -:    7: * to the OpenSSL project.
+        -:    8: *
+        -:    9: * The ECC Code is licensed pursuant to the OpenSSL open source
+        -:   10: * license provided below.
+        -:   11: *
+        -:   12: * In addition, Sun covenants to all licensees who provide a reciprocal
+        -:   13: * covenant with respect to their own patents if any, not to sue under
+        -:   14: * current and future patent claims necessarily infringed by the making,
+        -:   15: * using, practicing, selling, offering for sale and/or otherwise
+        -:   16: * disposing of the ECC Code as delivered hereunder (or portions thereof),
+        -:   17: * provided that such covenant shall not apply:
+        -:   18: *  1) for code that a licensee deletes from the ECC Code;
+        -:   19: *  2) separates from the ECC Code; or
+        -:   20: *  3) for infringements caused by:
+        -:   21: *       i) the modification of the ECC Code or
+        -:   22: *      ii) the combination of the ECC Code with other software or
+        -:   23: *          devices where such combination causes the infringement.
+        -:   24: *
+        -:   25: * The software is originally written by Sheueling Chang Shantz and
+        -:   26: * Douglas Stebila of Sun Microsystems Laboratories.
+        -:   27: *
+        -:   28: */
+        -:   29:
+        -:   30:/* NOTE: This file is licensed pursuant to the OpenSSL license below
+        -:   31: * and may be modified; but after modifications, the above covenant
+        -:   32: * may no longer apply!  In such cases, the corresponding paragraph
+        -:   33: * ["In addition, Sun covenants ... causes the infringement."] and
+        -:   34: * this note can be edited out; but please keep the Sun copyright
+        -:   35: * notice and attribution. */
+        -:   36:
+        -:   37:/* ====================================================================
+        -:   38: * Copyright (c) 1998-2002 The OpenSSL Project.  All rights reserved.
+        -:   39: *
+        -:   40: * Redistribution and use in source and binary forms, with or without
+        -:   41: * modification, are permitted provided that the following conditions
+        -:   42: * are met:
+        -:   43: *
+        -:   44: * 1. Redistributions of source code must retain the above copyright
+        -:   45: *    notice, this list of conditions and the following disclaimer. 
+        -:   46: *
+        -:   47: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   48: *    notice, this list of conditions and the following disclaimer in
+        -:   49: *    the documentation and/or other materials provided with the
+        -:   50: *    distribution.
+        -:   51: *
+        -:   52: * 3. All advertising materials mentioning features or use of this
+        -:   53: *    software must display the following acknowledgment:
+        -:   54: *    "This product includes software developed by the OpenSSL Project
+        -:   55: *    for use in the OpenSSL Toolkit. (http://www.openssl.org/)"
+        -:   56: *
+        -:   57: * 4. The names "OpenSSL Toolkit" and "OpenSSL Project" must not be used to
+        -:   58: *    endorse or promote products derived from this software without
+        -:   59: *    prior written permission. For written permission, please contact
+        -:   60: *    openssl-core@openssl.org.
+        -:   61: *
+        -:   62: * 5. Products derived from this software may not be called "OpenSSL"
+        -:   63: *    nor may "OpenSSL" appear in their names without prior written
+        -:   64: *    permission of the OpenSSL Project.
+        -:   65: *
+        -:   66: * 6. Redistributions of any form whatsoever must retain the following
+        -:   67: *    acknowledgment:
+        -:   68: *    "This product includes software developed by the OpenSSL Project
+        -:   69: *    for use in the OpenSSL Toolkit (http://www.openssl.org/)"
+        -:   70: *
+        -:   71: * THIS SOFTWARE IS PROVIDED BY THE OpenSSL PROJECT ``AS IS'' AND ANY
+        -:   72: * EXPRESSED OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   73: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+        -:   74: * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE OpenSSL PROJECT OR
+        -:   75: * ITS CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+        -:   76: * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+        -:   77: * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+        -:   78: * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   79: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+        -:   80: * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+        -:   81: * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+        -:   82: * OF THE POSSIBILITY OF SUCH DAMAGE.
+        -:   83: * ====================================================================
+        -:   84: *
+        -:   85: * This product includes cryptographic software written by Eric Young
+        -:   86: * (eay@cryptsoft.com).  This product includes software written by Tim
+        -:   87: * Hudson (tjh@cryptsoft.com).
+        -:   88: *
+        -:   89: */
+        -:   90:
+        -:   91:#include <assert.h>
+        -:   92:#include <limits.h>
+        -:   93:#include <stdio.h>
+        -:   94:#include "cryptlib.h"
+        -:   95:#include "bn_lcl.h"
+        -:   96:
+        -:   97:#ifndef OPENSSL_NO_EC2M
+        -:   98:
+        -:   99:/* Maximum number of iterations before BN_GF2m_mod_solve_quad_arr should fail. */
+        -:  100:#define MAX_ITERATIONS 50
+        -:  101:
+        -:  102:static const BN_ULONG SQR_tb[16] =
+        -:  103:  {     0,     1,     4,     5,    16,    17,    20,    21,
+        -:  104:       64,    65,    68,    69,    80,    81,    84,    85 };
+        -:  105:/* Platform-specific macros to accelerate squaring. */
+        -:  106:#if defined(SIXTY_FOUR_BIT) || defined(SIXTY_FOUR_BIT_LONG)
+        -:  107:#define SQR1(w) \
+        -:  108:    SQR_tb[(w) >> 60 & 0xF] << 56 | SQR_tb[(w) >> 56 & 0xF] << 48 | \
+        -:  109:    SQR_tb[(w) >> 52 & 0xF] << 40 | SQR_tb[(w) >> 48 & 0xF] << 32 | \
+        -:  110:    SQR_tb[(w) >> 44 & 0xF] << 24 | SQR_tb[(w) >> 40 & 0xF] << 16 | \
+        -:  111:    SQR_tb[(w) >> 36 & 0xF] <<  8 | SQR_tb[(w) >> 32 & 0xF]
+        -:  112:#define SQR0(w) \
+        -:  113:    SQR_tb[(w) >> 28 & 0xF] << 56 | SQR_tb[(w) >> 24 & 0xF] << 48 | \
+        -:  114:    SQR_tb[(w) >> 20 & 0xF] << 40 | SQR_tb[(w) >> 16 & 0xF] << 32 | \
+        -:  115:    SQR_tb[(w) >> 12 & 0xF] << 24 | SQR_tb[(w) >>  8 & 0xF] << 16 | \
+        -:  116:    SQR_tb[(w) >>  4 & 0xF] <<  8 | SQR_tb[(w)       & 0xF]
+        -:  117:#endif
+        -:  118:#ifdef THIRTY_TWO_BIT
+        -:  119:#define SQR1(w) \
+        -:  120:    SQR_tb[(w) >> 28 & 0xF] << 24 | SQR_tb[(w) >> 24 & 0xF] << 16 | \
+        -:  121:    SQR_tb[(w) >> 20 & 0xF] <<  8 | SQR_tb[(w) >> 16 & 0xF]
+        -:  122:#define SQR0(w) \
+        -:  123:    SQR_tb[(w) >> 12 & 0xF] << 24 | SQR_tb[(w) >>  8 & 0xF] << 16 | \
+        -:  124:    SQR_tb[(w) >>  4 & 0xF] <<  8 | SQR_tb[(w)       & 0xF]
+        -:  125:#endif
+        -:  126:
+        -:  127:#if !defined(OPENSSL_BN_ASM_GF2m)
+        -:  128:/* Product of two polynomials a, b each with degree < BN_BITS2 - 1,
+        -:  129: * result is a polynomial r with degree < 2 * BN_BITS - 1
+        -:  130: * The caller MUST ensure that the variables have the right amount
+        -:  131: * of space allocated.
+        -:  132: */
+        -:  133:#ifdef THIRTY_TWO_BIT
+        -:  134:static void bn_GF2m_mul_1x1(BN_ULONG *r1, BN_ULONG *r0, const BN_ULONG a, const BN_ULONG b)
+        -:  135:	{
+        -:  136:	register BN_ULONG h, l, s;
+        -:  137:	BN_ULONG tab[8], top2b = a >> 30; 
+        -:  138:	register BN_ULONG a1, a2, a4;
+        -:  139:
+        -:  140:	a1 = a & (0x3FFFFFFF); a2 = a1 << 1; a4 = a2 << 1;
+        -:  141:
+        -:  142:	tab[0] =  0; tab[1] = a1;    tab[2] = a2;    tab[3] = a1^a2;
+        -:  143:	tab[4] = a4; tab[5] = a1^a4; tab[6] = a2^a4; tab[7] = a1^a2^a4;
+        -:  144:
+        -:  145:	s = tab[b       & 0x7]; l  = s;
+        -:  146:	s = tab[b >>  3 & 0x7]; l ^= s <<  3; h  = s >> 29;
+        -:  147:	s = tab[b >>  6 & 0x7]; l ^= s <<  6; h ^= s >> 26;
+        -:  148:	s = tab[b >>  9 & 0x7]; l ^= s <<  9; h ^= s >> 23;
+        -:  149:	s = tab[b >> 12 & 0x7]; l ^= s << 12; h ^= s >> 20;
+        -:  150:	s = tab[b >> 15 & 0x7]; l ^= s << 15; h ^= s >> 17;
+        -:  151:	s = tab[b >> 18 & 0x7]; l ^= s << 18; h ^= s >> 14;
+        -:  152:	s = tab[b >> 21 & 0x7]; l ^= s << 21; h ^= s >> 11;
+        -:  153:	s = tab[b >> 24 & 0x7]; l ^= s << 24; h ^= s >>  8;
+        -:  154:	s = tab[b >> 27 & 0x7]; l ^= s << 27; h ^= s >>  5;
+        -:  155:	s = tab[b >> 30      ]; l ^= s << 30; h ^= s >>  2;
+        -:  156:
+        -:  157:	/* compensate for the top two bits of a */
+        -:  158:
+        -:  159:	if (top2b & 01) { l ^= b << 30; h ^= b >> 2; } 
+        -:  160:	if (top2b & 02) { l ^= b << 31; h ^= b >> 1; } 
+        -:  161:
+        -:  162:	*r1 = h; *r0 = l;
+        -:  163:	} 
+        -:  164:#endif
+        -:  165:#if defined(SIXTY_FOUR_BIT) || defined(SIXTY_FOUR_BIT_LONG)
+        -:  166:static void bn_GF2m_mul_1x1(BN_ULONG *r1, BN_ULONG *r0, const BN_ULONG a, const BN_ULONG b)
+        -:  167:	{
+        -:  168:	register BN_ULONG h, l, s;
+        -:  169:	BN_ULONG tab[16], top3b = a >> 61;
+        -:  170:	register BN_ULONG a1, a2, a4, a8;
+        -:  171:
+        -:  172:	a1 = a & (0x1FFFFFFFFFFFFFFFULL); a2 = a1 << 1; a4 = a2 << 1; a8 = a4 << 1;
+        -:  173:
+        -:  174:	tab[ 0] = 0;     tab[ 1] = a1;       tab[ 2] = a2;       tab[ 3] = a1^a2;
+        -:  175:	tab[ 4] = a4;    tab[ 5] = a1^a4;    tab[ 6] = a2^a4;    tab[ 7] = a1^a2^a4;
+        -:  176:	tab[ 8] = a8;    tab[ 9] = a1^a8;    tab[10] = a2^a8;    tab[11] = a1^a2^a8;
+        -:  177:	tab[12] = a4^a8; tab[13] = a1^a4^a8; tab[14] = a2^a4^a8; tab[15] = a1^a2^a4^a8;
+        -:  178:
+        -:  179:	s = tab[b       & 0xF]; l  = s;
+        -:  180:	s = tab[b >>  4 & 0xF]; l ^= s <<  4; h  = s >> 60;
+        -:  181:	s = tab[b >>  8 & 0xF]; l ^= s <<  8; h ^= s >> 56;
+        -:  182:	s = tab[b >> 12 & 0xF]; l ^= s << 12; h ^= s >> 52;
+        -:  183:	s = tab[b >> 16 & 0xF]; l ^= s << 16; h ^= s >> 48;
+        -:  184:	s = tab[b >> 20 & 0xF]; l ^= s << 20; h ^= s >> 44;
+        -:  185:	s = tab[b >> 24 & 0xF]; l ^= s << 24; h ^= s >> 40;
+        -:  186:	s = tab[b >> 28 & 0xF]; l ^= s << 28; h ^= s >> 36;
+        -:  187:	s = tab[b >> 32 & 0xF]; l ^= s << 32; h ^= s >> 32;
+        -:  188:	s = tab[b >> 36 & 0xF]; l ^= s << 36; h ^= s >> 28;
+        -:  189:	s = tab[b >> 40 & 0xF]; l ^= s << 40; h ^= s >> 24;
+        -:  190:	s = tab[b >> 44 & 0xF]; l ^= s << 44; h ^= s >> 20;
+        -:  191:	s = tab[b >> 48 & 0xF]; l ^= s << 48; h ^= s >> 16;
+        -:  192:	s = tab[b >> 52 & 0xF]; l ^= s << 52; h ^= s >> 12;
+        -:  193:	s = tab[b >> 56 & 0xF]; l ^= s << 56; h ^= s >>  8;
+        -:  194:	s = tab[b >> 60      ]; l ^= s << 60; h ^= s >>  4;
+        -:  195:
+        -:  196:	/* compensate for the top three bits of a */
+        -:  197:
+        -:  198:	if (top3b & 01) { l ^= b << 61; h ^= b >> 3; } 
+        -:  199:	if (top3b & 02) { l ^= b << 62; h ^= b >> 2; } 
+        -:  200:	if (top3b & 04) { l ^= b << 63; h ^= b >> 1; } 
+        -:  201:
+        -:  202:	*r1 = h; *r0 = l;
+        -:  203:	} 
+        -:  204:#endif
+        -:  205:
+        -:  206:/* Product of two polynomials a, b each with degree < 2 * BN_BITS2 - 1,
+        -:  207: * result is a polynomial r with degree < 4 * BN_BITS2 - 1
+        -:  208: * The caller MUST ensure that the variables have the right amount
+        -:  209: * of space allocated.
+        -:  210: */
+        -:  211:static void bn_GF2m_mul_2x2(BN_ULONG *r, const BN_ULONG a1, const BN_ULONG a0, const BN_ULONG b1, const BN_ULONG b0)
+        -:  212:	{
+        -:  213:	BN_ULONG m1, m0;
+        -:  214:	/* r[3] = h1, r[2] = h0; r[1] = l1; r[0] = l0 */
+        -:  215:	bn_GF2m_mul_1x1(r+3, r+2, a1, b1);
+        -:  216:	bn_GF2m_mul_1x1(r+1, r, a0, b0);
+        -:  217:	bn_GF2m_mul_1x1(&m1, &m0, a0 ^ a1, b0 ^ b1);
+        -:  218:	/* Correction on m1 ^= l1 ^ h1; m0 ^= l0 ^ h0; */
+        -:  219:	r[2] ^= m1 ^ r[1] ^ r[3];  /* h0 ^= m1 ^ l1 ^ h1; */
+        -:  220:	r[1] = r[3] ^ r[2] ^ r[0] ^ m1 ^ m0;  /* l1 ^= l0 ^ h0 ^ m0; */
+        -:  221:	}
+        -:  222:#else
+        -:  223:void bn_GF2m_mul_2x2(BN_ULONG *r, BN_ULONG a1, BN_ULONG a0, BN_ULONG b1, BN_ULONG b0);
+        -:  224:#endif 
+        -:  225:
+        -:  226:/* Add polynomials a and b and store result in r; r could be a or b, a and b 
+        -:  227: * could be equal; r is the bitwise XOR of a and b.
+        -:  228: */
+    #####:  229:int	BN_GF2m_add(BIGNUM *r, const BIGNUM *a, const BIGNUM *b)
+        -:  230:	{
+        -:  231:	int i;
+        -:  232:	const BIGNUM *at, *bt;
+        -:  233:
+        -:  234:	bn_check_top(a);
+        -:  235:	bn_check_top(b);
+        -:  236:
+    #####:  237:	if (a->top < b->top) { at = b; bt = a; }
+        -:  238:	else { at = a; bt = b; }
+        -:  239:
+    #####:  240:	if(bn_wexpand(r, at->top) == NULL)
+        -:  241:		return 0;
+        -:  242:
+    #####:  243:	for (i = 0; i < bt->top; i++)
+        -:  244:		{
+    #####:  245:		r->d[i] = at->d[i] ^ bt->d[i];
+        -:  246:		}
+    #####:  247:	for (; i < at->top; i++)
+        -:  248:		{
+    #####:  249:		r->d[i] = at->d[i];
+        -:  250:		}
+        -:  251:	
+    #####:  252:	r->top = at->top;
+    #####:  253:	bn_correct_top(r);
+        -:  254:	
+        -:  255:	return 1;
+        -:  256:	}
+        -:  257:
+        -:  258:
+        -:  259:/* Some functions allow for representation of the irreducible polynomials
+        -:  260: * as an int[], say p.  The irreducible f(t) is then of the form:
+        -:  261: *     t^p[0] + t^p[1] + ... + t^p[k]
+        -:  262: * where m = p[0] > p[1] > ... > p[k] = 0.
+        -:  263: */
+        -:  264:
+        -:  265:
+        -:  266:/* Performs modular reduction of a and store result in r.  r could be a. */
+    #####:  267:int BN_GF2m_mod_arr(BIGNUM *r, const BIGNUM *a, const int p[])
+        -:  268:	{
+        -:  269:	int j, k;
+        -:  270:	int n, dN, d0, d1;
+        -:  271:	BN_ULONG zz, *z;
+        -:  272:
+        -:  273:	bn_check_top(a);
+        -:  274:
+    #####:  275:	if (!p[0])
+        -:  276:		{
+        -:  277:		/* reduction mod 1 => return 0 */
+    #####:  278:		BN_zero(r);
+    #####:  279:		return 1;
+        -:  280:		}
+        -:  281:
+        -:  282:	/* Since the algorithm does reduction in the r value, if a != r, copy
+        -:  283:	 * the contents of a into r so we can do reduction in r. 
+        -:  284:	 */
+    #####:  285:	if (a != r)
+        -:  286:		{
+    #####:  287:		if (!bn_wexpand(r, a->top)) return 0;
+    #####:  288:		for (j = 0; j < a->top; j++)
+        -:  289:			{
+    #####:  290:			r->d[j] = a->d[j];
+        -:  291:			}
+    #####:  292:		r->top = a->top;
+        -:  293:		}
+    #####:  294:	z = r->d;
+        -:  295:
+        -:  296:	/* start reduction */
+    #####:  297:	dN = p[0] / BN_BITS2;  
+    #####:  298:	for (j = r->top - 1; j > dN;)
+        -:  299:		{
+    #####:  300:		zz = z[j];
+    #####:  301:		if (z[j] == 0) { j--; continue; }
+    #####:  302:		z[j] = 0;
+        -:  303:
+    #####:  304:		for (k = 1; p[k] != 0; k++)
+        -:  305:			{
+        -:  306:			/* reducing component t^p[k] */
+    #####:  307:			n = p[0] - p[k];
+    #####:  308:			d0 = n % BN_BITS2;  d1 = BN_BITS2 - d0;
+    #####:  309:			n /= BN_BITS2; 
+    #####:  310:			z[j-n] ^= (zz>>d0);
+    #####:  311:			if (d0) z[j-n-1] ^= (zz<<d1);
+        -:  312:			}
+        -:  313:
+        -:  314:		/* reducing component t^0 */
+        -:  315:		n = dN;  
+    #####:  316:		d0 = p[0] % BN_BITS2;
+    #####:  317:		d1 = BN_BITS2 - d0;
+    #####:  318:		z[j-n] ^= (zz >> d0);
+    #####:  319:		if (d0) z[j-n-1] ^= (zz << d1);
+        -:  320:		}
+        -:  321:
+        -:  322:	/* final round of reduction */
+    #####:  323:	while (j == dN)
+        -:  324:		{
+        -:  325:
+    #####:  326:		d0 = p[0] % BN_BITS2;
+    #####:  327:		zz = z[dN] >> d0;
+    #####:  328:		if (zz == 0) break;
+    #####:  329:		d1 = BN_BITS2 - d0;
+        -:  330:		
+        -:  331:		/* clear up the top d1 bits */
+    #####:  332:		if (d0)
+    #####:  333:			z[dN] = (z[dN] << d1) >> d1;
+        -:  334:		else
+    #####:  335:			z[dN] = 0;
+    #####:  336:		z[0] ^= zz; /* reduction t^0 component */
+        -:  337:
+    #####:  338:		for (k = 1; p[k] != 0; k++)
+        -:  339:			{
+        -:  340:			BN_ULONG tmp_ulong;
+        -:  341:
+        -:  342:			/* reducing component t^p[k]*/
+    #####:  343:			n = p[k] / BN_BITS2;   
+    #####:  344:			d0 = p[k] % BN_BITS2;
+    #####:  345:			d1 = BN_BITS2 - d0;
+    #####:  346:			z[n] ^= (zz << d0);
+    #####:  347:			tmp_ulong = zz >> d1;
+    #####:  348:                        if (d0 && tmp_ulong)
+    #####:  349:                                z[n+1] ^= tmp_ulong;
+        -:  350:			}
+        -:  351:
+        -:  352:		
+        -:  353:		}
+        -:  354:
+    #####:  355:	bn_correct_top(r);
+        -:  356:	return 1;
+        -:  357:	}
+        -:  358:
+        -:  359:/* Performs modular reduction of a by p and store result in r.  r could be a.
+        -:  360: *
+        -:  361: * This function calls down to the BN_GF2m_mod_arr implementation; this wrapper
+        -:  362: * function is only provided for convenience; for best performance, use the 
+        -:  363: * BN_GF2m_mod_arr function.
+        -:  364: */
+    #####:  365:int	BN_GF2m_mod(BIGNUM *r, const BIGNUM *a, const BIGNUM *p)
+        -:  366:	{
+        -:  367:	int ret = 0;
+        -:  368:	int arr[6];
+        -:  369:	bn_check_top(a);
+        -:  370:	bn_check_top(p);
+    #####:  371:	ret = BN_GF2m_poly2arr(p, arr, sizeof(arr)/sizeof(arr[0]));
+    #####:  372:	if (!ret || ret > (int)(sizeof(arr)/sizeof(arr[0])))
+        -:  373:		{
+    #####:  374:		BNerr(BN_F_BN_GF2M_MOD,BN_R_INVALID_LENGTH);
+    #####:  375:		return 0;
+        -:  376:		}
+    #####:  377:	ret = BN_GF2m_mod_arr(r, a, arr);
+        -:  378:	bn_check_top(r);
+    #####:  379:	return ret;
+        -:  380:	}
+        -:  381:
+        -:  382:
+        -:  383:/* Compute the product of two polynomials a and b, reduce modulo p, and store
+        -:  384: * the result in r.  r could be a or b; a could be b.
+        -:  385: */
+    #####:  386:int	BN_GF2m_mod_mul_arr(BIGNUM *r, const BIGNUM *a, const BIGNUM *b, const int p[], BN_CTX *ctx)
+        -:  387:	{
+        -:  388:	int zlen, i, j, k, ret = 0;
+        -:  389:	BIGNUM *s;
+        -:  390:	BN_ULONG x1, x0, y1, y0, zz[4];
+        -:  391:
+        -:  392:	bn_check_top(a);
+        -:  393:	bn_check_top(b);
+        -:  394:
+    #####:  395:	if (a == b)
+        -:  396:		{
+    #####:  397:		return BN_GF2m_mod_sqr_arr(r, a, p, ctx);
+        -:  398:		}
+        -:  399:
+    #####:  400:	BN_CTX_start(ctx);
+    #####:  401:	if ((s = BN_CTX_get(ctx)) == NULL) goto err;
+        -:  402:	
+    #####:  403:	zlen = a->top + b->top + 4;
+    #####:  404:	if (!bn_wexpand(s, zlen)) goto err;
+    #####:  405:	s->top = zlen;
+        -:  406:
+    #####:  407:	for (i = 0; i < zlen; i++) s->d[i] = 0;
+        -:  408:
+    #####:  409:	for (j = 0; j < b->top; j += 2)
+        -:  410:		{
+    #####:  411:		y0 = b->d[j];
+    #####:  412:		y1 = ((j+1) == b->top) ? 0 : b->d[j+1];
+    #####:  413:		for (i = 0; i < a->top; i += 2)
+        -:  414:			{
+    #####:  415:			x0 = a->d[i];
+    #####:  416:			x1 = ((i+1) == a->top) ? 0 : a->d[i+1];
+    #####:  417:			bn_GF2m_mul_2x2(zz, x1, x0, y1, y0);
+    #####:  418:			for (k = 0; k < 4; k++) s->d[i+j+k] ^= zz[k];
+        -:  419:			}
+        -:  420:		}
+        -:  421:
+    #####:  422:	bn_correct_top(s);
+    #####:  423:	if (BN_GF2m_mod_arr(r, s, p))
+        -:  424:		ret = 1;
+        -:  425:	bn_check_top(r);
+        -:  426:
+        -:  427:err:
+    #####:  428:	BN_CTX_end(ctx);
+    #####:  429:	return ret;
+        -:  430:	}
+        -:  431:
+        -:  432:/* Compute the product of two polynomials a and b, reduce modulo p, and store
+        -:  433: * the result in r.  r could be a or b; a could equal b.
+        -:  434: *
+        -:  435: * This function calls down to the BN_GF2m_mod_mul_arr implementation; this wrapper
+        -:  436: * function is only provided for convenience; for best performance, use the 
+        -:  437: * BN_GF2m_mod_mul_arr function.
+        -:  438: */
+    #####:  439:int	BN_GF2m_mod_mul(BIGNUM *r, const BIGNUM *a, const BIGNUM *b, const BIGNUM *p, BN_CTX *ctx)
+        -:  440:	{
+        -:  441:	int ret = 0;
+    #####:  442:	const int max = BN_num_bits(p) + 1;
+        -:  443:	int *arr=NULL;
+        -:  444:	bn_check_top(a);
+        -:  445:	bn_check_top(b);
+        -:  446:	bn_check_top(p);
+    #####:  447:	if ((arr = (int *)OPENSSL_malloc(sizeof(int) * max)) == NULL) goto err;
+    #####:  448:	ret = BN_GF2m_poly2arr(p, arr, max);
+    #####:  449:	if (!ret || ret > max)
+        -:  450:		{
+    #####:  451:		BNerr(BN_F_BN_GF2M_MOD_MUL,BN_R_INVALID_LENGTH);
+    #####:  452:		goto err;
+        -:  453:		}
+    #####:  454:	ret = BN_GF2m_mod_mul_arr(r, a, b, arr, ctx);
+        -:  455:	bn_check_top(r);
+        -:  456:err:
+    #####:  457:	if (arr) OPENSSL_free(arr);
+    #####:  458:	return ret;
+        -:  459:	}
+        -:  460:
+        -:  461:
+        -:  462:/* Square a, reduce the result mod p, and store it in a.  r could be a. */
+    #####:  463:int	BN_GF2m_mod_sqr_arr(BIGNUM *r, const BIGNUM *a, const int p[], BN_CTX *ctx)
+        -:  464:	{
+        -:  465:	int i, ret = 0;
+        -:  466:	BIGNUM *s;
+        -:  467:
+        -:  468:	bn_check_top(a);
+    #####:  469:	BN_CTX_start(ctx);
+    #####:  470:	if ((s = BN_CTX_get(ctx)) == NULL) return 0;
+    #####:  471:	if (!bn_wexpand(s, 2 * a->top)) goto err;
+        -:  472:
+    #####:  473:	for (i = a->top - 1; i >= 0; i--)
+        -:  474:		{
+    #####:  475:		s->d[2*i+1] = SQR1(a->d[i]);
+    #####:  476:		s->d[2*i  ] = SQR0(a->d[i]);
+        -:  477:		}
+        -:  478:
+    #####:  479:	s->top = 2 * a->top;
+    #####:  480:	bn_correct_top(s);
+    #####:  481:	if (!BN_GF2m_mod_arr(r, s, p)) goto err;
+        -:  482:	bn_check_top(r);
+        -:  483:	ret = 1;
+        -:  484:err:
+    #####:  485:	BN_CTX_end(ctx);
+    #####:  486:	return ret;
+        -:  487:	}
+        -:  488:
+        -:  489:/* Square a, reduce the result mod p, and store it in a.  r could be a.
+        -:  490: *
+        -:  491: * This function calls down to the BN_GF2m_mod_sqr_arr implementation; this wrapper
+        -:  492: * function is only provided for convenience; for best performance, use the 
+        -:  493: * BN_GF2m_mod_sqr_arr function.
+        -:  494: */
+    #####:  495:int	BN_GF2m_mod_sqr(BIGNUM *r, const BIGNUM *a, const BIGNUM *p, BN_CTX *ctx)
+        -:  496:	{
+        -:  497:	int ret = 0;
+    #####:  498:	const int max = BN_num_bits(p) + 1;
+        -:  499:	int *arr=NULL;
+        -:  500:
+        -:  501:	bn_check_top(a);
+        -:  502:	bn_check_top(p);
+    #####:  503:	if ((arr = (int *)OPENSSL_malloc(sizeof(int) * max)) == NULL) goto err;
+    #####:  504:	ret = BN_GF2m_poly2arr(p, arr, max);
+    #####:  505:	if (!ret || ret > max)
+        -:  506:		{
+    #####:  507:		BNerr(BN_F_BN_GF2M_MOD_SQR,BN_R_INVALID_LENGTH);
+    #####:  508:		goto err;
+        -:  509:		}
+    #####:  510:	ret = BN_GF2m_mod_sqr_arr(r, a, arr, ctx);
+        -:  511:	bn_check_top(r);
+        -:  512:err:
+    #####:  513:	if (arr) OPENSSL_free(arr);
+    #####:  514:	return ret;
+        -:  515:	}
+        -:  516:
+        -:  517:
+        -:  518:/* Invert a, reduce modulo p, and store the result in r. r could be a. 
+        -:  519: * Uses Modified Almost Inverse Algorithm (Algorithm 10) from
+        -:  520: *     Hankerson, D., Hernandez, J.L., and Menezes, A.  "Software Implementation
+        -:  521: *     of Elliptic Curve Cryptography Over Binary Fields".
+        -:  522: */
+    #####:  523:int BN_GF2m_mod_inv(BIGNUM *r, const BIGNUM *a, const BIGNUM *p, BN_CTX *ctx)
+        -:  524:	{
+        -:  525:	BIGNUM *b, *c = NULL, *u = NULL, *v = NULL, *tmp;
+        -:  526:	int ret = 0;
+        -:  527:
+        -:  528:	bn_check_top(a);
+        -:  529:	bn_check_top(p);
+        -:  530:
+    #####:  531:	BN_CTX_start(ctx);
+        -:  532:	
+    #####:  533:	if ((b = BN_CTX_get(ctx))==NULL) goto err;
+    #####:  534:	if ((c = BN_CTX_get(ctx))==NULL) goto err;
+    #####:  535:	if ((u = BN_CTX_get(ctx))==NULL) goto err;
+    #####:  536:	if ((v = BN_CTX_get(ctx))==NULL) goto err;
+        -:  537:
+    #####:  538:	if (!BN_GF2m_mod(u, a, p)) goto err;
+    #####:  539:	if (BN_is_zero(u)) goto err;
+        -:  540:
+    #####:  541:	if (!BN_copy(v, p)) goto err;
+        -:  542:#if 0
+        -:  543:	if (!BN_one(b)) goto err;
+        -:  544:
+        -:  545:	while (1)
+        -:  546:		{
+        -:  547:		while (!BN_is_odd(u))
+        -:  548:			{
+        -:  549:			if (BN_is_zero(u)) goto err;
+        -:  550:			if (!BN_rshift1(u, u)) goto err;
+        -:  551:			if (BN_is_odd(b))
+        -:  552:				{
+        -:  553:				if (!BN_GF2m_add(b, b, p)) goto err;
+        -:  554:				}
+        -:  555:			if (!BN_rshift1(b, b)) goto err;
+        -:  556:			}
+        -:  557:
+        -:  558:		if (BN_abs_is_word(u, 1)) break;
+        -:  559:
+        -:  560:		if (BN_num_bits(u) < BN_num_bits(v))
+        -:  561:			{
+        -:  562:			tmp = u; u = v; v = tmp;
+        -:  563:			tmp = b; b = c; c = tmp;
+        -:  564:			}
+        -:  565:		
+        -:  566:		if (!BN_GF2m_add(u, u, v)) goto err;
+        -:  567:		if (!BN_GF2m_add(b, b, c)) goto err;
+        -:  568:		}
+        -:  569:#else
+        -:  570:	{
+    #####:  571:	int i,	ubits = BN_num_bits(u),
+    #####:  572:		vbits = BN_num_bits(v),	/* v is copy of p */
+    #####:  573:		top = p->top;
+        -:  574:	BN_ULONG *udp,*bdp,*vdp,*cdp;
+        -:  575:
+    #####:  576:	bn_wexpand(u,top);	udp = u->d;
+    #####:  577:				for (i=u->top;i<top;i++) udp[i] = 0;
+    #####:  578:				u->top = top;
+    #####:  579:	bn_wexpand(b,top);	bdp = b->d;
+    #####:  580:				bdp[0] = 1;
+    #####:  581:				for (i=1;i<top;i++) bdp[i] = 0;
+    #####:  582:				b->top = top;
+    #####:  583:	bn_wexpand(c,top);	cdp = c->d;
+    #####:  584:				for (i=0;i<top;i++) cdp[i] = 0;
+    #####:  585:				c->top = top;
+    #####:  586:	vdp = v->d;	/* It pays off to "cache" *->d pointers, because
+        -:  587:			 * it allows optimizer to be more aggressive.
+        -:  588:			 * But we don't have to "cache" p->d, because *p
+        -:  589:			 * is declared 'const'... */
+        -:  590:	while (1)
+        -:  591:		{
+    #####:  592:		while (ubits && !(udp[0]&1))
+        -:  593:			{
+        -:  594:			BN_ULONG u0,u1,b0,b1,mask;
+        -:  595:
+        -:  596:			u0   = udp[0];
+    #####:  597:			b0   = bdp[0];
+    #####:  598:			mask = (BN_ULONG)0-(b0&1);
+    #####:  599:			b0  ^= p->d[0]&mask;
+    #####:  600:			for (i=0;i<top-1;i++)
+        -:  601:				{
+    #####:  602:				u1 = udp[i+1];
+    #####:  603:				udp[i] = ((u0>>1)|(u1<<(BN_BITS2-1)))&BN_MASK2;
+        -:  604:				u0 = u1;
+    #####:  605:				b1 = bdp[i+1]^(p->d[i+1]&mask);
+    #####:  606:				bdp[i] = ((b0>>1)|(b1<<(BN_BITS2-1)))&BN_MASK2;
+        -:  607:				b0 = b1;
+        -:  608:				}
+    #####:  609:			udp[i] = u0>>1;
+    #####:  610:			bdp[i] = b0>>1;
+    #####:  611:			ubits--;
+        -:  612:			}
+        -:  613:
+    #####:  614:		if (ubits<=BN_BITS2 && udp[0]==1) break;
+        -:  615:
+    #####:  616:		if (ubits<vbits)
+        -:  617:			{
+        -:  618:			i = ubits; ubits = vbits; vbits = i;
+        -:  619:			tmp = u; u = v; v = tmp;
+        -:  620:			tmp = b; b = c; c = tmp;
+    #####:  621:			udp = vdp; vdp = v->d;
+    #####:  622:			bdp = cdp; cdp = c->d;
+        -:  623:			}
+    #####:  624:		for(i=0;i<top;i++)
+        -:  625:			{
+    #####:  626:			udp[i] ^= vdp[i];
+    #####:  627:			bdp[i] ^= cdp[i];
+        -:  628:			}
+    #####:  629:		if (ubits==vbits)
+        -:  630:			{
+        -:  631:			BN_ULONG ul;
+    #####:  632:			int utop = (ubits-1)/BN_BITS2;
+        -:  633:
+    #####:  634:			while ((ul=udp[utop])==0 && utop) utop--;
+    #####:  635:			ubits = utop*BN_BITS2 + BN_num_bits_word(ul);
+        -:  636:			}
+        -:  637:		}
+    #####:  638:	bn_correct_top(b);
+        -:  639:	}
+        -:  640:#endif
+        -:  641:
+    #####:  642:	if (!BN_copy(r, b)) goto err;
+        -:  643:	bn_check_top(r);
+        -:  644:	ret = 1;
+        -:  645:
+        -:  646:err:
+        -:  647:#ifdef BN_DEBUG /* BN_CTX_end would complain about the expanded form */
+        -:  648:        bn_correct_top(c);
+        -:  649:        bn_correct_top(u);
+        -:  650:        bn_correct_top(v);
+        -:  651:#endif
+    #####:  652:  	BN_CTX_end(ctx);
+    #####:  653:	return ret;
+        -:  654:	}
+        -:  655:
+        -:  656:/* Invert xx, reduce modulo p, and store the result in r. r could be xx. 
+        -:  657: *
+        -:  658: * This function calls down to the BN_GF2m_mod_inv implementation; this wrapper
+        -:  659: * function is only provided for convenience; for best performance, use the 
+        -:  660: * BN_GF2m_mod_inv function.
+        -:  661: */
+    #####:  662:int BN_GF2m_mod_inv_arr(BIGNUM *r, const BIGNUM *xx, const int p[], BN_CTX *ctx)
+        -:  663:	{
+        -:  664:	BIGNUM *field;
+        -:  665:	int ret = 0;
+        -:  666:
+        -:  667:	bn_check_top(xx);
+    #####:  668:	BN_CTX_start(ctx);
+    #####:  669:	if ((field = BN_CTX_get(ctx)) == NULL) goto err;
+    #####:  670:	if (!BN_GF2m_arr2poly(p, field)) goto err;
+        -:  671:	
+    #####:  672:	ret = BN_GF2m_mod_inv(r, xx, field, ctx);
+        -:  673:	bn_check_top(r);
+        -:  674:
+        -:  675:err:
+    #####:  676:	BN_CTX_end(ctx);
+    #####:  677:	return ret;
+        -:  678:	}
+        -:  679:
+        -:  680:
+        -:  681:#ifndef OPENSSL_SUN_GF2M_DIV
+        -:  682:/* Divide y by x, reduce modulo p, and store the result in r. r could be x 
+        -:  683: * or y, x could equal y.
+        -:  684: */
+    #####:  685:int BN_GF2m_mod_div(BIGNUM *r, const BIGNUM *y, const BIGNUM *x, const BIGNUM *p, BN_CTX *ctx)
+        -:  686:	{
+        -:  687:	BIGNUM *xinv = NULL;
+        -:  688:	int ret = 0;
+        -:  689:
+        -:  690:	bn_check_top(y);
+        -:  691:	bn_check_top(x);
+        -:  692:	bn_check_top(p);
+        -:  693:
+    #####:  694:	BN_CTX_start(ctx);
+    #####:  695:	xinv = BN_CTX_get(ctx);
+    #####:  696:	if (xinv == NULL) goto err;
+        -:  697:	
+    #####:  698:	if (!BN_GF2m_mod_inv(xinv, x, p, ctx)) goto err;
+    #####:  699:	if (!BN_GF2m_mod_mul(r, y, xinv, p, ctx)) goto err;
+        -:  700:	bn_check_top(r);
+        -:  701:	ret = 1;
+        -:  702:
+        -:  703:err:
+    #####:  704:	BN_CTX_end(ctx);
+    #####:  705:	return ret;
+        -:  706:	}
+        -:  707:#else
+        -:  708:/* Divide y by x, reduce modulo p, and store the result in r. r could be x 
+        -:  709: * or y, x could equal y.
+        -:  710: * Uses algorithm Modular_Division_GF(2^m) from 
+        -:  711: *     Chang-Shantz, S.  "From Euclid's GCD to Montgomery Multiplication to 
+        -:  712: *     the Great Divide".
+        -:  713: */
+        -:  714:int BN_GF2m_mod_div(BIGNUM *r, const BIGNUM *y, const BIGNUM *x, const BIGNUM *p, BN_CTX *ctx)
+        -:  715:	{
+        -:  716:	BIGNUM *a, *b, *u, *v;
+        -:  717:	int ret = 0;
+        -:  718:
+        -:  719:	bn_check_top(y);
+        -:  720:	bn_check_top(x);
+        -:  721:	bn_check_top(p);
+        -:  722:
+        -:  723:	BN_CTX_start(ctx);
+        -:  724:	
+        -:  725:	a = BN_CTX_get(ctx);
+        -:  726:	b = BN_CTX_get(ctx);
+        -:  727:	u = BN_CTX_get(ctx);
+        -:  728:	v = BN_CTX_get(ctx);
+        -:  729:	if (v == NULL) goto err;
+        -:  730:
+        -:  731:	/* reduce x and y mod p */
+        -:  732:	if (!BN_GF2m_mod(u, y, p)) goto err;
+        -:  733:	if (!BN_GF2m_mod(a, x, p)) goto err;
+        -:  734:	if (!BN_copy(b, p)) goto err;
+        -:  735:	
+        -:  736:	while (!BN_is_odd(a))
+        -:  737:		{
+        -:  738:		if (!BN_rshift1(a, a)) goto err;
+        -:  739:		if (BN_is_odd(u)) if (!BN_GF2m_add(u, u, p)) goto err;
+        -:  740:		if (!BN_rshift1(u, u)) goto err;
+        -:  741:		}
+        -:  742:
+        -:  743:	do
+        -:  744:		{
+        -:  745:		if (BN_GF2m_cmp(b, a) > 0)
+        -:  746:			{
+        -:  747:			if (!BN_GF2m_add(b, b, a)) goto err;
+        -:  748:			if (!BN_GF2m_add(v, v, u)) goto err;
+        -:  749:			do
+        -:  750:				{
+        -:  751:				if (!BN_rshift1(b, b)) goto err;
+        -:  752:				if (BN_is_odd(v)) if (!BN_GF2m_add(v, v, p)) goto err;
+        -:  753:				if (!BN_rshift1(v, v)) goto err;
+        -:  754:				} while (!BN_is_odd(b));
+        -:  755:			}
+        -:  756:		else if (BN_abs_is_word(a, 1))
+        -:  757:			break;
+        -:  758:		else
+        -:  759:			{
+        -:  760:			if (!BN_GF2m_add(a, a, b)) goto err;
+        -:  761:			if (!BN_GF2m_add(u, u, v)) goto err;
+        -:  762:			do
+        -:  763:				{
+        -:  764:				if (!BN_rshift1(a, a)) goto err;
+        -:  765:				if (BN_is_odd(u)) if (!BN_GF2m_add(u, u, p)) goto err;
+        -:  766:				if (!BN_rshift1(u, u)) goto err;
+        -:  767:				} while (!BN_is_odd(a));
+        -:  768:			}
+        -:  769:		} while (1);
+        -:  770:
+        -:  771:	if (!BN_copy(r, u)) goto err;
+        -:  772:	bn_check_top(r);
+        -:  773:	ret = 1;
+        -:  774:
+        -:  775:err:
+        -:  776:  	BN_CTX_end(ctx);
+        -:  777:	return ret;
+        -:  778:	}
+        -:  779:#endif
+        -:  780:
+        -:  781:/* Divide yy by xx, reduce modulo p, and store the result in r. r could be xx 
+        -:  782: * or yy, xx could equal yy.
+        -:  783: *
+        -:  784: * This function calls down to the BN_GF2m_mod_div implementation; this wrapper
+        -:  785: * function is only provided for convenience; for best performance, use the 
+        -:  786: * BN_GF2m_mod_div function.
+        -:  787: */
+    #####:  788:int BN_GF2m_mod_div_arr(BIGNUM *r, const BIGNUM *yy, const BIGNUM *xx, const int p[], BN_CTX *ctx)
+        -:  789:	{
+        -:  790:	BIGNUM *field;
+        -:  791:	int ret = 0;
+        -:  792:
+        -:  793:	bn_check_top(yy);
+        -:  794:	bn_check_top(xx);
+        -:  795:
+    #####:  796:	BN_CTX_start(ctx);
+    #####:  797:	if ((field = BN_CTX_get(ctx)) == NULL) goto err;
+    #####:  798:	if (!BN_GF2m_arr2poly(p, field)) goto err;
+        -:  799:	
+    #####:  800:	ret = BN_GF2m_mod_div(r, yy, xx, field, ctx);
+        -:  801:	bn_check_top(r);
+        -:  802:
+        -:  803:err:
+    #####:  804:	BN_CTX_end(ctx);
+    #####:  805:	return ret;
+        -:  806:	}
+        -:  807:
+        -:  808:
+        -:  809:/* Compute the bth power of a, reduce modulo p, and store
+        -:  810: * the result in r.  r could be a.
+        -:  811: * Uses simple square-and-multiply algorithm A.5.1 from IEEE P1363.
+        -:  812: */
+    #####:  813:int	BN_GF2m_mod_exp_arr(BIGNUM *r, const BIGNUM *a, const BIGNUM *b, const int p[], BN_CTX *ctx)
+        -:  814:	{
+        -:  815:	int ret = 0, i, n;
+        -:  816:	BIGNUM *u;
+        -:  817:
+        -:  818:	bn_check_top(a);
+        -:  819:	bn_check_top(b);
+        -:  820:
+    #####:  821:	if (BN_is_zero(b))
+    #####:  822:		return(BN_one(r));
+        -:  823:
+    #####:  824:	if (BN_abs_is_word(b, 1))
+    #####:  825:		return (BN_copy(r, a) != NULL);
+        -:  826:
+    #####:  827:	BN_CTX_start(ctx);
+    #####:  828:	if ((u = BN_CTX_get(ctx)) == NULL) goto err;
+        -:  829:	
+    #####:  830:	if (!BN_GF2m_mod_arr(u, a, p)) goto err;
+        -:  831:	
+    #####:  832:	n = BN_num_bits(b) - 1;
+    #####:  833:	for (i = n - 1; i >= 0; i--)
+        -:  834:		{
+    #####:  835:		if (!BN_GF2m_mod_sqr_arr(u, u, p, ctx)) goto err;
+    #####:  836:		if (BN_is_bit_set(b, i))
+        -:  837:			{
+    #####:  838:			if (!BN_GF2m_mod_mul_arr(u, u, a, p, ctx)) goto err;
+        -:  839:			}
+        -:  840:		}
+    #####:  841:	if (!BN_copy(r, u)) goto err;
+        -:  842:	bn_check_top(r);
+        -:  843:	ret = 1;
+        -:  844:err:
+    #####:  845:	BN_CTX_end(ctx);
+    #####:  846:	return ret;
+        -:  847:	}
+        -:  848:
+        -:  849:/* Compute the bth power of a, reduce modulo p, and store
+        -:  850: * the result in r.  r could be a.
+        -:  851: *
+        -:  852: * This function calls down to the BN_GF2m_mod_exp_arr implementation; this wrapper
+        -:  853: * function is only provided for convenience; for best performance, use the 
+        -:  854: * BN_GF2m_mod_exp_arr function.
+        -:  855: */
+    #####:  856:int BN_GF2m_mod_exp(BIGNUM *r, const BIGNUM *a, const BIGNUM *b, const BIGNUM *p, BN_CTX *ctx)
+        -:  857:	{
+        -:  858:	int ret = 0;
+    #####:  859:	const int max = BN_num_bits(p) + 1;
+        -:  860:	int *arr=NULL;
+        -:  861:	bn_check_top(a);
+        -:  862:	bn_check_top(b);
+        -:  863:	bn_check_top(p);
+    #####:  864:	if ((arr = (int *)OPENSSL_malloc(sizeof(int) * max)) == NULL) goto err;
+    #####:  865:	ret = BN_GF2m_poly2arr(p, arr, max);
+    #####:  866:	if (!ret || ret > max)
+        -:  867:		{
+    #####:  868:		BNerr(BN_F_BN_GF2M_MOD_EXP,BN_R_INVALID_LENGTH);
+    #####:  869:		goto err;
+        -:  870:		}
+    #####:  871:	ret = BN_GF2m_mod_exp_arr(r, a, b, arr, ctx);
+        -:  872:	bn_check_top(r);
+        -:  873:err:
+    #####:  874:	if (arr) OPENSSL_free(arr);
+    #####:  875:	return ret;
+        -:  876:	}
+        -:  877:
+        -:  878:/* Compute the square root of a, reduce modulo p, and store
+        -:  879: * the result in r.  r could be a.
+        -:  880: * Uses exponentiation as in algorithm A.4.1 from IEEE P1363.
+        -:  881: */
+    #####:  882:int	BN_GF2m_mod_sqrt_arr(BIGNUM *r, const BIGNUM *a, const int p[], BN_CTX *ctx)
+        -:  883:	{
+        -:  884:	int ret = 0;
+        -:  885:	BIGNUM *u;
+        -:  886:
+        -:  887:	bn_check_top(a);
+        -:  888:
+    #####:  889:	if (!p[0])
+        -:  890:		{
+        -:  891:		/* reduction mod 1 => return 0 */
+    #####:  892:		BN_zero(r);
+    #####:  893:		return 1;
+        -:  894:		}
+        -:  895:
+    #####:  896:	BN_CTX_start(ctx);
+    #####:  897:	if ((u = BN_CTX_get(ctx)) == NULL) goto err;
+        -:  898:	
+    #####:  899:	if (!BN_set_bit(u, p[0] - 1)) goto err;
+    #####:  900:	ret = BN_GF2m_mod_exp_arr(r, a, u, p, ctx);
+        -:  901:	bn_check_top(r);
+        -:  902:
+        -:  903:err:
+    #####:  904:	BN_CTX_end(ctx);
+    #####:  905:	return ret;
+        -:  906:	}
+        -:  907:
+        -:  908:/* Compute the square root of a, reduce modulo p, and store
+        -:  909: * the result in r.  r could be a.
+        -:  910: *
+        -:  911: * This function calls down to the BN_GF2m_mod_sqrt_arr implementation; this wrapper
+        -:  912: * function is only provided for convenience; for best performance, use the 
+        -:  913: * BN_GF2m_mod_sqrt_arr function.
+        -:  914: */
+    #####:  915:int BN_GF2m_mod_sqrt(BIGNUM *r, const BIGNUM *a, const BIGNUM *p, BN_CTX *ctx)
+        -:  916:	{
+        -:  917:	int ret = 0;
+    #####:  918:	const int max = BN_num_bits(p) + 1;
+        -:  919:	int *arr=NULL;
+        -:  920:	bn_check_top(a);
+        -:  921:	bn_check_top(p);
+    #####:  922:	if ((arr = (int *)OPENSSL_malloc(sizeof(int) * max)) == NULL) goto err;
+    #####:  923:	ret = BN_GF2m_poly2arr(p, arr, max);
+    #####:  924:	if (!ret || ret > max)
+        -:  925:		{
+    #####:  926:		BNerr(BN_F_BN_GF2M_MOD_SQRT,BN_R_INVALID_LENGTH);
+    #####:  927:		goto err;
+        -:  928:		}
+    #####:  929:	ret = BN_GF2m_mod_sqrt_arr(r, a, arr, ctx);
+        -:  930:	bn_check_top(r);
+        -:  931:err:
+    #####:  932:	if (arr) OPENSSL_free(arr);
+    #####:  933:	return ret;
+        -:  934:	}
+        -:  935:
+        -:  936:/* Find r such that r^2 + r = a mod p.  r could be a. If no r exists returns 0.
+        -:  937: * Uses algorithms A.4.7 and A.4.6 from IEEE P1363.
+        -:  938: */
+    #####:  939:int BN_GF2m_mod_solve_quad_arr(BIGNUM *r, const BIGNUM *a_, const int p[], BN_CTX *ctx)
+        -:  940:	{
+        -:  941:	int ret = 0, count = 0, j;
+        -:  942:	BIGNUM *a, *z, *rho, *w, *w2, *tmp;
+        -:  943:
+        -:  944:	bn_check_top(a_);
+        -:  945:
+    #####:  946:	if (!p[0])
+        -:  947:		{
+        -:  948:		/* reduction mod 1 => return 0 */
+    #####:  949:		BN_zero(r);
+    #####:  950:		return 1;
+        -:  951:		}
+        -:  952:
+    #####:  953:	BN_CTX_start(ctx);
+    #####:  954:	a = BN_CTX_get(ctx);
+    #####:  955:	z = BN_CTX_get(ctx);
+    #####:  956:	w = BN_CTX_get(ctx);
+    #####:  957:	if (w == NULL) goto err;
+        -:  958:
+    #####:  959:	if (!BN_GF2m_mod_arr(a, a_, p)) goto err;
+        -:  960:	
+    #####:  961:	if (BN_is_zero(a))
+        -:  962:		{
+    #####:  963:		BN_zero(r);
+        -:  964:		ret = 1;
+    #####:  965:		goto err;
+        -:  966:		}
+        -:  967:
+    #####:  968:	if (p[0] & 0x1) /* m is odd */
+        -:  969:		{
+        -:  970:		/* compute half-trace of a */
+    #####:  971:		if (!BN_copy(z, a)) goto err;
+    #####:  972:		for (j = 1; j <= (p[0] - 1) / 2; j++)
+        -:  973:			{
+    #####:  974:			if (!BN_GF2m_mod_sqr_arr(z, z, p, ctx)) goto err;
+    #####:  975:			if (!BN_GF2m_mod_sqr_arr(z, z, p, ctx)) goto err;
+    #####:  976:			if (!BN_GF2m_add(z, z, a)) goto err;
+        -:  977:			}
+        -:  978:		
+        -:  979:		}
+        -:  980:	else /* m is even */
+        -:  981:		{
+    #####:  982:		rho = BN_CTX_get(ctx);
+    #####:  983:		w2 = BN_CTX_get(ctx);
+    #####:  984:		tmp = BN_CTX_get(ctx);
+    #####:  985:		if (tmp == NULL) goto err;
+        -:  986:		do
+        -:  987:			{
+    #####:  988:			if (!BN_rand(rho, p[0], 0, 0)) goto err;
+    #####:  989:			if (!BN_GF2m_mod_arr(rho, rho, p)) goto err;
+    #####:  990:			BN_zero(z);
+    #####:  991:			if (!BN_copy(w, rho)) goto err;
+    #####:  992:			for (j = 1; j <= p[0] - 1; j++)
+        -:  993:				{
+    #####:  994:				if (!BN_GF2m_mod_sqr_arr(z, z, p, ctx)) goto err;
+    #####:  995:				if (!BN_GF2m_mod_sqr_arr(w2, w, p, ctx)) goto err;
+    #####:  996:				if (!BN_GF2m_mod_mul_arr(tmp, w2, a, p, ctx)) goto err;
+    #####:  997:				if (!BN_GF2m_add(z, z, tmp)) goto err;
+    #####:  998:				if (!BN_GF2m_add(w, w2, rho)) goto err;
+        -:  999:				}
+    #####: 1000:			count++;
+    #####: 1001:			} while (BN_is_zero(w) && (count < MAX_ITERATIONS));
+    #####: 1002:		if (BN_is_zero(w))
+        -: 1003:			{
+    #####: 1004:			BNerr(BN_F_BN_GF2M_MOD_SOLVE_QUAD_ARR,BN_R_TOO_MANY_ITERATIONS);
+    #####: 1005:			goto err;
+        -: 1006:			}
+        -: 1007:		}
+        -: 1008:	
+    #####: 1009:	if (!BN_GF2m_mod_sqr_arr(w, z, p, ctx)) goto err;
+    #####: 1010:	if (!BN_GF2m_add(w, z, w)) goto err;
+    #####: 1011:	if (BN_GF2m_cmp(w, a))
+        -: 1012:		{
+    #####: 1013:		BNerr(BN_F_BN_GF2M_MOD_SOLVE_QUAD_ARR, BN_R_NO_SOLUTION);
+    #####: 1014:		goto err;
+        -: 1015:		}
+        -: 1016:
+    #####: 1017:	if (!BN_copy(r, z)) goto err;
+        -: 1018:	bn_check_top(r);
+        -: 1019:
+        -: 1020:	ret = 1;
+        -: 1021:
+        -: 1022:err:
+    #####: 1023:	BN_CTX_end(ctx);
+    #####: 1024:	return ret;
+        -: 1025:	}
+        -: 1026:
+        -: 1027:/* Find r such that r^2 + r = a mod p.  r could be a. If no r exists returns 0.
+        -: 1028: *
+        -: 1029: * This function calls down to the BN_GF2m_mod_solve_quad_arr implementation; this wrapper
+        -: 1030: * function is only provided for convenience; for best performance, use the 
+        -: 1031: * BN_GF2m_mod_solve_quad_arr function.
+        -: 1032: */
+    #####: 1033:int BN_GF2m_mod_solve_quad(BIGNUM *r, const BIGNUM *a, const BIGNUM *p, BN_CTX *ctx)
+        -: 1034:	{
+        -: 1035:	int ret = 0;
+    #####: 1036:	const int max = BN_num_bits(p) + 1;
+        -: 1037:	int *arr=NULL;
+        -: 1038:	bn_check_top(a);
+        -: 1039:	bn_check_top(p);
+    #####: 1040:	if ((arr = (int *)OPENSSL_malloc(sizeof(int) *
+        -: 1041:						max)) == NULL) goto err;
+    #####: 1042:	ret = BN_GF2m_poly2arr(p, arr, max);
+    #####: 1043:	if (!ret || ret > max)
+        -: 1044:		{
+    #####: 1045:		BNerr(BN_F_BN_GF2M_MOD_SOLVE_QUAD,BN_R_INVALID_LENGTH);
+    #####: 1046:		goto err;
+        -: 1047:		}
+    #####: 1048:	ret = BN_GF2m_mod_solve_quad_arr(r, a, arr, ctx);
+        -: 1049:	bn_check_top(r);
+        -: 1050:err:
+    #####: 1051:	if (arr) OPENSSL_free(arr);
+    #####: 1052:	return ret;
+        -: 1053:	}
+        -: 1054:
+        -: 1055:/* Convert the bit-string representation of a polynomial
+        -: 1056: * ( \sum_{i=0}^n a_i * x^i) into an array of integers corresponding 
+        -: 1057: * to the bits with non-zero coefficient.  Array is terminated with -1.
+        -: 1058: * Up to max elements of the array will be filled.  Return value is total
+        -: 1059: * number of array elements that would be filled if array was large enough.
+        -: 1060: */
+    #####: 1061:int BN_GF2m_poly2arr(const BIGNUM *a, int p[], int max)
+        -: 1062:	{
+        -: 1063:	int i, j, k = 0;
+        -: 1064:	BN_ULONG mask;
+        -: 1065:
+    #####: 1066:	if (BN_is_zero(a))
+        -: 1067:		return 0;
+        -: 1068:
+    #####: 1069:	for (i = a->top - 1; i >= 0; i--)
+        -: 1070:		{
+    #####: 1071:		if (!a->d[i])
+        -: 1072:			/* skip word if a->d[i] == 0 */
+    #####: 1073:			continue;
+        -: 1074:		mask = BN_TBIT;
+    #####: 1075:		for (j = BN_BITS2 - 1; j >= 0; j--)
+        -: 1076:			{
+    #####: 1077:			if (a->d[i] & mask) 
+        -: 1078:				{
+    #####: 1079:				if (k < max) p[k] = BN_BITS2 * i + j;
+    #####: 1080:				k++;
+        -: 1081:				}
+    #####: 1082:			mask >>= 1;
+        -: 1083:			}
+        -: 1084:		}
+        -: 1085:
+    #####: 1086:	if (k < max) {
+    #####: 1087:		p[k] = -1;
+    #####: 1088:		k++;
+        -: 1089:	}
+        -: 1090:
+    #####: 1091:	return k;
+        -: 1092:	}
+        -: 1093:
+        -: 1094:/* Convert the coefficient array representation of a polynomial to a 
+        -: 1095: * bit-string.  The array must be terminated by -1.
+        -: 1096: */
+    #####: 1097:int BN_GF2m_arr2poly(const int p[], BIGNUM *a)
+        -: 1098:	{
+        -: 1099:	int i;
+        -: 1100:
+        -: 1101:	bn_check_top(a);
+    #####: 1102:	BN_zero(a);
+    #####: 1103:	for (i = 0; p[i] != -1; i++)
+        -: 1104:		{
+    #####: 1105:		if (BN_set_bit(a, p[i]) == 0)
+        -: 1106:			return 0;
+        -: 1107:		}
+        -: 1108:	bn_check_top(a);
+        -: 1109:
+        -: 1110:	return 1;
+        -: 1111:	}
+        -: 1112:
+        -: 1113:#endif

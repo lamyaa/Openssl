@@ -1,0 +1,450 @@
+        -:    0:Source:encode.c
+        -:    0:Graph:encode.gcno
+        -:    0:Data:encode.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* crypto/evp/encode.c */
+        -:    2:/* Copyright (C) 1995-1998 Eric Young (eay@cryptsoft.com)
+        -:    3: * All rights reserved.
+        -:    4: *
+        -:    5: * This package is an SSL implementation written
+        -:    6: * by Eric Young (eay@cryptsoft.com).
+        -:    7: * The implementation was written so as to conform with Netscapes SSL.
+        -:    8: * 
+        -:    9: * This library is free for commercial and non-commercial use as long as
+        -:   10: * the following conditions are aheared to.  The following conditions
+        -:   11: * apply to all code found in this distribution, be it the RC4, RSA,
+        -:   12: * lhash, DES, etc., code; not just the SSL code.  The SSL documentation
+        -:   13: * included with this distribution is covered by the same copyright terms
+        -:   14: * except that the holder is Tim Hudson (tjh@cryptsoft.com).
+        -:   15: * 
+        -:   16: * Copyright remains Eric Young's, and as such any Copyright notices in
+        -:   17: * the code are not to be removed.
+        -:   18: * If this package is used in a product, Eric Young should be given attribution
+        -:   19: * as the author of the parts of the library used.
+        -:   20: * This can be in the form of a textual message at program startup or
+        -:   21: * in documentation (online or textual) provided with the package.
+        -:   22: * 
+        -:   23: * Redistribution and use in source and binary forms, with or without
+        -:   24: * modification, are permitted provided that the following conditions
+        -:   25: * are met:
+        -:   26: * 1. Redistributions of source code must retain the copyright
+        -:   27: *    notice, this list of conditions and the following disclaimer.
+        -:   28: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   29: *    notice, this list of conditions and the following disclaimer in the
+        -:   30: *    documentation and/or other materials provided with the distribution.
+        -:   31: * 3. All advertising materials mentioning features or use of this software
+        -:   32: *    must display the following acknowledgement:
+        -:   33: *    "This product includes cryptographic software written by
+        -:   34: *     Eric Young (eay@cryptsoft.com)"
+        -:   35: *    The word 'cryptographic' can be left out if the rouines from the library
+        -:   36: *    being used are not cryptographic related :-).
+        -:   37: * 4. If you include any Windows specific code (or a derivative thereof) from 
+        -:   38: *    the apps directory (application code) you must include an acknowledgement:
+        -:   39: *    "This product includes software written by Tim Hudson (tjh@cryptsoft.com)"
+        -:   40: * 
+        -:   41: * THIS SOFTWARE IS PROVIDED BY ERIC YOUNG ``AS IS'' AND
+        -:   42: * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   43: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+        -:   44: * ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+        -:   45: * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+        -:   46: * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+        -:   47: * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   48: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+        -:   49: * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+        -:   50: * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+        -:   51: * SUCH DAMAGE.
+        -:   52: * 
+        -:   53: * The licence and distribution terms for any publically available version or
+        -:   54: * derivative of this code cannot be changed.  i.e. this code cannot simply be
+        -:   55: * copied and put under another distribution licence
+        -:   56: * [including the GNU Public Licence.]
+        -:   57: */
+        -:   58:
+        -:   59:#include <stdio.h>
+        -:   60:#include "cryptlib.h"
+        -:   61:#include <openssl/evp.h>
+        -:   62:
+        -:   63:#ifndef CHARSET_EBCDIC
+        -:   64:#define conv_bin2ascii(a)	(data_bin2ascii[(a)&0x3f])
+        -:   65:#define conv_ascii2bin(a)	(data_ascii2bin[(a)&0x7f])
+        -:   66:#else
+        -:   67:/* We assume that PEM encoded files are EBCDIC files
+        -:   68: * (i.e., printable text files). Convert them here while decoding.
+        -:   69: * When encoding, output is EBCDIC (text) format again.
+        -:   70: * (No need for conversion in the conv_bin2ascii macro, as the
+        -:   71: * underlying textstring data_bin2ascii[] is already EBCDIC)
+        -:   72: */
+        -:   73:#define conv_bin2ascii(a)	(data_bin2ascii[(a)&0x3f])
+        -:   74:#define conv_ascii2bin(a)	(data_ascii2bin[os_toascii[a]&0x7f])
+        -:   75:#endif
+        -:   76:
+        -:   77:/* 64 char lines
+        -:   78: * pad input with 0
+        -:   79: * left over chars are set to =
+        -:   80: * 1 byte  => xx==
+        -:   81: * 2 bytes => xxx=
+        -:   82: * 3 bytes => xxxx
+        -:   83: */
+        -:   84:#define BIN_PER_LINE    (64/4*3)
+        -:   85:#define CHUNKS_PER_LINE (64/4)
+        -:   86:#define CHAR_PER_LINE   (64+1)
+        -:   87:
+        -:   88:static const unsigned char data_bin2ascii[65]="ABCDEFGHIJKLMNOPQRSTUVWXYZ\
+        -:   89:abcdefghijklmnopqrstuvwxyz0123456789+/";
+        -:   90:
+        -:   91:/* 0xF0 is a EOLN
+        -:   92: * 0xF1 is ignore but next needs to be 0xF0 (for \r\n processing).
+        -:   93: * 0xF2 is EOF
+        -:   94: * 0xE0 is ignore at start of line.
+        -:   95: * 0xFF is error
+        -:   96: */
+        -:   97:
+        -:   98:#define B64_EOLN		0xF0
+        -:   99:#define B64_CR			0xF1
+        -:  100:#define B64_EOF			0xF2
+        -:  101:#define B64_WS			0xE0
+        -:  102:#define B64_ERROR       	0xFF
+        -:  103:#define B64_NOT_BASE64(a)	(((a)|0x13) == 0xF3)
+        -:  104:
+        -:  105:static const unsigned char data_ascii2bin[128]={
+        -:  106:	0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,
+        -:  107:	0xFF,0xE0,0xF0,0xFF,0xFF,0xF1,0xFF,0xFF,
+        -:  108:	0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,
+        -:  109:	0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,
+        -:  110:	0xE0,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,
+        -:  111:	0xFF,0xFF,0xFF,0x3E,0xFF,0xF2,0xFF,0x3F,
+        -:  112:	0x34,0x35,0x36,0x37,0x38,0x39,0x3A,0x3B,
+        -:  113:	0x3C,0x3D,0xFF,0xFF,0xFF,0x00,0xFF,0xFF,
+        -:  114:	0xFF,0x00,0x01,0x02,0x03,0x04,0x05,0x06,
+        -:  115:	0x07,0x08,0x09,0x0A,0x0B,0x0C,0x0D,0x0E,
+        -:  116:	0x0F,0x10,0x11,0x12,0x13,0x14,0x15,0x16,
+        -:  117:	0x17,0x18,0x19,0xFF,0xFF,0xFF,0xFF,0xFF,
+        -:  118:	0xFF,0x1A,0x1B,0x1C,0x1D,0x1E,0x1F,0x20,
+        -:  119:	0x21,0x22,0x23,0x24,0x25,0x26,0x27,0x28,
+        -:  120:	0x29,0x2A,0x2B,0x2C,0x2D,0x2E,0x2F,0x30,
+        -:  121:	0x31,0x32,0x33,0xFF,0xFF,0xFF,0xFF,0xFF,
+        -:  122:	};
+        -:  123:
+    10000:  124:void EVP_EncodeInit(EVP_ENCODE_CTX *ctx)
+        -:  125:	{
+    10000:  126:	ctx->length=48;
+    10000:  127:	ctx->num=0;
+    10000:  128:	ctx->line_num=0;
+    10000:  129:	}
+        -:  130:
+    10009:  131:void EVP_EncodeUpdate(EVP_ENCODE_CTX *ctx, unsigned char *out, int *outl,
+        -:  132:	     const unsigned char *in, int inl)
+        -:  133:	{
+        -:  134:	int i,j;
+        -:  135:	unsigned int total=0;
+        -:  136:
+    10009:  137:	*outl=0;
+    10009:  138:	if (inl == 0) return;
+    10009:  139:	OPENSSL_assert(ctx->length <= (int)sizeof(ctx->enc_data));
+    10009:  140:	if ((ctx->num+inl) < ctx->length)
+        -:  141:		{
+    #####:  142:		memcpy(&(ctx->enc_data[ctx->num]),in,inl);
+    #####:  143:		ctx->num+=inl;
+    #####:  144:		return;
+        -:  145:		}
+    10009:  146:	if (ctx->num != 0)
+        -:  147:		{
+        9:  148:		i=ctx->length-ctx->num;
+        9:  149:		memcpy(&(ctx->enc_data[ctx->num]),in,i);
+        9:  150:		in+=i;
+        9:  151:		inl-=i;
+        9:  152:		j=EVP_EncodeBlock(out,ctx->enc_data,ctx->length);
+        9:  153:		ctx->num=0;
+        9:  154:		out+=j;
+        9:  155:		*(out++)='\n';
+        9:  156:		*out='\0';
+        9:  157:		total=j+1;
+        -:  158:		}
+   272225:  159:	while (inl >= ctx->length)
+        -:  160:		{
+   262216:  161:		j=EVP_EncodeBlock(out,in,ctx->length);
+   262216:  162:		in+=ctx->length;
+   262216:  163:		inl-=ctx->length;
+   262216:  164:		out+=j;
+   262216:  165:		*(out++)='\n';
+   262216:  166:		*out='\0';
+   262216:  167:		total+=j+1;
+        -:  168:		}
+    10009:  169:	if (inl != 0)
+     9821:  170:		memcpy(&(ctx->enc_data[0]),in,inl);
+    10009:  171:	ctx->num=inl;
+    10009:  172:	*outl=total;
+        -:  173:	}
+        -:  174:
+    10000:  175:void EVP_EncodeFinal(EVP_ENCODE_CTX *ctx, unsigned char *out, int *outl)
+        -:  176:	{
+        -:  177:	unsigned int ret=0;
+        -:  178:
+    10000:  179:	if (ctx->num != 0)
+        -:  180:		{
+     9812:  181:		ret=EVP_EncodeBlock(out,ctx->enc_data,ctx->num);
+     9812:  182:		out[ret++]='\n';
+     9812:  183:		out[ret]='\0';
+     9812:  184:		ctx->num=0;
+        -:  185:		}
+    10000:  186:	*outl=ret;
+    10000:  187:	}
+        -:  188:
+   272037:  189:int EVP_EncodeBlock(unsigned char *t, const unsigned char *f, int dlen)
+        -:  190:	{
+        -:  191:	int i,ret=0;
+        -:  192:	unsigned long l;
+        -:  193:
+  4549308:  194:	for (i=dlen; i > 0; i-=3)
+        -:  195:		{
+  4277271:  196:		if (i >= 3)
+        -:  197:			{
+ 12811836:  198:			l=	(((unsigned long)f[0])<<16L)|
+  8541224:  199:				(((unsigned long)f[1])<< 8L)|f[2];
+  4270612:  200:			*(t++)=conv_bin2ascii(l>>18L);
+  4270612:  201:			*(t++)=conv_bin2ascii(l>>12L);
+  4270612:  202:			*(t++)=conv_bin2ascii(l>> 6L);
+  4270612:  203:			*(t++)=conv_bin2ascii(l     );
+        -:  204:			}
+        -:  205:		else
+        -:  206:			{
+     6659:  207:			l=((unsigned long)f[0])<<16L;
+     6659:  208:			if (i == 2) l|=((unsigned long)f[1]<<8L);
+        -:  209:
+     6659:  210:			*(t++)=conv_bin2ascii(l>>18L);
+     6659:  211:			*(t++)=conv_bin2ascii(l>>12L);
+     6659:  212:			*(t++)=(i == 1)?'=':conv_bin2ascii(l>> 6L);
+     6659:  213:			*(t++)='=';
+        -:  214:			}
+  4277271:  215:		ret+=4;
+  4277271:  216:		f+=3;
+        -:  217:		}
+        -:  218:
+   272037:  219:	*t='\0';
+   272037:  220:	return(ret);
+        -:  221:	}
+        -:  222:
+    20000:  223:void EVP_DecodeInit(EVP_ENCODE_CTX *ctx)
+        -:  224:	{
+    20000:  225:	ctx->length=30;
+    20000:  226:	ctx->num=0;
+    20000:  227:	ctx->line_num=0;
+    20000:  228:	ctx->expect_nl=0;
+    20000:  229:	}
+        -:  230:
+        -:  231:/* -1 for error
+        -:  232: *  0 for last line
+        -:  233: *  1 for full line
+        -:  234: */
+    20000:  235:int EVP_DecodeUpdate(EVP_ENCODE_CTX *ctx, unsigned char *out, int *outl,
+        -:  236:	     const unsigned char *in, int inl)
+        -:  237:	{
+        -:  238:	int seof= -1,eof=0,rv= -1,ret=0,i,v,tmp,n,ln,exp_nl;
+        -:  239:	unsigned char *d;
+        -:  240:
+    20000:  241:	n=ctx->num;
+    20000:  242:	d=ctx->enc_data;
+    20000:  243:	ln=ctx->line_num;
+    20000:  244:	exp_nl=ctx->expect_nl;
+        -:  245:
+        -:  246:	/* last line of input. */
+    20000:  247:	if ((inl == 0) || ((n == 0) && (conv_ascii2bin(in[0]) == B64_EOF)))
+        -:  248:		{ rv=0; goto end; }
+        -:  249:		
+        -:  250:	/* We parse the input data */
+ 16970000:  251:	for (i=0; i<inl; i++)
+        -:  252:		{
+        -:  253:		/* If the current line is > 80 characters, scream alot */
+ 16990000:  254:		if (ln >= 80) { rv= -1; goto end; }
+        -:  255:
+        -:  256:		/* Get char and put it into the buffer */
+ 16990000:  257:		tmp= *(in++);
+ 16990000:  258:		v=conv_ascii2bin(tmp);
+        -:  259:		/* only save the good data :-) */
+ 16990000:  260:		if (!B64_NOT_BASE64(v))
+        -:  261:			{
+ 16720000:  262:			OPENSSL_assert(n < (int)sizeof(ctx->enc_data));
+ 16720000:  263:			d[n++]=tmp;
+ 16720000:  264:			ln++;
+        -:  265:			}
+   270000:  266:		else if (v == B64_ERROR)
+        -:  267:			{
+        -:  268:			rv= -1;
+        -:  269:			goto end;
+        -:  270:			}
+        -:  271:
+        -:  272:		/* have we seen a '=' which is 'definitly' the last
+        -:  273:		 * input line.  seof will point to the character that
+        -:  274:		 * holds it. and eof will hold how many characters to
+        -:  275:		 * chop off. */
+ 16990000:  276:		if (tmp == '=')
+        -:  277:			{
+    20000:  278:			if (seof == -1) seof=n;
+    20000:  279:			eof++;
+        -:  280:			}
+        -:  281:
+ 16990000:  282:		if (v == B64_CR)
+        -:  283:			{
+        -:  284:			ln = 0;
+    #####:  285:			if (exp_nl)
+    #####:  286:				continue;
+        -:  287:			}
+        -:  288:
+        -:  289:		/* eoln */
+ 16990000:  290:		if (v == B64_EOLN)
+        -:  291:			{
+        -:  292:			ln=0;
+   270000:  293:			if (exp_nl)
+        -:  294:				{
+        -:  295:				exp_nl=0;
+   250000:  296:				continue;
+        -:  297:				}
+        -:  298:			}
+        -:  299:		exp_nl=0;
+        -:  300:
+        -:  301:		/* If we are at the end of input and it looks like a
+        -:  302:		 * line, process it. */
+ 16740000:  303:		if (((i+1) == inl) && (((n&3) == 0) || eof))
+        -:  304:			{
+        -:  305:			v=B64_EOF;
+        -:  306:			/* In case things were given us in really small
+        -:  307:			   records (so two '=' were given in separate
+        -:  308:			   updates), eof may contain the incorrect number
+        -:  309:			   of ending bytes to skip, so let's redo the count */
+        -:  310:			eof = 0;
+    20000:  311:			if (d[n-1] == '=') eof++;
+    20000:  312:			if (d[n-2] == '=') eof++;
+        -:  313:			/* There will never be more than two '=' */
+        -:  314:			}
+        -:  315:
+ 16740000:  316:		if ((v == B64_EOF && (n&3) == 0) || (n >= 64))
+        -:  317:			{
+        -:  318:			/* This is needed to work correctly on 64 byte input
+        -:  319:			 * lines.  We process the line and then need to
+        -:  320:			 * accept the '\n' */
+   270000:  321:			if ((v != B64_EOF) && (n >= 64)) exp_nl=1;
+   270000:  322:			if (n > 0)
+        -:  323:				{
+   270000:  324:				v=EVP_DecodeBlock(out,d,n);
+        -:  325:				n=0;
+   270000:  326:				if (v < 0) { rv=0; goto end; }
+   270000:  327:				ret+=(v-eof);
+        -:  328:				}
+        -:  329:			else
+        -:  330:				{
+        -:  331:				eof=1;
+        -:  332:				v=0;
+        -:  333:				}
+        -:  334:
+        -:  335:			/* This is the case where we have had a short
+        -:  336:			 * but valid input line */
+   270000:  337:			if ((v < ctx->length) && eof)
+        -:  338:				{
+        -:  339:				rv=0;
+        -:  340:				goto end;
+        -:  341:				}
+        -:  342:			else
+   250000:  343:				ctx->length=v;
+        -:  344:
+   250000:  345:			if (seof >= 0) { rv=0; goto end; }
+   250000:  346:			out+=v;
+        -:  347:			}
+        -:  348:		}
+        -:  349:	rv=1;
+        -:  350:end:
+    20000:  351:	*outl=ret;
+    20000:  352:	ctx->num=n;
+    20000:  353:	ctx->line_num=ln;
+    20000:  354:	ctx->expect_nl=exp_nl;
+    20000:  355:	return(rv);
+        -:  356:	}
+        -:  357:
+   270000:  358:int EVP_DecodeBlock(unsigned char *t, const unsigned char *f, int n)
+        -:  359:	{
+        -:  360:	int i,ret=0,a,b,c,d;
+        -:  361:	unsigned long l;
+        -:  362:
+        -:  363:	/* trim white space from the start of the line. */
+   540000:  364:	while ((conv_ascii2bin(*f) == B64_WS) && (n > 0))
+        -:  365:		{
+    #####:  366:		f++;
+    #####:  367:		n--;
+        -:  368:		}
+        -:  369:
+        -:  370:	/* strip off stuff at the end of the line
+        -:  371:	 * ascii2bin values B64_WS, B64_EOLN, B64_EOLN and B64_EOF */
+   270000:  372:	while ((n > 3) && (B64_NOT_BASE64(conv_ascii2bin(f[n-1]))))
+    #####:  373:		n--;
+        -:  374:
+   270000:  375:	if (n%4 != 0) return(-1);
+        -:  376:
+  4180000:  377:	for (i=0; i<n; i+=4)
+        -:  378:		{
+  4180000:  379:		a=conv_ascii2bin(*(f++));
+  4180000:  380:		b=conv_ascii2bin(*(f++));
+  4180000:  381:		c=conv_ascii2bin(*(f++));
+  4180000:  382:		d=conv_ascii2bin(*(f++));
+  8360000:  383:		if (	(a & 0x80) || (b & 0x80) ||
+  8360000:  384:			(c & 0x80) || (d & 0x80))
+        -:  385:			return(-1);
+ 12540000:  386:		l=(	(((unsigned long)a)<<18L)|
+  8360000:  387:			(((unsigned long)b)<<12L)|
+  4180000:  388:			(((unsigned long)c)<< 6L)|
+  4180000:  389:			(((unsigned long)d)     ));
+  4180000:  390:		*(t++)=(unsigned char)(l>>16L)&0xff;
+  4180000:  391:		*(t++)=(unsigned char)(l>> 8L)&0xff;
+  4180000:  392:		*(t++)=(unsigned char)(l     )&0xff;
+  4180000:  393:		ret+=3;
+        -:  394:		}
+        -:  395:	return(ret);
+        -:  396:	}
+        -:  397:
+    20000:  398:int EVP_DecodeFinal(EVP_ENCODE_CTX *ctx, unsigned char *out, int *outl)
+        -:  399:	{
+        -:  400:	int i;
+        -:  401:
+    20000:  402:	*outl=0;
+    20000:  403:	if (ctx->num != 0)
+        -:  404:		{
+    #####:  405:		i=EVP_DecodeBlock(out,ctx->enc_data,ctx->num);
+    #####:  406:		if (i < 0) return(-1);
+    #####:  407:		ctx->num=0;
+    #####:  408:		*outl=i;
+    #####:  409:		return(1);
+        -:  410:		}
+        -:  411:	else
+        -:  412:		return(1);
+        -:  413:	}
+        -:  414:
+        -:  415:#ifdef undef
+        -:  416:int EVP_DecodeValid(unsigned char *buf, int len)
+        -:  417:	{
+        -:  418:	int i,num=0,bad=0;
+        -:  419:
+        -:  420:	if (len == 0) return(-1);
+        -:  421:	while (conv_ascii2bin(*buf) == B64_WS)
+        -:  422:		{
+        -:  423:		buf++;
+        -:  424:		len--;
+        -:  425:		if (len == 0) return(-1);
+        -:  426:		}
+        -:  427:
+        -:  428:	for (i=len; i >= 4; i-=4)
+        -:  429:		{
+        -:  430:		if (	(conv_ascii2bin(buf[0]) >= 0x40) ||
+        -:  431:			(conv_ascii2bin(buf[1]) >= 0x40) ||
+        -:  432:			(conv_ascii2bin(buf[2]) >= 0x40) ||
+        -:  433:			(conv_ascii2bin(buf[3]) >= 0x40))
+        -:  434:			return(-1);
+        -:  435:		buf+=4;
+        -:  436:		num+=1+(buf[2] != '=')+(buf[3] != '=');
+        -:  437:		}
+        -:  438:	if ((i == 1) && (conv_ascii2bin(buf[0]) == B64_EOLN))
+        -:  439:		return(num);
+        -:  440:	if ((i == 2) && (conv_ascii2bin(buf[0]) == B64_EOLN) &&
+        -:  441:		(conv_ascii2bin(buf[0]) == B64_EOLN))
+        -:  442:		return(num);
+        -:  443:	return(1);
+        -:  444:	}
+        -:  445:#endif

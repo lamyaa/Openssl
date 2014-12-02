@@ -1,0 +1,955 @@
+        -:    0:Source:pvkfmt.c
+        -:    0:Graph:pvkfmt.gcno
+        -:    0:Data:pvkfmt.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* Written by Dr Stephen N Henson (steve@openssl.org) for the OpenSSL
+        -:    2: * project 2005.
+        -:    3: */
+        -:    4:/* ====================================================================
+        -:    5: * Copyright (c) 2005 The OpenSSL Project.  All rights reserved.
+        -:    6: *
+        -:    7: * Redistribution and use in source and binary forms, with or without
+        -:    8: * modification, are permitted provided that the following conditions
+        -:    9: * are met:
+        -:   10: *
+        -:   11: * 1. Redistributions of source code must retain the above copyright
+        -:   12: *    notice, this list of conditions and the following disclaimer. 
+        -:   13: *
+        -:   14: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   15: *    notice, this list of conditions and the following disclaimer in
+        -:   16: *    the documentation and/or other materials provided with the
+        -:   17: *    distribution.
+        -:   18: *
+        -:   19: * 3. All advertising materials mentioning features or use of this
+        -:   20: *    software must display the following acknowledgment:
+        -:   21: *    "This product includes software developed by the OpenSSL Project
+        -:   22: *    for use in the OpenSSL Toolkit. (http://www.OpenSSL.org/)"
+        -:   23: *
+        -:   24: * 4. The names "OpenSSL Toolkit" and "OpenSSL Project" must not be used to
+        -:   25: *    endorse or promote products derived from this software without
+        -:   26: *    prior written permission. For written permission, please contact
+        -:   27: *    licensing@OpenSSL.org.
+        -:   28: *
+        -:   29: * 5. Products derived from this software may not be called "OpenSSL"
+        -:   30: *    nor may "OpenSSL" appear in their names without prior written
+        -:   31: *    permission of the OpenSSL Project.
+        -:   32: *
+        -:   33: * 6. Redistributions of any form whatsoever must retain the following
+        -:   34: *    acknowledgment:
+        -:   35: *    "This product includes software developed by the OpenSSL Project
+        -:   36: *    for use in the OpenSSL Toolkit (http://www.OpenSSL.org/)"
+        -:   37: *
+        -:   38: * THIS SOFTWARE IS PROVIDED BY THE OpenSSL PROJECT ``AS IS'' AND ANY
+        -:   39: * EXPRESSED OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   40: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+        -:   41: * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE OpenSSL PROJECT OR
+        -:   42: * ITS CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+        -:   43: * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+        -:   44: * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+        -:   45: * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   46: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+        -:   47: * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+        -:   48: * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+        -:   49: * OF THE POSSIBILITY OF SUCH DAMAGE.
+        -:   50: * ====================================================================
+        -:   51: *
+        -:   52: * This product includes cryptographic software written by Eric Young
+        -:   53: * (eay@cryptsoft.com).  This product includes software written by Tim
+        -:   54: * Hudson (tjh@cryptsoft.com).
+        -:   55: *
+        -:   56: */
+        -:   57:
+        -:   58:/* Support for PVK format keys and related structures (such a PUBLICKEYBLOB
+        -:   59: * and PRIVATEKEYBLOB).
+        -:   60: */
+        -:   61:
+        -:   62:#include "cryptlib.h"
+        -:   63:#include <openssl/pem.h>
+        -:   64:#include <openssl/rand.h>
+        -:   65:#include <openssl/bn.h>
+        -:   66:#if !defined(OPENSSL_NO_RSA) && !defined(OPENSSL_NO_DSA)
+        -:   67:#include <openssl/dsa.h>
+        -:   68:#include <openssl/rsa.h>
+        -:   69:
+        -:   70:/* Utility function: read a DWORD (4 byte unsigned integer) in little endian
+        -:   71: * format
+        -:   72: */
+        -:   73:
+        -:   74:static unsigned int read_ledword(const unsigned char **in)
+        -:   75:	{
+    #####:   76:	const unsigned char *p = *in;
+        -:   77:	unsigned int ret;
+    #####:   78:	ret = *p++;
+    #####:   79:	ret |= (*p++ << 8);
+    #####:   80:	ret |= (*p++ << 16);
+    #####:   81:	ret |= (*p++ << 24);
+    #####:   82:	*in = p;
+        -:   83:	return ret;
+        -:   84:	}
+        -:   85:
+        -:   86:/* Read a BIGNUM in little endian format. The docs say that this should take up 
+        -:   87: * bitlen/8 bytes.
+        -:   88: */
+        -:   89:
+    #####:   90:static int read_lebn(const unsigned char **in, unsigned int nbyte, BIGNUM **r)
+        -:   91:	{
+        -:   92:	const unsigned char *p;
+        -:   93:	unsigned char *tmpbuf, *q;
+        -:   94:	unsigned int i;
+    #####:   95:	p = *in + nbyte - 1;
+    #####:   96:	tmpbuf = OPENSSL_malloc(nbyte);
+    #####:   97:	if (!tmpbuf)
+        -:   98:		return 0;
+        -:   99:	q = tmpbuf;
+    #####:  100:	for (i = 0; i < nbyte; i++)
+    #####:  101:		*q++ = *p--;
+    #####:  102:	*r = BN_bin2bn(tmpbuf, nbyte, NULL);
+    #####:  103:	OPENSSL_free(tmpbuf);
+    #####:  104:	if (*r)
+        -:  105:		{
+    #####:  106:		*in += nbyte;
+    #####:  107:		return 1;
+        -:  108:		}
+        -:  109:	else
+        -:  110:		return 0;
+        -:  111:	}
+        -:  112:
+        -:  113:
+        -:  114:/* Convert private key blob to EVP_PKEY: RSA and DSA keys supported */
+        -:  115:
+        -:  116:#define MS_PUBLICKEYBLOB	0x6
+        -:  117:#define MS_PRIVATEKEYBLOB	0x7
+        -:  118:#define MS_RSA1MAGIC		0x31415352L
+        -:  119:#define MS_RSA2MAGIC		0x32415352L
+        -:  120:#define MS_DSS1MAGIC		0x31535344L
+        -:  121:#define MS_DSS2MAGIC		0x32535344L
+        -:  122:
+        -:  123:#define MS_KEYALG_RSA_KEYX	0xa400
+        -:  124:#define MS_KEYALG_DSS_SIGN	0x2200
+        -:  125:
+        -:  126:#define MS_KEYTYPE_KEYX		0x1
+        -:  127:#define MS_KEYTYPE_SIGN		0x2
+        -:  128:
+        -:  129:/* The PVK file magic number: seems to spell out "bobsfile", who is Bob? */
+        -:  130:#define MS_PVKMAGIC		0xb0b5f11eL
+        -:  131:/* Salt length for PVK files */
+        -:  132:#define PVK_SALTLEN		0x10
+        -:  133:
+        -:  134:static EVP_PKEY *b2i_rsa(const unsigned char **in, unsigned int length,
+        -:  135:						unsigned int bitlen, int ispub);
+        -:  136:static EVP_PKEY *b2i_dss(const unsigned char **in, unsigned int length,
+        -:  137:						unsigned int bitlen, int ispub);
+        -:  138:
+    #####:  139:static int do_blob_header(const unsigned char **in, unsigned int length,
+        -:  140:				unsigned int *pmagic, unsigned int *pbitlen,
+        -:  141:				int *pisdss, int *pispub)
+        -:  142:	{
+    #####:  143:	const unsigned char *p = *in;
+    #####:  144:	if (length < 16)
+        -:  145:		return 0;
+        -:  146:	/* bType */
+    #####:  147:	if (*p == MS_PUBLICKEYBLOB)
+        -:  148:		{
+    #####:  149:		if (*pispub == 0)
+        -:  150:			{
+    #####:  151:			PEMerr(PEM_F_DO_BLOB_HEADER,
+        -:  152:					PEM_R_EXPECTING_PRIVATE_KEY_BLOB);
+    #####:  153:			return 0;
+        -:  154:			}
+    #####:  155:		*pispub = 1;
+        -:  156:		}
+    #####:  157:	else if (*p == MS_PRIVATEKEYBLOB)
+        -:  158:		{
+    #####:  159:		if (*pispub == 1)
+        -:  160:			{
+    #####:  161:			PEMerr(PEM_F_DO_BLOB_HEADER,
+        -:  162:					PEM_R_EXPECTING_PUBLIC_KEY_BLOB);
+    #####:  163:			return 0;
+        -:  164:			}
+    #####:  165:		*pispub = 0;
+        -:  166:		}
+        -:  167:	else
+        -:  168:		return 0;
+        -:  169:	p++;
+        -:  170:	/* Version */
+    #####:  171:	if (*p++ != 0x2)
+        -:  172:		{
+    #####:  173:		PEMerr(PEM_F_DO_BLOB_HEADER, PEM_R_BAD_VERSION_NUMBER);
+    #####:  174:		return 0;
+        -:  175:		}
+        -:  176:	/* Ignore reserved, aiKeyAlg */
+        -:  177:	p+= 6;
+    #####:  178:	*pmagic = read_ledword(&p);
+    #####:  179:	*pbitlen = read_ledword(&p);
+    #####:  180:	*pisdss = 0;
+    #####:  181:	switch (*pmagic)
+        -:  182:		{
+        -:  183:
+        -:  184:		case MS_DSS1MAGIC:
+    #####:  185:		*pisdss = 1;
+        -:  186:		case MS_RSA1MAGIC:
+    #####:  187:		if (*pispub == 0)
+        -:  188:			{
+    #####:  189:			PEMerr(PEM_F_DO_BLOB_HEADER,
+        -:  190:					PEM_R_EXPECTING_PRIVATE_KEY_BLOB);
+    #####:  191:			return 0;
+        -:  192:			}
+        -:  193:		break;
+        -:  194:
+        -:  195:		case MS_DSS2MAGIC:
+    #####:  196:		*pisdss = 1;
+        -:  197:		case MS_RSA2MAGIC:
+    #####:  198:		if (*pispub == 1)
+        -:  199:			{
+    #####:  200:			PEMerr(PEM_F_DO_BLOB_HEADER,
+        -:  201:					PEM_R_EXPECTING_PUBLIC_KEY_BLOB);
+    #####:  202:			return 0;
+        -:  203:			}
+        -:  204:		break;
+        -:  205:
+        -:  206:		default:
+    #####:  207:		PEMerr(PEM_F_DO_BLOB_HEADER, PEM_R_BAD_MAGIC_NUMBER);
+    #####:  208:		return -1;
+        -:  209:		}
+    #####:  210:	*in = p;
+    #####:  211:	return 1;
+        -:  212:	}
+        -:  213:
+    #####:  214:static unsigned int blob_length(unsigned bitlen, int isdss, int ispub)
+        -:  215:	{
+        -:  216:	unsigned int nbyte, hnbyte;
+    #####:  217:	nbyte = (bitlen + 7) >> 3;
+    #####:  218:	hnbyte = (bitlen + 15) >> 4;
+    #####:  219:	if (isdss)
+        -:  220:		{
+        -:  221:
+        -:  222:		/* Expected length: 20 for q + 3 components bitlen each + 24
+        -:  223:		 * for seed structure.
+        -:  224:		 */
+    #####:  225:		if (ispub)
+    #####:  226:			return  44 + 3 * nbyte;
+        -:  227:		/* Expected length: 20 for q, priv, 2 bitlen components + 24
+        -:  228:		 * for seed structure.
+        -:  229:		 */
+        -:  230:		else
+    #####:  231:			return 64 + 2 * nbyte;
+        -:  232:		}
+        -:  233:	else
+        -:  234:		{
+        -:  235:		/* Expected length: 4 for 'e' + 'n' */
+    #####:  236:		if (ispub)
+    #####:  237:			return 4 + nbyte;
+        -:  238:		else
+        -:  239:		/* Expected length: 4 for 'e' and 7 other components.
+        -:  240:		 * 2 components are bitlen size, 5 are bitlen/2
+        -:  241:		 */
+    #####:  242:			return 4 + 2*nbyte + 5*hnbyte;
+        -:  243:		}
+        -:  244:
+        -:  245:	}
+        -:  246:
+    #####:  247:static EVP_PKEY *do_b2i(const unsigned char **in, unsigned int length,
+        -:  248:								int ispub)
+        -:  249:	{
+    #####:  250:	const unsigned char *p = *in;
+        -:  251:	unsigned int bitlen, magic;
+        -:  252:	int isdss;
+    #####:  253:	if (do_blob_header(&p, length, &magic, &bitlen, &isdss, &ispub) <= 0)
+        -:  254:		{
+    #####:  255:		PEMerr(PEM_F_DO_B2I, PEM_R_KEYBLOB_HEADER_PARSE_ERROR);
+        -:  256:		return NULL;
+        -:  257:		}
+    #####:  258:	length -= 16;
+    #####:  259:	if (length < blob_length(bitlen, isdss, ispub))
+        -:  260:		{
+    #####:  261:		PEMerr(PEM_F_DO_B2I, PEM_R_KEYBLOB_TOO_SHORT);
+        -:  262:		return NULL;
+        -:  263:		}
+    #####:  264:	if (isdss)
+    #####:  265:		return b2i_dss(&p, length, bitlen, ispub);
+        -:  266:	else
+    #####:  267:		return b2i_rsa(&p, length, bitlen, ispub);
+        -:  268:	}
+        -:  269:
+    #####:  270:static EVP_PKEY *do_b2i_bio(BIO *in, int ispub)
+        -:  271:	{
+        -:  272:	const unsigned char *p;
+        -:  273:	unsigned char hdr_buf[16], *buf = NULL;
+        -:  274:	unsigned int bitlen, magic, length;
+        -:  275:	int isdss;
+        -:  276:	EVP_PKEY *ret = NULL;
+    #####:  277:	if (BIO_read(in, hdr_buf, 16) != 16)
+        -:  278:		{
+    #####:  279:		PEMerr(PEM_F_DO_B2I_BIO, PEM_R_KEYBLOB_TOO_SHORT);
+    #####:  280:		return NULL;
+        -:  281:		}
+    #####:  282:	p = hdr_buf;
+    #####:  283:	if (do_blob_header(&p, 16, &magic, &bitlen, &isdss, &ispub) <= 0)
+        -:  284:		return NULL;
+        -:  285:
+    #####:  286:	length = blob_length(bitlen, isdss, ispub);
+    #####:  287:	buf = OPENSSL_malloc(length);
+    #####:  288:	if (!buf)
+        -:  289:		{
+    #####:  290:		PEMerr(PEM_F_DO_B2I_BIO, ERR_R_MALLOC_FAILURE);
+    #####:  291:		goto err;
+        -:  292:		}
+    #####:  293:	p = buf;
+    #####:  294:	if (BIO_read(in, buf, length) != (int)length)
+        -:  295:		{
+    #####:  296:		PEMerr(PEM_F_DO_B2I_BIO, PEM_R_KEYBLOB_TOO_SHORT);
+    #####:  297:		goto err;
+        -:  298:		}
+        -:  299:
+    #####:  300:	if (isdss)
+    #####:  301:		ret = b2i_dss(&p, length, bitlen, ispub);
+        -:  302:	else
+    #####:  303:		ret = b2i_rsa(&p, length, bitlen, ispub);
+        -:  304:
+        -:  305:	err:
+    #####:  306:	if (buf)
+    #####:  307:		OPENSSL_free(buf);
+    #####:  308:	return ret;
+        -:  309:	}
+        -:  310:
+    #####:  311:static EVP_PKEY *b2i_dss(const unsigned char **in, unsigned int length,
+        -:  312:						unsigned int bitlen, int ispub)
+        -:  313:	{
+    #####:  314:	const unsigned char *p = *in;
+        -:  315:	EVP_PKEY *ret = NULL;
+        -:  316:	DSA *dsa = NULL;
+        -:  317:	BN_CTX *ctx = NULL;
+        -:  318:	unsigned int nbyte;
+    #####:  319:	nbyte = (bitlen + 7) >> 3;
+        -:  320:
+    #####:  321:	dsa = DSA_new();
+    #####:  322:	ret = EVP_PKEY_new();
+    #####:  323:	if (!dsa || !ret)
+        -:  324:		goto memerr;
+    #####:  325:	if (!read_lebn(&p, nbyte, &dsa->p))
+        -:  326:		goto memerr;
+    #####:  327:	if (!read_lebn(&p, 20, &dsa->q))
+        -:  328:		goto memerr;
+    #####:  329:	if (!read_lebn(&p, nbyte, &dsa->g))
+        -:  330:		goto memerr;
+    #####:  331:	if (ispub)
+        -:  332:		{
+    #####:  333:		if (!read_lebn(&p, nbyte, &dsa->pub_key))
+        -:  334:			goto memerr;
+        -:  335:		}
+        -:  336:	else
+        -:  337:		{
+    #####:  338:		if (!read_lebn(&p, 20, &dsa->priv_key))
+        -:  339:			goto memerr;
+        -:  340:		/* Calculate public key */
+    #####:  341:		if (!(dsa->pub_key = BN_new()))
+        -:  342:			goto memerr;
+    #####:  343:		if (!(ctx = BN_CTX_new()))
+        -:  344:			goto memerr;
+        -:  345:			
+    #####:  346:		if (!BN_mod_exp(dsa->pub_key, dsa->g,
+    #####:  347:						 dsa->priv_key, dsa->p, ctx))
+        -:  348:			
+        -:  349:			goto memerr;
+    #####:  350:		BN_CTX_free(ctx);
+        -:  351:		}
+        -:  352:
+    #####:  353:	EVP_PKEY_set1_DSA(ret, dsa);
+    #####:  354:	DSA_free(dsa);
+    #####:  355:	*in = p;
+        -:  356:	return ret;
+        -:  357:
+        -:  358:	memerr:
+    #####:  359:	PEMerr(PEM_F_B2I_DSS, ERR_R_MALLOC_FAILURE);
+    #####:  360:	if (dsa)
+    #####:  361:		DSA_free(dsa);
+    #####:  362:	if (ret)
+    #####:  363:		EVP_PKEY_free(ret);
+    #####:  364:	if (ctx)
+    #####:  365:		BN_CTX_free(ctx);
+        -:  366:	return NULL;
+        -:  367:	}
+        -:  368:
+    #####:  369:static EVP_PKEY *b2i_rsa(const unsigned char **in, unsigned int length,
+        -:  370:						unsigned int bitlen, int ispub)
+        -:  371:		
+        -:  372:	{
+    #####:  373:	const unsigned char *p = *in;
+        -:  374:	EVP_PKEY *ret = NULL;
+        -:  375:	RSA *rsa = NULL;
+        -:  376:	unsigned int nbyte, hnbyte;
+    #####:  377:	nbyte = (bitlen + 7) >> 3;
+    #####:  378:	hnbyte = (bitlen + 15) >> 4;
+    #####:  379:	rsa = RSA_new();
+    #####:  380:	ret = EVP_PKEY_new();
+    #####:  381:	if (!rsa || !ret)
+        -:  382:		goto memerr;
+    #####:  383:	rsa->e = BN_new();
+    #####:  384:	if (!rsa->e)
+        -:  385:		goto memerr;
+    #####:  386:	if (!BN_set_word(rsa->e, read_ledword(&p)))
+        -:  387:		goto memerr;
+    #####:  388:	if (!read_lebn(&p, nbyte, &rsa->n))
+        -:  389:		goto memerr;
+    #####:  390:	if (!ispub)
+        -:  391:		{
+    #####:  392:		if (!read_lebn(&p, hnbyte, &rsa->p))
+        -:  393:			goto memerr;
+    #####:  394:		if (!read_lebn(&p, hnbyte, &rsa->q))
+        -:  395:			goto memerr;
+    #####:  396:		if (!read_lebn(&p, hnbyte, &rsa->dmp1))
+        -:  397:			goto memerr;
+    #####:  398:		if (!read_lebn(&p, hnbyte, &rsa->dmq1))
+        -:  399:			goto memerr;
+    #####:  400:		if (!read_lebn(&p, hnbyte, &rsa->iqmp))
+        -:  401:			goto memerr;
+    #####:  402:		if (!read_lebn(&p, nbyte, &rsa->d))
+        -:  403:			goto memerr;
+        -:  404:		}
+        -:  405:
+    #####:  406:	EVP_PKEY_set1_RSA(ret, rsa);
+    #####:  407:	RSA_free(rsa);
+    #####:  408:	*in = p;
+        -:  409:	return ret;
+        -:  410:	memerr:
+    #####:  411:	PEMerr(PEM_F_B2I_RSA, ERR_R_MALLOC_FAILURE);
+    #####:  412:	if (rsa)
+    #####:  413:		RSA_free(rsa);
+    #####:  414:	if (ret)
+    #####:  415:		EVP_PKEY_free(ret);
+        -:  416:	return NULL;
+        -:  417:	}
+        -:  418:
+    #####:  419:EVP_PKEY *b2i_PrivateKey(const unsigned char **in, long length)
+        -:  420:	{
+    #####:  421:	return do_b2i(in, length, 0);
+        -:  422:	}
+        -:  423:
+    #####:  424:EVP_PKEY *b2i_PublicKey(const unsigned char **in, long length)
+        -:  425:	{
+    #####:  426:	return do_b2i(in, length, 1);
+        -:  427:	}
+        -:  428:
+        -:  429:
+    #####:  430:EVP_PKEY *b2i_PrivateKey_bio(BIO *in)
+        -:  431:	{
+    #####:  432:	return do_b2i_bio(in, 0);
+        -:  433:	}
+        -:  434:
+    #####:  435:EVP_PKEY *b2i_PublicKey_bio(BIO *in)
+        -:  436:	{
+    #####:  437:	return do_b2i_bio(in, 1);
+        -:  438:	}
+        -:  439:
+        -:  440:static void write_ledword(unsigned char **out, unsigned int dw)
+        -:  441:	{
+    #####:  442:	unsigned char *p = *out;
+    #####:  443:	*p++ = dw & 0xff;
+    #####:  444:	*p++ = (dw>>8) & 0xff;
+    #####:  445:	*p++ = (dw>>16) & 0xff;
+    #####:  446:	*p++ = (dw>>24) & 0xff;
+    #####:  447:	*out = p;
+        -:  448:	}
+        -:  449:
+    #####:  450:static void write_lebn(unsigned char **out, const BIGNUM *bn, int len)
+        -:  451:	{
+        -:  452:	int nb, i;
+    #####:  453:	unsigned char *p = *out, *q, c;
+    #####:  454:	nb = BN_num_bytes(bn);
+    #####:  455:	BN_bn2bin(bn, p);
+    #####:  456:	q = p + nb - 1;
+        -:  457:	/* In place byte order reversal */
+    #####:  458:	for (i = 0; i < nb/2; i++)
+        -:  459:		{
+    #####:  460:		c = *p;
+    #####:  461:		*p++ = *q;
+    #####:  462:		*q-- = c;
+        -:  463:		}
+    #####:  464:	*out += nb;
+        -:  465:	/* Pad with zeroes if we have to */
+    #####:  466:	if (len > 0)
+        -:  467:		{
+    #####:  468:		len -= nb;
+    #####:  469:		if (len > 0)
+        -:  470:			{
+    #####:  471:			memset(*out, 0, len);
+    #####:  472:			*out += len;
+        -:  473:			}
+        -:  474:		}
+    #####:  475:	}
+        -:  476:
+        -:  477:
+        -:  478:static int check_bitlen_rsa(RSA *rsa, int ispub, unsigned int *magic);
+        -:  479:static int check_bitlen_dsa(DSA *dsa, int ispub, unsigned int *magic);
+        -:  480:
+        -:  481:static void write_rsa(unsigned char **out, RSA *rsa, int ispub);
+        -:  482:static void write_dsa(unsigned char **out, DSA *dsa, int ispub);
+        -:  483:	
+    #####:  484:static int do_i2b(unsigned char **out, EVP_PKEY *pk, int ispub)
+        -:  485:	{
+        -:  486:	unsigned char *p;
+    #####:  487:	unsigned int bitlen, magic = 0, keyalg;
+        -:  488:	int outlen, noinc = 0;
+    #####:  489:	if (pk->type == EVP_PKEY_DSA)
+        -:  490:		{
+    #####:  491:		bitlen = check_bitlen_dsa(pk->pkey.dsa, ispub, &magic);
+        -:  492:		keyalg = MS_KEYALG_DSS_SIGN;
+        -:  493:		}
+    #####:  494:	else if (pk->type == EVP_PKEY_RSA)
+        -:  495:		{
+    #####:  496:		bitlen = check_bitlen_rsa(pk->pkey.rsa, ispub, &magic);
+        -:  497:		keyalg = MS_KEYALG_RSA_KEYX;
+        -:  498:		}
+        -:  499:	else
+        -:  500:		return -1;
+    #####:  501:	if (bitlen == 0)
+        -:  502:		return -1;
+    #####:  503:	outlen = 16 + blob_length(bitlen,
+        -:  504:			keyalg == MS_KEYALG_DSS_SIGN ? 1 : 0, ispub);
+    #####:  505:	if (out == NULL)
+        -:  506:		return outlen;
+    #####:  507:	if (*out)
+    #####:  508:		p = *out;
+        -:  509:	else
+        -:  510:		{
+    #####:  511:		p = OPENSSL_malloc(outlen);
+    #####:  512:		if (!p)
+        -:  513:			return -1;
+    #####:  514:		*out = p;
+        -:  515:		noinc = 1;
+        -:  516:		}
+    #####:  517:	if (ispub)
+    #####:  518:		*p++ = MS_PUBLICKEYBLOB;
+        -:  519:	else
+    #####:  520:		*p++ = MS_PRIVATEKEYBLOB;
+    #####:  521:	*p++ = 0x2;
+    #####:  522:	*p++ = 0;
+    #####:  523:	*p++ = 0;
+        -:  524:	write_ledword(&p, keyalg);
+    #####:  525:	write_ledword(&p, magic);
+        -:  526:	write_ledword(&p, bitlen);
+    #####:  527:	if (keyalg == MS_KEYALG_DSS_SIGN)
+    #####:  528:		write_dsa(&p, pk->pkey.dsa, ispub);
+        -:  529:	else
+    #####:  530:		write_rsa(&p, pk->pkey.rsa, ispub);
+    #####:  531:	if (!noinc)
+    #####:  532:		*out += outlen;
+        -:  533:	return outlen;
+        -:  534:	}
+        -:  535:
+    #####:  536:static int do_i2b_bio(BIO *out, EVP_PKEY *pk, int ispub)
+        -:  537:	{
+    #####:  538:	unsigned char *tmp = NULL;
+        -:  539:	int outlen, wrlen;
+    #####:  540:	outlen = do_i2b(&tmp, pk, ispub);
+    #####:  541:	if (outlen < 0)
+        -:  542:		return -1;
+    #####:  543:	wrlen = BIO_write(out, tmp, outlen);
+    #####:  544:	OPENSSL_free(tmp);
+    #####:  545:	if (wrlen == outlen)
+    #####:  546:		return outlen;
+        -:  547:	return -1;
+        -:  548:	}
+        -:  549:
+    #####:  550:static int check_bitlen_dsa(DSA *dsa, int ispub, unsigned int *pmagic)
+        -:  551:	{
+        -:  552:	int bitlen;
+    #####:  553:	bitlen = BN_num_bits(dsa->p);
+    #####:  554:	if ((bitlen & 7) || (BN_num_bits(dsa->q) != 160)
+    #####:  555:		|| (BN_num_bits(dsa->g) > bitlen))
+        -:  556:		goto badkey;
+    #####:  557:	if (ispub)
+        -:  558:		{
+    #####:  559:		if (BN_num_bits(dsa->pub_key) > bitlen)
+        -:  560:			goto badkey;
+    #####:  561:		*pmagic = MS_DSS1MAGIC;
+        -:  562:		}
+        -:  563:	else
+        -:  564:		{
+    #####:  565:		if (BN_num_bits(dsa->priv_key) > 160)
+        -:  566:			goto badkey;
+    #####:  567:		*pmagic = MS_DSS2MAGIC;
+        -:  568:		}
+        -:  569:	
+    #####:  570:	return bitlen;
+        -:  571:	badkey:
+    #####:  572:	PEMerr(PEM_F_CHECK_BITLEN_DSA, PEM_R_UNSUPPORTED_KEY_COMPONENTS);
+    #####:  573:	return 0;
+        -:  574:	}
+        -:  575:
+    #####:  576:static int check_bitlen_rsa(RSA *rsa, int ispub, unsigned int *pmagic)
+        -:  577:	{
+        -:  578:	int nbyte, hnbyte, bitlen;
+    #####:  579:	if (BN_num_bits(rsa->e) > 32)
+        -:  580:		goto badkey;
+    #####:  581:	bitlen = BN_num_bits(rsa->n);
+    #####:  582:	nbyte = BN_num_bytes(rsa->n);
+    #####:  583:	hnbyte = (BN_num_bits(rsa->n) + 15) >> 4;
+    #####:  584:	if (ispub)
+        -:  585:		{
+    #####:  586:		*pmagic = MS_RSA1MAGIC;
+    #####:  587:		return bitlen;
+        -:  588:		}
+        -:  589:	else
+        -:  590:	{
+    #####:  591:		*pmagic = MS_RSA2MAGIC;
+        -:  592:		/* For private key each component must fit within nbyte or
+        -:  593:		 * hnbyte.
+        -:  594:		 */
+    #####:  595:		if (BN_num_bytes(rsa->d) > nbyte)
+        -:  596:			goto badkey;
+    #####:  597:		if ((BN_num_bytes(rsa->iqmp) > hnbyte)
+    #####:  598:			|| (BN_num_bytes(rsa->p) > hnbyte)
+    #####:  599:			|| (BN_num_bytes(rsa->q) > hnbyte)
+    #####:  600:			|| (BN_num_bytes(rsa->dmp1) > hnbyte)
+    #####:  601:			|| (BN_num_bytes(rsa->dmq1) > hnbyte))
+        -:  602:			goto badkey;
+        -:  603:	}
+        -:  604:	return bitlen;
+        -:  605:	badkey:
+    #####:  606:	PEMerr(PEM_F_CHECK_BITLEN_RSA, PEM_R_UNSUPPORTED_KEY_COMPONENTS);
+    #####:  607:	return 0;
+        -:  608:	}
+        -:  609:
+        -:  610:
+    #####:  611:static void write_rsa(unsigned char **out, RSA *rsa, int ispub)
+        -:  612:	{
+        -:  613:	int nbyte, hnbyte;
+    #####:  614:	nbyte = BN_num_bytes(rsa->n);
+    #####:  615:	hnbyte = (BN_num_bits(rsa->n) + 15) >> 4;
+    #####:  616:	write_lebn(out, rsa->e, 4);
+    #####:  617:	write_lebn(out, rsa->n, -1);
+    #####:  618:	if (ispub)
+    #####:  619:		return;
+    #####:  620:	write_lebn(out, rsa->p, hnbyte);
+    #####:  621:	write_lebn(out, rsa->q, hnbyte);
+    #####:  622:	write_lebn(out, rsa->dmp1, hnbyte);
+    #####:  623:	write_lebn(out, rsa->dmq1, hnbyte);
+    #####:  624:	write_lebn(out, rsa->iqmp, hnbyte);
+    #####:  625:	write_lebn(out, rsa->d, nbyte);
+        -:  626:	}
+        -:  627:
+        -:  628:	
+    #####:  629:static void write_dsa(unsigned char **out, DSA *dsa, int ispub)
+        -:  630:	{
+        -:  631:	int nbyte;
+    #####:  632:	nbyte = BN_num_bytes(dsa->p);
+    #####:  633:	write_lebn(out, dsa->p, nbyte);
+    #####:  634:	write_lebn(out, dsa->q, 20);
+    #####:  635:	write_lebn(out, dsa->g, nbyte);
+    #####:  636:	if (ispub)
+    #####:  637:		write_lebn(out, dsa->pub_key, nbyte);
+        -:  638:	else
+    #####:  639:		write_lebn(out, dsa->priv_key, 20);
+        -:  640:	/* Set "invalid" for seed structure values */
+    #####:  641:	memset(*out, 0xff, 24);
+    #####:  642:	*out += 24;
+    #####:  643:	return;
+        -:  644:	}
+        -:  645:	
+        -:  646:
+    #####:  647:int i2b_PrivateKey_bio(BIO *out, EVP_PKEY *pk)
+        -:  648:	{
+    #####:  649:	return do_i2b_bio(out, pk, 0);
+        -:  650:	}
+        -:  651:
+    #####:  652:int i2b_PublicKey_bio(BIO *out, EVP_PKEY *pk)
+        -:  653:	{
+    #####:  654:	return do_i2b_bio(out, pk, 1);
+        -:  655:	}
+        -:  656:
+        -:  657:#ifndef OPENSSL_NO_RC4
+        -:  658:
+    #####:  659:static int do_PVK_header(const unsigned char **in, unsigned int length,
+        -:  660:		int skip_magic,
+        -:  661:	       	unsigned int *psaltlen, unsigned int *pkeylen)
+        -:  662:		
+        -:  663:	{
+    #####:  664:	const unsigned char *p = *in;
+        -:  665:	unsigned int pvk_magic, is_encrypted;
+    #####:  666:	if (skip_magic)
+        -:  667:		{
+    #####:  668:		if (length < 20)
+        -:  669:			{
+    #####:  670:			PEMerr(PEM_F_DO_PVK_HEADER, PEM_R_PVK_TOO_SHORT);
+    #####:  671:			return 0;
+        -:  672:			}
+        -:  673:		length -= 20;
+        -:  674:		}
+        -:  675:	else
+        -:  676:		{
+    #####:  677:		if (length < 24)
+        -:  678:			{
+    #####:  679:			PEMerr(PEM_F_DO_PVK_HEADER, PEM_R_PVK_TOO_SHORT);
+    #####:  680:			return 0;
+        -:  681:			}
+        -:  682:		length -= 24;
+        -:  683:		pvk_magic = read_ledword(&p);
+    #####:  684:		if (pvk_magic != MS_PVKMAGIC)
+        -:  685:			{
+    #####:  686:			PEMerr(PEM_F_DO_PVK_HEADER, PEM_R_BAD_MAGIC_NUMBER);
+    #####:  687:			return 0;
+        -:  688:			}
+        -:  689:		}
+        -:  690:	/* Skip reserved */
+        -:  691:	p += 4;
+        -:  692:	/*keytype = */read_ledword(&p);
+        -:  693:	is_encrypted = read_ledword(&p);
+    #####:  694:	*psaltlen = read_ledword(&p);
+    #####:  695:	*pkeylen = read_ledword(&p);
+        -:  696:
+    #####:  697:	if (is_encrypted && !*psaltlen)
+        -:  698:		{
+    #####:  699:		PEMerr(PEM_F_DO_PVK_HEADER, PEM_R_INCONSISTENT_HEADER);
+    #####:  700:		return 0;
+        -:  701:		}
+        -:  702:
+    #####:  703:	*in = p;
+    #####:  704:	return 1;
+        -:  705:	}
+        -:  706:
+    #####:  707:static int derive_pvk_key(unsigned char *key, 
+        -:  708:			const unsigned char *salt, unsigned int saltlen,
+        -:  709:			const unsigned char *pass, int passlen)
+        -:  710:	{
+        -:  711:	EVP_MD_CTX mctx;
+        -:  712:	int rv = 1;
+    #####:  713:	EVP_MD_CTX_init(&mctx);
+    #####:  714:	if (!EVP_DigestInit_ex(&mctx, EVP_sha1(), NULL)
+    #####:  715:		|| !EVP_DigestUpdate(&mctx, salt, saltlen)
+    #####:  716:		|| !EVP_DigestUpdate(&mctx, pass, passlen)
+    #####:  717:		|| !EVP_DigestFinal_ex(&mctx, key, NULL))
+        -:  718:			rv = 0;
+        -:  719:
+    #####:  720:	EVP_MD_CTX_cleanup(&mctx);
+    #####:  721:	return rv;
+        -:  722:	}
+        -:  723:	
+        -:  724:
+    #####:  725:static EVP_PKEY *do_PVK_body(const unsigned char **in,
+        -:  726:		unsigned int saltlen, unsigned int keylen,
+        -:  727:		pem_password_cb *cb, void *u)
+        -:  728:	{
+        -:  729:	EVP_PKEY *ret = NULL;
+    #####:  730:	const unsigned char *p = *in;
+        -:  731:	unsigned int magic;
+        -:  732:	unsigned char *enctmp = NULL, *q;
+        -:  733:	EVP_CIPHER_CTX cctx;
+    #####:  734:	EVP_CIPHER_CTX_init(&cctx);
+    #####:  735:	if (saltlen)
+        -:  736:		{
+        -:  737:		char psbuf[PEM_BUFSIZE];
+        -:  738:		unsigned char keybuf[20];
+        -:  739:		int enctmplen, inlen;
+    #####:  740:		if (cb)
+    #####:  741:			inlen=cb(psbuf,PEM_BUFSIZE,0,u);
+        -:  742:		else
+    #####:  743:			inlen=PEM_def_callback(psbuf,PEM_BUFSIZE,0,u);
+    #####:  744:		if (inlen <= 0)
+        -:  745:			{
+    #####:  746:			PEMerr(PEM_F_DO_PVK_BODY,PEM_R_BAD_PASSWORD_READ);
+    #####:  747:			return NULL;
+        -:  748:			}
+    #####:  749:		enctmp = OPENSSL_malloc(keylen + 8);
+    #####:  750:		if (!enctmp)
+        -:  751:			{
+    #####:  752:			PEMerr(PEM_F_DO_PVK_BODY, ERR_R_MALLOC_FAILURE);
+        -:  753:			return NULL;
+        -:  754:			}
+    #####:  755:		if (!derive_pvk_key(keybuf, p, saltlen,
+        -:  756:			    (unsigned char *)psbuf, inlen))
+        -:  757:			return NULL;
+    #####:  758:		p += saltlen;
+        -:  759:		/* Copy BLOBHEADER across, decrypt rest */
+        -:  760:		memcpy(enctmp, p, 8);
+    #####:  761:		p += 8;
+    #####:  762:		inlen = keylen - 8;
+    #####:  763:		q = enctmp + 8;
+    #####:  764:		if (!EVP_DecryptInit_ex(&cctx, EVP_rc4(), NULL, keybuf, NULL))
+        -:  765:			goto err;
+    #####:  766:		if (!EVP_DecryptUpdate(&cctx, q, &enctmplen, p, inlen))
+        -:  767:			goto err;
+    #####:  768:		if (!EVP_DecryptFinal_ex(&cctx, q + enctmplen, &enctmplen))
+        -:  769:			goto err;
+        -:  770:		magic = read_ledword((const unsigned char **)&q);
+    #####:  771:		if (magic != MS_RSA2MAGIC && magic != MS_DSS2MAGIC)
+        -:  772:			{
+        -:  773:			q = enctmp + 8;
+        -:  774:			memset(keybuf + 5, 0, 11);
+    #####:  775:			if (!EVP_DecryptInit_ex(&cctx, EVP_rc4(), NULL, keybuf,
+        -:  776:								NULL))
+        -:  777:				goto err;
+    #####:  778:			OPENSSL_cleanse(keybuf, 20);
+    #####:  779:			if (!EVP_DecryptUpdate(&cctx, q, &enctmplen, p, inlen))
+        -:  780:				goto err;
+    #####:  781:			if (!EVP_DecryptFinal_ex(&cctx, q + enctmplen,
+        -:  782:								&enctmplen))
+        -:  783:				goto err;
+        -:  784:			magic = read_ledword((const unsigned char **)&q);
+    #####:  785:			if (magic != MS_RSA2MAGIC && magic != MS_DSS2MAGIC)
+        -:  786:				{
+    #####:  787:				PEMerr(PEM_F_DO_PVK_BODY, PEM_R_BAD_DECRYPT);
+        -:  788:				goto err;
+        -:  789:				}
+        -:  790:			}
+        -:  791:		else
+    #####:  792:			OPENSSL_cleanse(keybuf, 20);
+        -:  793:		p = enctmp;
+        -:  794:		}
+        -:  795:
+        -:  796:	ret = b2i_PrivateKey(&p, keylen);
+        -:  797:	err:
+    #####:  798:	EVP_CIPHER_CTX_cleanup(&cctx);
+    #####:  799:	if (enctmp && saltlen)
+    #####:  800:		OPENSSL_free(enctmp);
+        -:  801:	return ret;
+        -:  802:	}
+        -:  803:
+        -:  804:
+    #####:  805:EVP_PKEY *b2i_PVK_bio(BIO *in, pem_password_cb *cb, void *u)
+        -:  806:	{
+        -:  807:	unsigned char pvk_hdr[24], *buf = NULL;
+        -:  808:	const unsigned char *p;
+        -:  809:	int buflen;
+        -:  810:	EVP_PKEY *ret = NULL;
+        -:  811:	unsigned int saltlen, keylen;
+    #####:  812:	if (BIO_read(in, pvk_hdr, 24) != 24)
+        -:  813:		{
+    #####:  814:		PEMerr(PEM_F_B2I_PVK_BIO, PEM_R_PVK_DATA_TOO_SHORT);
+    #####:  815:		return NULL;
+        -:  816:		}
+    #####:  817:	p = pvk_hdr;
+        -:  818:
+    #####:  819:	if (!do_PVK_header(&p, 24, 0, &saltlen, &keylen))
+        -:  820:		return 0;
+    #####:  821:	buflen = (int) keylen + saltlen;
+    #####:  822:	buf = OPENSSL_malloc(buflen);
+    #####:  823:	if (!buf)
+        -:  824:		{
+    #####:  825:		PEMerr(PEM_F_B2I_PVK_BIO, ERR_R_MALLOC_FAILURE);
+    #####:  826:		return 0;
+        -:  827:		}
+    #####:  828:	p = buf;
+    #####:  829:	if (BIO_read(in, buf, buflen) != buflen)
+        -:  830:		{
+    #####:  831:		PEMerr(PEM_F_B2I_PVK_BIO, PEM_R_PVK_DATA_TOO_SHORT);
+    #####:  832:		goto err;
+        -:  833:		}
+    #####:  834:	ret = do_PVK_body(&p, saltlen, keylen, cb, u);
+        -:  835:
+        -:  836:	err:
+    #####:  837:	if (buf)
+        -:  838:		{
+    #####:  839:		OPENSSL_cleanse(buf, buflen);
+    #####:  840:		OPENSSL_free(buf);
+        -:  841:		}
+    #####:  842:	return ret;
+        -:  843:	}
+        -:  844:
+        -:  845:	
+        -:  846:	
+    #####:  847:static int i2b_PVK(unsigned char **out, EVP_PKEY*pk, int enclevel,
+        -:  848:		pem_password_cb *cb, void *u)
+        -:  849:	{
+        -:  850:	int outlen = 24, pklen;
+        -:  851:	unsigned char *p, *salt = NULL;
+        -:  852:	EVP_CIPHER_CTX cctx;
+    #####:  853:	EVP_CIPHER_CTX_init(&cctx);
+    #####:  854:	if (enclevel)
+        -:  855:		outlen += PVK_SALTLEN;
+    #####:  856:	pklen = do_i2b(NULL, pk, 0);
+    #####:  857:	if (pklen < 0)
+        -:  858:		return -1;
+    #####:  859:	outlen += pklen;
+    #####:  860:	if (!out)
+        -:  861:		return outlen;
+    #####:  862:	if (*out)
+    #####:  863:		p = *out;
+        -:  864:	else
+        -:  865:		{
+    #####:  866:		p = OPENSSL_malloc(outlen);
+    #####:  867:		if (!p)
+        -:  868:			{
+    #####:  869:			PEMerr(PEM_F_I2B_PVK,ERR_R_MALLOC_FAILURE);
+    #####:  870:			return -1;
+        -:  871:			}
+    #####:  872:		*out = p;
+        -:  873:		}
+        -:  874:
+        -:  875:	write_ledword(&p, MS_PVKMAGIC);
+        -:  876:	write_ledword(&p, 0);
+    #####:  877:	if (pk->type == EVP_PKEY_DSA)
+        -:  878:		write_ledword(&p, MS_KEYTYPE_SIGN);
+        -:  879:	else
+        -:  880:		write_ledword(&p, MS_KEYTYPE_KEYX);
+    #####:  881:	write_ledword(&p, enclevel ? 1 : 0);
+    #####:  882:	write_ledword(&p, enclevel ? PVK_SALTLEN: 0);
+    #####:  883:	write_ledword(&p, pklen);
+    #####:  884:	if (enclevel)
+        -:  885:		{
+    #####:  886:		if (RAND_bytes(p, PVK_SALTLEN) <= 0)
+        -:  887:			goto error;
+    #####:  888:		salt = p;
+    #####:  889:		p += PVK_SALTLEN;
+        -:  890:		}
+    #####:  891:	do_i2b(&p, pk, 0);
+    #####:  892:	if (enclevel == 0)
+        -:  893:		return outlen;
+        -:  894:	else
+        -:  895:		{
+        -:  896:		char psbuf[PEM_BUFSIZE];
+        -:  897:		unsigned char keybuf[20];
+        -:  898:		int enctmplen, inlen;
+    #####:  899:		if (cb)
+    #####:  900:			inlen=cb(psbuf,PEM_BUFSIZE,1,u);
+        -:  901:		else
+    #####:  902:			inlen=PEM_def_callback(psbuf,PEM_BUFSIZE,1,u);
+    #####:  903:		if (inlen <= 0)
+        -:  904:			{
+    #####:  905:			PEMerr(PEM_F_I2B_PVK,PEM_R_BAD_PASSWORD_READ);
+    #####:  906:			goto error;
+        -:  907:			}
+    #####:  908:		if (!derive_pvk_key(keybuf, salt, PVK_SALTLEN,
+        -:  909:			    (unsigned char *)psbuf, inlen))
+        -:  910:			goto error;
+    #####:  911:		if (enclevel == 1)
+        -:  912:			memset(keybuf + 5, 0, 11);
+    #####:  913:		p = salt + PVK_SALTLEN + 8;
+    #####:  914:		if (!EVP_EncryptInit_ex(&cctx, EVP_rc4(), NULL, keybuf, NULL))
+        -:  915:			goto error;
+    #####:  916:		OPENSSL_cleanse(keybuf, 20);
+    #####:  917:		if (!EVP_DecryptUpdate(&cctx, p, &enctmplen, p, pklen - 8))
+        -:  918:			goto error;
+    #####:  919:		if (!EVP_DecryptFinal_ex(&cctx, p + enctmplen, &enctmplen))
+        -:  920:			goto error;
+        -:  921:		}
+    #####:  922:	EVP_CIPHER_CTX_cleanup(&cctx);
+    #####:  923:	return outlen;
+        -:  924:
+        -:  925:	error:
+    #####:  926:	EVP_CIPHER_CTX_cleanup(&cctx);
+    #####:  927:	return -1;
+        -:  928:	}
+        -:  929:
+    #####:  930:int i2b_PVK_bio(BIO *out, EVP_PKEY *pk, int enclevel,
+        -:  931:		pem_password_cb *cb, void *u)
+        -:  932:	{
+    #####:  933:	unsigned char *tmp = NULL;
+        -:  934:	int outlen, wrlen;
+    #####:  935:	outlen = i2b_PVK(&tmp, pk, enclevel, cb, u);
+    #####:  936:	if (outlen < 0)
+        -:  937:		return -1;
+    #####:  938:	wrlen = BIO_write(out, tmp, outlen);
+    #####:  939:	OPENSSL_free(tmp);
+    #####:  940:	if (wrlen == outlen)
+        -:  941:		{
+    #####:  942:		PEMerr(PEM_F_I2B_PVK_BIO, PEM_R_BIO_WRITE_FAILURE);
+    #####:  943:		return outlen;
+        -:  944:		}
+        -:  945:	return -1;
+        -:  946:	}
+        -:  947:
+        -:  948:#endif
+        -:  949:
+        -:  950:#endif

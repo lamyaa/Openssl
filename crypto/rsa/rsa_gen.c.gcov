@@ -1,0 +1,239 @@
+        -:    0:Source:rsa_gen.c
+        -:    0:Graph:rsa_gen.gcno
+        -:    0:Data:rsa_gen.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* crypto/rsa/rsa_gen.c */
+        -:    2:/* Copyright (C) 1995-1998 Eric Young (eay@cryptsoft.com)
+        -:    3: * All rights reserved.
+        -:    4: *
+        -:    5: * This package is an SSL implementation written
+        -:    6: * by Eric Young (eay@cryptsoft.com).
+        -:    7: * The implementation was written so as to conform with Netscapes SSL.
+        -:    8: * 
+        -:    9: * This library is free for commercial and non-commercial use as long as
+        -:   10: * the following conditions are aheared to.  The following conditions
+        -:   11: * apply to all code found in this distribution, be it the RC4, RSA,
+        -:   12: * lhash, DES, etc., code; not just the SSL code.  The SSL documentation
+        -:   13: * included with this distribution is covered by the same copyright terms
+        -:   14: * except that the holder is Tim Hudson (tjh@cryptsoft.com).
+        -:   15: * 
+        -:   16: * Copyright remains Eric Young's, and as such any Copyright notices in
+        -:   17: * the code are not to be removed.
+        -:   18: * If this package is used in a product, Eric Young should be given attribution
+        -:   19: * as the author of the parts of the library used.
+        -:   20: * This can be in the form of a textual message at program startup or
+        -:   21: * in documentation (online or textual) provided with the package.
+        -:   22: * 
+        -:   23: * Redistribution and use in source and binary forms, with or without
+        -:   24: * modification, are permitted provided that the following conditions
+        -:   25: * are met:
+        -:   26: * 1. Redistributions of source code must retain the copyright
+        -:   27: *    notice, this list of conditions and the following disclaimer.
+        -:   28: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   29: *    notice, this list of conditions and the following disclaimer in the
+        -:   30: *    documentation and/or other materials provided with the distribution.
+        -:   31: * 3. All advertising materials mentioning features or use of this software
+        -:   32: *    must display the following acknowledgement:
+        -:   33: *    "This product includes cryptographic software written by
+        -:   34: *     Eric Young (eay@cryptsoft.com)"
+        -:   35: *    The word 'cryptographic' can be left out if the rouines from the library
+        -:   36: *    being used are not cryptographic related :-).
+        -:   37: * 4. If you include any Windows specific code (or a derivative thereof) from 
+        -:   38: *    the apps directory (application code) you must include an acknowledgement:
+        -:   39: *    "This product includes software written by Tim Hudson (tjh@cryptsoft.com)"
+        -:   40: * 
+        -:   41: * THIS SOFTWARE IS PROVIDED BY ERIC YOUNG ``AS IS'' AND
+        -:   42: * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   43: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+        -:   44: * ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+        -:   45: * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+        -:   46: * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+        -:   47: * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   48: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+        -:   49: * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+        -:   50: * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+        -:   51: * SUCH DAMAGE.
+        -:   52: * 
+        -:   53: * The licence and distribution terms for any publically available version or
+        -:   54: * derivative of this code cannot be changed.  i.e. this code cannot simply be
+        -:   55: * copied and put under another distribution licence
+        -:   56: * [including the GNU Public Licence.]
+        -:   57: */
+        -:   58:
+        -:   59:
+        -:   60:/* NB: these functions have been "upgraded", the deprecated versions (which are
+        -:   61: * compatibility wrappers using these functions) are in rsa_depr.c.
+        -:   62: * - Geoff
+        -:   63: */
+        -:   64:
+        -:   65:#include <stdio.h>
+        -:   66:#include <time.h>
+        -:   67:#include "cryptlib.h"
+        -:   68:#include <openssl/bn.h>
+        -:   69:#include <openssl/rsa.h>
+        -:   70:#ifdef OPENSSL_FIPS
+        -:   71:#include <openssl/fips.h>
+        -:   72:#endif
+        -:   73:
+        -:   74:static int rsa_builtin_keygen(RSA *rsa, int bits, BIGNUM *e_value, BN_GENCB *cb);
+        -:   75:
+        -:   76:/* NB: this wrapper would normally be placed in rsa_lib.c and the static
+        -:   77: * implementation would probably be in rsa_eay.c. Nonetheless, is kept here so
+        -:   78: * that we don't introduce a new linker dependency. Eg. any application that
+        -:   79: * wasn't previously linking object code related to key-generation won't have to
+        -:   80: * now just because key-generation is part of RSA_METHOD. */
+    #####:   81:int RSA_generate_key_ex(RSA *rsa, int bits, BIGNUM *e_value, BN_GENCB *cb)
+        -:   82:	{
+        -:   83:#ifdef OPENSSL_FIPS
+        -:   84:	if (FIPS_mode() && !(rsa->meth->flags & RSA_FLAG_FIPS_METHOD)
+        -:   85:			&& !(rsa->flags & RSA_FLAG_NON_FIPS_ALLOW))
+        -:   86:		{
+        -:   87:		RSAerr(RSA_F_RSA_GENERATE_KEY_EX, RSA_R_NON_FIPS_RSA_METHOD);
+        -:   88:		return 0;
+        -:   89:		}
+        -:   90:#endif
+    #####:   91:	if(rsa->meth->rsa_keygen)
+    #####:   92:		return rsa->meth->rsa_keygen(rsa, bits, e_value, cb);
+        -:   93:#ifdef OPENSSL_FIPS
+        -:   94:	if (FIPS_mode())
+        -:   95:		return FIPS_rsa_generate_key_ex(rsa, bits, e_value, cb);
+        -:   96:#endif
+    #####:   97:	return rsa_builtin_keygen(rsa, bits, e_value, cb);
+        -:   98:	}
+        -:   99:
+    #####:  100:static int rsa_builtin_keygen(RSA *rsa, int bits, BIGNUM *e_value, BN_GENCB *cb)
+        -:  101:	{
+        -:  102:	BIGNUM *r0=NULL,*r1=NULL,*r2=NULL,*r3=NULL,*tmp;
+        -:  103:	BIGNUM local_r0,local_d,local_p;
+        -:  104:	BIGNUM *pr0,*d,*p;
+        -:  105:	int bitsp,bitsq,ok= -1,n=0;
+        -:  106:	BN_CTX *ctx=NULL;
+        -:  107:
+    #####:  108:	ctx=BN_CTX_new();
+    #####:  109:	if (ctx == NULL) goto err;
+    #####:  110:	BN_CTX_start(ctx);
+    #####:  111:	r0 = BN_CTX_get(ctx);
+    #####:  112:	r1 = BN_CTX_get(ctx);
+    #####:  113:	r2 = BN_CTX_get(ctx);
+    #####:  114:	r3 = BN_CTX_get(ctx);
+    #####:  115:	if (r3 == NULL) goto err;
+        -:  116:
+    #####:  117:	bitsp=(bits+1)/2;
+    #####:  118:	bitsq=bits-bitsp;
+        -:  119:
+        -:  120:	/* We need the RSA components non-NULL */
+    #####:  121:	if(!rsa->n && ((rsa->n=BN_new()) == NULL)) goto err;
+    #####:  122:	if(!rsa->d && ((rsa->d=BN_new()) == NULL)) goto err;
+    #####:  123:	if(!rsa->e && ((rsa->e=BN_new()) == NULL)) goto err;
+    #####:  124:	if(!rsa->p && ((rsa->p=BN_new()) == NULL)) goto err;
+    #####:  125:	if(!rsa->q && ((rsa->q=BN_new()) == NULL)) goto err;
+    #####:  126:	if(!rsa->dmp1 && ((rsa->dmp1=BN_new()) == NULL)) goto err;
+    #####:  127:	if(!rsa->dmq1 && ((rsa->dmq1=BN_new()) == NULL)) goto err;
+    #####:  128:	if(!rsa->iqmp && ((rsa->iqmp=BN_new()) == NULL)) goto err;
+        -:  129:
+    #####:  130:	BN_copy(rsa->e, e_value);
+        -:  131:
+        -:  132:	/* generate p and q */
+        -:  133:	for (;;)
+        -:  134:		{
+    #####:  135:		if(!BN_generate_prime_ex(rsa->p, bitsp, 0, NULL, NULL, cb))
+        -:  136:			goto err;
+    #####:  137:		if (!BN_sub(r2,rsa->p,BN_value_one())) goto err;
+    #####:  138:		if (!BN_gcd(r1,r2,rsa->e,ctx)) goto err;
+    #####:  139:		if (BN_is_one(r1)) break;
+    #####:  140:		if(!BN_GENCB_call(cb, 2, n++))
+        -:  141:			goto err;
+        -:  142:		}
+    #####:  143:	if(!BN_GENCB_call(cb, 3, 0))
+        -:  144:		goto err;
+        -:  145:	for (;;)
+        -:  146:		{
+        -:  147:		/* When generating ridiculously small keys, we can get stuck
+        -:  148:		 * continually regenerating the same prime values. Check for
+        -:  149:		 * this and bail if it happens 3 times. */
+        -:  150:		unsigned int degenerate = 0;
+        -:  151:		do
+        -:  152:			{
+    #####:  153:			if(!BN_generate_prime_ex(rsa->q, bitsq, 0, NULL, NULL, cb))
+        -:  154:				goto err;
+    #####:  155:			} while((BN_cmp(rsa->p, rsa->q) == 0) && (++degenerate < 3));
+    #####:  156:		if(degenerate == 3)
+        -:  157:			{
+        -:  158:			ok = 0; /* we set our own err */
+    #####:  159:			RSAerr(RSA_F_RSA_BUILTIN_KEYGEN,RSA_R_KEY_SIZE_TOO_SMALL);
+    #####:  160:			goto err;
+        -:  161:			}
+    #####:  162:		if (!BN_sub(r2,rsa->q,BN_value_one())) goto err;
+    #####:  163:		if (!BN_gcd(r1,r2,rsa->e,ctx)) goto err;
+    #####:  164:		if (BN_is_one(r1))
+        -:  165:			break;
+    #####:  166:		if(!BN_GENCB_call(cb, 2, n++))
+        -:  167:			goto err;
+        -:  168:		}
+    #####:  169:	if(!BN_GENCB_call(cb, 3, 1))
+        -:  170:		goto err;
+    #####:  171:	if (BN_cmp(rsa->p,rsa->q) < 0)
+        -:  172:		{
+    #####:  173:		tmp=rsa->p;
+    #####:  174:		rsa->p=rsa->q;
+    #####:  175:		rsa->q=tmp;
+        -:  176:		}
+        -:  177:
+        -:  178:	/* calculate n */
+    #####:  179:	if (!BN_mul(rsa->n,rsa->p,rsa->q,ctx)) goto err;
+        -:  180:
+        -:  181:	/* calculate d */
+    #####:  182:	if (!BN_sub(r1,rsa->p,BN_value_one())) goto err;	/* p-1 */
+    #####:  183:	if (!BN_sub(r2,rsa->q,BN_value_one())) goto err;	/* q-1 */
+    #####:  184:	if (!BN_mul(r0,r1,r2,ctx)) goto err;	/* (p-1)(q-1) */
+    #####:  185:	if (!(rsa->flags & RSA_FLAG_NO_CONSTTIME))
+        -:  186:		{
+        -:  187:		  pr0 = &local_r0;
+    #####:  188:		  BN_with_flags(pr0, r0, BN_FLG_CONSTTIME);
+        -:  189:		}
+        -:  190:	else
+        -:  191:	  pr0 = r0;
+    #####:  192:	if (!BN_mod_inverse(rsa->d,rsa->e,pr0,ctx)) goto err;	/* d */
+        -:  193:
+        -:  194:	/* set up d for correct BN_FLG_CONSTTIME flag */
+    #####:  195:	if (!(rsa->flags & RSA_FLAG_NO_CONSTTIME))
+        -:  196:		{
+        -:  197:		d = &local_d;
+    #####:  198:		BN_with_flags(d, rsa->d, BN_FLG_CONSTTIME);
+        -:  199:		}
+        -:  200:	else
+    #####:  201:		d = rsa->d;
+        -:  202:
+        -:  203:	/* calculate d mod (p-1) */
+    #####:  204:	if (!BN_mod(rsa->dmp1,d,r1,ctx)) goto err;
+        -:  205:
+        -:  206:	/* calculate d mod (q-1) */
+    #####:  207:	if (!BN_mod(rsa->dmq1,d,r2,ctx)) goto err;
+        -:  208:
+        -:  209:	/* calculate inverse of q mod p */
+    #####:  210:	if (!(rsa->flags & RSA_FLAG_NO_CONSTTIME))
+        -:  211:		{
+        -:  212:		p = &local_p;
+    #####:  213:		BN_with_flags(p, rsa->p, BN_FLG_CONSTTIME);
+        -:  214:		}
+        -:  215:	else
+    #####:  216:		p = rsa->p;
+    #####:  217:	if (!BN_mod_inverse(rsa->iqmp,rsa->q,p,ctx)) goto err;
+        -:  218:
+        -:  219:	ok=1;
+        -:  220:err:
+    #####:  221:	if (ok == -1)
+        -:  222:		{
+    #####:  223:		RSAerr(RSA_F_RSA_BUILTIN_KEYGEN,ERR_LIB_BN);
+        -:  224:		ok=0;
+        -:  225:		}
+    #####:  226:	if (ctx != NULL)
+        -:  227:		{
+    #####:  228:		BN_CTX_end(ctx);
+    #####:  229:		BN_CTX_free(ctx);
+        -:  230:		}
+        -:  231:
+    #####:  232:	return ok;
+        -:  233:	}
+        -:  234:

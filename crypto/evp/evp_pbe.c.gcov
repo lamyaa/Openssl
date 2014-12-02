@@ -1,0 +1,321 @@
+        -:    0:Source:evp_pbe.c
+        -:    0:Graph:evp_pbe.gcno
+        -:    0:Data:evp_pbe.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* evp_pbe.c */
+        -:    2:/* Written by Dr Stephen N Henson (steve@openssl.org) for the OpenSSL
+        -:    3: * project 1999.
+        -:    4: */
+        -:    5:/* ====================================================================
+        -:    6: * Copyright (c) 1999-2006 The OpenSSL Project.  All rights reserved.
+        -:    7: *
+        -:    8: * Redistribution and use in source and binary forms, with or without
+        -:    9: * modification, are permitted provided that the following conditions
+        -:   10: * are met:
+        -:   11: *
+        -:   12: * 1. Redistributions of source code must retain the above copyright
+        -:   13: *    notice, this list of conditions and the following disclaimer. 
+        -:   14: *
+        -:   15: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   16: *    notice, this list of conditions and the following disclaimer in
+        -:   17: *    the documentation and/or other materials provided with the
+        -:   18: *    distribution.
+        -:   19: *
+        -:   20: * 3. All advertising materials mentioning features or use of this
+        -:   21: *    software must display the following acknowledgment:
+        -:   22: *    "This product includes software developed by the OpenSSL Project
+        -:   23: *    for use in the OpenSSL Toolkit. (http://www.OpenSSL.org/)"
+        -:   24: *
+        -:   25: * 4. The names "OpenSSL Toolkit" and "OpenSSL Project" must not be used to
+        -:   26: *    endorse or promote products derived from this software without
+        -:   27: *    prior written permission. For written permission, please contact
+        -:   28: *    licensing@OpenSSL.org.
+        -:   29: *
+        -:   30: * 5. Products derived from this software may not be called "OpenSSL"
+        -:   31: *    nor may "OpenSSL" appear in their names without prior written
+        -:   32: *    permission of the OpenSSL Project.
+        -:   33: *
+        -:   34: * 6. Redistributions of any form whatsoever must retain the following
+        -:   35: *    acknowledgment:
+        -:   36: *    "This product includes software developed by the OpenSSL Project
+        -:   37: *    for use in the OpenSSL Toolkit (http://www.OpenSSL.org/)"
+        -:   38: *
+        -:   39: * THIS SOFTWARE IS PROVIDED BY THE OpenSSL PROJECT ``AS IS'' AND ANY
+        -:   40: * EXPRESSED OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   41: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+        -:   42: * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE OpenSSL PROJECT OR
+        -:   43: * ITS CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+        -:   44: * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+        -:   45: * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+        -:   46: * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   47: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+        -:   48: * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+        -:   49: * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+        -:   50: * OF THE POSSIBILITY OF SUCH DAMAGE.
+        -:   51: * ====================================================================
+        -:   52: *
+        -:   53: * This product includes cryptographic software written by Eric Young
+        -:   54: * (eay@cryptsoft.com).  This product includes software written by Tim
+        -:   55: * Hudson (tjh@cryptsoft.com).
+        -:   56: *
+        -:   57: */
+        -:   58:
+        -:   59:#include <stdio.h>
+        -:   60:#include "cryptlib.h"
+        -:   61:#include <openssl/evp.h>
+        -:   62:#include <openssl/pkcs12.h>
+        -:   63:#include <openssl/x509.h>
+        -:   64:#include "evp_locl.h"
+        -:   65:
+        -:   66:/* Password based encryption (PBE) functions */
+        -:   67:
+        -:   68:DECLARE_STACK_OF(EVP_PBE_CTL)
+        -:   69:static STACK_OF(EVP_PBE_CTL) *pbe_algs;
+        -:   70:
+        -:   71:/* Setup a cipher context from a PBE algorithm */
+        -:   72:
+        -:   73:typedef struct
+        -:   74:	{
+        -:   75:	int pbe_type;
+        -:   76:	int pbe_nid;
+        -:   77:	int cipher_nid;
+        -:   78:	int md_nid;
+        -:   79:	EVP_PBE_KEYGEN *keygen;
+        -:   80:	} EVP_PBE_CTL;
+        -:   81:
+        -:   82:static const EVP_PBE_CTL builtin_pbe[] = 
+        -:   83:	{
+        -:   84:	{EVP_PBE_TYPE_OUTER, NID_pbeWithMD2AndDES_CBC,
+        -:   85:			NID_des_cbc, NID_md2, PKCS5_PBE_keyivgen},
+        -:   86:	{EVP_PBE_TYPE_OUTER, NID_pbeWithMD5AndDES_CBC,
+        -:   87:			NID_des_cbc, NID_md5, PKCS5_PBE_keyivgen},
+        -:   88:	{EVP_PBE_TYPE_OUTER, NID_pbeWithSHA1AndRC2_CBC,
+        -:   89:			NID_rc2_64_cbc, NID_sha1, PKCS5_PBE_keyivgen},
+        -:   90:
+        -:   91:#ifndef OPENSSL_NO_HMAC
+        -:   92:	{EVP_PBE_TYPE_OUTER, NID_id_pbkdf2, -1, -1, PKCS5_v2_PBKDF2_keyivgen},
+        -:   93:#endif
+        -:   94:
+        -:   95:	{EVP_PBE_TYPE_OUTER, NID_pbe_WithSHA1And128BitRC4,
+        -:   96:			NID_rc4, NID_sha1, PKCS12_PBE_keyivgen},
+        -:   97:	{EVP_PBE_TYPE_OUTER, NID_pbe_WithSHA1And40BitRC4,
+        -:   98:			NID_rc4_40, NID_sha1, PKCS12_PBE_keyivgen},
+        -:   99:	{EVP_PBE_TYPE_OUTER, NID_pbe_WithSHA1And3_Key_TripleDES_CBC,
+        -:  100:		 	NID_des_ede3_cbc, NID_sha1, PKCS12_PBE_keyivgen},
+        -:  101:	{EVP_PBE_TYPE_OUTER, NID_pbe_WithSHA1And2_Key_TripleDES_CBC, 
+        -:  102:			NID_des_ede_cbc, NID_sha1, PKCS12_PBE_keyivgen},
+        -:  103:	{EVP_PBE_TYPE_OUTER, NID_pbe_WithSHA1And128BitRC2_CBC,
+        -:  104:			NID_rc2_cbc, NID_sha1, PKCS12_PBE_keyivgen},
+        -:  105:	{EVP_PBE_TYPE_OUTER, NID_pbe_WithSHA1And40BitRC2_CBC,
+        -:  106:			NID_rc2_40_cbc, NID_sha1, PKCS12_PBE_keyivgen},
+        -:  107:
+        -:  108:#ifndef OPENSSL_NO_HMAC
+        -:  109:	{EVP_PBE_TYPE_OUTER, NID_pbes2, -1, -1, PKCS5_v2_PBE_keyivgen},
+        -:  110:#endif
+        -:  111:	{EVP_PBE_TYPE_OUTER, NID_pbeWithMD2AndRC2_CBC,
+        -:  112:			NID_rc2_64_cbc, NID_md2, PKCS5_PBE_keyivgen},
+        -:  113:	{EVP_PBE_TYPE_OUTER, NID_pbeWithMD5AndRC2_CBC,
+        -:  114:			NID_rc2_64_cbc, NID_md5, PKCS5_PBE_keyivgen},
+        -:  115:	{EVP_PBE_TYPE_OUTER, NID_pbeWithSHA1AndDES_CBC,
+        -:  116:			NID_des_cbc, NID_sha1, PKCS5_PBE_keyivgen},
+        -:  117:
+        -:  118:
+        -:  119:	{EVP_PBE_TYPE_PRF, NID_hmacWithSHA1, -1, NID_sha1, 0},
+        -:  120:	{EVP_PBE_TYPE_PRF, NID_hmacWithMD5, -1, NID_md5, 0},
+        -:  121:	{EVP_PBE_TYPE_PRF, NID_hmacWithSHA224, -1, NID_sha224, 0},
+        -:  122:	{EVP_PBE_TYPE_PRF, NID_hmacWithSHA256, -1, NID_sha256, 0},
+        -:  123:	{EVP_PBE_TYPE_PRF, NID_hmacWithSHA384, -1, NID_sha384, 0},
+        -:  124:	{EVP_PBE_TYPE_PRF, NID_hmacWithSHA512, -1, NID_sha512, 0},
+        -:  125:	{EVP_PBE_TYPE_PRF, NID_id_HMACGostR3411_94, -1, NID_id_GostR3411_94, 0},
+        -:  126:	};
+        -:  127:
+        -:  128:#ifdef TEST
+        -:  129:int main(int argc, char **argv)
+        -:  130:	{
+        -:  131:	int i, nid_md, nid_cipher;
+        -:  132:	EVP_PBE_CTL *tpbe, *tpbe2;
+        -:  133:	/*OpenSSL_add_all_algorithms();*/
+        -:  134:
+        -:  135:	for (i = 0; i < sizeof(builtin_pbe)/sizeof(EVP_PBE_CTL); i++)
+        -:  136:		{
+        -:  137:		tpbe = builtin_pbe + i;
+        -:  138:		fprintf(stderr, "%d %d %s ", tpbe->pbe_type, tpbe->pbe_nid,
+        -:  139:						OBJ_nid2sn(tpbe->pbe_nid));
+        -:  140:		if (EVP_PBE_find(tpbe->pbe_type, tpbe->pbe_nid,
+        -:  141:					&nid_cipher ,&nid_md,0))
+        -:  142:			fprintf(stderr, "Found %s %s\n",
+        -:  143:					OBJ_nid2sn(nid_cipher),
+        -:  144:					OBJ_nid2sn(nid_md));
+        -:  145:		else
+        -:  146:			fprintf(stderr, "Find ERROR!!\n");
+        -:  147:		}
+        -:  148:
+        -:  149:	return 0;
+        -:  150:	}
+        -:  151:#endif
+        -:  152:		
+        -:  153:
+        -:  154:
+    #####:  155:int EVP_PBE_CipherInit(ASN1_OBJECT *pbe_obj, const char *pass, int passlen,
+        -:  156:		       ASN1_TYPE *param, EVP_CIPHER_CTX *ctx, int en_de)
+        -:  157:	{
+        -:  158:	const EVP_CIPHER *cipher;
+        -:  159:	const EVP_MD *md;
+        -:  160:	int cipher_nid, md_nid;
+        -:  161:	EVP_PBE_KEYGEN *keygen;
+        -:  162:
+    #####:  163:	if (!EVP_PBE_find(EVP_PBE_TYPE_OUTER, OBJ_obj2nid(pbe_obj),
+        -:  164:					&cipher_nid, &md_nid, &keygen))
+        -:  165:		{
+        -:  166:		char obj_tmp[80];
+    #####:  167:		EVPerr(EVP_F_EVP_PBE_CIPHERINIT,EVP_R_UNKNOWN_PBE_ALGORITHM);
+    #####:  168:		if (!pbe_obj) BUF_strlcpy (obj_tmp, "NULL", sizeof obj_tmp);
+    #####:  169:		else i2t_ASN1_OBJECT(obj_tmp, sizeof obj_tmp, pbe_obj);
+    #####:  170:		ERR_add_error_data(2, "TYPE=", obj_tmp);
+        -:  171:		return 0;
+        -:  172:		}
+        -:  173:
+    #####:  174:	if(!pass)
+        -:  175:		passlen = 0;
+    #####:  176:	else if (passlen == -1)
+    #####:  177:		passlen = strlen(pass);
+        -:  178:
+    #####:  179:	if (cipher_nid == -1)
+        -:  180:		cipher = NULL;
+        -:  181:	else
+        -:  182:		{
+    #####:  183:		cipher = EVP_get_cipherbynid(cipher_nid);
+    #####:  184:		if (!cipher)
+        -:  185:			{
+    #####:  186:			EVPerr(EVP_F_EVP_PBE_CIPHERINIT,EVP_R_UNKNOWN_CIPHER);
+    #####:  187:			return 0;
+        -:  188:			}
+        -:  189:		}
+        -:  190:
+    #####:  191:	if (md_nid == -1)
+        -:  192:		md = NULL;
+        -:  193:	else
+        -:  194:		{
+    #####:  195:		md = EVP_get_digestbynid(md_nid);
+    #####:  196:		if (!md)
+        -:  197:			{
+    #####:  198:			EVPerr(EVP_F_EVP_PBE_CIPHERINIT,EVP_R_UNKNOWN_DIGEST);
+    #####:  199:			return 0;
+        -:  200:			}
+        -:  201:		}
+        -:  202:
+    #####:  203:	if (!keygen(ctx, pass, passlen, param, cipher, md, en_de))
+        -:  204:		{
+    #####:  205:		EVPerr(EVP_F_EVP_PBE_CIPHERINIT,EVP_R_KEYGEN_FAILURE);
+    #####:  206:		return 0;
+        -:  207:		}
+        -:  208:	return 1;	
+        -:  209:}
+        -:  210:
+        -:  211:DECLARE_OBJ_BSEARCH_CMP_FN(EVP_PBE_CTL, EVP_PBE_CTL, pbe2);
+        -:  212:
+        -:  213:static int pbe2_cmp(const EVP_PBE_CTL *pbe1, const EVP_PBE_CTL *pbe2)
+        -:  214:	{
+    #####:  215:	int ret = pbe1->pbe_type - pbe2->pbe_type;
+    #####:  216:	if (ret)
+        -:  217:		return ret;
+        -:  218:	else
+    #####:  219:		return pbe1->pbe_nid - pbe2->pbe_nid;
+        -:  220:	}
+        -:  221:
+    #####:  222:IMPLEMENT_OBJ_BSEARCH_CMP_FN(EVP_PBE_CTL, EVP_PBE_CTL, pbe2);
+        -:  223:
+    #####:  224:static int pbe_cmp(const EVP_PBE_CTL * const *a, const EVP_PBE_CTL * const *b)
+        -:  225:	{
+    #####:  226:	int ret = (*a)->pbe_type - (*b)->pbe_type;
+    #####:  227:	if (ret)
+        -:  228:		return ret;
+        -:  229:	else
+    #####:  230:		return (*a)->pbe_nid - (*b)->pbe_nid;
+        -:  231:	}
+        -:  232:
+        -:  233:/* Add a PBE algorithm */
+        -:  234:
+    #####:  235:int EVP_PBE_alg_add_type(int pbe_type, int pbe_nid, int cipher_nid, int md_nid,
+        -:  236:			 EVP_PBE_KEYGEN *keygen)
+        -:  237:	{
+        -:  238:	EVP_PBE_CTL *pbe_tmp;
+    #####:  239:	if (!pbe_algs)
+    #####:  240:		pbe_algs = sk_EVP_PBE_CTL_new(pbe_cmp);
+    #####:  241:	if (!(pbe_tmp = (EVP_PBE_CTL*) OPENSSL_malloc (sizeof(EVP_PBE_CTL))))
+        -:  242:		{
+    #####:  243:		EVPerr(EVP_F_EVP_PBE_ALG_ADD_TYPE,ERR_R_MALLOC_FAILURE);
+    #####:  244:		return 0;
+        -:  245:		}
+    #####:  246:	pbe_tmp->pbe_type = pbe_type;
+    #####:  247:	pbe_tmp->pbe_nid = pbe_nid;
+    #####:  248:	pbe_tmp->cipher_nid = cipher_nid;
+    #####:  249:	pbe_tmp->md_nid = md_nid;
+    #####:  250:	pbe_tmp->keygen = keygen;
+        -:  251:
+        -:  252:
+    #####:  253:	sk_EVP_PBE_CTL_push (pbe_algs, pbe_tmp);
+    #####:  254:	return 1;
+        -:  255:	}
+        -:  256:
+    #####:  257:int EVP_PBE_alg_add(int nid, const EVP_CIPHER *cipher, const EVP_MD *md,
+        -:  258:		    EVP_PBE_KEYGEN *keygen)
+        -:  259:	{
+        -:  260:	int cipher_nid, md_nid;
+    #####:  261:	if (cipher)
+    #####:  262:		cipher_nid = EVP_CIPHER_type(cipher);
+        -:  263:	else
+        -:  264:		cipher_nid = -1;
+    #####:  265:	if (md)
+    #####:  266:		md_nid = EVP_MD_type(md);
+        -:  267:	else
+        -:  268:		md_nid = -1;
+        -:  269:
+    #####:  270:	return EVP_PBE_alg_add_type(EVP_PBE_TYPE_OUTER, nid,
+        -:  271:					cipher_nid, md_nid, keygen);
+        -:  272:	}
+        -:  273:
+    #####:  274:int EVP_PBE_find(int type, int pbe_nid,
+        -:  275:		 int *pcnid, int *pmnid, EVP_PBE_KEYGEN **pkeygen)
+        -:  276:	{
+        -:  277:	EVP_PBE_CTL *pbetmp = NULL, pbelu;
+        -:  278:	int i;
+    #####:  279:	if (pbe_nid == NID_undef)
+        -:  280:		return 0;
+        -:  281:
+    #####:  282:	pbelu.pbe_type = type;
+    #####:  283:	pbelu.pbe_nid = pbe_nid;
+        -:  284:
+    #####:  285:	if (pbe_algs)
+        -:  286:		{
+    #####:  287:		i = sk_EVP_PBE_CTL_find(pbe_algs, &pbelu);
+    #####:  288:		if (i != -1)
+    #####:  289:			pbetmp = sk_EVP_PBE_CTL_value (pbe_algs, i);
+        -:  290:		}
+    #####:  291:	if (pbetmp == NULL)
+        -:  292:		{
+        -:  293:		pbetmp = OBJ_bsearch_pbe2(&pbelu, builtin_pbe,
+        -:  294:				     sizeof(builtin_pbe)/sizeof(EVP_PBE_CTL));
+        -:  295:		}
+    #####:  296:	if (pbetmp == NULL)
+        -:  297:		return 0;
+    #####:  298:	if (pcnid)
+    #####:  299:		*pcnid = pbetmp->cipher_nid;
+    #####:  300:	if (pmnid)
+    #####:  301:		*pmnid = pbetmp->md_nid;
+    #####:  302:	if (pkeygen)
+    #####:  303:		*pkeygen = pbetmp->keygen;
+        -:  304:	return 1;
+        -:  305:	}
+        -:  306:
+    #####:  307:static void free_evp_pbe_ctl(EVP_PBE_CTL *pbe)
+        -:  308:	 {
+    #####:  309:	 OPENSSL_freeFunc(pbe);
+    #####:  310:	 }
+        -:  311:
+    10000:  312:void EVP_PBE_cleanup(void)
+        -:  313:	{
+    10000:  314:	sk_EVP_PBE_CTL_pop_free(pbe_algs, free_evp_pbe_ctl);
+    10000:  315:	pbe_algs = NULL;
+    10000:  316:	}

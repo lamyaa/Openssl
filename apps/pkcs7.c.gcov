@@ -1,0 +1,325 @@
+        -:    0:Source:pkcs7.c
+        -:    0:Graph:pkcs7.gcno
+        -:    0:Data:pkcs7.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* apps/pkcs7.c */
+        -:    2:/* Copyright (C) 1995-1998 Eric Young (eay@cryptsoft.com)
+        -:    3: * All rights reserved.
+        -:    4: *
+        -:    5: * This package is an SSL implementation written
+        -:    6: * by Eric Young (eay@cryptsoft.com).
+        -:    7: * The implementation was written so as to conform with Netscapes SSL.
+        -:    8: * 
+        -:    9: * This library is free for commercial and non-commercial use as long as
+        -:   10: * the following conditions are aheared to.  The following conditions
+        -:   11: * apply to all code found in this distribution, be it the RC4, RSA,
+        -:   12: * lhash, DES, etc., code; not just the SSL code.  The SSL documentation
+        -:   13: * included with this distribution is covered by the same copyright terms
+        -:   14: * except that the holder is Tim Hudson (tjh@cryptsoft.com).
+        -:   15: * 
+        -:   16: * Copyright remains Eric Young's, and as such any Copyright notices in
+        -:   17: * the code are not to be removed.
+        -:   18: * If this package is used in a product, Eric Young should be given attribution
+        -:   19: * as the author of the parts of the library used.
+        -:   20: * This can be in the form of a textual message at program startup or
+        -:   21: * in documentation (online or textual) provided with the package.
+        -:   22: * 
+        -:   23: * Redistribution and use in source and binary forms, with or without
+        -:   24: * modification, are permitted provided that the following conditions
+        -:   25: * are met:
+        -:   26: * 1. Redistributions of source code must retain the copyright
+        -:   27: *    notice, this list of conditions and the following disclaimer.
+        -:   28: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   29: *    notice, this list of conditions and the following disclaimer in the
+        -:   30: *    documentation and/or other materials provided with the distribution.
+        -:   31: * 3. All advertising materials mentioning features or use of this software
+        -:   32: *    must display the following acknowledgement:
+        -:   33: *    "This product includes cryptographic software written by
+        -:   34: *     Eric Young (eay@cryptsoft.com)"
+        -:   35: *    The word 'cryptographic' can be left out if the rouines from the library
+        -:   36: *    being used are not cryptographic related :-).
+        -:   37: * 4. If you include any Windows specific code (or a derivative thereof) from 
+        -:   38: *    the apps directory (application code) you must include an acknowledgement:
+        -:   39: *    "This product includes software written by Tim Hudson (tjh@cryptsoft.com)"
+        -:   40: * 
+        -:   41: * THIS SOFTWARE IS PROVIDED BY ERIC YOUNG ``AS IS'' AND
+        -:   42: * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   43: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+        -:   44: * ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+        -:   45: * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+        -:   46: * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+        -:   47: * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   48: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+        -:   49: * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+        -:   50: * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+        -:   51: * SUCH DAMAGE.
+        -:   52: * 
+        -:   53: * The licence and distribution terms for any publically available version or
+        -:   54: * derivative of this code cannot be changed.  i.e. this code cannot simply be
+        -:   55: * copied and put under another distribution licence
+        -:   56: * [including the GNU Public Licence.]
+        -:   57: */
+        -:   58:
+        -:   59:#include <stdio.h>
+        -:   60:#include <stdlib.h>
+        -:   61:#include <string.h>
+        -:   62:#include <time.h>
+        -:   63:#include "apps.h"
+        -:   64:#include <openssl/err.h>
+        -:   65:#include <openssl/objects.h>
+        -:   66:#include <openssl/evp.h>
+        -:   67:#include <openssl/x509.h>
+        -:   68:#include <openssl/pkcs7.h>
+        -:   69:#include <openssl/pem.h>
+        -:   70:
+        -:   71:#undef PROG
+        -:   72:#define PROG	pkcs7_main
+        -:   73:
+        -:   74:/* -inform arg	- input format - default PEM (DER or PEM)
+        -:   75: * -outform arg - output format - default PEM
+        -:   76: * -in arg	- input file - default stdin
+        -:   77: * -out arg	- output file - default stdout
+        -:   78: * -print_certs
+        -:   79: */
+        -:   80:
+        -:   81:int MAIN(int, char **);
+        -:   82:
+    #####:   83:int MAIN(int argc, char **argv)
+        -:   84:	{
+        -:   85:	PKCS7 *p7=NULL;
+        -:   86:	int i,badops=0;
+        -:   87:	BIO *in=NULL,*out=NULL;
+        -:   88:	int informat,outformat;
+        -:   89:	char *infile,*outfile,*prog;
+        -:   90:	int print_certs=0,text=0,noout=0,p7_print=0;
+        -:   91:	int ret=1;
+        -:   92:#ifndef OPENSSL_NO_ENGINE
+        -:   93:	char *engine=NULL;
+        -:   94:#endif
+        -:   95:
+    #####:   96:	apps_startup();
+        -:   97:
+    #####:   98:	if (bio_err == NULL)
+    #####:   99:		if ((bio_err=BIO_new(BIO_s_file())) != NULL)
+    #####:  100:			BIO_set_fp(bio_err,stderr,BIO_NOCLOSE|BIO_FP_TEXT);
+        -:  101:
+    #####:  102:	if (!load_config(bio_err, NULL))
+        -:  103:		goto end;
+        -:  104:
+        -:  105:	infile=NULL;
+        -:  106:	outfile=NULL;
+        -:  107:	informat=FORMAT_PEM;
+        -:  108:	outformat=FORMAT_PEM;
+        -:  109:
+    #####:  110:	prog=argv[0];
+    #####:  111:	argc--;
+    #####:  112:	argv++;
+    #####:  113:	while (argc >= 1)
+        -:  114:		{
+    #####:  115:		if 	(strcmp(*argv,"-inform") == 0)
+        -:  116:			{
+    #####:  117:			if (--argc < 1) goto bad;
+    #####:  118:			informat=str2fmt(*(++argv));
+        -:  119:			}
+    #####:  120:		else if (strcmp(*argv,"-outform") == 0)
+        -:  121:			{
+    #####:  122:			if (--argc < 1) goto bad;
+    #####:  123:			outformat=str2fmt(*(++argv));
+        -:  124:			}
+    #####:  125:		else if (strcmp(*argv,"-in") == 0)
+        -:  126:			{
+    #####:  127:			if (--argc < 1) goto bad;
+    #####:  128:			infile= *(++argv);
+        -:  129:			}
+    #####:  130:		else if (strcmp(*argv,"-out") == 0)
+        -:  131:			{
+    #####:  132:			if (--argc < 1) goto bad;
+    #####:  133:			outfile= *(++argv);
+        -:  134:			}
+    #####:  135:		else if (strcmp(*argv,"-noout") == 0)
+        -:  136:			noout=1;
+    #####:  137:		else if (strcmp(*argv,"-text") == 0)
+        -:  138:			text=1;
+    #####:  139:		else if (strcmp(*argv,"-print") == 0)
+        -:  140:			p7_print=1;
+    #####:  141:		else if (strcmp(*argv,"-print_certs") == 0)
+        -:  142:			print_certs=1;
+        -:  143:#ifndef OPENSSL_NO_ENGINE
+    #####:  144:		else if (strcmp(*argv,"-engine") == 0)
+        -:  145:			{
+    #####:  146:			if (--argc < 1) goto bad;
+    #####:  147:			engine= *(++argv);
+        -:  148:			}
+        -:  149:#endif
+        -:  150:		else
+        -:  151:			{
+    #####:  152:			BIO_printf(bio_err,"unknown option %s\n",*argv);
+        -:  153:			badops=1;
+    #####:  154:			break;
+        -:  155:			}
+    #####:  156:		argc--;
+    #####:  157:		argv++;
+        -:  158:		}
+        -:  159:
+    #####:  160:	if (badops)
+        -:  161:		{
+        -:  162:bad:
+    #####:  163:		BIO_printf(bio_err,"%s [options] <infile >outfile\n",prog);
+    #####:  164:		BIO_printf(bio_err,"where options are\n");
+    #####:  165:		BIO_printf(bio_err," -inform arg   input format - DER or PEM\n");
+    #####:  166:		BIO_printf(bio_err," -outform arg  output format - DER or PEM\n");
+    #####:  167:		BIO_printf(bio_err," -in arg       input file\n");
+    #####:  168:		BIO_printf(bio_err," -out arg      output file\n");
+    #####:  169:		BIO_printf(bio_err," -print_certs  print any certs or crl in the input\n");
+    #####:  170:		BIO_printf(bio_err," -text         print full details of certificates\n");
+    #####:  171:		BIO_printf(bio_err," -noout        don't output encoded data\n");
+        -:  172:#ifndef OPENSSL_NO_ENGINE
+    #####:  173:		BIO_printf(bio_err," -engine e     use engine e, possibly a hardware device.\n");
+        -:  174:#endif
+        -:  175:		ret = 1;
+    #####:  176:		goto end;
+        -:  177:		}
+        -:  178:
+    #####:  179:	ERR_load_crypto_strings();
+        -:  180:
+        -:  181:#ifndef OPENSSL_NO_ENGINE
+    #####:  182:        setup_engine(bio_err, engine, 0);
+        -:  183:#endif
+        -:  184:
+    #####:  185:	in=BIO_new(BIO_s_file());
+    #####:  186:	out=BIO_new(BIO_s_file());
+    #####:  187:	if ((in == NULL) || (out == NULL))
+        -:  188:		{
+    #####:  189:		ERR_print_errors(bio_err);
+    #####:  190:                goto end;
+        -:  191:                }
+        -:  192:
+    #####:  193:	if (infile == NULL)
+    #####:  194:		BIO_set_fp(in,stdin,BIO_NOCLOSE);
+        -:  195:	else
+        -:  196:		{
+    #####:  197:		if (BIO_read_filename(in,infile) <= 0)
+    #####:  198:		if (in == NULL)
+        -:  199:			{
+    #####:  200:			perror(infile);
+    #####:  201:			goto end;
+        -:  202:			}
+        -:  203:		}
+        -:  204:
+    #####:  205:	if	(informat == FORMAT_ASN1)
+    #####:  206:		p7=d2i_PKCS7_bio(in,NULL);
+    #####:  207:	else if (informat == FORMAT_PEM)
+    #####:  208:		p7=PEM_read_bio_PKCS7(in,NULL,NULL,NULL);
+        -:  209:	else
+        -:  210:		{
+    #####:  211:		BIO_printf(bio_err,"bad input format specified for pkcs7 object\n");
+    #####:  212:		goto end;
+        -:  213:		}
+    #####:  214:	if (p7 == NULL)
+        -:  215:		{
+    #####:  216:		BIO_printf(bio_err,"unable to load PKCS7 object\n");
+    #####:  217:		ERR_print_errors(bio_err);
+    #####:  218:		goto end;
+        -:  219:		}
+        -:  220:
+    #####:  221:	if (outfile == NULL)
+        -:  222:		{
+    #####:  223:		BIO_set_fp(out,stdout,BIO_NOCLOSE);
+        -:  224:#ifdef OPENSSL_SYS_VMS
+        -:  225:		{
+        -:  226:		BIO *tmpbio = BIO_new(BIO_f_linebuffer());
+        -:  227:		out = BIO_push(tmpbio, out);
+        -:  228:		}
+        -:  229:#endif
+        -:  230:		}
+        -:  231:	else
+        -:  232:		{
+    #####:  233:		if (BIO_write_filename(out,outfile) <= 0)
+        -:  234:			{
+    #####:  235:			perror(outfile);
+    #####:  236:			goto end;
+        -:  237:			}
+        -:  238:		}
+        -:  239:
+    #####:  240:	if (p7_print)
+    #####:  241:		PKCS7_print_ctx(out, p7, 0, NULL);
+        -:  242:
+    #####:  243:	if (print_certs)
+        -:  244:		{
+        -:  245:		STACK_OF(X509) *certs=NULL;
+        -:  246:		STACK_OF(X509_CRL) *crls=NULL;
+        -:  247:
+    #####:  248:		i=OBJ_obj2nid(p7->type);
+    #####:  249:		switch (i)
+        -:  250:			{
+        -:  251:		case NID_pkcs7_signed:
+    #####:  252:			certs=p7->d.sign->cert;
+    #####:  253:			crls=p7->d.sign->crl;
+    #####:  254:			break;
+        -:  255:		case NID_pkcs7_signedAndEnveloped:
+    #####:  256:			certs=p7->d.signed_and_enveloped->cert;
+    #####:  257:			crls=p7->d.signed_and_enveloped->crl;
+    #####:  258:			break;
+        -:  259:		default:
+        -:  260:			break;
+        -:  261:			}
+        -:  262:
+    #####:  263:		if (certs != NULL)
+        -:  264:			{
+        -:  265:			X509 *x;
+        -:  266:
+    #####:  267:			for (i=0; i<sk_X509_num(certs); i++)
+        -:  268:				{
+    #####:  269:				x=sk_X509_value(certs,i);
+    #####:  270:				if(text) X509_print(out, x);
+    #####:  271:				else dump_cert_text(out, x);
+        -:  272:
+    #####:  273:				if(!noout) PEM_write_bio_X509(out,x);
+    #####:  274:				BIO_puts(out,"\n");
+        -:  275:				}
+        -:  276:			}
+    #####:  277:		if (crls != NULL)
+        -:  278:			{
+        -:  279:			X509_CRL *crl;
+        -:  280:
+    #####:  281:			for (i=0; i<sk_X509_CRL_num(crls); i++)
+        -:  282:				{
+    #####:  283:				crl=sk_X509_CRL_value(crls,i);
+        -:  284:
+    #####:  285:				X509_CRL_print(out, crl);
+        -:  286:
+    #####:  287:				if(!noout)PEM_write_bio_X509_CRL(out,crl);
+    #####:  288:				BIO_puts(out,"\n");
+        -:  289:				}
+        -:  290:			}
+        -:  291:
+        -:  292:		ret=0;
+        -:  293:		goto end;
+        -:  294:		}
+        -:  295:
+    #####:  296:	if(!noout) {
+    #####:  297:		if 	(outformat == FORMAT_ASN1)
+    #####:  298:			i=i2d_PKCS7_bio(out,p7);
+    #####:  299:		else if (outformat == FORMAT_PEM)
+    #####:  300:			i=PEM_write_bio_PKCS7(out,p7);
+        -:  301:		else	{
+    #####:  302:			BIO_printf(bio_err,"bad output format specified for outfile\n");
+    #####:  303:			goto end;
+        -:  304:			}
+        -:  305:
+    #####:  306:		if (!i)
+        -:  307:			{
+    #####:  308:			BIO_printf(bio_err,"unable to write pkcs7 object\n");
+    #####:  309:			ERR_print_errors(bio_err);
+    #####:  310:			goto end;
+        -:  311:			}
+        -:  312:	}
+        -:  313:	ret=0;
+        -:  314:end:
+    #####:  315:	if (p7 != NULL) PKCS7_free(p7);
+    #####:  316:	if (in != NULL) BIO_free(in);
+    #####:  317:	if (out != NULL) BIO_free_all(out);
+        -:  318:	apps_shutdown();
+    #####:  319:	OPENSSL_EXIT(ret);
+        -:  320:	}

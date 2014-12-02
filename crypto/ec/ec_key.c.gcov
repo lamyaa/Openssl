@@ -1,0 +1,577 @@
+        -:    0:Source:ec_key.c
+        -:    0:Graph:ec_key.gcno
+        -:    0:Data:ec_key.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* crypto/ec/ec_key.c */
+        -:    2:/*
+        -:    3: * Written by Nils Larsch for the OpenSSL project.
+        -:    4: */
+        -:    5:/* ====================================================================
+        -:    6: * Copyright (c) 1998-2005 The OpenSSL Project.  All rights reserved.
+        -:    7: *
+        -:    8: * Redistribution and use in source and binary forms, with or without
+        -:    9: * modification, are permitted provided that the following conditions
+        -:   10: * are met:
+        -:   11: *
+        -:   12: * 1. Redistributions of source code must retain the above copyright
+        -:   13: *    notice, this list of conditions and the following disclaimer. 
+        -:   14: *
+        -:   15: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   16: *    notice, this list of conditions and the following disclaimer in
+        -:   17: *    the documentation and/or other materials provided with the
+        -:   18: *    distribution.
+        -:   19: *
+        -:   20: * 3. All advertising materials mentioning features or use of this
+        -:   21: *    software must display the following acknowledgment:
+        -:   22: *    "This product includes software developed by the OpenSSL Project
+        -:   23: *    for use in the OpenSSL Toolkit. (http://www.openssl.org/)"
+        -:   24: *
+        -:   25: * 4. The names "OpenSSL Toolkit" and "OpenSSL Project" must not be used to
+        -:   26: *    endorse or promote products derived from this software without
+        -:   27: *    prior written permission. For written permission, please contact
+        -:   28: *    openssl-core@openssl.org.
+        -:   29: *
+        -:   30: * 5. Products derived from this software may not be called "OpenSSL"
+        -:   31: *    nor may "OpenSSL" appear in their names without prior written
+        -:   32: *    permission of the OpenSSL Project.
+        -:   33: *
+        -:   34: * 6. Redistributions of any form whatsoever must retain the following
+        -:   35: *    acknowledgment:
+        -:   36: *    "This product includes software developed by the OpenSSL Project
+        -:   37: *    for use in the OpenSSL Toolkit (http://www.openssl.org/)"
+        -:   38: *
+        -:   39: * THIS SOFTWARE IS PROVIDED BY THE OpenSSL PROJECT ``AS IS'' AND ANY
+        -:   40: * EXPRESSED OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   41: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+        -:   42: * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE OpenSSL PROJECT OR
+        -:   43: * ITS CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+        -:   44: * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+        -:   45: * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+        -:   46: * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   47: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+        -:   48: * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+        -:   49: * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+        -:   50: * OF THE POSSIBILITY OF SUCH DAMAGE.
+        -:   51: * ====================================================================
+        -:   52: *
+        -:   53: * This product includes cryptographic software written by Eric Young
+        -:   54: * (eay@cryptsoft.com).  This product includes software written by Tim
+        -:   55: * Hudson (tjh@cryptsoft.com).
+        -:   56: *
+        -:   57: */
+        -:   58:/* ====================================================================
+        -:   59: * Copyright 2002 Sun Microsystems, Inc. ALL RIGHTS RESERVED.
+        -:   60: * Portions originally developed by SUN MICROSYSTEMS, INC., and 
+        -:   61: * contributed to the OpenSSL project.
+        -:   62: */
+        -:   63:
+        -:   64:#include <string.h>
+        -:   65:#include "ec_lcl.h"
+        -:   66:#include <openssl/err.h>
+        -:   67:#ifdef OPENSSL_FIPS
+        -:   68:#include <openssl/fips.h>
+        -:   69:#endif
+        -:   70:
+    #####:   71:EC_KEY *EC_KEY_new(void)
+        -:   72:	{
+        -:   73:	EC_KEY *ret;
+        -:   74:
+    #####:   75:	ret=(EC_KEY *)OPENSSL_malloc(sizeof(EC_KEY));
+    #####:   76:	if (ret == NULL)
+        -:   77:		{
+    #####:   78:		ECerr(EC_F_EC_KEY_NEW, ERR_R_MALLOC_FAILURE);
+    #####:   79:		return(NULL);
+        -:   80:		}
+        -:   81:
+    #####:   82:	ret->version = 1;	
+    #####:   83:	ret->flags = 0;
+    #####:   84:	ret->group   = NULL;
+    #####:   85:	ret->pub_key = NULL;
+    #####:   86:	ret->priv_key= NULL;
+    #####:   87:	ret->enc_flag= 0; 
+    #####:   88:	ret->conv_form = POINT_CONVERSION_UNCOMPRESSED;
+    #####:   89:	ret->references= 1;
+    #####:   90:	ret->method_data = NULL;
+    #####:   91:	return(ret);
+        -:   92:	}
+        -:   93:
+    #####:   94:EC_KEY *EC_KEY_new_by_curve_name(int nid)
+        -:   95:	{
+    #####:   96:	EC_KEY *ret = EC_KEY_new();
+    #####:   97:	if (ret == NULL)
+        -:   98:		return NULL;
+    #####:   99:	ret->group = EC_GROUP_new_by_curve_name(nid);
+    #####:  100:	if (ret->group == NULL)
+        -:  101:		{
+    #####:  102:		EC_KEY_free(ret);
+    #####:  103:		return NULL;
+        -:  104:		}
+        -:  105:	return ret;
+        -:  106:	}
+        -:  107:
+    #####:  108:void EC_KEY_free(EC_KEY *r)
+        -:  109:	{
+        -:  110:	int i;
+        -:  111:
+    #####:  112:	if (r == NULL) return;
+        -:  113:
+    #####:  114:	i=CRYPTO_add(&r->references,-1,CRYPTO_LOCK_EC);
+        -:  115:#ifdef REF_PRINT
+        -:  116:	REF_PRINT("EC_KEY",r);
+        -:  117:#endif
+    #####:  118:	if (i > 0) return;
+        -:  119:#ifdef REF_CHECK
+        -:  120:	if (i < 0)
+        -:  121:		{
+        -:  122:		fprintf(stderr,"EC_KEY_free, bad reference count\n");
+        -:  123:		abort();
+        -:  124:		}
+        -:  125:#endif
+        -:  126:
+    #####:  127:	if (r->group    != NULL) 
+    #####:  128:		EC_GROUP_free(r->group);
+    #####:  129:	if (r->pub_key  != NULL)
+    #####:  130:		EC_POINT_free(r->pub_key);
+    #####:  131:	if (r->priv_key != NULL)
+    #####:  132:		BN_clear_free(r->priv_key);
+        -:  133:
+    #####:  134:	EC_EX_DATA_free_all_data(&r->method_data);
+        -:  135:
+    #####:  136:	OPENSSL_cleanse((void *)r, sizeof(EC_KEY));
+        -:  137:
+    #####:  138:	OPENSSL_free(r);
+        -:  139:	}
+        -:  140:
+    #####:  141:EC_KEY *EC_KEY_copy(EC_KEY *dest, const EC_KEY *src)
+        -:  142:	{
+        -:  143:	EC_EXTRA_DATA *d;
+        -:  144:
+    #####:  145:	if (dest == NULL || src == NULL)
+        -:  146:		{
+    #####:  147:		ECerr(EC_F_EC_KEY_COPY, ERR_R_PASSED_NULL_PARAMETER);
+    #####:  148:		return NULL;
+        -:  149:		}
+        -:  150:	/* copy the parameters */
+    #####:  151:	if (src->group)
+        -:  152:		{
+    #####:  153:		const EC_METHOD *meth = EC_GROUP_method_of(src->group);
+        -:  154:		/* clear the old group */
+    #####:  155:		if (dest->group)
+    #####:  156:			EC_GROUP_free(dest->group);
+    #####:  157:		dest->group = EC_GROUP_new(meth);
+    #####:  158:		if (dest->group == NULL)
+        -:  159:			return NULL;
+    #####:  160:		if (!EC_GROUP_copy(dest->group, src->group))
+        -:  161:			return NULL;
+        -:  162:		}
+        -:  163:	/*  copy the public key */
+    #####:  164:	if (src->pub_key && src->group)
+        -:  165:		{
+    #####:  166:		if (dest->pub_key)
+    #####:  167:			EC_POINT_free(dest->pub_key);
+    #####:  168:		dest->pub_key = EC_POINT_new(src->group);
+    #####:  169:		if (dest->pub_key == NULL)
+        -:  170:			return NULL;
+    #####:  171:		if (!EC_POINT_copy(dest->pub_key, src->pub_key))
+        -:  172:			return NULL;
+        -:  173:		}
+        -:  174:	/* copy the private key */
+    #####:  175:	if (src->priv_key)
+        -:  176:		{
+    #####:  177:		if (dest->priv_key == NULL)
+        -:  178:			{
+    #####:  179:			dest->priv_key = BN_new();
+    #####:  180:			if (dest->priv_key == NULL)
+        -:  181:				return NULL;
+        -:  182:			}
+    #####:  183:		if (!BN_copy(dest->priv_key, src->priv_key))
+        -:  184:			return NULL;
+        -:  185:		}
+        -:  186:	/* copy method/extra data */
+    #####:  187:	EC_EX_DATA_free_all_data(&dest->method_data);
+        -:  188:
+    #####:  189:	for (d = src->method_data; d != NULL; d = d->next)
+        -:  190:		{
+    #####:  191:		void *t = d->dup_func(d->data);
+        -:  192:		
+    #####:  193:		if (t == NULL)
+        -:  194:			return 0;
+    #####:  195:		if (!EC_EX_DATA_set_data(&dest->method_data, t, d->dup_func, d->free_func, d->clear_free_func))
+        -:  196:			return 0;
+        -:  197:		}
+        -:  198:
+        -:  199:	/* copy the rest */
+    #####:  200:	dest->enc_flag  = src->enc_flag;
+    #####:  201:	dest->conv_form = src->conv_form;
+    #####:  202:	dest->version   = src->version;
+    #####:  203:	dest->flags = src->flags;
+        -:  204:
+    #####:  205:	return dest;
+        -:  206:	}
+        -:  207:
+    #####:  208:EC_KEY *EC_KEY_dup(const EC_KEY *ec_key)
+        -:  209:	{
+    #####:  210:	EC_KEY *ret = EC_KEY_new();
+    #####:  211:	if (ret == NULL)
+        -:  212:		return NULL;
+    #####:  213:	if (EC_KEY_copy(ret, ec_key) == NULL)
+        -:  214:		{
+    #####:  215:		EC_KEY_free(ret);
+    #####:  216:		return NULL;
+        -:  217:		}
+        -:  218:	return ret;
+        -:  219:	}
+        -:  220:
+    #####:  221:int EC_KEY_up_ref(EC_KEY *r)
+        -:  222:	{
+    #####:  223:	int i = CRYPTO_add(&r->references, 1, CRYPTO_LOCK_EC);
+        -:  224:#ifdef REF_PRINT
+        -:  225:	REF_PRINT("EC_KEY",r);
+        -:  226:#endif
+        -:  227:#ifdef REF_CHECK
+        -:  228:	if (i < 2)
+        -:  229:		{
+        -:  230:		fprintf(stderr, "EC_KEY_up, bad reference count\n");
+        -:  231:		abort();
+        -:  232:		}
+        -:  233:#endif
+    #####:  234:	return ((i > 1) ? 1 : 0);
+        -:  235:	}
+        -:  236:
+    #####:  237:int EC_KEY_generate_key(EC_KEY *eckey)
+        -:  238:	{	
+        -:  239:	int	ok = 0;
+        -:  240:	BN_CTX	*ctx = NULL;
+        -:  241:	BIGNUM	*priv_key = NULL, *order = NULL;
+        -:  242:	EC_POINT *pub_key = NULL;
+        -:  243:
+        -:  244:#ifdef OPENSSL_FIPS
+        -:  245:	if (FIPS_mode())
+        -:  246:		return FIPS_ec_key_generate_key(eckey);
+        -:  247:#endif
+        -:  248:
+    #####:  249:	if (!eckey || !eckey->group)
+        -:  250:		{
+    #####:  251:		ECerr(EC_F_EC_KEY_GENERATE_KEY, ERR_R_PASSED_NULL_PARAMETER);
+    #####:  252:		return 0;
+        -:  253:		}
+        -:  254:
+    #####:  255:	if ((order = BN_new()) == NULL) goto err;
+    #####:  256:	if ((ctx = BN_CTX_new()) == NULL) goto err;
+        -:  257:
+    #####:  258:	if (eckey->priv_key == NULL)
+        -:  259:		{
+    #####:  260:		priv_key = BN_new();
+    #####:  261:		if (priv_key == NULL)
+        -:  262:			goto err;
+        -:  263:		}
+        -:  264:	else
+        -:  265:		priv_key = eckey->priv_key;
+        -:  266:
+    #####:  267:	if (!EC_GROUP_get_order(eckey->group, order, ctx))
+        -:  268:		goto err;
+        -:  269:
+        -:  270:	do
+    #####:  271:		if (!BN_rand_range(priv_key, order))
+        -:  272:			goto err;
+    #####:  273:	while (BN_is_zero(priv_key));
+        -:  274:
+    #####:  275:	if (eckey->pub_key == NULL)
+        -:  276:		{
+    #####:  277:		pub_key = EC_POINT_new(eckey->group);
+    #####:  278:		if (pub_key == NULL)
+        -:  279:			goto err;
+        -:  280:		}
+        -:  281:	else
+        -:  282:		pub_key = eckey->pub_key;
+        -:  283:
+    #####:  284:	if (!EC_POINT_mul(eckey->group, pub_key, priv_key, NULL, NULL, ctx))
+        -:  285:		goto err;
+        -:  286:
+    #####:  287:	eckey->priv_key = priv_key;
+    #####:  288:	eckey->pub_key  = pub_key;
+        -:  289:
+        -:  290:	ok=1;
+        -:  291:
+        -:  292:err:	
+    #####:  293:	if (order)
+    #####:  294:		BN_free(order);
+    #####:  295:	if (pub_key  != NULL && eckey->pub_key  == NULL)
+    #####:  296:		EC_POINT_free(pub_key);
+    #####:  297:	if (priv_key != NULL && eckey->priv_key == NULL)
+    #####:  298:		BN_free(priv_key);
+    #####:  299:	if (ctx != NULL)
+    #####:  300:		BN_CTX_free(ctx);
+    #####:  301:	return(ok);
+        -:  302:	}
+        -:  303:
+    #####:  304:int EC_KEY_check_key(const EC_KEY *eckey)
+        -:  305:	{
+        -:  306:	int	ok   = 0;
+        -:  307:	BN_CTX	*ctx = NULL;
+        -:  308:	const BIGNUM	*order  = NULL;
+        -:  309:	EC_POINT *point = NULL;
+        -:  310:
+    #####:  311:	if (!eckey || !eckey->group || !eckey->pub_key)
+        -:  312:		{
+    #####:  313:		ECerr(EC_F_EC_KEY_CHECK_KEY, ERR_R_PASSED_NULL_PARAMETER);
+    #####:  314:		return 0;
+        -:  315:		}
+        -:  316:
+    #####:  317:	if (EC_POINT_is_at_infinity(eckey->group, eckey->pub_key))
+        -:  318:		{
+    #####:  319:		ECerr(EC_F_EC_KEY_CHECK_KEY, EC_R_POINT_AT_INFINITY);
+    #####:  320:		goto err;
+        -:  321:		}
+        -:  322:
+    #####:  323:	if ((ctx = BN_CTX_new()) == NULL)
+        -:  324:		goto err;
+    #####:  325:	if ((point = EC_POINT_new(eckey->group)) == NULL)
+        -:  326:		goto err;
+        -:  327:
+        -:  328:	/* testing whether the pub_key is on the elliptic curve */
+    #####:  329:	if (!EC_POINT_is_on_curve(eckey->group, eckey->pub_key, ctx))
+        -:  330:		{
+    #####:  331:		ECerr(EC_F_EC_KEY_CHECK_KEY, EC_R_POINT_IS_NOT_ON_CURVE);
+    #####:  332:		goto err;
+        -:  333:		}
+        -:  334:	/* testing whether pub_key * order is the point at infinity */
+    #####:  335:	order = &eckey->group->order;
+    #####:  336:	if (BN_is_zero(order))
+        -:  337:		{
+    #####:  338:		ECerr(EC_F_EC_KEY_CHECK_KEY, EC_R_INVALID_GROUP_ORDER);
+    #####:  339:		goto err;
+        -:  340:		}
+    #####:  341:	if (!EC_POINT_mul(eckey->group, point, NULL, eckey->pub_key, order, ctx))
+        -:  342:		{
+    #####:  343:		ECerr(EC_F_EC_KEY_CHECK_KEY, ERR_R_EC_LIB);
+    #####:  344:		goto err;
+        -:  345:		}
+    #####:  346:	if (!EC_POINT_is_at_infinity(eckey->group, point))
+        -:  347:		{
+    #####:  348:		ECerr(EC_F_EC_KEY_CHECK_KEY, EC_R_WRONG_ORDER);
+    #####:  349:		goto err;
+        -:  350:		}
+        -:  351:	/* in case the priv_key is present : 
+        -:  352:	 * check if generator * priv_key == pub_key 
+        -:  353:	 */
+    #####:  354:	if (eckey->priv_key)
+        -:  355:		{
+    #####:  356:		if (BN_cmp(eckey->priv_key, order) >= 0)
+        -:  357:			{
+    #####:  358:			ECerr(EC_F_EC_KEY_CHECK_KEY, EC_R_WRONG_ORDER);
+    #####:  359:			goto err;
+        -:  360:			}
+    #####:  361:		if (!EC_POINT_mul(eckey->group, point, eckey->priv_key,
+        -:  362:			NULL, NULL, ctx))
+        -:  363:			{
+    #####:  364:			ECerr(EC_F_EC_KEY_CHECK_KEY, ERR_R_EC_LIB);
+    #####:  365:			goto err;
+        -:  366:			}
+    #####:  367:		if (EC_POINT_cmp(eckey->group, point, eckey->pub_key, 
+        -:  368:			ctx) != 0)
+        -:  369:			{
+    #####:  370:			ECerr(EC_F_EC_KEY_CHECK_KEY, EC_R_INVALID_PRIVATE_KEY);
+    #####:  371:			goto err;
+        -:  372:			}
+        -:  373:		}
+        -:  374:	ok = 1;
+        -:  375:err:
+    #####:  376:	if (ctx   != NULL)
+    #####:  377:		BN_CTX_free(ctx);
+    #####:  378:	if (point != NULL)
+    #####:  379:		EC_POINT_free(point);
+    #####:  380:	return(ok);
+        -:  381:	}
+        -:  382:
+    #####:  383:int EC_KEY_set_public_key_affine_coordinates(EC_KEY *key, BIGNUM *x, BIGNUM *y)
+        -:  384:	{
+        -:  385:	BN_CTX *ctx = NULL;
+        -:  386:	BIGNUM *tx, *ty;
+        -:  387:	EC_POINT *point = NULL;
+        -:  388:	int ok = 0, tmp_nid, is_char_two = 0;
+        -:  389:
+    #####:  390:	if (!key || !key->group || !x || !y)
+        -:  391:		{
+    #####:  392:		ECerr(EC_F_EC_KEY_SET_PUBLIC_KEY_AFFINE_COORDINATES,
+        -:  393:						ERR_R_PASSED_NULL_PARAMETER);
+    #####:  394:		return 0;
+        -:  395:		}
+    #####:  396:	ctx = BN_CTX_new();
+    #####:  397:	if (!ctx)
+        -:  398:		goto err;
+        -:  399:
+    #####:  400:	point = EC_POINT_new(key->group);
+        -:  401:
+    #####:  402:	if (!point)
+        -:  403:		goto err;
+        -:  404:
+    #####:  405:	tmp_nid = EC_METHOD_get_field_type(EC_GROUP_method_of(key->group));
+        -:  406:
+    #####:  407:        if (tmp_nid == NID_X9_62_characteristic_two_field)
+        -:  408:		is_char_two = 1;
+        -:  409:
+    #####:  410:	tx = BN_CTX_get(ctx);
+    #####:  411:	ty = BN_CTX_get(ctx);
+        -:  412:#ifndef OPENSSL_NO_EC2M
+    #####:  413:	if (is_char_two)
+        -:  414:		{
+    #####:  415:		if (!EC_POINT_set_affine_coordinates_GF2m(key->group, point,
+        -:  416:								x, y, ctx))
+        -:  417:			goto err;
+    #####:  418:		if (!EC_POINT_get_affine_coordinates_GF2m(key->group, point,
+        -:  419:								tx, ty, ctx))
+        -:  420:			goto err;
+        -:  421:		}
+        -:  422:	else
+        -:  423:#endif
+        -:  424:		{
+    #####:  425:		if (!EC_POINT_set_affine_coordinates_GFp(key->group, point,
+        -:  426:								x, y, ctx))
+        -:  427:			goto err;
+    #####:  428:		if (!EC_POINT_get_affine_coordinates_GFp(key->group, point,
+        -:  429:								tx, ty, ctx))
+        -:  430:			goto err;
+        -:  431:		}
+        -:  432:	/* Check if retrieved coordinates match originals: if not values
+        -:  433:	 * are out of range.
+        -:  434:	 */
+    #####:  435:	if (BN_cmp(x, tx) || BN_cmp(y, ty))
+        -:  436:		{
+    #####:  437:		ECerr(EC_F_EC_KEY_SET_PUBLIC_KEY_AFFINE_COORDINATES,
+        -:  438:			EC_R_COORDINATES_OUT_OF_RANGE);
+    #####:  439:		goto err;
+        -:  440:		}
+        -:  441:
+    #####:  442:	if (!EC_KEY_set_public_key(key, point))
+        -:  443:		goto err;
+        -:  444:
+    #####:  445:	if (EC_KEY_check_key(key) == 0)
+        -:  446:		goto err;
+        -:  447:
+        -:  448:	ok = 1;
+        -:  449:
+        -:  450:	err:
+    #####:  451:	if (ctx)
+    #####:  452:		BN_CTX_free(ctx);
+    #####:  453:	if (point)
+    #####:  454:		EC_POINT_free(point);
+    #####:  455:	return ok;
+        -:  456:
+        -:  457:	}
+        -:  458:
+    #####:  459:const EC_GROUP *EC_KEY_get0_group(const EC_KEY *key)
+        -:  460:	{
+    #####:  461:	return key->group;
+        -:  462:	}
+        -:  463:
+    #####:  464:int EC_KEY_set_group(EC_KEY *key, const EC_GROUP *group)
+        -:  465:	{
+    #####:  466:	if (key->group != NULL)
+    #####:  467:		EC_GROUP_free(key->group);
+    #####:  468:	key->group = EC_GROUP_dup(group);
+    #####:  469:	return (key->group == NULL) ? 0 : 1;
+        -:  470:	}
+        -:  471:
+    #####:  472:const BIGNUM *EC_KEY_get0_private_key(const EC_KEY *key)
+        -:  473:	{
+    #####:  474:	return key->priv_key;
+        -:  475:	}
+        -:  476:
+    #####:  477:int EC_KEY_set_private_key(EC_KEY *key, const BIGNUM *priv_key)
+        -:  478:	{
+    #####:  479:	if (key->priv_key)
+    #####:  480:		BN_clear_free(key->priv_key);
+    #####:  481:	key->priv_key = BN_dup(priv_key);
+    #####:  482:	return (key->priv_key == NULL) ? 0 : 1;
+        -:  483:	}
+        -:  484:
+    #####:  485:const EC_POINT *EC_KEY_get0_public_key(const EC_KEY *key)
+        -:  486:	{
+    #####:  487:	return key->pub_key;
+        -:  488:	}
+        -:  489:
+    #####:  490:int EC_KEY_set_public_key(EC_KEY *key, const EC_POINT *pub_key)
+        -:  491:	{
+    #####:  492:	if (key->pub_key != NULL)
+    #####:  493:		EC_POINT_free(key->pub_key);
+    #####:  494:	key->pub_key = EC_POINT_dup(pub_key, key->group);
+    #####:  495:	return (key->pub_key == NULL) ? 0 : 1;
+        -:  496:	}
+        -:  497:
+    #####:  498:unsigned int EC_KEY_get_enc_flags(const EC_KEY *key)
+        -:  499:	{
+    #####:  500:	return key->enc_flag;
+        -:  501:	}
+        -:  502:
+    #####:  503:void EC_KEY_set_enc_flags(EC_KEY *key, unsigned int flags)
+        -:  504:	{
+    #####:  505:	key->enc_flag = flags;
+    #####:  506:	}
+        -:  507:
+    #####:  508:point_conversion_form_t EC_KEY_get_conv_form(const EC_KEY *key)
+        -:  509:	{
+    #####:  510:	return key->conv_form;
+        -:  511:	}
+        -:  512:
+    #####:  513:void EC_KEY_set_conv_form(EC_KEY *key, point_conversion_form_t cform)
+        -:  514:	{
+    #####:  515:	key->conv_form = cform;
+    #####:  516:	if (key->group != NULL)
+    #####:  517:		EC_GROUP_set_point_conversion_form(key->group, cform);
+    #####:  518:	}
+        -:  519:
+    #####:  520:void *EC_KEY_get_key_method_data(EC_KEY *key,
+        -:  521:	void *(*dup_func)(void *), void (*free_func)(void *), void (*clear_free_func)(void *))
+        -:  522:	{
+        -:  523:	void *ret;
+        -:  524:
+    #####:  525:	CRYPTO_r_lock(CRYPTO_LOCK_EC);
+    #####:  526:	ret = EC_EX_DATA_get_data(key->method_data, dup_func, free_func, clear_free_func);
+    #####:  527:	CRYPTO_r_unlock(CRYPTO_LOCK_EC);
+        -:  528:
+    #####:  529:	return ret;
+        -:  530:	}
+        -:  531:
+    #####:  532:void *EC_KEY_insert_key_method_data(EC_KEY *key, void *data,
+        -:  533:	void *(*dup_func)(void *), void (*free_func)(void *), void (*clear_free_func)(void *))
+        -:  534:	{
+        -:  535:	EC_EXTRA_DATA *ex_data;
+        -:  536:
+    #####:  537:	CRYPTO_w_lock(CRYPTO_LOCK_EC);
+    #####:  538:	ex_data = EC_EX_DATA_get_data(key->method_data, dup_func, free_func, clear_free_func);
+    #####:  539:	if (ex_data == NULL)
+    #####:  540:		EC_EX_DATA_set_data(&key->method_data, data, dup_func, free_func, clear_free_func);
+    #####:  541:	CRYPTO_w_unlock(CRYPTO_LOCK_EC);
+        -:  542:
+    #####:  543:	return ex_data;
+        -:  544:	}
+        -:  545:
+    #####:  546:void EC_KEY_set_asn1_flag(EC_KEY *key, int flag)
+        -:  547:	{
+    #####:  548:	if (key->group != NULL)
+    #####:  549:		EC_GROUP_set_asn1_flag(key->group, flag);
+    #####:  550:	}
+        -:  551:
+    #####:  552:int EC_KEY_precompute_mult(EC_KEY *key, BN_CTX *ctx)
+        -:  553:	{
+    #####:  554:	if (key->group == NULL)
+        -:  555:		return 0;
+    #####:  556:	return EC_GROUP_precompute_mult(key->group, ctx);
+        -:  557:	}
+        -:  558:
+    #####:  559:int EC_KEY_get_flags(const EC_KEY *key)
+        -:  560:	{
+    #####:  561:	return key->flags;
+        -:  562:	}
+        -:  563:
+    #####:  564:void EC_KEY_set_flags(EC_KEY *key, int flags)
+        -:  565:	{
+    #####:  566:	key->flags |= flags;
+    #####:  567:	}
+        -:  568:
+    #####:  569:void EC_KEY_clear_flags(EC_KEY *key, int flags)
+        -:  570:	{
+    #####:  571:	key->flags &= ~flags;
+    #####:  572:	}

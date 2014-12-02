@@ -1,0 +1,207 @@
+        -:    0:Source:cbc128.c
+        -:    0:Graph:cbc128.gcno
+        -:    0:Data:cbc128.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* ====================================================================
+        -:    2: * Copyright (c) 2008 The OpenSSL Project.  All rights reserved.
+        -:    3: *
+        -:    4: * Redistribution and use in source and binary forms, with or without
+        -:    5: * modification, are permitted provided that the following conditions
+        -:    6: * are met:
+        -:    7: *
+        -:    8: * 1. Redistributions of source code must retain the above copyright
+        -:    9: *    notice, this list of conditions and the following disclaimer. 
+        -:   10: *
+        -:   11: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   12: *    notice, this list of conditions and the following disclaimer in
+        -:   13: *    the documentation and/or other materials provided with the
+        -:   14: *    distribution.
+        -:   15: *
+        -:   16: * 3. All advertising materials mentioning features or use of this
+        -:   17: *    software must display the following acknowledgment:
+        -:   18: *    "This product includes software developed by the OpenSSL Project
+        -:   19: *    for use in the OpenSSL Toolkit. (http://www.openssl.org/)"
+        -:   20: *
+        -:   21: * 4. The names "OpenSSL Toolkit" and "OpenSSL Project" must not be used to
+        -:   22: *    endorse or promote products derived from this software without
+        -:   23: *    prior written permission. For written permission, please contact
+        -:   24: *    openssl-core@openssl.org.
+        -:   25: *
+        -:   26: * 5. Products derived from this software may not be called "OpenSSL"
+        -:   27: *    nor may "OpenSSL" appear in their names without prior written
+        -:   28: *    permission of the OpenSSL Project.
+        -:   29: *
+        -:   30: * 6. Redistributions of any form whatsoever must retain the following
+        -:   31: *    acknowledgment:
+        -:   32: *    "This product includes software developed by the OpenSSL Project
+        -:   33: *    for use in the OpenSSL Toolkit (http://www.openssl.org/)"
+        -:   34: *
+        -:   35: * THIS SOFTWARE IS PROVIDED BY THE OpenSSL PROJECT ``AS IS'' AND ANY
+        -:   36: * EXPRESSED OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   37: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+        -:   38: * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE OpenSSL PROJECT OR
+        -:   39: * ITS CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+        -:   40: * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+        -:   41: * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+        -:   42: * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   43: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+        -:   44: * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+        -:   45: * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+        -:   46: * OF THE POSSIBILITY OF SUCH DAMAGE.
+        -:   47: * ====================================================================
+        -:   48: *
+        -:   49: */
+        -:   50:
+        -:   51:#include <openssl/crypto.h>
+        -:   52:#include "modes_lcl.h"
+        -:   53:#include <string.h>
+        -:   54:
+        -:   55:#ifndef MODES_DEBUG
+        -:   56:# ifndef NDEBUG
+        -:   57:#  define NDEBUG
+        -:   58:# endif
+        -:   59:#endif
+        -:   60:#include <assert.h>
+        -:   61:
+        -:   62:#ifndef STRICT_ALIGNMENT
+        -:   63:#  define STRICT_ALIGNMENT 0
+        -:   64:#endif
+        -:   65:
+    #####:   66:void CRYPTO_cbc128_encrypt(const unsigned char *in, unsigned char *out,
+        -:   67:			size_t len, const void *key,
+        -:   68:			unsigned char ivec[16], block128_f block)
+        -:   69:{
+        -:   70:	size_t n;
+        -:   71:	const unsigned char *iv = ivec;
+        -:   72:
+        -:   73:	assert(in && out && key && ivec);
+        -:   74:
+        -:   75:#if !defined(OPENSSL_SMALL_FOOTPRINT)
+        -:   76:	if (STRICT_ALIGNMENT &&
+        -:   77:	    ((size_t)in|(size_t)out|(size_t)ivec)%sizeof(size_t) != 0) {
+        -:   78:		while (len>=16) {
+        -:   79:			for(n=0; n<16; ++n)
+        -:   80:				out[n] = in[n] ^ iv[n];
+        -:   81:			(*block)(out, out, key);
+        -:   82:			iv = out;
+        -:   83:			len -= 16;
+        -:   84:			in  += 16;
+        -:   85:			out += 16;
+        -:   86:		}
+        -:   87:	} else {
+    #####:   88:		while (len>=16) {
+    #####:   89:			for(n=0; n<16; n+=sizeof(size_t))
+    #####:   90:				*(size_t*)(out+n) =
+    #####:   91:				*(size_t*)(in+n) ^ *(size_t*)(iv+n);
+    #####:   92:			(*block)(out, out, key);
+        -:   93:			iv = out;
+    #####:   94:			len -= 16;
+    #####:   95:			in  += 16;
+    #####:   96:			out += 16;
+        -:   97:		}
+        -:   98:	}
+        -:   99:#endif
+    #####:  100:	while (len) {
+    #####:  101:		for(n=0; n<16 && n<len; ++n)
+    #####:  102:			out[n] = in[n] ^ iv[n];
+    #####:  103:		for(; n<16; ++n)
+    #####:  104:			out[n] = iv[n];
+    #####:  105:		(*block)(out, out, key);
+        -:  106:		iv = out;
+    #####:  107:		if (len<=16) break;
+    #####:  108:		len -= 16;
+    #####:  109:		in  += 16;
+    #####:  110:		out += 16;
+        -:  111:	}
+        -:  112:	memcpy(ivec,iv,16);
+    #####:  113:}
+        -:  114:
+    #####:  115:void CRYPTO_cbc128_decrypt(const unsigned char *in, unsigned char *out,
+        -:  116:			size_t len, const void *key,
+        -:  117:			unsigned char ivec[16], block128_f block)
+        -:  118:{
+        -:  119:	size_t n;
+        -:  120:	union { size_t align; unsigned char c[16]; } tmp;
+        -:  121:
+        -:  122:	assert(in && out && key && ivec);
+        -:  123:
+        -:  124:#if !defined(OPENSSL_SMALL_FOOTPRINT)
+    #####:  125:	if (in != out) {
+        -:  126:		const unsigned char *iv = ivec;
+        -:  127:
+        -:  128:		if (STRICT_ALIGNMENT &&
+        -:  129:		    ((size_t)in|(size_t)out|(size_t)ivec)%sizeof(size_t) != 0) {
+        -:  130:			while (len>=16) {
+        -:  131:				(*block)(in, out, key);
+        -:  132:				for(n=0; n<16; ++n)
+        -:  133:					out[n] ^= iv[n];
+        -:  134:				iv = in;
+        -:  135:				len -= 16;
+        -:  136:				in  += 16;
+        -:  137:				out += 16;
+        -:  138:			}
+        -:  139:		}
+        -:  140:		else {
+    #####:  141:			while (len>=16) {
+    #####:  142:				(*block)(in, out, key);
+    #####:  143:				for(n=0; n<16; n+=sizeof(size_t))
+    #####:  144:					*(size_t *)(out+n) ^= *(size_t *)(iv+n);
+        -:  145:				iv = in;
+    #####:  146:				len -= 16;
+    #####:  147:				in  += 16;
+    #####:  148:				out += 16;
+        -:  149:			}
+        -:  150:		}
+        -:  151:		memcpy(ivec,iv,16);
+        -:  152:	} else {
+        -:  153:		if (STRICT_ALIGNMENT &&
+        -:  154:		    ((size_t)in|(size_t)out|(size_t)ivec)%sizeof(size_t) != 0) {
+        -:  155:			unsigned char c;
+        -:  156:			while (len>=16) {
+        -:  157:				(*block)(in, tmp.c, key);
+        -:  158:				for(n=0; n<16; ++n) {
+        -:  159:					c = in[n];
+        -:  160:					out[n] = tmp.c[n] ^ ivec[n];
+        -:  161:					ivec[n] = c;
+        -:  162:				}
+        -:  163:				len -= 16;
+        -:  164:				in  += 16;
+        -:  165:				out += 16;
+        -:  166:			}
+        -:  167:		}
+        -:  168:		else {
+        -:  169:			size_t c;
+    #####:  170:			while (len>=16) {
+    #####:  171:				(*block)(in, tmp.c, key);
+    #####:  172:				for(n=0; n<16; n+=sizeof(size_t)) {
+    #####:  173:					c = *(size_t *)(in+n);
+    #####:  174:					*(size_t *)(out+n) =
+    #####:  175:					*(size_t *)(tmp.c+n) ^ *(size_t *)(ivec+n);
+    #####:  176:					*(size_t *)(ivec+n) = c;
+        -:  177:				}
+    #####:  178:				len -= 16;
+    #####:  179:				in  += 16;
+    #####:  180:				out += 16;
+        -:  181:			}
+        -:  182:		}
+        -:  183:	}
+        -:  184:#endif
+    #####:  185:	while (len) {
+        -:  186:		unsigned char c;
+    #####:  187:		(*block)(in, tmp.c, key);
+    #####:  188:		for(n=0; n<16 && n<len; ++n) {
+    #####:  189:			c = in[n];
+    #####:  190:			out[n] = tmp.c[n] ^ ivec[n];
+    #####:  191:			ivec[n] = c;
+        -:  192:		}
+    #####:  193:		if (len<=16) {
+    #####:  194:			for (; n<16; ++n)
+    #####:  195:				ivec[n] = in[n];
+        -:  196:			break;
+        -:  197:		}
+    #####:  198:		len -= 16;
+    #####:  199:		in  += 16;
+    #####:  200:		out += 16;
+        -:  201:	}
+    #####:  202:}

@@ -1,0 +1,270 @@
+        -:    0:Source:wp_dgst.c
+        -:    0:Graph:wp_dgst.gcno
+        -:    0:Data:wp_dgst.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/**
+        -:    2: * The Whirlpool hashing function.
+        -:    3: *
+        -:    4: * <P>
+        -:    5: * <b>References</b>
+        -:    6: *
+        -:    7: * <P>
+        -:    8: * The Whirlpool algorithm was developed by
+        -:    9: * <a href="mailto:pbarreto@scopus.com.br">Paulo S. L. M. Barreto</a> and
+        -:   10: * <a href="mailto:vincent.rijmen@cryptomathic.com">Vincent Rijmen</a>.
+        -:   11: *
+        -:   12: * See
+        -:   13: *      P.S.L.M. Barreto, V. Rijmen,
+        -:   14: *      ``The Whirlpool hashing function,''
+        -:   15: *      NESSIE submission, 2000 (tweaked version, 2001),
+        -:   16: *      <https://www.cosic.esat.kuleuven.ac.be/nessie/workshop/submissions/whirlpool.zip>
+        -:   17: *
+        -:   18: * Based on "@version 3.0 (2003.03.12)" by Paulo S.L.M. Barreto and
+        -:   19: * Vincent Rijmen. Lookup "reference implementations" on
+        -:   20: * <http://planeta.terra.com.br/informatica/paulobarreto/>
+        -:   21: *
+        -:   22: * =============================================================================
+        -:   23: *
+        -:   24: * THIS SOFTWARE IS PROVIDED BY THE AUTHORS ''AS IS'' AND ANY EXPRESS
+        -:   25: * OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+        -:   26: * WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+        -:   27: * ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHORS OR CONTRIBUTORS BE
+        -:   28: * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+        -:   29: * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+        -:   30: * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR
+        -:   31: * BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
+        -:   32: * WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE
+        -:   33: * OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE,
+        -:   34: * EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+        -:   35: *
+        -:   36: */
+        -:   37:
+        -:   38:/*
+        -:   39: * OpenSSL-specific implementation notes.
+        -:   40: *
+        -:   41: * WHIRLPOOL_Update as well as one-stroke WHIRLPOOL both expect
+        -:   42: * number of *bytes* as input length argument. Bit-oriented routine
+        -:   43: * as specified by authors is called WHIRLPOOL_BitUpdate[!] and
+        -:   44: * does not have one-stroke counterpart.
+        -:   45: *
+        -:   46: * WHIRLPOOL_BitUpdate implements byte-oriented loop, essentially
+        -:   47: * to serve WHIRLPOOL_Update. This is done for performance.
+        -:   48: *
+        -:   49: * Unlike authors' reference implementation, block processing
+        -:   50: * routine whirlpool_block is designed to operate on multi-block
+        -:   51: * input. This is done for perfomance.
+        -:   52: */
+        -:   53:
+        -:   54:#include "wp_locl.h"
+        -:   55:#include <openssl/crypto.h>
+        -:   56:#include <string.h>
+        -:   57:
+    #####:   58:fips_md_init(WHIRLPOOL)
+        -:   59:	{
+        -:   60:	memset (c,0,sizeof(*c));
+    #####:   61:	return(1);
+        -:   62:	}
+        -:   63:
+    #####:   64:int WHIRLPOOL_Update	(WHIRLPOOL_CTX *c,const void *_inp,size_t bytes)
+        -:   65:	{
+        -:   66:	/* Well, largest suitable chunk size actually is
+        -:   67:	 * (1<<(sizeof(size_t)*8-3))-64, but below number
+        -:   68:	 * is large enough for not to care about excessive
+        -:   69:	 * calls to WHIRLPOOL_BitUpdate... */
+        -:   70:	size_t chunk = ((size_t)1)<<(sizeof(size_t)*8-4);
+        -:   71:	const unsigned char *inp = _inp;
+        -:   72:
+    #####:   73:	while (bytes>=chunk)
+        -:   74:		{
+    #####:   75:		WHIRLPOOL_BitUpdate(c,inp,chunk*8);
+    #####:   76:		bytes -= chunk;
+    #####:   77:		inp   += chunk;
+        -:   78:		}
+    #####:   79:	if (bytes)
+    #####:   80:		WHIRLPOOL_BitUpdate(c,inp,bytes*8);
+        -:   81:
+    #####:   82:	return(1);
+        -:   83:	}
+        -:   84:
+    #####:   85:void WHIRLPOOL_BitUpdate(WHIRLPOOL_CTX *c,const void *_inp,size_t bits)
+        -:   86:	{
+        -:   87:	size_t		n;
+    #####:   88:	unsigned int	bitoff = c->bitoff,
+    #####:   89:			bitrem = bitoff%8,
+    #####:   90:			inpgap = (8-(unsigned int)bits%8)&7;
+        -:   91:	const unsigned char *inp=_inp;
+        -:   92:
+        -:   93:	/* This 256-bit increment procedure relies on the size_t
+        -:   94:	 * being natural size of CPU register, so that we don't
+        -:   95:	 * have to mask the value in order to detect overflows. */
+    #####:   96:	c->bitlen[0] += bits;
+    #####:   97:	if (c->bitlen[0] < bits)	/* overflow */
+        -:   98:		{
+        -:   99:		n = 1;
+    #####:  100:		do  { 	c->bitlen[n]++;
+        -:  101:		    } while(c->bitlen[n]==0
+    #####:  102:		   	    && ++n<(WHIRLPOOL_COUNTER/sizeof(size_t)));
+        -:  103:		}
+        -:  104:
+        -:  105:#ifndef OPENSSL_SMALL_FOOTPRINT
+        -:  106:	reconsider:
+    #####:  107:	if (inpgap==0 && bitrem==0)	/* byte-oriented loop */
+        -:  108:		{
+    #####:  109:		while (bits)
+        -:  110:			{
+    #####:  111:			if (bitoff==0 && (n=bits/WHIRLPOOL_BBLOCK))
+        -:  112:				{
+    #####:  113:				whirlpool_block(c,inp,n);
+    #####:  114:				inp  += n*WHIRLPOOL_BBLOCK/8;
+    #####:  115:				bits %= WHIRLPOOL_BBLOCK;
+        -:  116:				}
+        -:  117:			else
+        -:  118:				{
+    #####:  119:				unsigned int byteoff = bitoff/8;
+        -:  120:
+    #####:  121:				bitrem = WHIRLPOOL_BBLOCK - bitoff;/* re-use bitrem */
+    #####:  122:				if (bits >= bitrem)
+        -:  123:					{
+    #####:  124:					bits -= bitrem;
+    #####:  125:					bitrem /= 8;
+    #####:  126:					memcpy(c->data+byteoff,inp,bitrem);
+    #####:  127:					inp  += bitrem;
+    #####:  128:					whirlpool_block(c,c->data,1);
+        -:  129:					bitoff = 0;
+        -:  130:					}
+        -:  131:				else
+        -:  132:					{
+    #####:  133:					memcpy(c->data+byteoff,inp,bits/8);
+    #####:  134:					bitoff += (unsigned int)bits;
+        -:  135:					bits = 0;
+        -:  136:					}
+    #####:  137:				c->bitoff = bitoff;
+        -:  138:				}
+        -:  139:			}
+        -:  140:		}
+        -:  141:	else				/* bit-oriented loop */
+        -:  142:#endif
+        -:  143:		{
+        -:  144:		/*
+        -:  145:			   inp
+        -:  146:			   |
+        -:  147:			   +-------+-------+-------
+        -:  148:			      |||||||||||||||||||||
+        -:  149:			   +-------+-------+-------
+        -:  150:		+-------+-------+-------+-------+-------
+        -:  151:		||||||||||||||				c->data
+        -:  152:		+-------+-------+-------+-------+-------
+        -:  153:			|
+        -:  154:			c->bitoff/8
+        -:  155:		*/
+    #####:  156:		while (bits)
+        -:  157:			{
+    #####:  158:			unsigned int	byteoff	= bitoff/8;
+        -:  159:			unsigned char	b;
+        -:  160:
+        -:  161:#ifndef OPENSSL_SMALL_FOOTPRINT
+    #####:  162:			if (bitrem==inpgap)
+        -:  163:				{
+    #####:  164:				c->data[byteoff++] |= inp[0] & (0xff>>inpgap);
+    #####:  165:				inpgap = 8-inpgap;
+    #####:  166:				bitoff += inpgap;  bitrem = 0;	/* bitoff%8 */
+    #####:  167:				bits   -= inpgap;  inpgap = 0;	/* bits%8   */
+    #####:  168:				inp++;
+    #####:  169:				if (bitoff==WHIRLPOOL_BBLOCK)
+        -:  170:					{
+    #####:  171:					whirlpool_block(c,c->data,1);
+        -:  172:					bitoff = 0;
+        -:  173:					}
+    #####:  174:				c->bitoff = bitoff;
+    #####:  175:				goto reconsider;
+        -:  176:				}
+        -:  177:			else
+        -:  178:#endif
+    #####:  179:			if (bits>=8)
+        -:  180:				{
+    #####:  181:				b  = ((inp[0]<<inpgap) | (inp[1]>>(8-inpgap)));
+        -:  182:				b &= 0xff;
+    #####:  183:				if (bitrem)	c->data[byteoff++] |= b>>bitrem;
+    #####:  184:				else		c->data[byteoff++]  = b;
+    #####:  185:				bitoff += 8;
+    #####:  186:				bits   -= 8;
+    #####:  187:				inp++;
+    #####:  188:				if (bitoff>=WHIRLPOOL_BBLOCK)
+        -:  189:					{
+    #####:  190:					whirlpool_block(c,c->data,1);
+        -:  191:					byteoff  = 0;
+    #####:  192:					bitoff  %= WHIRLPOOL_BBLOCK;
+        -:  193:					}
+    #####:  194:				if (bitrem)	c->data[byteoff] = b<<(8-bitrem);
+        -:  195:				}
+        -:  196:			else	/* remaining less than 8 bits */
+        -:  197:				{
+    #####:  198:				b = (inp[0]<<inpgap)&0xff;
+    #####:  199:				if (bitrem)	c->data[byteoff++] |= b>>bitrem;
+    #####:  200:				else		c->data[byteoff++]  = b;
+    #####:  201:				bitoff += (unsigned int)bits;
+    #####:  202:				if (bitoff==WHIRLPOOL_BBLOCK)
+        -:  203:					{
+    #####:  204:					whirlpool_block(c,c->data,1);
+        -:  205:					byteoff  = 0;
+    #####:  206:			        	bitoff  %= WHIRLPOOL_BBLOCK;
+        -:  207:					}
+    #####:  208:				if (bitrem)	c->data[byteoff] = b<<(8-bitrem);
+        -:  209:				bits = 0;
+        -:  210:				}
+    #####:  211:			c->bitoff = bitoff;
+        -:  212:			}
+        -:  213:		}
+    #####:  214:	}
+        -:  215:
+    #####:  216:int WHIRLPOOL_Final	(unsigned char *md,WHIRLPOOL_CTX *c)
+        -:  217:	{
+    #####:  218:	unsigned int	bitoff  = c->bitoff,
+    #####:  219:			byteoff = bitoff/8;
+        -:  220:	size_t		i,j,v;
+        -:  221:	unsigned char  *p;
+        -:  222:
+    #####:  223:	bitoff %= 8;
+    #####:  224:	if (bitoff)	c->data[byteoff] |= 0x80>>bitoff;
+    #####:  225:	else		c->data[byteoff]  = 0x80;
+    #####:  226:	byteoff++;
+        -:  227:
+        -:  228:	/* pad with zeros */
+    #####:  229:	if (byteoff > (WHIRLPOOL_BBLOCK/8-WHIRLPOOL_COUNTER))
+        -:  230:		{
+    #####:  231:		if (byteoff<WHIRLPOOL_BBLOCK/8)
+    #####:  232:			memset(&c->data[byteoff],0,WHIRLPOOL_BBLOCK/8-byteoff);
+    #####:  233:		whirlpool_block(c,c->data,1);
+        -:  234:		byteoff = 0;
+        -:  235:		}
+    #####:  236:	if (byteoff < (WHIRLPOOL_BBLOCK/8-WHIRLPOOL_COUNTER))
+    #####:  237:		memset(&c->data[byteoff],0,
+    #####:  238:			(WHIRLPOOL_BBLOCK/8-WHIRLPOOL_COUNTER)-byteoff);
+        -:  239:	/* smash 256-bit c->bitlen in big-endian order */
+    #####:  240:	p = &c->data[WHIRLPOOL_BBLOCK/8-1];	/* last byte in c->data */
+    #####:  241:	for(i=0;i<WHIRLPOOL_COUNTER/sizeof(size_t);i++)
+    #####:  242:		for(v=c->bitlen[i],j=0;j<sizeof(size_t);j++,v>>=8)
+    #####:  243:			*p-- = (unsigned char)(v&0xff);
+        -:  244:
+    #####:  245:	whirlpool_block(c,c->data,1);
+        -:  246:
+    #####:  247:	if (md)	{
+    #####:  248:		memcpy(md,c->H.c,WHIRLPOOL_DIGEST_LENGTH);
+        -:  249:		memset(c,0,sizeof(*c));
+    #####:  250:		return(1);
+        -:  251:		}
+        -:  252:	return(0);
+        -:  253:	}
+        -:  254:
+    #####:  255:unsigned char *WHIRLPOOL(const void *inp, size_t bytes,unsigned char *md)
+        -:  256:	{
+        -:  257:	WHIRLPOOL_CTX ctx;
+        -:  258:	static unsigned char m[WHIRLPOOL_DIGEST_LENGTH];
+        -:  259:
+    #####:  260:	if (md == NULL) md=m;
+        -:  261:	WHIRLPOOL_Init(&ctx);
+    #####:  262:	WHIRLPOOL_Update(&ctx,inp,bytes);
+    #####:  263:	WHIRLPOOL_Final(md,&ctx);
+    #####:  264:	return(md);
+        -:  265:	}

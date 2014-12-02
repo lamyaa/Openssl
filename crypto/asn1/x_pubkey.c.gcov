@@ -1,0 +1,390 @@
+        -:    0:Source:x_pubkey.c
+        -:    0:Graph:x_pubkey.gcno
+        -:    0:Data:x_pubkey.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* crypto/asn1/x_pubkey.c */
+        -:    2:/* Copyright (C) 1995-1998 Eric Young (eay@cryptsoft.com)
+        -:    3: * All rights reserved.
+        -:    4: *
+        -:    5: * This package is an SSL implementation written
+        -:    6: * by Eric Young (eay@cryptsoft.com).
+        -:    7: * The implementation was written so as to conform with Netscapes SSL.
+        -:    8: * 
+        -:    9: * This library is free for commercial and non-commercial use as long as
+        -:   10: * the following conditions are aheared to.  The following conditions
+        -:   11: * apply to all code found in this distribution, be it the RC4, RSA,
+        -:   12: * lhash, DES, etc., code; not just the SSL code.  The SSL documentation
+        -:   13: * included with this distribution is covered by the same copyright terms
+        -:   14: * except that the holder is Tim Hudson (tjh@cryptsoft.com).
+        -:   15: * 
+        -:   16: * Copyright remains Eric Young's, and as such any Copyright notices in
+        -:   17: * the code are not to be removed.
+        -:   18: * If this package is used in a product, Eric Young should be given attribution
+        -:   19: * as the author of the parts of the library used.
+        -:   20: * This can be in the form of a textual message at program startup or
+        -:   21: * in documentation (online or textual) provided with the package.
+        -:   22: * 
+        -:   23: * Redistribution and use in source and binary forms, with or without
+        -:   24: * modification, are permitted provided that the following conditions
+        -:   25: * are met:
+        -:   26: * 1. Redistributions of source code must retain the copyright
+        -:   27: *    notice, this list of conditions and the following disclaimer.
+        -:   28: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   29: *    notice, this list of conditions and the following disclaimer in the
+        -:   30: *    documentation and/or other materials provided with the distribution.
+        -:   31: * 3. All advertising materials mentioning features or use of this software
+        -:   32: *    must display the following acknowledgement:
+        -:   33: *    "This product includes cryptographic software written by
+        -:   34: *     Eric Young (eay@cryptsoft.com)"
+        -:   35: *    The word 'cryptographic' can be left out if the rouines from the library
+        -:   36: *    being used are not cryptographic related :-).
+        -:   37: * 4. If you include any Windows specific code (or a derivative thereof) from 
+        -:   38: *    the apps directory (application code) you must include an acknowledgement:
+        -:   39: *    "This product includes software written by Tim Hudson (tjh@cryptsoft.com)"
+        -:   40: * 
+        -:   41: * THIS SOFTWARE IS PROVIDED BY ERIC YOUNG ``AS IS'' AND
+        -:   42: * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   43: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+        -:   44: * ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+        -:   45: * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+        -:   46: * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+        -:   47: * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   48: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+        -:   49: * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+        -:   50: * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+        -:   51: * SUCH DAMAGE.
+        -:   52: * 
+        -:   53: * The licence and distribution terms for any publically available version or
+        -:   54: * derivative of this code cannot be changed.  i.e. this code cannot simply be
+        -:   55: * copied and put under another distribution licence
+        -:   56: * [including the GNU Public Licence.]
+        -:   57: */
+        -:   58:
+        -:   59:#include <stdio.h>
+        -:   60:#include "cryptlib.h"
+        -:   61:#include <openssl/asn1t.h>
+        -:   62:#include <openssl/x509.h>
+        -:   63:#include "asn1_locl.h"
+        -:   64:#ifndef OPENSSL_NO_RSA
+        -:   65:#include <openssl/rsa.h>
+        -:   66:#endif
+        -:   67:#ifndef OPENSSL_NO_DSA
+        -:   68:#include <openssl/dsa.h>
+        -:   69:#endif
+        -:   70:
+        -:   71:/* Minor tweak to operation: free up EVP_PKEY */
+   179850:   72:static int pubkey_cb(int operation, ASN1_VALUE **pval, const ASN1_ITEM *it,
+        -:   73:			void *exarg)
+        -:   74:	{
+   179850:   75:	if (operation == ASN1_OP_FREE_POST)
+        -:   76:		{
+    29975:   77:		X509_PUBKEY *pubkey = (X509_PUBKEY *)*pval;
+    29975:   78:		EVP_PKEY_free(pubkey->pkey);
+        -:   79:		}
+   179850:   80:	return 1;
+        -:   81:	}
+        -:   82:
+        -:   83:ASN1_SEQUENCE_cb(X509_PUBKEY, pubkey_cb) = {
+        -:   84:	ASN1_SIMPLE(X509_PUBKEY, algor, X509_ALGOR),
+        -:   85:	ASN1_SIMPLE(X509_PUBKEY, public_key, ASN1_BIT_STRING)
+        -:   86:} ASN1_SEQUENCE_END_cb(X509_PUBKEY, X509_PUBKEY)
+        -:   87:
+    #####:   88:IMPLEMENT_ASN1_FUNCTIONS(X509_PUBKEY)
+        -:   89:
+    #####:   90:int X509_PUBKEY_set(X509_PUBKEY **x, EVP_PKEY *pkey)
+        -:   91:	{
+        -:   92:	X509_PUBKEY *pk=NULL;
+        -:   93:
+    #####:   94:	if (x == NULL) return(0);
+        -:   95:
+    #####:   96:	if ((pk=X509_PUBKEY_new()) == NULL) goto error;
+        -:   97:
+    #####:   98:	if (pkey->ameth)
+        -:   99:		{
+    #####:  100:		if (pkey->ameth->pub_encode)
+        -:  101:			{
+    #####:  102:			if (!pkey->ameth->pub_encode(pk, pkey))
+        -:  103:				{
+    #####:  104:				X509err(X509_F_X509_PUBKEY_SET,
+        -:  105:					X509_R_PUBLIC_KEY_ENCODE_ERROR);
+    #####:  106:				goto error;
+        -:  107:				}
+        -:  108:			}
+        -:  109:		else
+        -:  110:			{
+    #####:  111:			X509err(X509_F_X509_PUBKEY_SET,
+        -:  112:				X509_R_METHOD_NOT_SUPPORTED);
+    #####:  113:			goto error;
+        -:  114:			}
+        -:  115:		}
+        -:  116:	else
+        -:  117:		{
+    #####:  118:		X509err(X509_F_X509_PUBKEY_SET,X509_R_UNSUPPORTED_ALGORITHM);
+    #####:  119:		goto error;
+        -:  120:		}
+        -:  121:
+    #####:  122:	if (*x != NULL)
+        -:  123:		X509_PUBKEY_free(*x);
+        -:  124:
+    #####:  125:	*x=pk;
+        -:  126:
+    #####:  127:	return 1;
+        -:  128:error:
+    #####:  129:	if (pk != NULL) X509_PUBKEY_free(pk);
+        -:  130:	return 0;
+        -:  131:	}
+        -:  132:
+    51945:  133:EVP_PKEY *X509_PUBKEY_get(X509_PUBKEY *key)
+        -:  134:	{
+        -:  135:	EVP_PKEY *ret=NULL;
+        -:  136:
+    51945:  137:	if (key == NULL) goto error;
+        -:  138:
+    51945:  139:	if (key->pkey != NULL)
+        -:  140:		{
+    40003:  141:		CRYPTO_add(&key->pkey->references, 1, CRYPTO_LOCK_EVP_PKEY);
+    40003:  142:		return key->pkey;
+        -:  143:		}
+        -:  144:
+    11942:  145:	if (key->public_key == NULL) goto error;
+        -:  146:
+    11942:  147:	if ((ret = EVP_PKEY_new()) == NULL)
+        -:  148:		{
+    #####:  149:		X509err(X509_F_X509_PUBKEY_GET, ERR_R_MALLOC_FAILURE);
+    #####:  150:		goto error;
+        -:  151:		}
+        -:  152:
+    11942:  153:	if (!EVP_PKEY_set_type(ret, OBJ_obj2nid(key->algor->algorithm)))
+        -:  154:		{
+    #####:  155:		X509err(X509_F_X509_PUBKEY_GET,X509_R_UNSUPPORTED_ALGORITHM);
+    #####:  156:		goto error;
+        -:  157:		}
+        -:  158:
+    11942:  159:	if (ret->ameth->pub_decode)
+        -:  160:		{
+    11942:  161:		if (!ret->ameth->pub_decode(ret, key))
+        -:  162:			{
+    #####:  163:			X509err(X509_F_X509_PUBKEY_GET,
+        -:  164:						X509_R_PUBLIC_KEY_DECODE_ERROR);
+    #####:  165:			goto error;
+        -:  166:			}
+        -:  167:		}
+        -:  168:	else
+        -:  169:		{
+    #####:  170:		X509err(X509_F_X509_PUBKEY_GET, X509_R_METHOD_NOT_SUPPORTED);
+    #####:  171:		goto error;
+        -:  172:		}
+        -:  173:
+        -:  174:	/* Check to see if another thread set key->pkey first */
+    11942:  175:	CRYPTO_w_lock(CRYPTO_LOCK_EVP_PKEY);
+    11942:  176:	if (key->pkey)
+        -:  177:		{
+    #####:  178:		CRYPTO_w_unlock(CRYPTO_LOCK_EVP_PKEY);
+    #####:  179:		EVP_PKEY_free(ret);
+    #####:  180:		ret = key->pkey;
+        -:  181:		}
+        -:  182:	else
+        -:  183:		{
+    11942:  184:		key->pkey = ret;
+    11942:  185:		CRYPTO_w_unlock(CRYPTO_LOCK_EVP_PKEY);
+        -:  186:		}
+    11942:  187:	CRYPTO_add(&ret->references, 1, CRYPTO_LOCK_EVP_PKEY);
+        -:  188:
+    11942:  189:	return ret;
+        -:  190:
+        -:  191:	error:
+    #####:  192:	if (ret != NULL)
+    #####:  193:		EVP_PKEY_free(ret);
+        -:  194:	return(NULL);
+        -:  195:	}
+        -:  196:
+        -:  197:/* Now two pseudo ASN1 routines that take an EVP_PKEY structure
+        -:  198: * and encode or decode as X509_PUBKEY
+        -:  199: */
+        -:  200:
+    #####:  201:EVP_PKEY *d2i_PUBKEY(EVP_PKEY **a, const unsigned char **pp,
+        -:  202:	     long length)
+        -:  203:	{
+        -:  204:	X509_PUBKEY *xpk;
+        -:  205:	EVP_PKEY *pktmp;
+        -:  206:	xpk = d2i_X509_PUBKEY(NULL, pp, length);
+    #####:  207:	if(!xpk) return NULL;
+    #####:  208:	pktmp = X509_PUBKEY_get(xpk);
+        -:  209:	X509_PUBKEY_free(xpk);
+    #####:  210:	if(!pktmp) return NULL;
+    #####:  211:	if(a)
+        -:  212:		{
+    #####:  213:		EVP_PKEY_free(*a);
+    #####:  214:		*a = pktmp;
+        -:  215:		}
+    #####:  216:	return pktmp;
+        -:  217:	}
+        -:  218:
+    #####:  219:int i2d_PUBKEY(EVP_PKEY *a, unsigned char **pp)
+        -:  220:	{
+    #####:  221:	X509_PUBKEY *xpk=NULL;
+        -:  222:	int ret;
+    #####:  223:	if(!a) return 0;
+    #####:  224:	if(!X509_PUBKEY_set(&xpk, a)) return 0;
+    #####:  225:	ret = i2d_X509_PUBKEY(xpk, pp);
+    #####:  226:	X509_PUBKEY_free(xpk);
+    #####:  227:	return ret;
+        -:  228:	}
+        -:  229:
+        -:  230:/* The following are equivalents but which return RSA and DSA
+        -:  231: * keys
+        -:  232: */
+        -:  233:#ifndef OPENSSL_NO_RSA
+    #####:  234:RSA *d2i_RSA_PUBKEY(RSA **a, const unsigned char **pp,
+        -:  235:	     long length)
+        -:  236:	{
+        -:  237:	EVP_PKEY *pkey;
+        -:  238:	RSA *key;
+        -:  239:	const unsigned char *q;
+    #####:  240:	q = *pp;
+    #####:  241:	pkey = d2i_PUBKEY(NULL, &q, length);
+    #####:  242:	if (!pkey) return NULL;
+    #####:  243:	key = EVP_PKEY_get1_RSA(pkey);
+    #####:  244:	EVP_PKEY_free(pkey);
+    #####:  245:	if (!key) return NULL;
+    #####:  246:	*pp = q;
+    #####:  247:	if (a)
+        -:  248:		{
+    #####:  249:		RSA_free(*a);
+    #####:  250:		*a = key;
+        -:  251:		}
+    #####:  252:	return key;
+        -:  253:	}
+        -:  254:
+    #####:  255:int i2d_RSA_PUBKEY(RSA *a, unsigned char **pp)
+        -:  256:	{
+        -:  257:	EVP_PKEY *pktmp;
+        -:  258:	int ret;
+    #####:  259:	if (!a) return 0;
+    #####:  260:	pktmp = EVP_PKEY_new();
+    #####:  261:	if (!pktmp)
+        -:  262:		{
+    #####:  263:		ASN1err(ASN1_F_I2D_RSA_PUBKEY, ERR_R_MALLOC_FAILURE);
+    #####:  264:		return 0;
+        -:  265:		}
+    #####:  266:	EVP_PKEY_set1_RSA(pktmp, a);
+    #####:  267:	ret = i2d_PUBKEY(pktmp, pp);
+    #####:  268:	EVP_PKEY_free(pktmp);
+    #####:  269:	return ret;
+        -:  270:	}
+        -:  271:#endif
+        -:  272:
+        -:  273:#ifndef OPENSSL_NO_DSA
+    #####:  274:DSA *d2i_DSA_PUBKEY(DSA **a, const unsigned char **pp,
+        -:  275:	     long length)
+        -:  276:	{
+        -:  277:	EVP_PKEY *pkey;
+        -:  278:	DSA *key;
+        -:  279:	const unsigned char *q;
+    #####:  280:	q = *pp;
+    #####:  281:	pkey = d2i_PUBKEY(NULL, &q, length);
+    #####:  282:	if (!pkey) return NULL;
+    #####:  283:	key = EVP_PKEY_get1_DSA(pkey);
+    #####:  284:	EVP_PKEY_free(pkey);
+    #####:  285:	if (!key) return NULL;
+    #####:  286:	*pp = q;
+    #####:  287:	if (a)
+        -:  288:		{
+    #####:  289:		DSA_free(*a);
+    #####:  290:		*a = key;
+        -:  291:		}
+    #####:  292:	return key;
+        -:  293:	}
+        -:  294:
+    #####:  295:int i2d_DSA_PUBKEY(DSA *a, unsigned char **pp)
+        -:  296:	{
+        -:  297:	EVP_PKEY *pktmp;
+        -:  298:	int ret;
+    #####:  299:	if(!a) return 0;
+    #####:  300:	pktmp = EVP_PKEY_new();
+    #####:  301:	if(!pktmp)
+        -:  302:		{
+    #####:  303:		ASN1err(ASN1_F_I2D_DSA_PUBKEY, ERR_R_MALLOC_FAILURE);
+    #####:  304:		return 0;
+        -:  305:		}
+    #####:  306:	EVP_PKEY_set1_DSA(pktmp, a);
+    #####:  307:	ret = i2d_PUBKEY(pktmp, pp);
+    #####:  308:	EVP_PKEY_free(pktmp);
+    #####:  309:	return ret;
+        -:  310:	}
+        -:  311:#endif
+        -:  312:
+        -:  313:#ifndef OPENSSL_NO_EC
+    #####:  314:EC_KEY *d2i_EC_PUBKEY(EC_KEY **a, const unsigned char **pp, long length)
+        -:  315:	{
+        -:  316:	EVP_PKEY *pkey;
+        -:  317:	EC_KEY *key;
+        -:  318:	const unsigned char *q;
+    #####:  319:	q = *pp;
+    #####:  320:	pkey = d2i_PUBKEY(NULL, &q, length);
+    #####:  321:	if (!pkey) return(NULL);
+    #####:  322:	key = EVP_PKEY_get1_EC_KEY(pkey);
+    #####:  323:	EVP_PKEY_free(pkey);
+    #####:  324:	if (!key)  return(NULL);
+    #####:  325:	*pp = q;
+    #####:  326:	if (a)
+        -:  327:		{
+    #####:  328:		EC_KEY_free(*a);
+    #####:  329:		*a = key;
+        -:  330:		}
+    #####:  331:	return(key);
+        -:  332:	}
+        -:  333:
+    #####:  334:int i2d_EC_PUBKEY(EC_KEY *a, unsigned char **pp)
+        -:  335:	{
+        -:  336:	EVP_PKEY *pktmp;
+        -:  337:	int ret;
+    #####:  338:	if (!a)	return(0);
+    #####:  339:	if ((pktmp = EVP_PKEY_new()) == NULL)
+        -:  340:		{
+    #####:  341:		ASN1err(ASN1_F_I2D_EC_PUBKEY, ERR_R_MALLOC_FAILURE);
+    #####:  342:		return(0);
+        -:  343:		}
+    #####:  344:	EVP_PKEY_set1_EC_KEY(pktmp, a);
+    #####:  345:	ret = i2d_PUBKEY(pktmp, pp);
+    #####:  346:	EVP_PKEY_free(pktmp);
+    #####:  347:	return(ret);
+        -:  348:	}
+        -:  349:#endif
+        -:  350:
+    #####:  351:int X509_PUBKEY_set0_param(X509_PUBKEY *pub, ASN1_OBJECT *aobj,
+        -:  352:					int ptype, void *pval,
+        -:  353:					unsigned char *penc, int penclen)
+        -:  354:	{
+    #####:  355:	if (!X509_ALGOR_set0(pub->algor, aobj, ptype, pval))
+        -:  356:		return 0;
+    #####:  357:	if (penc)
+        -:  358:		{
+    #####:  359:		if (pub->public_key->data)
+    #####:  360:			OPENSSL_free(pub->public_key->data);
+    #####:  361:		pub->public_key->data = penc;
+    #####:  362:		pub->public_key->length = penclen;
+        -:  363:  		/* Set number of unused bits to zero */
+    #####:  364:		pub->public_key->flags&= ~(ASN1_STRING_FLAG_BITS_LEFT|0x07);
+    #####:  365:		pub->public_key->flags|=ASN1_STRING_FLAG_BITS_LEFT;
+        -:  366:		}
+        -:  367:	return 1;
+        -:  368:	}
+        -:  369:
+    11942:  370:int X509_PUBKEY_get0_param(ASN1_OBJECT **ppkalg,
+        -:  371:		const unsigned char **pk, int *ppklen,
+        -:  372:		X509_ALGOR **pa,
+        -:  373:		X509_PUBKEY *pub)
+        -:  374:	{
+    11942:  375:	if (ppkalg)
+    #####:  376:		*ppkalg = pub->algor->algorithm;
+    11942:  377:	if (pk)
+        -:  378:		{
+    11942:  379:		*pk = pub->public_key->data;
+    11942:  380:		*ppklen = pub->public_key->length;
+        -:  381:		}
+    11942:  382:	if (pa)
+    #####:  383:		*pa = pub->algor;
+    11942:  384:	return 1;
+        -:  385:	}

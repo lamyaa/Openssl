@@ -1,0 +1,1074 @@
+        -:    0:Source:e_ubsec.c
+        -:    0:Graph:e_ubsec.gcno
+        -:    0:Data:e_ubsec.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* crypto/engine/hw_ubsec.c */
+        -:    2:/* Written by Geoff Thorpe (geoff@geoffthorpe.net) for the OpenSSL
+        -:    3: * project 2000.
+        -:    4: *
+        -:    5: * Cloned shamelessly by Joe Tardo. 
+        -:    6: */
+        -:    7:/* ====================================================================
+        -:    8: * Copyright (c) 1999-2001 The OpenSSL Project.  All rights reserved.
+        -:    9: *
+        -:   10: * Redistribution and use in source and binary forms, with or without
+        -:   11: * modification, are permitted provided that the following conditions
+        -:   12: * are met:
+        -:   13: *
+        -:   14: * 1. Redistributions of source code must retain the above copyright
+        -:   15: *    notice, this list of conditions and the following disclaimer. 
+        -:   16: *
+        -:   17: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   18: *    notice, this list of conditions and the following disclaimer in
+        -:   19: *    the documentation and/or other materials provided with the
+        -:   20: *    distribution.
+        -:   21: *
+        -:   22: * 3. All advertising materials mentioning features or use of this
+        -:   23: *    software must display the following acknowledgment:
+        -:   24: *    "This product includes software developed by the OpenSSL Project
+        -:   25: *    for use in the OpenSSL Toolkit. (http://www.OpenSSL.org/)"
+        -:   26: *
+        -:   27: * 4. The names "OpenSSL Toolkit" and "OpenSSL Project" must not be used to
+        -:   28: *    endorse or promote products derived from this software without
+        -:   29: *    prior written permission. For written permission, please contact
+        -:   30: *    licensing@OpenSSL.org.
+        -:   31: *
+        -:   32: * 5. Products derived from this software may not be called "OpenSSL"
+        -:   33: *    nor may "OpenSSL" appear in their names without prior written
+        -:   34: *    permission of the OpenSSL Project.
+        -:   35: *
+        -:   36: * 6. Redistributions of any form whatsoever must retain the following
+        -:   37: *    acknowledgment:
+        -:   38: *    "This product includes software developed by the OpenSSL Project
+        -:   39: *    for use in the OpenSSL Toolkit (http://www.OpenSSL.org/)"
+        -:   40: *
+        -:   41: * THIS SOFTWARE IS PROVIDED BY THE OpenSSL PROJECT ``AS IS'' AND ANY
+        -:   42: * EXPRESSED OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   43: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+        -:   44: * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE OpenSSL PROJECT OR
+        -:   45: * ITS CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+        -:   46: * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+        -:   47: * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+        -:   48: * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   49: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+        -:   50: * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+        -:   51: * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+        -:   52: * OF THE POSSIBILITY OF SUCH DAMAGE.
+        -:   53: * ====================================================================
+        -:   54: *
+        -:   55: * This product includes cryptographic software written by Eric Young
+        -:   56: * (eay@cryptsoft.com).  This product includes software written by Tim
+        -:   57: * Hudson (tjh@cryptsoft.com).
+        -:   58: *
+        -:   59: */
+        -:   60:
+        -:   61:#include <stdio.h>
+        -:   62:#include <string.h>
+        -:   63:#include <openssl/crypto.h>
+        -:   64:#include <openssl/buffer.h>
+        -:   65:#include <openssl/dso.h>
+        -:   66:#include <openssl/engine.h>
+        -:   67:#ifndef OPENSSL_NO_RSA
+        -:   68:#include <openssl/rsa.h>
+        -:   69:#endif
+        -:   70:#ifndef OPENSSL_NO_DSA
+        -:   71:#include <openssl/dsa.h>
+        -:   72:#endif
+        -:   73:#ifndef OPENSSL_NO_DH
+        -:   74:#include <openssl/dh.h>
+        -:   75:#endif
+        -:   76:#include <openssl/bn.h>
+        -:   77:
+        -:   78:#ifndef OPENSSL_NO_HW
+        -:   79:#ifndef OPENSSL_NO_HW_UBSEC
+        -:   80:
+        -:   81:#ifdef FLAT_INC
+        -:   82:#include "hw_ubsec.h"
+        -:   83:#else
+        -:   84:#include "vendor_defns/hw_ubsec.h"
+        -:   85:#endif
+        -:   86:
+        -:   87:#define UBSEC_LIB_NAME "ubsec engine"
+        -:   88:#include "e_ubsec_err.c"
+        -:   89:
+        -:   90:#define FAIL_TO_SOFTWARE -15
+        -:   91:
+        -:   92:static int ubsec_destroy(ENGINE *e);
+        -:   93:static int ubsec_init(ENGINE *e);
+        -:   94:static int ubsec_finish(ENGINE *e);
+        -:   95:static int ubsec_ctrl(ENGINE *e, int cmd, long i, void *p, void (*f)(void));
+        -:   96:static int ubsec_mod_exp(BIGNUM *r, const BIGNUM *a, const BIGNUM *p,
+        -:   97:		const BIGNUM *m, BN_CTX *ctx);
+        -:   98:#ifndef OPENSSL_NO_RSA
+        -:   99:static int ubsec_mod_exp_crt(BIGNUM *r, const BIGNUM *a, const BIGNUM *p,
+        -:  100:			const BIGNUM *q, const BIGNUM *dp,
+        -:  101:			const BIGNUM *dq, const BIGNUM *qinv, BN_CTX *ctx);
+        -:  102:static int ubsec_rsa_mod_exp(BIGNUM *r0, const BIGNUM *I, RSA *rsa, BN_CTX *ctx);
+        -:  103:static int ubsec_mod_exp_mont(BIGNUM *r, const BIGNUM *a, const BIGNUM *p,
+        -:  104:		const BIGNUM *m, BN_CTX *ctx, BN_MONT_CTX *m_ctx);
+        -:  105:#endif
+        -:  106:#ifndef OPENSSL_NO_DSA
+        -:  107:#ifdef NOT_USED
+        -:  108:static int ubsec_dsa_mod_exp(DSA *dsa, BIGNUM *rr, BIGNUM *a1,
+        -:  109:		BIGNUM *p1, BIGNUM *a2, BIGNUM *p2, BIGNUM *m,
+        -:  110:		BN_CTX *ctx, BN_MONT_CTX *in_mont);
+        -:  111:static int ubsec_mod_exp_dsa(DSA *dsa, BIGNUM *r, BIGNUM *a,
+        -:  112:		const BIGNUM *p, const BIGNUM *m, BN_CTX *ctx,
+        -:  113:		BN_MONT_CTX *m_ctx);
+        -:  114:#endif
+        -:  115:static DSA_SIG *ubsec_dsa_do_sign(const unsigned char *dgst, int dlen, DSA *dsa);
+        -:  116:static int ubsec_dsa_verify(const unsigned char *dgst, int dgst_len,
+        -:  117:                                DSA_SIG *sig, DSA *dsa);
+        -:  118:#endif
+        -:  119:#ifndef OPENSSL_NO_DH
+        -:  120:static int ubsec_mod_exp_dh(const DH *dh, BIGNUM *r, const BIGNUM *a,
+        -:  121:		const BIGNUM *p, const BIGNUM *m, BN_CTX *ctx,
+        -:  122:		BN_MONT_CTX *m_ctx);
+        -:  123:static int ubsec_dh_compute_key(unsigned char *key,const BIGNUM *pub_key,DH *dh);
+        -:  124:static int ubsec_dh_generate_key(DH *dh);
+        -:  125:#endif
+        -:  126:
+        -:  127:#ifdef NOT_USED
+        -:  128:static int ubsec_rand_bytes(unsigned char *buf, int num);
+        -:  129:static int ubsec_rand_status(void);
+        -:  130:#endif
+        -:  131:
+        -:  132:#define UBSEC_CMD_SO_PATH		ENGINE_CMD_BASE
+        -:  133:static const ENGINE_CMD_DEFN ubsec_cmd_defns[] = {
+        -:  134:	{UBSEC_CMD_SO_PATH,
+        -:  135:		"SO_PATH",
+        -:  136:		"Specifies the path to the 'ubsec' shared library",
+        -:  137:		ENGINE_CMD_FLAG_STRING},
+        -:  138:	{0, NULL, NULL, 0}
+        -:  139:	};
+        -:  140:
+        -:  141:#ifndef OPENSSL_NO_RSA
+        -:  142:/* Our internal RSA_METHOD that we provide pointers to */
+        -:  143:static RSA_METHOD ubsec_rsa =
+        -:  144:	{
+        -:  145:	"UBSEC RSA method",
+        -:  146:	NULL,
+        -:  147:	NULL,
+        -:  148:	NULL,
+        -:  149:	NULL,
+        -:  150:	ubsec_rsa_mod_exp,
+        -:  151:	ubsec_mod_exp_mont,
+        -:  152:	NULL,
+        -:  153:	NULL,
+        -:  154:	0,
+        -:  155:	NULL,
+        -:  156:	NULL,
+        -:  157:	NULL,
+        -:  158:	NULL
+        -:  159:	};
+        -:  160:#endif
+        -:  161:
+        -:  162:#ifndef OPENSSL_NO_DSA
+        -:  163:/* Our internal DSA_METHOD that we provide pointers to */
+        -:  164:static DSA_METHOD ubsec_dsa =
+        -:  165:	{
+        -:  166:	"UBSEC DSA method",
+        -:  167:	ubsec_dsa_do_sign, /* dsa_do_sign */
+        -:  168:	NULL, /* dsa_sign_setup */
+        -:  169:	ubsec_dsa_verify, /* dsa_do_verify */
+        -:  170:	NULL, /* ubsec_dsa_mod_exp */ /* dsa_mod_exp */
+        -:  171:	NULL, /* ubsec_mod_exp_dsa */ /* bn_mod_exp */
+        -:  172:	NULL, /* init */
+        -:  173:	NULL, /* finish */
+        -:  174:	0, /* flags */
+        -:  175:	NULL, /* app_data */
+        -:  176:	NULL, /* dsa_paramgen */
+        -:  177:	NULL /* dsa_keygen */
+        -:  178:	};
+        -:  179:#endif
+        -:  180:
+        -:  181:#ifndef OPENSSL_NO_DH
+        -:  182:/* Our internal DH_METHOD that we provide pointers to */
+        -:  183:static DH_METHOD ubsec_dh =
+        -:  184:	{
+        -:  185:	"UBSEC DH method",
+        -:  186:	ubsec_dh_generate_key,
+        -:  187:	ubsec_dh_compute_key,
+        -:  188:	ubsec_mod_exp_dh,
+        -:  189:	NULL,
+        -:  190:	NULL,
+        -:  191:	0,
+        -:  192:	NULL,
+        -:  193:	NULL
+        -:  194:	};
+        -:  195:#endif
+        -:  196:
+        -:  197:/* Constants used when creating the ENGINE */
+        -:  198:static const char *engine_ubsec_id = "ubsec";
+        -:  199:static const char *engine_ubsec_name = "UBSEC hardware engine support";
+        -:  200:
+        -:  201:/* This internal function is used by ENGINE_ubsec() and possibly by the
+        -:  202: * "dynamic" ENGINE support too */
+    10000:  203:static int bind_helper(ENGINE *e)
+        -:  204:	{
+        -:  205:#ifndef OPENSSL_NO_RSA
+        -:  206:	const RSA_METHOD *meth1;
+        -:  207:#endif
+        -:  208:#ifndef OPENSSL_NO_DH
+        -:  209:#ifndef HAVE_UBSEC_DH
+        -:  210:	const DH_METHOD *meth3;
+        -:  211:#endif /* HAVE_UBSEC_DH */
+        -:  212:#endif
+    20000:  213:	if(!ENGINE_set_id(e, engine_ubsec_id) ||
+    20000:  214:			!ENGINE_set_name(e, engine_ubsec_name) ||
+        -:  215:#ifndef OPENSSL_NO_RSA
+    20000:  216:			!ENGINE_set_RSA(e, &ubsec_rsa) ||
+        -:  217:#endif
+        -:  218:#ifndef OPENSSL_NO_DSA
+    20000:  219:			!ENGINE_set_DSA(e, &ubsec_dsa) ||
+        -:  220:#endif
+        -:  221:#ifndef OPENSSL_NO_DH
+    20000:  222:			!ENGINE_set_DH(e, &ubsec_dh) ||
+        -:  223:#endif
+    20000:  224:			!ENGINE_set_destroy_function(e, ubsec_destroy) ||
+    20000:  225:			!ENGINE_set_init_function(e, ubsec_init) ||
+    20000:  226:			!ENGINE_set_finish_function(e, ubsec_finish) ||
+    20000:  227:			!ENGINE_set_ctrl_function(e, ubsec_ctrl) ||
+    10000:  228:			!ENGINE_set_cmd_defns(e, ubsec_cmd_defns))
+        -:  229:		return 0;
+        -:  230:
+        -:  231:#ifndef OPENSSL_NO_RSA
+        -:  232:	/* We know that the "PKCS1_SSLeay()" functions hook properly
+        -:  233:	 * to the Broadcom-specific mod_exp and mod_exp_crt so we use
+        -:  234:	 * those functions. NB: We don't use ENGINE_openssl() or
+        -:  235:	 * anything "more generic" because something like the RSAref
+        -:  236:	 * code may not hook properly, and if you own one of these
+        -:  237:	 * cards then you have the right to do RSA operations on it
+        -:  238:	 * anyway! */ 
+    10000:  239:	meth1 = RSA_PKCS1_SSLeay();
+    10000:  240:	ubsec_rsa.rsa_pub_enc = meth1->rsa_pub_enc;
+    10000:  241:	ubsec_rsa.rsa_pub_dec = meth1->rsa_pub_dec;
+    10000:  242:	ubsec_rsa.rsa_priv_enc = meth1->rsa_priv_enc;
+    10000:  243:	ubsec_rsa.rsa_priv_dec = meth1->rsa_priv_dec;
+        -:  244:#endif
+        -:  245:
+        -:  246:#ifndef OPENSSL_NO_DH
+        -:  247:#ifndef HAVE_UBSEC_DH
+        -:  248:	/* Much the same for Diffie-Hellman */
+    10000:  249:	meth3 = DH_OpenSSL();
+    10000:  250:	ubsec_dh.generate_key = meth3->generate_key;
+    10000:  251:	ubsec_dh.compute_key = meth3->compute_key;
+        -:  252:#endif /* HAVE_UBSEC_DH */
+        -:  253:#endif
+        -:  254:
+        -:  255:	/* Ensure the ubsec error handling is set up */
+    10000:  256:	ERR_load_UBSEC_strings();
+    10000:  257:	return 1;
+        -:  258:	}
+        -:  259:
+        -:  260:#ifdef OPENSSL_NO_DYNAMIC_ENGINE
+    10000:  261:static ENGINE *engine_ubsec(void)
+        -:  262:	{
+    10000:  263:	ENGINE *ret = ENGINE_new();
+    10000:  264:	if(!ret)
+        -:  265:		return NULL;
+    10000:  266:	if(!bind_helper(ret))
+        -:  267:		{
+    #####:  268:		ENGINE_free(ret);
+    #####:  269:		return NULL;
+        -:  270:		}
+        -:  271:	return ret;
+        -:  272:	}
+        -:  273:
+    10000:  274:void ENGINE_load_ubsec(void)
+        -:  275:	{
+        -:  276:	/* Copied from eng_[openssl|dyn].c */
+    10000:  277:	ENGINE *toadd = engine_ubsec();
+    20000:  278:	if(!toadd) return;
+    10000:  279:	ENGINE_add(toadd);
+    10000:  280:	ENGINE_free(toadd);
+    10000:  281:	ERR_clear_error();
+        -:  282:	}
+        -:  283:#endif
+        -:  284:
+        -:  285:/* This is a process-global DSO handle used for loading and unloading
+        -:  286: * the UBSEC library. NB: This is only set (or unset) during an
+        -:  287: * init() or finish() call (reference counts permitting) and they're
+        -:  288: * operating with global locks, so this should be thread-safe
+        -:  289: * implicitly. */
+        -:  290:
+        -:  291:static DSO *ubsec_dso = NULL;
+        -:  292:
+        -:  293:/* These are the function pointers that are (un)set when the library has
+        -:  294: * successfully (un)loaded. */
+        -:  295:
+        -:  296:static t_UBSEC_ubsec_bytes_to_bits *p_UBSEC_ubsec_bytes_to_bits = NULL;
+        -:  297:static t_UBSEC_ubsec_bits_to_bytes *p_UBSEC_ubsec_bits_to_bytes = NULL;
+        -:  298:static t_UBSEC_ubsec_open *p_UBSEC_ubsec_open = NULL;
+        -:  299:static t_UBSEC_ubsec_close *p_UBSEC_ubsec_close = NULL;
+        -:  300:#ifndef OPENSSL_NO_DH
+        -:  301:static t_UBSEC_diffie_hellman_generate_ioctl 
+        -:  302:	*p_UBSEC_diffie_hellman_generate_ioctl = NULL;
+        -:  303:static t_UBSEC_diffie_hellman_agree_ioctl *p_UBSEC_diffie_hellman_agree_ioctl = NULL;
+        -:  304:#endif
+        -:  305:#ifndef OPENSSL_NO_RSA
+        -:  306:static t_UBSEC_rsa_mod_exp_ioctl *p_UBSEC_rsa_mod_exp_ioctl = NULL;
+        -:  307:static t_UBSEC_rsa_mod_exp_crt_ioctl *p_UBSEC_rsa_mod_exp_crt_ioctl = NULL;
+        -:  308:#endif
+        -:  309:#ifndef OPENSSL_NO_DSA
+        -:  310:static t_UBSEC_dsa_sign_ioctl *p_UBSEC_dsa_sign_ioctl = NULL;
+        -:  311:static t_UBSEC_dsa_verify_ioctl *p_UBSEC_dsa_verify_ioctl = NULL;
+        -:  312:#endif
+        -:  313:static t_UBSEC_math_accelerate_ioctl *p_UBSEC_math_accelerate_ioctl = NULL;
+        -:  314:static t_UBSEC_rng_ioctl *p_UBSEC_rng_ioctl = NULL;
+        -:  315:static t_UBSEC_max_key_len_ioctl *p_UBSEC_max_key_len_ioctl = NULL;
+        -:  316:
+        -:  317:static int max_key_len = 1024;  /* ??? */
+        -:  318:
+        -:  319:/* 
+        -:  320: * These are the static string constants for the DSO file name and the function
+        -:  321: * symbol names to bind to. 
+        -:  322: */
+        -:  323:
+        -:  324:static const char *UBSEC_LIBNAME = NULL;
+        -:  325:static const char *get_UBSEC_LIBNAME(void)
+        -:  326:	{
+    #####:  327:	if(UBSEC_LIBNAME)
+        -:  328:		return UBSEC_LIBNAME;
+        -:  329:	return "ubsec";
+        -:  330:	}
+        -:  331:static void free_UBSEC_LIBNAME(void)
+        -:  332:	{
+    10000:  333:	if(UBSEC_LIBNAME)
+    #####:  334:		OPENSSL_free((void*)UBSEC_LIBNAME);
+    10000:  335:	UBSEC_LIBNAME = NULL;
+        -:  336:	}
+    #####:  337:static long set_UBSEC_LIBNAME(const char *name)
+        -:  338:	{
+        -:  339:	free_UBSEC_LIBNAME();
+    #####:  340:	return (((UBSEC_LIBNAME = BUF_strdup(name)) != NULL) ? 1 : 0);
+        -:  341:	}
+        -:  342:static const char *UBSEC_F1 = "ubsec_bytes_to_bits";
+        -:  343:static const char *UBSEC_F2 = "ubsec_bits_to_bytes";
+        -:  344:static const char *UBSEC_F3 = "ubsec_open";
+        -:  345:static const char *UBSEC_F4 = "ubsec_close";
+        -:  346:#ifndef OPENSSL_NO_DH
+        -:  347:static const char *UBSEC_F5 = "diffie_hellman_generate_ioctl";
+        -:  348:static const char *UBSEC_F6 = "diffie_hellman_agree_ioctl";
+        -:  349:#endif
+        -:  350:/* #ifndef OPENSSL_NO_RSA */
+        -:  351:static const char *UBSEC_F7 = "rsa_mod_exp_ioctl";
+        -:  352:static const char *UBSEC_F8 = "rsa_mod_exp_crt_ioctl";
+        -:  353:/* #endif */
+        -:  354:#ifndef OPENSSL_NO_DSA
+        -:  355:static const char *UBSEC_F9 = "dsa_sign_ioctl";
+        -:  356:static const char *UBSEC_F10 = "dsa_verify_ioctl";
+        -:  357:#endif
+        -:  358:static const char *UBSEC_F11 = "math_accelerate_ioctl";
+        -:  359:static const char *UBSEC_F12 = "rng_ioctl";
+        -:  360:static const char *UBSEC_F13 = "ubsec_max_key_len_ioctl";
+        -:  361:
+        -:  362:/* Destructor (complements the "ENGINE_ubsec()" constructor) */
+    10000:  363:static int ubsec_destroy(ENGINE *e)
+        -:  364:	{
+        -:  365:	free_UBSEC_LIBNAME();
+    10000:  366:	ERR_unload_UBSEC_strings();
+    10000:  367:	return 1;
+        -:  368:	}
+        -:  369:
+        -:  370:/* (de)initialisation functions. */
+    #####:  371:static int ubsec_init(ENGINE *e)
+        -:  372:	{
+        -:  373:	t_UBSEC_ubsec_bytes_to_bits *p1;
+        -:  374:	t_UBSEC_ubsec_bits_to_bytes *p2;
+        -:  375:	t_UBSEC_ubsec_open *p3;
+        -:  376:	t_UBSEC_ubsec_close *p4;
+        -:  377:#ifndef OPENSSL_NO_DH
+        -:  378:	t_UBSEC_diffie_hellman_generate_ioctl *p5;
+        -:  379:	t_UBSEC_diffie_hellman_agree_ioctl *p6;
+        -:  380:#endif
+        -:  381:/* #ifndef OPENSSL_NO_RSA */
+        -:  382:	t_UBSEC_rsa_mod_exp_ioctl *p7;
+        -:  383:	t_UBSEC_rsa_mod_exp_crt_ioctl *p8;
+        -:  384:/* #endif */
+        -:  385:#ifndef OPENSSL_NO_DSA
+        -:  386:	t_UBSEC_dsa_sign_ioctl *p9;
+        -:  387:	t_UBSEC_dsa_verify_ioctl *p10;
+        -:  388:#endif
+        -:  389:	t_UBSEC_math_accelerate_ioctl *p11;
+        -:  390:	t_UBSEC_rng_ioctl *p12;
+        -:  391:        t_UBSEC_max_key_len_ioctl *p13;
+        -:  392:	int fd = 0;
+        -:  393:
+    #####:  394:	if(ubsec_dso != NULL)
+        -:  395:		{
+    #####:  396:		UBSECerr(UBSEC_F_UBSEC_INIT, UBSEC_R_ALREADY_LOADED);
+    #####:  397:		goto err;
+        -:  398:		}
+        -:  399:	/* 
+        -:  400:	 * Attempt to load libubsec.so/ubsec.dll/whatever. 
+        -:  401:	 */
+    #####:  402:	ubsec_dso = DSO_load(NULL, get_UBSEC_LIBNAME(), NULL, 0);
+    #####:  403:	if(ubsec_dso == NULL)
+        -:  404:		{
+    #####:  405:		UBSECerr(UBSEC_F_UBSEC_INIT, UBSEC_R_DSO_FAILURE);
+    #####:  406:		goto err;
+        -:  407:		}
+        -:  408:
+    #####:  409:	if (
+    #####:  410:	!(p1 = (t_UBSEC_ubsec_bytes_to_bits *) DSO_bind_func(ubsec_dso, UBSEC_F1)) ||
+    #####:  411:	!(p2 = (t_UBSEC_ubsec_bits_to_bytes *) DSO_bind_func(ubsec_dso, UBSEC_F2)) ||
+    #####:  412:	!(p3 = (t_UBSEC_ubsec_open *) DSO_bind_func(ubsec_dso, UBSEC_F3)) ||
+    #####:  413:	!(p4 = (t_UBSEC_ubsec_close *) DSO_bind_func(ubsec_dso, UBSEC_F4)) ||
+        -:  414:#ifndef OPENSSL_NO_DH
+        -:  415:	!(p5 = (t_UBSEC_diffie_hellman_generate_ioctl *) 
+    #####:  416:				DSO_bind_func(ubsec_dso, UBSEC_F5)) ||
+        -:  417:	!(p6 = (t_UBSEC_diffie_hellman_agree_ioctl *) 
+    #####:  418:				DSO_bind_func(ubsec_dso, UBSEC_F6)) ||
+        -:  419:#endif
+        -:  420:/* #ifndef OPENSSL_NO_RSA */
+    #####:  421:	!(p7 = (t_UBSEC_rsa_mod_exp_ioctl *) DSO_bind_func(ubsec_dso, UBSEC_F7)) ||
+    #####:  422:	!(p8 = (t_UBSEC_rsa_mod_exp_crt_ioctl *) DSO_bind_func(ubsec_dso, UBSEC_F8)) ||
+        -:  423:/* #endif */
+        -:  424:#ifndef OPENSSL_NO_DSA
+    #####:  425:	!(p9 = (t_UBSEC_dsa_sign_ioctl *) DSO_bind_func(ubsec_dso, UBSEC_F9)) ||
+    #####:  426:	!(p10 = (t_UBSEC_dsa_verify_ioctl *) DSO_bind_func(ubsec_dso, UBSEC_F10)) ||
+        -:  427:#endif
+        -:  428:	!(p11 = (t_UBSEC_math_accelerate_ioctl *) 
+    #####:  429:				DSO_bind_func(ubsec_dso, UBSEC_F11)) ||
+    #####:  430:	!(p12 = (t_UBSEC_rng_ioctl *) DSO_bind_func(ubsec_dso, UBSEC_F12)) ||
+    #####:  431:        !(p13 = (t_UBSEC_max_key_len_ioctl *) DSO_bind_func(ubsec_dso, UBSEC_F13)))
+        -:  432:		{
+    #####:  433:		UBSECerr(UBSEC_F_UBSEC_INIT, UBSEC_R_DSO_FAILURE);
+    #####:  434:		goto err;
+        -:  435:		}
+        -:  436:
+        -:  437:	/* Copy the pointers */
+    #####:  438:	p_UBSEC_ubsec_bytes_to_bits = p1;
+    #####:  439:	p_UBSEC_ubsec_bits_to_bytes = p2;
+    #####:  440:	p_UBSEC_ubsec_open = p3;
+    #####:  441:	p_UBSEC_ubsec_close = p4;
+        -:  442:#ifndef OPENSSL_NO_DH
+    #####:  443:	p_UBSEC_diffie_hellman_generate_ioctl = p5;
+    #####:  444:	p_UBSEC_diffie_hellman_agree_ioctl = p6;
+        -:  445:#endif
+        -:  446:#ifndef OPENSSL_NO_RSA
+    #####:  447:	p_UBSEC_rsa_mod_exp_ioctl = p7;
+    #####:  448:	p_UBSEC_rsa_mod_exp_crt_ioctl = p8;
+        -:  449:#endif
+        -:  450:#ifndef OPENSSL_NO_DSA
+    #####:  451:	p_UBSEC_dsa_sign_ioctl = p9;
+    #####:  452:	p_UBSEC_dsa_verify_ioctl = p10;
+        -:  453:#endif
+    #####:  454:	p_UBSEC_math_accelerate_ioctl = p11;
+    #####:  455:	p_UBSEC_rng_ioctl = p12;
+    #####:  456:        p_UBSEC_max_key_len_ioctl = p13;
+        -:  457:
+        -:  458:	/* Perform an open to see if there's actually any unit running. */
+    #####:  459:	if (((fd = p_UBSEC_ubsec_open(UBSEC_KEY_DEVICE_NAME)) > 0) && (p_UBSEC_max_key_len_ioctl(fd, &max_key_len) == 0))
+        -:  460:	{
+    #####:  461:	   p_UBSEC_ubsec_close(fd);
+    #####:  462:	   return 1;
+        -:  463:	}
+        -:  464:	else
+        -:  465:	{
+    #####:  466:	  UBSECerr(UBSEC_F_UBSEC_INIT, UBSEC_R_UNIT_FAILURE);
+        -:  467:	}
+        -:  468:
+        -:  469:err:
+    #####:  470:	if(ubsec_dso)
+    #####:  471:		DSO_free(ubsec_dso);
+    #####:  472:	ubsec_dso = NULL;
+    #####:  473:	p_UBSEC_ubsec_bytes_to_bits = NULL;
+    #####:  474:	p_UBSEC_ubsec_bits_to_bytes = NULL;
+    #####:  475:	p_UBSEC_ubsec_open = NULL;
+    #####:  476:	p_UBSEC_ubsec_close = NULL;
+        -:  477:#ifndef OPENSSL_NO_DH
+    #####:  478:	p_UBSEC_diffie_hellman_generate_ioctl = NULL;
+    #####:  479:	p_UBSEC_diffie_hellman_agree_ioctl = NULL;
+        -:  480:#endif
+        -:  481:#ifndef OPENSSL_NO_RSA
+    #####:  482:	p_UBSEC_rsa_mod_exp_ioctl = NULL;
+    #####:  483:	p_UBSEC_rsa_mod_exp_crt_ioctl = NULL;
+        -:  484:#endif
+        -:  485:#ifndef OPENSSL_NO_DSA
+    #####:  486:	p_UBSEC_dsa_sign_ioctl = NULL;
+    #####:  487:	p_UBSEC_dsa_verify_ioctl = NULL;
+        -:  488:#endif
+    #####:  489:	p_UBSEC_math_accelerate_ioctl = NULL;
+    #####:  490:	p_UBSEC_rng_ioctl = NULL;
+    #####:  491:        p_UBSEC_max_key_len_ioctl = NULL;
+        -:  492:
+    #####:  493:	return 0;
+        -:  494:	}
+        -:  495:
+    #####:  496:static int ubsec_finish(ENGINE *e)
+        -:  497:	{
+        -:  498:	free_UBSEC_LIBNAME();
+    #####:  499:	if(ubsec_dso == NULL)
+        -:  500:		{
+    #####:  501:		UBSECerr(UBSEC_F_UBSEC_FINISH, UBSEC_R_NOT_LOADED);
+    #####:  502:		return 0;
+        -:  503:		}
+    #####:  504:	if(!DSO_free(ubsec_dso))
+        -:  505:		{
+    #####:  506:		UBSECerr(UBSEC_F_UBSEC_FINISH, UBSEC_R_DSO_FAILURE);
+    #####:  507:		return 0;
+        -:  508:		}
+    #####:  509:	ubsec_dso = NULL;
+    #####:  510:	p_UBSEC_ubsec_bytes_to_bits = NULL;
+    #####:  511:	p_UBSEC_ubsec_bits_to_bytes = NULL;
+    #####:  512:	p_UBSEC_ubsec_open = NULL;
+    #####:  513:	p_UBSEC_ubsec_close = NULL;
+        -:  514:#ifndef OPENSSL_NO_DH
+    #####:  515:	p_UBSEC_diffie_hellman_generate_ioctl = NULL;
+    #####:  516:	p_UBSEC_diffie_hellman_agree_ioctl = NULL;
+        -:  517:#endif
+        -:  518:#ifndef OPENSSL_NO_RSA
+    #####:  519:	p_UBSEC_rsa_mod_exp_ioctl = NULL;
+    #####:  520:	p_UBSEC_rsa_mod_exp_crt_ioctl = NULL;
+        -:  521:#endif
+        -:  522:#ifndef OPENSSL_NO_DSA
+    #####:  523:	p_UBSEC_dsa_sign_ioctl = NULL;
+    #####:  524:	p_UBSEC_dsa_verify_ioctl = NULL;
+        -:  525:#endif
+    #####:  526:	p_UBSEC_math_accelerate_ioctl = NULL;
+    #####:  527:	p_UBSEC_rng_ioctl = NULL;
+    #####:  528:        p_UBSEC_max_key_len_ioctl = NULL;
+    #####:  529:	return 1;
+        -:  530:	}
+        -:  531:
+    #####:  532:static int ubsec_ctrl(ENGINE *e, int cmd, long i, void *p, void (*f)(void))
+        -:  533:	{
+    #####:  534:	int initialised = ((ubsec_dso == NULL) ? 0 : 1);
+    #####:  535:	switch(cmd)
+        -:  536:		{
+        -:  537:	case UBSEC_CMD_SO_PATH:
+    #####:  538:		if(p == NULL)
+        -:  539:			{
+    #####:  540:			UBSECerr(UBSEC_F_UBSEC_CTRL,ERR_R_PASSED_NULL_PARAMETER);
+    #####:  541:			return 0;
+        -:  542:			}
+    #####:  543:		if(initialised)
+        -:  544:			{
+    #####:  545:			UBSECerr(UBSEC_F_UBSEC_CTRL,UBSEC_R_ALREADY_LOADED);
+    #####:  546:			return 0;
+        -:  547:			}
+    #####:  548:		return set_UBSEC_LIBNAME((const char *)p);
+        -:  549:	default:
+        -:  550:		break;
+        -:  551:		}
+    #####:  552:	UBSECerr(UBSEC_F_UBSEC_CTRL,UBSEC_R_CTRL_COMMAND_NOT_IMPLEMENTED);
+    #####:  553:	return 0;
+        -:  554:	}
+        -:  555:
+    #####:  556:static int ubsec_mod_exp(BIGNUM *r, const BIGNUM *a, const BIGNUM *p,
+        -:  557:		const BIGNUM *m, BN_CTX *ctx)
+        -:  558:	{
+    #####:  559:	int 	y_len = 0;
+        -:  560:	int 	fd;
+        -:  561:
+    #####:  562:	if(ubsec_dso == NULL)
+        -:  563:	{
+    #####:  564:		UBSECerr(UBSEC_F_UBSEC_MOD_EXP, UBSEC_R_NOT_LOADED);
+    #####:  565:		return 0;
+        -:  566:	}
+        -:  567:
+        -:  568:	/* Check if hardware can't handle this argument. */
+    #####:  569:	y_len = BN_num_bits(m);
+    #####:  570:	if (y_len > max_key_len) {
+    #####:  571:		UBSECerr(UBSEC_F_UBSEC_MOD_EXP, UBSEC_R_SIZE_TOO_LARGE_OR_TOO_SMALL);
+    #####:  572:                return BN_mod_exp(r, a, p, m, ctx);
+        -:  573:	} 
+        -:  574:
+    #####:  575:	if(!bn_wexpand(r, m->top))
+        -:  576:	{
+    #####:  577:		UBSECerr(UBSEC_F_UBSEC_MOD_EXP, UBSEC_R_BN_EXPAND_FAIL);
+    #####:  578:		return 0;
+        -:  579:	}
+        -:  580:
+    #####:  581:	if ((fd = p_UBSEC_ubsec_open(UBSEC_KEY_DEVICE_NAME)) <= 0) {
+        -:  582:		fd = 0;
+    #####:  583:		UBSECerr(UBSEC_F_UBSEC_MOD_EXP, UBSEC_R_UNIT_FAILURE);
+    #####:  584:                return BN_mod_exp(r, a, p, m, ctx);
+        -:  585:	}
+        -:  586:
+    #####:  587:	if (p_UBSEC_rsa_mod_exp_ioctl(fd, (unsigned char *)a->d, BN_num_bits(a),
+    #####:  588:		(unsigned char *)m->d, BN_num_bits(m), (unsigned char *)p->d, 
+    #####:  589:		BN_num_bits(p), (unsigned char *)r->d, &y_len) != 0)
+        -:  590:	{
+    #####:  591:		UBSECerr(UBSEC_F_UBSEC_MOD_EXP, UBSEC_R_REQUEST_FAILED);
+    #####:  592:                p_UBSEC_ubsec_close(fd);
+        -:  593:
+    #####:  594:                return BN_mod_exp(r, a, p, m, ctx);
+        -:  595:	}
+        -:  596:
+    #####:  597:	p_UBSEC_ubsec_close(fd);
+        -:  598:
+    #####:  599:	r->top = (BN_num_bits(m)+BN_BITS2-1)/BN_BITS2;
+    #####:  600:	return 1;
+        -:  601:	}
+        -:  602:
+        -:  603:#ifndef OPENSSL_NO_RSA
+    #####:  604:static int ubsec_rsa_mod_exp(BIGNUM *r0, const BIGNUM *I, RSA *rsa, BN_CTX *ctx)
+        -:  605:	{
+        -:  606:	int to_return = 0;
+        -:  607:
+    #####:  608:	if(!rsa->p || !rsa->q || !rsa->dmp1 || !rsa->dmq1 || !rsa->iqmp)
+        -:  609:		{
+    #####:  610:		UBSECerr(UBSEC_F_UBSEC_RSA_MOD_EXP, UBSEC_R_MISSING_KEY_COMPONENTS);
+    #####:  611:		goto err;
+        -:  612:		}
+        -:  613:
+    #####:  614:	to_return = ubsec_mod_exp_crt(r0, I, rsa->p, rsa->q, rsa->dmp1,
+        -:  615:		    rsa->dmq1, rsa->iqmp, ctx);
+    #####:  616:	if (to_return == FAIL_TO_SOFTWARE)
+        -:  617:	{
+        -:  618:	  /*
+        -:  619:	   * Do in software as hardware failed.
+        -:  620:	   */
+    #####:  621:	   const RSA_METHOD *meth = RSA_PKCS1_SSLeay();
+    #####:  622:	   to_return = (*meth->rsa_mod_exp)(r0, I, rsa, ctx);
+        -:  623:	}
+        -:  624:err:
+    #####:  625:	return to_return;
+        -:  626:	}
+        -:  627:
+    #####:  628:static int ubsec_mod_exp_crt(BIGNUM *r, const BIGNUM *a, const BIGNUM *p,
+        -:  629:			const BIGNUM *q, const BIGNUM *dp,
+        -:  630:			const BIGNUM *dq, const BIGNUM *qinv, BN_CTX *ctx)
+        -:  631:	{
+        -:  632:	int	y_len,
+        -:  633:		fd;
+        -:  634:
+    #####:  635:	y_len = BN_num_bits(p) + BN_num_bits(q);
+        -:  636:
+        -:  637:	/* Check if hardware can't handle this argument. */
+    #####:  638:	if (y_len > max_key_len) {
+    #####:  639:		UBSECerr(UBSEC_F_UBSEC_MOD_EXP_CRT, UBSEC_R_SIZE_TOO_LARGE_OR_TOO_SMALL);
+        -:  640:		return FAIL_TO_SOFTWARE;
+        -:  641:	} 
+        -:  642:
+    #####:  643:	if (!bn_wexpand(r, p->top + q->top + 1)) {
+    #####:  644:		UBSECerr(UBSEC_F_UBSEC_MOD_EXP_CRT, UBSEC_R_BN_EXPAND_FAIL);
+        -:  645:		return 0;
+        -:  646:	}
+        -:  647:
+    #####:  648:	if ((fd = p_UBSEC_ubsec_open(UBSEC_KEY_DEVICE_NAME)) <= 0) {
+        -:  649:		fd = 0;
+    #####:  650:		UBSECerr(UBSEC_F_UBSEC_MOD_EXP_CRT, UBSEC_R_UNIT_FAILURE);
+        -:  651:		return FAIL_TO_SOFTWARE;
+        -:  652:	}
+        -:  653:
+    #####:  654:	if (p_UBSEC_rsa_mod_exp_crt_ioctl(fd,
+    #####:  655:		(unsigned char *)a->d, BN_num_bits(a), 
+    #####:  656:		(unsigned char *)qinv->d, BN_num_bits(qinv),
+    #####:  657:		(unsigned char *)dp->d, BN_num_bits(dp),
+    #####:  658:		(unsigned char *)p->d, BN_num_bits(p),
+    #####:  659:		(unsigned char *)dq->d, BN_num_bits(dq),
+    #####:  660:		(unsigned char *)q->d, BN_num_bits(q),
+    #####:  661:		(unsigned char *)r->d,  &y_len) != 0) {
+    #####:  662:		UBSECerr(UBSEC_F_UBSEC_MOD_EXP_CRT, UBSEC_R_REQUEST_FAILED);
+    #####:  663:                p_UBSEC_ubsec_close(fd);
+        -:  664:		return FAIL_TO_SOFTWARE;
+        -:  665:	}
+        -:  666:
+    #####:  667:	p_UBSEC_ubsec_close(fd);
+        -:  668:
+    #####:  669:	r->top = (BN_num_bits(p) + BN_num_bits(q) + BN_BITS2 - 1)/BN_BITS2;
+        -:  670:	return 1;
+        -:  671:}
+        -:  672:#endif
+        -:  673:
+        -:  674:#ifndef OPENSSL_NO_DSA
+        -:  675:#ifdef NOT_USED
+        -:  676:static int ubsec_dsa_mod_exp(DSA *dsa, BIGNUM *rr, BIGNUM *a1,
+        -:  677:		BIGNUM *p1, BIGNUM *a2, BIGNUM *p2, BIGNUM *m,
+        -:  678:		BN_CTX *ctx, BN_MONT_CTX *in_mont)
+        -:  679:	{
+        -:  680:	BIGNUM t;
+        -:  681:	int to_return = 0;
+        -:  682: 
+        -:  683:	BN_init(&t);
+        -:  684:	/* let rr = a1 ^ p1 mod m */
+        -:  685:	if (!ubsec_mod_exp(rr,a1,p1,m,ctx)) goto end;
+        -:  686:	/* let t = a2 ^ p2 mod m */
+        -:  687:	if (!ubsec_mod_exp(&t,a2,p2,m,ctx)) goto end;
+        -:  688:	/* let rr = rr * t mod m */
+        -:  689:	if (!BN_mod_mul(rr,rr,&t,m,ctx)) goto end;
+        -:  690:	to_return = 1;
+        -:  691:end:
+        -:  692:	BN_free(&t);
+        -:  693:	return to_return;
+        -:  694:	}
+        -:  695:
+        -:  696:static int ubsec_mod_exp_dsa(DSA *dsa, BIGNUM *r, BIGNUM *a,
+        -:  697:		const BIGNUM *p, const BIGNUM *m, BN_CTX *ctx,
+        -:  698:		BN_MONT_CTX *m_ctx)
+        -:  699:	{
+        -:  700:	return ubsec_mod_exp(r, a, p, m, ctx);
+        -:  701:	}
+        -:  702:#endif
+        -:  703:#endif
+        -:  704:
+        -:  705:#ifndef OPENSSL_NO_RSA
+        -:  706:
+        -:  707:/*
+        -:  708: * This function is aliased to mod_exp (with the mont stuff dropped).
+        -:  709: */
+    #####:  710:static int ubsec_mod_exp_mont(BIGNUM *r, const BIGNUM *a, const BIGNUM *p,
+        -:  711:		const BIGNUM *m, BN_CTX *ctx, BN_MONT_CTX *m_ctx)
+        -:  712:        {
+        -:  713:	int ret = 0;
+        -:  714:
+        -:  715: 	/* Do in software if the key is too large for the hardware. */
+    #####:  716:	if (BN_num_bits(m) > max_key_len)
+        -:  717:                {
+    #####:  718:		const RSA_METHOD *meth = RSA_PKCS1_SSLeay();
+    #####:  719:		ret = (*meth->bn_mod_exp)(r, a, p, m, ctx, m_ctx);
+        -:  720:                }
+        -:  721:        else
+        -:  722:                {
+    #####:  723:		ret = ubsec_mod_exp(r, a, p, m, ctx);
+        -:  724:                }
+        -:  725:	
+    #####:  726:	return ret;
+        -:  727:        }
+        -:  728:#endif
+        -:  729:
+        -:  730:#ifndef OPENSSL_NO_DH
+        -:  731:/* This function is aliased to mod_exp (with the dh and mont dropped). */
+    #####:  732:static int ubsec_mod_exp_dh(const DH *dh, BIGNUM *r, const BIGNUM *a,
+        -:  733:		const BIGNUM *p, const BIGNUM *m, BN_CTX *ctx,
+        -:  734:		BN_MONT_CTX *m_ctx)
+        -:  735:	{
+    #####:  736:	return ubsec_mod_exp(r, a, p, m, ctx);
+        -:  737:	}
+        -:  738:#endif
+        -:  739:
+        -:  740:#ifndef OPENSSL_NO_DSA
+    #####:  741:static DSA_SIG *ubsec_dsa_do_sign(const unsigned char *dgst, int dlen, DSA *dsa)
+        -:  742:	{
+        -:  743:	DSA_SIG *to_return = NULL;
+    #####:  744:	int s_len = 160, r_len = 160, d_len, fd;
+        -:  745:	BIGNUM m, *r=NULL, *s=NULL;
+        -:  746:
+    #####:  747:	BN_init(&m);
+        -:  748:
+    #####:  749:	s = BN_new();
+    #####:  750:	r = BN_new();
+    #####:  751:	if ((s == NULL) || (r==NULL))
+        -:  752:		goto err;
+        -:  753:
+    #####:  754:	d_len = p_UBSEC_ubsec_bytes_to_bits((unsigned char *)dgst, dlen);
+        -:  755:
+    #####:  756:        if(!bn_wexpand(r, (160+BN_BITS2-1)/BN_BITS2) ||
+    #####:  757:       	   (!bn_wexpand(s, (160+BN_BITS2-1)/BN_BITS2))) {
+    #####:  758:		UBSECerr(UBSEC_F_UBSEC_DSA_DO_SIGN, UBSEC_R_BN_EXPAND_FAIL);
+    #####:  759:		goto err;
+        -:  760:	}
+        -:  761:
+    #####:  762:	if (BN_bin2bn(dgst,dlen,&m) == NULL) {
+    #####:  763:		UBSECerr(UBSEC_F_UBSEC_DSA_DO_SIGN, UBSEC_R_BN_EXPAND_FAIL);
+    #####:  764:		goto err;
+        -:  765:	} 
+        -:  766:
+    #####:  767:	if ((fd = p_UBSEC_ubsec_open(UBSEC_KEY_DEVICE_NAME)) <= 0) {
+        -:  768:                const DSA_METHOD *meth;
+        -:  769:		fd = 0;
+    #####:  770:		UBSECerr(UBSEC_F_UBSEC_DSA_DO_SIGN, UBSEC_R_UNIT_FAILURE);
+    #####:  771:                meth = DSA_OpenSSL();
+    #####:  772:                to_return =  meth->dsa_do_sign(dgst, dlen, dsa);
+    #####:  773:		goto err;
+        -:  774:	}
+        -:  775:
+    #####:  776:	if (p_UBSEC_dsa_sign_ioctl(fd, 0, /* compute hash before signing */
+        -:  777:		(unsigned char *)dgst, d_len,
+        -:  778:		NULL, 0,  /* compute random value */
+    #####:  779:		(unsigned char *)dsa->p->d, BN_num_bits(dsa->p), 
+    #####:  780:		(unsigned char *)dsa->q->d, BN_num_bits(dsa->q),
+    #####:  781:		(unsigned char *)dsa->g->d, BN_num_bits(dsa->g),
+    #####:  782:		(unsigned char *)dsa->priv_key->d, BN_num_bits(dsa->priv_key),
+    #####:  783:		(unsigned char *)r->d, &r_len,
+    #####:  784:		(unsigned char *)s->d, &s_len ) != 0) {
+        -:  785:                const DSA_METHOD *meth;
+        -:  786:
+    #####:  787:		UBSECerr(UBSEC_F_UBSEC_DSA_DO_SIGN, UBSEC_R_REQUEST_FAILED);
+    #####:  788:                p_UBSEC_ubsec_close(fd);
+    #####:  789:                meth = DSA_OpenSSL();
+    #####:  790:                to_return = meth->dsa_do_sign(dgst, dlen, dsa);
+        -:  791:
+    #####:  792:		goto err;
+        -:  793:	}
+        -:  794:
+    #####:  795:	p_UBSEC_ubsec_close(fd);
+        -:  796:
+    #####:  797:	r->top = (160+BN_BITS2-1)/BN_BITS2;
+    #####:  798:	s->top = (160+BN_BITS2-1)/BN_BITS2;
+        -:  799:
+    #####:  800:	to_return = DSA_SIG_new();
+    #####:  801:	if(to_return == NULL) {
+    #####:  802:		UBSECerr(UBSEC_F_UBSEC_DSA_DO_SIGN, UBSEC_R_BN_EXPAND_FAIL);
+    #####:  803:		goto err;
+        -:  804:	}
+        -:  805:
+    #####:  806:	to_return->r = r;
+    #####:  807:	to_return->s = s;
+        -:  808:
+        -:  809:err:
+    #####:  810:	if (!to_return) {
+    #####:  811:		if (r) BN_free(r);
+    #####:  812:		if (s) BN_free(s);
+        -:  813:	}                                 
+    #####:  814:	BN_clear_free(&m);
+    #####:  815:	return to_return;
+        -:  816:}
+        -:  817:
+    #####:  818:static int ubsec_dsa_verify(const unsigned char *dgst, int dgst_len,
+        -:  819:                                DSA_SIG *sig, DSA *dsa)
+        -:  820:	{
+        -:  821:	int v_len, d_len;
+        -:  822:	int to_return = 0;
+        -:  823:	int fd;
+        -:  824:	BIGNUM v, *pv = &v;
+        -:  825:
+    #####:  826:	BN_init(&v);
+        -:  827:
+    #####:  828:	if(!bn_wexpand(pv, dsa->p->top)) {
+    #####:  829:		UBSECerr(UBSEC_F_UBSEC_DSA_VERIFY, UBSEC_R_BN_EXPAND_FAIL);
+    #####:  830:		goto err;
+        -:  831:	}
+        -:  832:
+    #####:  833:	v_len = BN_num_bits(dsa->p);
+        -:  834:
+    #####:  835:	d_len = p_UBSEC_ubsec_bytes_to_bits((unsigned char *)dgst, dgst_len);
+        -:  836:
+    #####:  837:	if ((fd = p_UBSEC_ubsec_open(UBSEC_KEY_DEVICE_NAME)) <= 0) {
+        -:  838:                const DSA_METHOD *meth;
+        -:  839:		fd = 0;
+    #####:  840:		UBSECerr(UBSEC_F_UBSEC_DSA_VERIFY, UBSEC_R_UNIT_FAILURE);
+    #####:  841:                meth = DSA_OpenSSL();
+    #####:  842:                to_return = meth->dsa_do_verify(dgst, dgst_len, sig, dsa);
+    #####:  843:		goto err;
+        -:  844:	}
+        -:  845:
+    #####:  846:	if (p_UBSEC_dsa_verify_ioctl(fd, 0, /* compute hash before signing */
+        -:  847:		(unsigned char *)dgst, d_len,
+    #####:  848:		(unsigned char *)dsa->p->d, BN_num_bits(dsa->p), 
+    #####:  849:		(unsigned char *)dsa->q->d, BN_num_bits(dsa->q),
+    #####:  850:		(unsigned char *)dsa->g->d, BN_num_bits(dsa->g),
+    #####:  851:		(unsigned char *)dsa->pub_key->d, BN_num_bits(dsa->pub_key),
+    #####:  852:		(unsigned char *)sig->r->d, BN_num_bits(sig->r),
+    #####:  853:		(unsigned char *)sig->s->d, BN_num_bits(sig->s),
+    #####:  854:		(unsigned char *)v.d, &v_len) != 0) {
+        -:  855:                const DSA_METHOD *meth;
+    #####:  856:		UBSECerr(UBSEC_F_UBSEC_DSA_VERIFY, UBSEC_R_REQUEST_FAILED);
+    #####:  857:                p_UBSEC_ubsec_close(fd);
+        -:  858:
+    #####:  859:                meth = DSA_OpenSSL();
+    #####:  860:                to_return = meth->dsa_do_verify(dgst, dgst_len, sig, dsa);
+        -:  861:
+    #####:  862:		goto err;
+        -:  863:	}
+        -:  864:
+    #####:  865:	p_UBSEC_ubsec_close(fd);
+        -:  866:
+        -:  867:	to_return = 1;
+        -:  868:err:
+    #####:  869:	BN_clear_free(&v);
+    #####:  870:	return to_return;
+        -:  871:	}
+        -:  872:#endif
+        -:  873:
+        -:  874:#ifndef OPENSSL_NO_DH
+    #####:  875:static int ubsec_dh_compute_key(unsigned char *key,const BIGNUM *pub_key,DH *dh)
+        -:  876:        {
+        -:  877:        int      ret      = -1,
+        -:  878:                 k_len,
+        -:  879:                 fd;
+        -:  880:
+    #####:  881:        k_len = BN_num_bits(dh->p);
+        -:  882:
+    #####:  883:        if ((fd = p_UBSEC_ubsec_open(UBSEC_KEY_DEVICE_NAME)) <= 0)
+        -:  884:                {
+        -:  885:                const DH_METHOD *meth;
+    #####:  886:                UBSECerr(UBSEC_F_UBSEC_DH_COMPUTE_KEY, UBSEC_R_UNIT_FAILURE);
+    #####:  887:                meth = DH_OpenSSL();
+    #####:  888:                ret = meth->compute_key(key, pub_key, dh);
+    #####:  889:                goto err;
+        -:  890:                }
+        -:  891:
+    #####:  892:        if (p_UBSEC_diffie_hellman_agree_ioctl(fd,
+    #####:  893:                                               (unsigned char *)dh->priv_key->d, BN_num_bits(dh->priv_key),
+    #####:  894:                                               (unsigned char *)pub_key->d, BN_num_bits(pub_key),
+    #####:  895:                                               (unsigned char *)dh->p->d, BN_num_bits(dh->p),
+        -:  896:                                               key, &k_len) != 0)
+        -:  897:                {
+        -:  898:                /* Hardware's a no go, failover to software */
+        -:  899:                const DH_METHOD *meth;
+    #####:  900:                UBSECerr(UBSEC_F_UBSEC_DH_COMPUTE_KEY, UBSEC_R_REQUEST_FAILED);
+    #####:  901:                p_UBSEC_ubsec_close(fd);
+        -:  902:
+    #####:  903:                meth = DH_OpenSSL();
+    #####:  904:                ret = meth->compute_key(key, pub_key, dh);
+        -:  905:
+    #####:  906:                goto err;
+        -:  907:                }
+        -:  908:
+    #####:  909:        p_UBSEC_ubsec_close(fd);
+        -:  910:
+    #####:  911:        ret = p_UBSEC_ubsec_bits_to_bytes(k_len);
+        -:  912:err:
+    #####:  913:        return ret;
+        -:  914:        }
+        -:  915:
+    #####:  916:static int ubsec_dh_generate_key(DH *dh)
+        -:  917:        {
+        -:  918:        int      ret               = 0,
+        -:  919:                 random_bits       = 0,
+    #####:  920:                 pub_key_len       = 0,
+    #####:  921:                 priv_key_len      = 0,
+        -:  922:                 fd;
+        -:  923:        BIGNUM   *pub_key          = NULL;
+        -:  924:        BIGNUM   *priv_key         = NULL;
+        -:  925:
+        -:  926:        /* 
+        -:  927:         *  How many bits should Random x be? dh_key.c
+        -:  928:         *  sets the range from 0 to num_bits(modulus) ???
+        -:  929:         */
+        -:  930:
+    #####:  931:        if (dh->priv_key == NULL)
+        -:  932:                {
+    #####:  933:                priv_key = BN_new();
+    #####:  934:                if (priv_key == NULL) goto err;
+    #####:  935:                priv_key_len = BN_num_bits(dh->p);
+    #####:  936:                if(bn_wexpand(priv_key, dh->p->top) == NULL) goto err;
+        -:  937:                do
+    #####:  938:                        if (!BN_rand_range(priv_key, dh->p)) goto err;
+    #####:  939:                while (BN_is_zero(priv_key));
+    #####:  940:                random_bits = BN_num_bits(priv_key);
+        -:  941:                }
+        -:  942:        else
+        -:  943:                {
+        -:  944:                priv_key = dh->priv_key;
+        -:  945:                }
+        -:  946:
+    #####:  947:        if (dh->pub_key == NULL)
+        -:  948:                {
+    #####:  949:                pub_key = BN_new();
+    #####:  950:                pub_key_len = BN_num_bits(dh->p);
+    #####:  951:                if(bn_wexpand(pub_key, dh->p->top) == NULL) goto err;
+    #####:  952:                if(pub_key == NULL) goto err;
+        -:  953:                }
+        -:  954:        else
+        -:  955:                {
+        -:  956:                pub_key = dh->pub_key;
+        -:  957:                }
+        -:  958:
+    #####:  959:        if ((fd = p_UBSEC_ubsec_open(UBSEC_KEY_DEVICE_NAME)) <= 0)
+        -:  960:                {
+        -:  961:                const DH_METHOD *meth;
+    #####:  962:                UBSECerr(UBSEC_F_UBSEC_DH_GENERATE_KEY, UBSEC_R_UNIT_FAILURE);
+    #####:  963:                meth = DH_OpenSSL();
+    #####:  964:                ret = meth->generate_key(dh);
+    #####:  965:                goto err;
+        -:  966:                }
+        -:  967:
+    #####:  968:        if (p_UBSEC_diffie_hellman_generate_ioctl(fd,
+    #####:  969:                                                  (unsigned char *)priv_key->d, &priv_key_len,
+    #####:  970:                                                  (unsigned char *)pub_key->d,  &pub_key_len,
+    #####:  971:                                                  (unsigned char *)dh->g->d, BN_num_bits(dh->g),
+    #####:  972:                                                  (unsigned char *)dh->p->d, BN_num_bits(dh->p),
+        -:  973:                                                  0, 0, random_bits) != 0)
+        -:  974:                {
+        -:  975:                /* Hardware's a no go, failover to software */
+        -:  976:                const DH_METHOD *meth;
+        -:  977:
+    #####:  978:                UBSECerr(UBSEC_F_UBSEC_DH_GENERATE_KEY, UBSEC_R_REQUEST_FAILED);
+    #####:  979:                p_UBSEC_ubsec_close(fd);
+        -:  980:
+    #####:  981:                meth = DH_OpenSSL();
+    #####:  982:                ret = meth->generate_key(dh);
+        -:  983:
+    #####:  984:                goto err;
+        -:  985:                }
+        -:  986:
+    #####:  987:        p_UBSEC_ubsec_close(fd);
+        -:  988:
+    #####:  989:        dh->pub_key = pub_key;
+    #####:  990:        dh->pub_key->top = (pub_key_len + BN_BITS2-1) / BN_BITS2;
+    #####:  991:        dh->priv_key = priv_key;
+    #####:  992:        dh->priv_key->top = (priv_key_len + BN_BITS2-1) / BN_BITS2;
+        -:  993:
+        -:  994:        ret = 1;
+        -:  995:err:
+    #####:  996:        return ret;
+        -:  997:        }
+        -:  998:#endif
+        -:  999:
+        -: 1000:#ifdef NOT_USED
+        -: 1001:static int ubsec_rand_bytes(unsigned char * buf,
+        -: 1002:                            int num)
+        -: 1003:        {
+        -: 1004:        int      ret      = 0,
+        -: 1005:                 fd;
+        -: 1006:
+        -: 1007:        if ((fd = p_UBSEC_ubsec_open(UBSEC_KEY_DEVICE_NAME)) <= 0)
+        -: 1008:                {
+        -: 1009:                const RAND_METHOD *meth;
+        -: 1010:                UBSECerr(UBSEC_F_UBSEC_RAND_BYTES, UBSEC_R_UNIT_FAILURE);
+        -: 1011:                num = p_UBSEC_ubsec_bits_to_bytes(num);
+        -: 1012:                meth = RAND_SSLeay();
+        -: 1013:                meth->seed(buf, num);
+        -: 1014:                ret = meth->bytes(buf, num);
+        -: 1015:                goto err;
+        -: 1016:                }
+        -: 1017:
+        -: 1018:        num *= 8; /* bytes to bits */
+        -: 1019:
+        -: 1020:        if (p_UBSEC_rng_ioctl(fd,
+        -: 1021:                              UBSEC_RNG_DIRECT,
+        -: 1022:                              buf,
+        -: 1023:                              &num) != 0)
+        -: 1024:                {
+        -: 1025:                /* Hardware's a no go, failover to software */
+        -: 1026:                const RAND_METHOD *meth;
+        -: 1027:
+        -: 1028:                UBSECerr(UBSEC_F_UBSEC_RAND_BYTES, UBSEC_R_REQUEST_FAILED);
+        -: 1029:                p_UBSEC_ubsec_close(fd);
+        -: 1030:
+        -: 1031:                num = p_UBSEC_ubsec_bits_to_bytes(num);
+        -: 1032:                meth = RAND_SSLeay();
+        -: 1033:                meth->seed(buf, num);
+        -: 1034:                ret = meth->bytes(buf, num);
+        -: 1035:
+        -: 1036:                goto err;
+        -: 1037:                }
+        -: 1038:
+        -: 1039:        p_UBSEC_ubsec_close(fd);
+        -: 1040:
+        -: 1041:        ret = 1;
+        -: 1042:err:
+        -: 1043:        return(ret);
+        -: 1044:        }
+        -: 1045:
+        -: 1046:
+        -: 1047:static int ubsec_rand_status(void)
+        -: 1048:	{
+        -: 1049:	return 0;
+        -: 1050:	}
+        -: 1051:#endif
+        -: 1052:
+        -: 1053:/* This stuff is needed if this ENGINE is being compiled into a self-contained
+        -: 1054: * shared-library. */
+        -: 1055:#ifndef OPENSSL_NO_DYNAMIC_ENGINE
+        -: 1056:static int bind_fn(ENGINE *e, const char *id)
+        -: 1057:	{
+        -: 1058:	if(id && (strcmp(id, engine_ubsec_id) != 0))
+        -: 1059:		return 0;
+        -: 1060:	if(!bind_helper(e))
+        -: 1061:		return 0;
+        -: 1062:	return 1;
+        -: 1063:	}
+        -: 1064:IMPLEMENT_DYNAMIC_CHECK_FN()
+        -: 1065:IMPLEMENT_DYNAMIC_BIND_FN(bind_fn)
+        -: 1066:#endif /* OPENSSL_NO_DYNAMIC_ENGINE */
+        -: 1067:
+        -: 1068:#endif /* !OPENSSL_NO_HW_UBSEC */
+        -: 1069:#endif /* !OPENSSL_NO_HW */

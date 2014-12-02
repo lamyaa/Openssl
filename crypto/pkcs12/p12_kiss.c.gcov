@@ -1,0 +1,307 @@
+        -:    0:Source:p12_kiss.c
+        -:    0:Graph:p12_kiss.gcno
+        -:    0:Data:p12_kiss.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* p12_kiss.c */
+        -:    2:/* Written by Dr Stephen N Henson (steve@openssl.org) for the OpenSSL
+        -:    3: * project 1999.
+        -:    4: */
+        -:    5:/* ====================================================================
+        -:    6: * Copyright (c) 1999 The OpenSSL Project.  All rights reserved.
+        -:    7: *
+        -:    8: * Redistribution and use in source and binary forms, with or without
+        -:    9: * modification, are permitted provided that the following conditions
+        -:   10: * are met:
+        -:   11: *
+        -:   12: * 1. Redistributions of source code must retain the above copyright
+        -:   13: *    notice, this list of conditions and the following disclaimer. 
+        -:   14: *
+        -:   15: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   16: *    notice, this list of conditions and the following disclaimer in
+        -:   17: *    the documentation and/or other materials provided with the
+        -:   18: *    distribution.
+        -:   19: *
+        -:   20: * 3. All advertising materials mentioning features or use of this
+        -:   21: *    software must display the following acknowledgment:
+        -:   22: *    "This product includes software developed by the OpenSSL Project
+        -:   23: *    for use in the OpenSSL Toolkit. (http://www.OpenSSL.org/)"
+        -:   24: *
+        -:   25: * 4. The names "OpenSSL Toolkit" and "OpenSSL Project" must not be used to
+        -:   26: *    endorse or promote products derived from this software without
+        -:   27: *    prior written permission. For written permission, please contact
+        -:   28: *    licensing@OpenSSL.org.
+        -:   29: *
+        -:   30: * 5. Products derived from this software may not be called "OpenSSL"
+        -:   31: *    nor may "OpenSSL" appear in their names without prior written
+        -:   32: *    permission of the OpenSSL Project.
+        -:   33: *
+        -:   34: * 6. Redistributions of any form whatsoever must retain the following
+        -:   35: *    acknowledgment:
+        -:   36: *    "This product includes software developed by the OpenSSL Project
+        -:   37: *    for use in the OpenSSL Toolkit (http://www.OpenSSL.org/)"
+        -:   38: *
+        -:   39: * THIS SOFTWARE IS PROVIDED BY THE OpenSSL PROJECT ``AS IS'' AND ANY
+        -:   40: * EXPRESSED OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   41: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+        -:   42: * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE OpenSSL PROJECT OR
+        -:   43: * ITS CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+        -:   44: * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+        -:   45: * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+        -:   46: * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   47: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+        -:   48: * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+        -:   49: * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+        -:   50: * OF THE POSSIBILITY OF SUCH DAMAGE.
+        -:   51: * ====================================================================
+        -:   52: *
+        -:   53: * This product includes cryptographic software written by Eric Young
+        -:   54: * (eay@cryptsoft.com).  This product includes software written by Tim
+        -:   55: * Hudson (tjh@cryptsoft.com).
+        -:   56: *
+        -:   57: */
+        -:   58:
+        -:   59:#include <stdio.h>
+        -:   60:#include "cryptlib.h"
+        -:   61:#include <openssl/pkcs12.h>
+        -:   62:
+        -:   63:/* Simplified PKCS#12 routines */
+        -:   64:
+        -:   65:static int parse_pk12( PKCS12 *p12, const char *pass, int passlen,
+        -:   66:		EVP_PKEY **pkey, STACK_OF(X509) *ocerts);
+        -:   67:
+        -:   68:static int parse_bags( STACK_OF(PKCS12_SAFEBAG) *bags, const char *pass,
+        -:   69:		       int passlen, EVP_PKEY **pkey, STACK_OF(X509) *ocerts);
+        -:   70:
+        -:   71:static int parse_bag( PKCS12_SAFEBAG *bag, const char *pass, int passlen,
+        -:   72:			EVP_PKEY **pkey, STACK_OF(X509) *ocerts);
+        -:   73:
+        -:   74:/* Parse and decrypt a PKCS#12 structure returning user key, user cert
+        -:   75: * and other (CA) certs. Note either ca should be NULL, *ca should be NULL,
+        -:   76: * or it should point to a valid STACK structure. pkey and cert can be
+        -:   77: * passed unitialised.
+        -:   78: */
+        -:   79:
+    #####:   80:int PKCS12_parse(PKCS12 *p12, const char *pass, EVP_PKEY **pkey, X509 **cert,
+        -:   81:	     STACK_OF(X509) **ca)
+        -:   82:{
+        -:   83:	STACK_OF(X509) *ocerts = NULL;
+        -:   84:	X509 *x = NULL;
+        -:   85:	/* Check for NULL PKCS12 structure */
+        -:   86:
+    #####:   87:	if(!p12)
+        -:   88:		{
+    #####:   89:		PKCS12err(PKCS12_F_PKCS12_PARSE,PKCS12_R_INVALID_NULL_PKCS12_POINTER);
+    #####:   90:		return 0;
+        -:   91:		}
+        -:   92:
+    #####:   93:	if(pkey)
+    #####:   94:		*pkey = NULL;
+    #####:   95:	if(cert)
+    #####:   96:		*cert = NULL;
+        -:   97:
+        -:   98:	/* Check the mac */
+        -:   99:
+        -:  100:	/* If password is zero length or NULL then try verifying both cases
+        -:  101:	 * to determine which password is correct. The reason for this is that
+        -:  102:	 * under PKCS#12 password based encryption no password and a zero length
+        -:  103:	 * password are two different things...
+        -:  104:	 */
+        -:  105:
+    #####:  106:	if(!pass || !*pass) {
+    #####:  107:		if(PKCS12_verify_mac(p12, NULL, 0)) pass = NULL;
+    #####:  108:		else if(PKCS12_verify_mac(p12, "", 0)) pass = "";
+        -:  109:		else {
+    #####:  110:			PKCS12err(PKCS12_F_PKCS12_PARSE,PKCS12_R_MAC_VERIFY_FAILURE);
+    #####:  111:			goto err;
+        -:  112:		}
+    #####:  113:	} else if (!PKCS12_verify_mac(p12, pass, -1)) {
+    #####:  114:		PKCS12err(PKCS12_F_PKCS12_PARSE,PKCS12_R_MAC_VERIFY_FAILURE);
+    #####:  115:		goto err;
+        -:  116:	}
+        -:  117:
+        -:  118:	/* Allocate stack for other certificates */
+    #####:  119:	ocerts = sk_X509_new_null();
+        -:  120:
+    #####:  121:	if (!ocerts)
+        -:  122:		{
+    #####:  123:		PKCS12err(PKCS12_F_PKCS12_PARSE,ERR_R_MALLOC_FAILURE);
+    #####:  124:		return 0;
+        -:  125:		}
+        -:  126:
+    #####:  127:	if (!parse_pk12 (p12, pass, -1, pkey, ocerts))
+        -:  128:		{
+    #####:  129:		PKCS12err(PKCS12_F_PKCS12_PARSE,PKCS12_R_PARSE_ERROR);
+    #####:  130:		goto err;
+        -:  131:		}
+        -:  132:
+    #####:  133:	while ((x = sk_X509_pop(ocerts)))
+        -:  134:		{
+    #####:  135:		if (pkey && *pkey && cert && !*cert)
+        -:  136:			{
+    #####:  137:			if (X509_check_private_key(x, *pkey))
+        -:  138:				{
+    #####:  139:				*cert = x;
+        -:  140:				x = NULL;
+        -:  141:				}
+        -:  142:			}
+        -:  143:
+    #####:  144:		if (ca && x)
+        -:  145:			{
+    #####:  146:			if (!*ca)
+    #####:  147:				*ca = sk_X509_new_null();
+    #####:  148:			if (!*ca)
+        -:  149:				goto err;
+    #####:  150:			if (!sk_X509_push(*ca, x))
+        -:  151:				goto err;
+        -:  152:			x = NULL;
+        -:  153:			}
+    #####:  154:		if (x)
+    #####:  155:			X509_free(x);
+        -:  156:		}
+        -:  157:
+    #####:  158:	if (ocerts)
+    #####:  159:		sk_X509_pop_free(ocerts, X509_free);
+        -:  160:
+        -:  161:	return 1;
+        -:  162:
+        -:  163: err:
+        -:  164:
+    #####:  165:	if (pkey && *pkey)
+    #####:  166:		EVP_PKEY_free(*pkey);
+    #####:  167:	if (cert && *cert)
+    #####:  168:		X509_free(*cert);
+    #####:  169:	if (x)
+    #####:  170:		X509_free(x);
+    #####:  171:	if (ocerts)
+    #####:  172:		sk_X509_pop_free(ocerts, X509_free);
+        -:  173:	return 0;
+        -:  174:
+        -:  175:}
+        -:  176:
+        -:  177:/* Parse the outer PKCS#12 structure */
+        -:  178:
+    #####:  179:static int parse_pk12(PKCS12 *p12, const char *pass, int passlen,
+        -:  180:	     EVP_PKEY **pkey, STACK_OF(X509) *ocerts)
+        -:  181:{
+        -:  182:	STACK_OF(PKCS7) *asafes;
+        -:  183:	STACK_OF(PKCS12_SAFEBAG) *bags;
+        -:  184:	int i, bagnid;
+        -:  185:	PKCS7 *p7;
+        -:  186:
+    #####:  187:	if (!(asafes = PKCS12_unpack_authsafes (p12))) return 0;
+    #####:  188:	for (i = 0; i < sk_PKCS7_num (asafes); i++) {
+    #####:  189:		p7 = sk_PKCS7_value (asafes, i);
+    #####:  190:		bagnid = OBJ_obj2nid (p7->type);
+    #####:  191:		if (bagnid == NID_pkcs7_data) {
+    #####:  192:			bags = PKCS12_unpack_p7data(p7);
+    #####:  193:		} else if (bagnid == NID_pkcs7_encrypted) {
+    #####:  194:			bags = PKCS12_unpack_p7encdata(p7, pass, passlen);
+    #####:  195:		} else continue;
+    #####:  196:		if (!bags) {
+    #####:  197:			sk_PKCS7_pop_free(asafes, PKCS7_free);
+    #####:  198:			return 0;
+        -:  199:		}
+    #####:  200:	    	if (!parse_bags(bags, pass, passlen, pkey, ocerts)) {
+    #####:  201:			sk_PKCS12_SAFEBAG_pop_free(bags, PKCS12_SAFEBAG_free);
+    #####:  202:			sk_PKCS7_pop_free(asafes, PKCS7_free);
+    #####:  203:			return 0;
+        -:  204:		}
+    #####:  205:		sk_PKCS12_SAFEBAG_pop_free(bags, PKCS12_SAFEBAG_free);
+        -:  206:	}
+    #####:  207:	sk_PKCS7_pop_free(asafes, PKCS7_free);
+    #####:  208:	return 1;
+        -:  209:}
+        -:  210:
+        -:  211:
+    #####:  212:static int parse_bags(STACK_OF(PKCS12_SAFEBAG) *bags, const char *pass,
+        -:  213:		      int passlen, EVP_PKEY **pkey, STACK_OF(X509) *ocerts)
+        -:  214:{
+        -:  215:	int i;
+    #####:  216:	for (i = 0; i < sk_PKCS12_SAFEBAG_num(bags); i++) {
+    #####:  217:		if (!parse_bag(sk_PKCS12_SAFEBAG_value (bags, i),
+        -:  218:				 pass, passlen, pkey, ocerts))
+        -:  219:			return 0;
+        -:  220:	}
+        -:  221:	return 1;
+        -:  222:}
+        -:  223:
+    #####:  224:static int parse_bag(PKCS12_SAFEBAG *bag, const char *pass, int passlen,
+        -:  225:		     EVP_PKEY **pkey, STACK_OF(X509) *ocerts)
+        -:  226:{
+        -:  227:	PKCS8_PRIV_KEY_INFO *p8;
+        -:  228:	X509 *x509;
+        -:  229:	ASN1_TYPE *attrib;
+        -:  230:	ASN1_BMPSTRING *fname = NULL;
+        -:  231:	ASN1_OCTET_STRING *lkid = NULL;
+        -:  232:
+    #####:  233:	if ((attrib = PKCS12_get_attr (bag, NID_friendlyName)))
+    #####:  234:		fname = attrib->value.bmpstring;
+        -:  235:
+    #####:  236:	if ((attrib = PKCS12_get_attr (bag, NID_localKeyID)))
+    #####:  237:		lkid = attrib->value.octet_string;
+        -:  238:
+    #####:  239:	switch (M_PKCS12_bag_type(bag))
+        -:  240:	{
+        -:  241:	case NID_keyBag:
+    #####:  242:		if (!pkey || *pkey)
+        -:  243:			return 1;	
+    #####:  244:		if (!(*pkey = EVP_PKCS82PKEY(bag->value.keybag)))
+        -:  245:			return 0;
+        -:  246:	break;
+        -:  247:
+        -:  248:	case NID_pkcs8ShroudedKeyBag:
+    #####:  249:		if (!pkey || *pkey)
+        -:  250:			return 1;	
+    #####:  251:		if (!(p8 = PKCS12_decrypt_skey(bag, pass, passlen)))
+        -:  252:				return 0;
+    #####:  253:		*pkey = EVP_PKCS82PKEY(p8);
+    #####:  254:		PKCS8_PRIV_KEY_INFO_free(p8);
+    #####:  255:		if (!(*pkey)) return 0;
+        -:  256:	break;
+        -:  257:
+        -:  258:	case NID_certBag:
+    #####:  259:		if (M_PKCS12_cert_bag_type(bag) != NID_x509Certificate )
+        -:  260:			return 1;
+    #####:  261:		if (!(x509 = PKCS12_certbag2x509(bag)))
+        -:  262:			return 0;
+    #####:  263:		if(lkid && !X509_keyid_set1(x509, lkid->data, lkid->length))
+        -:  264:			{
+    #####:  265:			X509_free(x509);
+    #####:  266:			return 0;
+        -:  267:			}
+    #####:  268:		if(fname) {
+        -:  269:			int len, r;
+        -:  270:			unsigned char *data;
+    #####:  271:			len = ASN1_STRING_to_UTF8(&data, fname);
+    #####:  272:			if(len > 0) {
+    #####:  273:				r = X509_alias_set1(x509, data, len);
+    #####:  274:				OPENSSL_free(data);
+    #####:  275:				if (!r)
+        -:  276:					{
+    #####:  277:					X509_free(x509);
+    #####:  278:					return 0;
+        -:  279:					}
+        -:  280:			}
+        -:  281:		}
+        -:  282:
+    #####:  283:		if(!sk_X509_push(ocerts, x509))
+        -:  284:			{
+    #####:  285:			X509_free(x509);
+    #####:  286:			return 0;
+        -:  287:			}
+        -:  288:
+        -:  289:	break;
+        -:  290:
+        -:  291:	case NID_safeContentsBag:
+    #####:  292:		return parse_bags(bag->value.safes, pass, passlen,
+        -:  293:			 		pkey, ocerts);
+        -:  294:	break;
+        -:  295:
+        -:  296:	default:
+        -:  297:		return 1;
+        -:  298:	break;
+        -:  299:	}
+        -:  300:	return 1;
+        -:  301:}
+        -:  302:

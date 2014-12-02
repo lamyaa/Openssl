@@ -1,0 +1,2847 @@
+        -:    0:Source:speed.c
+        -:    0:Graph:speed.gcno
+        -:    0:Data:speed.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* apps/speed.c -*- mode:C; c-file-style: "eay" -*- */
+        -:    2:/* Copyright (C) 1995-1998 Eric Young (eay@cryptsoft.com)
+        -:    3: * All rights reserved.
+        -:    4: *
+        -:    5: * This package is an SSL implementation written
+        -:    6: * by Eric Young (eay@cryptsoft.com).
+        -:    7: * The implementation was written so as to conform with Netscapes SSL.
+        -:    8: * 
+        -:    9: * This library is free for commercial and non-commercial use as long as
+        -:   10: * the following conditions are aheared to.  The following conditions
+        -:   11: * apply to all code found in this distribution, be it the RC4, RSA,
+        -:   12: * lhash, DES, etc., code; not just the SSL code.  The SSL documentation
+        -:   13: * included with this distribution is covered by the same copyright terms
+        -:   14: * except that the holder is Tim Hudson (tjh@cryptsoft.com).
+        -:   15: * 
+        -:   16: * Copyright remains Eric Young's, and as such any Copyright notices in
+        -:   17: * the code are not to be removed.
+        -:   18: * If this package is used in a product, Eric Young should be given attribution
+        -:   19: * as the author of the parts of the library used.
+        -:   20: * This can be in the form of a textual message at program startup or
+        -:   21: * in documentation (online or textual) provided with the package.
+        -:   22: * 
+        -:   23: * Redistribution and use in source and binary forms, with or without
+        -:   24: * modification, are permitted provided that the following conditions
+        -:   25: * are met:
+        -:   26: * 1. Redistributions of source code must retain the copyright
+        -:   27: *    notice, this list of conditions and the following disclaimer.
+        -:   28: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   29: *    notice, this list of conditions and the following disclaimer in the
+        -:   30: *    documentation and/or other materials provided with the distribution.
+        -:   31: * 3. All advertising materials mentioning features or use of this software
+        -:   32: *    must display the following acknowledgement:
+        -:   33: *    "This product includes cryptographic software written by
+        -:   34: *     Eric Young (eay@cryptsoft.com)"
+        -:   35: *    The word 'cryptographic' can be left out if the rouines from the library
+        -:   36: *    being used are not cryptographic related :-).
+        -:   37: * 4. If you include any Windows specific code (or a derivative thereof) from 
+        -:   38: *    the apps directory (application code) you must include an acknowledgement:
+        -:   39: *    "This product includes software written by Tim Hudson (tjh@cryptsoft.com)"
+        -:   40: * 
+        -:   41: * THIS SOFTWARE IS PROVIDED BY ERIC YOUNG ``AS IS'' AND
+        -:   42: * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   43: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+        -:   44: * ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+        -:   45: * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+        -:   46: * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+        -:   47: * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   48: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+        -:   49: * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+        -:   50: * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+        -:   51: * SUCH DAMAGE.
+        -:   52: * 
+        -:   53: * The licence and distribution terms for any publically available version or
+        -:   54: * derivative of this code cannot be changed.  i.e. this code cannot simply be
+        -:   55: * copied and put under another distribution licence
+        -:   56: * [including the GNU Public Licence.]
+        -:   57: */
+        -:   58:/* ====================================================================
+        -:   59: * Copyright 2002 Sun Microsystems, Inc. ALL RIGHTS RESERVED.
+        -:   60: *
+        -:   61: * Portions of the attached software ("Contribution") are developed by 
+        -:   62: * SUN MICROSYSTEMS, INC., and are contributed to the OpenSSL project.
+        -:   63: *
+        -:   64: * The Contribution is licensed pursuant to the OpenSSL open source
+        -:   65: * license provided above.
+        -:   66: *
+        -:   67: * The ECDH and ECDSA speed test software is originally written by 
+        -:   68: * Sumit Gupta of Sun Microsystems Laboratories.
+        -:   69: *
+        -:   70: */
+        -:   71:
+        -:   72:/* most of this code has been pilfered from my libdes speed.c program */
+        -:   73:
+        -:   74:#ifndef OPENSSL_NO_SPEED
+        -:   75:
+        -:   76:#undef SECONDS
+        -:   77:#define SECONDS		3	
+        -:   78:#define RSA_SECONDS	10
+        -:   79:#define DSA_SECONDS	10
+        -:   80:#define ECDSA_SECONDS   10
+        -:   81:#define ECDH_SECONDS    10
+        -:   82:
+        -:   83:/* 11-Sep-92 Andrew Daviel   Support for Silicon Graphics IRIX added */
+        -:   84:/* 06-Apr-92 Luke Brennan    Support for VMS and add extra signal calls */
+        -:   85:
+        -:   86:#undef PROG
+        -:   87:#define PROG speed_main
+        -:   88:
+        -:   89:#include <stdio.h>
+        -:   90:#include <stdlib.h>
+        -:   91:
+        -:   92:#include <string.h>
+        -:   93:#include <math.h>
+        -:   94:#include "apps.h"
+        -:   95:#ifdef OPENSSL_NO_STDIO
+        -:   96:#define APPS_WIN16
+        -:   97:#endif
+        -:   98:#include <openssl/crypto.h>
+        -:   99:#include <openssl/rand.h>
+        -:  100:#include <openssl/err.h>
+        -:  101:#include <openssl/evp.h>
+        -:  102:#include <openssl/objects.h>
+        -:  103:#if !defined(OPENSSL_SYS_MSDOS)
+        -:  104:#include OPENSSL_UNISTD
+        -:  105:#endif
+        -:  106:
+        -:  107:#ifndef OPENSSL_SYS_NETWARE
+        -:  108:#include <signal.h>
+        -:  109:#endif
+        -:  110:
+        -:  111:#if defined(_WIN32) || defined(__CYGWIN__)
+        -:  112:#include <windows.h>
+        -:  113:# if defined(__CYGWIN__) && !defined(_WIN32)
+        -:  114:  /* <windows.h> should define _WIN32, which normally is mutually
+        -:  115:   * exclusive with __CYGWIN__, but if it didn't... */
+        -:  116:#  define _WIN32
+        -:  117:  /* this is done because Cygwin alarm() fails sometimes. */
+        -:  118:# endif
+        -:  119:#endif
+        -:  120:
+        -:  121:#include <openssl/bn.h>
+        -:  122:#ifndef OPENSSL_NO_DES
+        -:  123:#include <openssl/des.h>
+        -:  124:#endif
+        -:  125:#ifndef OPENSSL_NO_AES
+        -:  126:#include <openssl/aes.h>
+        -:  127:#endif
+        -:  128:#ifndef OPENSSL_NO_CAMELLIA
+        -:  129:#include <openssl/camellia.h>
+        -:  130:#endif
+        -:  131:#ifndef OPENSSL_NO_MD2
+        -:  132:#include <openssl/md2.h>
+        -:  133:#endif
+        -:  134:#ifndef OPENSSL_NO_MDC2
+        -:  135:#include <openssl/mdc2.h>
+        -:  136:#endif
+        -:  137:#ifndef OPENSSL_NO_MD4
+        -:  138:#include <openssl/md4.h>
+        -:  139:#endif
+        -:  140:#ifndef OPENSSL_NO_MD5
+        -:  141:#include <openssl/md5.h>
+        -:  142:#endif
+        -:  143:#ifndef OPENSSL_NO_HMAC
+        -:  144:#include <openssl/hmac.h>
+        -:  145:#endif
+        -:  146:#include <openssl/evp.h>
+        -:  147:#ifndef OPENSSL_NO_SHA
+        -:  148:#include <openssl/sha.h>
+        -:  149:#endif
+        -:  150:#ifndef OPENSSL_NO_RIPEMD
+        -:  151:#include <openssl/ripemd.h>
+        -:  152:#endif
+        -:  153:#ifndef OPENSSL_NO_WHIRLPOOL
+        -:  154:#include <openssl/whrlpool.h>
+        -:  155:#endif
+        -:  156:#ifndef OPENSSL_NO_RC4
+        -:  157:#include <openssl/rc4.h>
+        -:  158:#endif
+        -:  159:#ifndef OPENSSL_NO_RC5
+        -:  160:#include <openssl/rc5.h>
+        -:  161:#endif
+        -:  162:#ifndef OPENSSL_NO_RC2
+        -:  163:#include <openssl/rc2.h>
+        -:  164:#endif
+        -:  165:#ifndef OPENSSL_NO_IDEA
+        -:  166:#include <openssl/idea.h>
+        -:  167:#endif
+        -:  168:#ifndef OPENSSL_NO_SEED
+        -:  169:#include <openssl/seed.h>
+        -:  170:#endif
+        -:  171:#ifndef OPENSSL_NO_BF
+        -:  172:#include <openssl/blowfish.h>
+        -:  173:#endif
+        -:  174:#ifndef OPENSSL_NO_CAST
+        -:  175:#include <openssl/cast.h>
+        -:  176:#endif
+        -:  177:#ifndef OPENSSL_NO_RSA
+        -:  178:#include <openssl/rsa.h>
+        -:  179:#include "./testrsa.h"
+        -:  180:#endif
+        -:  181:#include <openssl/x509.h>
+        -:  182:#ifndef OPENSSL_NO_DSA
+        -:  183:#include <openssl/dsa.h>
+        -:  184:#include "./testdsa.h"
+        -:  185:#endif
+        -:  186:#ifndef OPENSSL_NO_ECDSA
+        -:  187:#include <openssl/ecdsa.h>
+        -:  188:#endif
+        -:  189:#ifndef OPENSSL_NO_ECDH
+        -:  190:#include <openssl/ecdh.h>
+        -:  191:#endif
+        -:  192:#include <openssl/modes.h>
+        -:  193:
+        -:  194:#ifdef OPENSSL_FIPS
+        -:  195:#ifdef OPENSSL_DOING_MAKEDEPEND
+        -:  196:#undef AES_set_encrypt_key
+        -:  197:#undef AES_set_decrypt_key
+        -:  198:#undef DES_set_key_unchecked
+        -:  199:#endif
+        -:  200:#define BF_set_key	private_BF_set_key
+        -:  201:#define CAST_set_key	private_CAST_set_key
+        -:  202:#define idea_set_encrypt_key	private_idea_set_encrypt_key
+        -:  203:#define SEED_set_key	private_SEED_set_key
+        -:  204:#define RC2_set_key	private_RC2_set_key
+        -:  205:#define RC4_set_key	private_RC4_set_key
+        -:  206:#define DES_set_key_unchecked	private_DES_set_key_unchecked
+        -:  207:#define AES_set_encrypt_key	private_AES_set_encrypt_key
+        -:  208:#define AES_set_decrypt_key	private_AES_set_decrypt_key
+        -:  209:#define Camellia_set_key	private_Camellia_set_key
+        -:  210:#endif
+        -:  211:
+        -:  212:#ifndef HAVE_FORK
+        -:  213:# if defined(OPENSSL_SYS_VMS) || defined(OPENSSL_SYS_WINDOWS) || defined(OPENSSL_SYS_MACINTOSH_CLASSIC) || defined(OPENSSL_SYS_OS2) || defined(OPENSSL_SYS_NETWARE)
+        -:  214:#  define HAVE_FORK 0
+        -:  215:# else
+        -:  216:#  define HAVE_FORK 1
+        -:  217:# endif
+        -:  218:#endif
+        -:  219:
+        -:  220:#if HAVE_FORK
+        -:  221:#undef NO_FORK
+        -:  222:#else
+        -:  223:#define NO_FORK
+        -:  224:#endif
+        -:  225:
+        -:  226:#undef BUFSIZE
+        -:  227:#define BUFSIZE	((long)1024*8+1)
+        -:  228:int run=0;
+        -:  229:
+        -:  230:static int mr=0;
+        -:  231:static int usertime=1;
+        -:  232:
+        -:  233:static double Time_F(int s);
+        -:  234:static void print_message(const char *s,long num,int length);
+        -:  235:static void pkey_print_message(const char *str, const char *str2,
+        -:  236:	long num, int bits, int sec);
+        -:  237:static void print_result(int alg,int run_no,int count,double time_used);
+        -:  238:#ifndef NO_FORK
+        -:  239:static int do_multi(int multi);
+        -:  240:#endif
+        -:  241:
+        -:  242:#define ALGOR_NUM	30
+        -:  243:#define SIZE_NUM	5
+        -:  244:#define RSA_NUM		4
+        -:  245:#define DSA_NUM		3
+        -:  246:
+        -:  247:#define EC_NUM       16
+        -:  248:#define MAX_ECDH_SIZE 256
+        -:  249:
+        -:  250:static const char *names[ALGOR_NUM]={
+        -:  251:  "md2","mdc2","md4","md5","hmac(md5)","sha1","rmd160","rc4",
+        -:  252:  "des cbc","des ede3","idea cbc","seed cbc",
+        -:  253:  "rc2 cbc","rc5-32/12 cbc","blowfish cbc","cast cbc",
+        -:  254:  "aes-128 cbc","aes-192 cbc","aes-256 cbc",
+        -:  255:  "camellia-128 cbc","camellia-192 cbc","camellia-256 cbc",
+        -:  256:  "evp","sha256","sha512","whirlpool",
+        -:  257:  "aes-128 ige","aes-192 ige","aes-256 ige","ghash" };
+        -:  258:static double results[ALGOR_NUM][SIZE_NUM];
+        -:  259:static int lengths[SIZE_NUM]={16,64,256,1024,8*1024};
+        -:  260:#ifndef OPENSSL_NO_RSA
+        -:  261:static double rsa_results[RSA_NUM][2];
+        -:  262:#endif
+        -:  263:#ifndef OPENSSL_NO_DSA
+        -:  264:static double dsa_results[DSA_NUM][2];
+        -:  265:#endif
+        -:  266:#ifndef OPENSSL_NO_ECDSA
+        -:  267:static double ecdsa_results[EC_NUM][2];
+        -:  268:#endif
+        -:  269:#ifndef OPENSSL_NO_ECDH
+        -:  270:static double ecdh_results[EC_NUM][1];
+        -:  271:#endif
+        -:  272:
+        -:  273:#if defined(OPENSSL_NO_DSA) && !(defined(OPENSSL_NO_ECDSA) && defined(OPENSSL_NO_ECDH))
+        -:  274:static const char rnd_seed[] = "string to make the random number generator think it has entropy";
+        -:  275:static int rnd_fake = 0;
+        -:  276:#endif
+        -:  277:
+        -:  278:#ifdef SIGALRM
+        -:  279:#if defined(__STDC__) || defined(sgi) || defined(_AIX)
+        -:  280:#define SIGRETTYPE void
+        -:  281:#else
+        -:  282:#define SIGRETTYPE int
+        -:  283:#endif 
+        -:  284:
+        -:  285:static SIGRETTYPE sig_done(int sig);
+    #####:  286:static SIGRETTYPE sig_done(int sig)
+        -:  287:	{
+    #####:  288:	signal(SIGALRM,sig_done);
+    #####:  289:	run=0;
+        -:  290:#ifdef LINT
+        -:  291:	sig=sig;
+        -:  292:#endif
+    #####:  293:	}
+        -:  294:#endif
+        -:  295:
+        -:  296:#define START	0
+        -:  297:#define STOP	1
+        -:  298:
+        -:  299:#if defined(_WIN32)
+        -:  300:
+        -:  301:#if !defined(SIGALRM)
+        -:  302:# define SIGALRM
+        -:  303:#endif
+        -:  304:static unsigned int lapse,schlock;
+        -:  305:static void alarm_win32(unsigned int secs) { lapse = secs*1000; }
+        -:  306:#define alarm alarm_win32
+        -:  307:
+        -:  308:static DWORD WINAPI sleepy(VOID *arg)
+        -:  309:	{
+        -:  310:	schlock = 1;
+        -:  311:	Sleep(lapse);
+        -:  312:	run = 0;
+        -:  313:	return 0;
+        -:  314:	}
+        -:  315:
+        -:  316:static double Time_F(int s)
+        -:  317:	{
+        -:  318:	if (s == START)
+        -:  319:		{
+        -:  320:		HANDLE	thr;
+        -:  321:		schlock = 0;
+        -:  322:		thr = CreateThread(NULL,4096,sleepy,NULL,0,NULL);
+        -:  323:		if (thr==NULL)
+        -:  324:			{
+        -:  325:			DWORD ret=GetLastError();
+        -:  326:			BIO_printf(bio_err,"unable to CreateThread (%d)",ret);
+        -:  327:			ExitProcess(ret);
+        -:  328:			}
+        -:  329:		CloseHandle(thr);		/* detach the thread	*/
+        -:  330:		while (!schlock) Sleep(0);	/* scheduler spinlock	*/
+        -:  331:		}
+        -:  332:
+        -:  333:	return app_tminterval(s,usertime);
+        -:  334:	}
+        -:  335:#else
+        -:  336:
+        -:  337:static double Time_F(int s)
+        -:  338:	{
+    #####:  339:	return app_tminterval(s,usertime);
+        -:  340:	}
+        -:  341:#endif
+        -:  342:
+        -:  343:
+        -:  344:#ifndef OPENSSL_NO_ECDH
+        -:  345:static const int KDF1_SHA1_len = 20;
+    #####:  346:static void *KDF1_SHA1(const void *in, size_t inlen, void *out, size_t *outlen)
+        -:  347:	{
+        -:  348:#ifndef OPENSSL_NO_SHA
+    #####:  349:	if (*outlen < SHA_DIGEST_LENGTH)
+        -:  350:		return NULL;
+        -:  351:	else
+    #####:  352:		*outlen = SHA_DIGEST_LENGTH;
+    #####:  353:	return SHA1(in, inlen, out);
+        -:  354:#else
+        -:  355:	return NULL;
+        -:  356:#endif	/* OPENSSL_NO_SHA */
+        -:  357:	}
+        -:  358:#endif	/* OPENSSL_NO_ECDH */
+        -:  359:
+        -:  360:
+        -:  361:int MAIN(int, char **);
+        -:  362:
+    #####:  363:int MAIN(int argc, char **argv)
+        -:  364:	{
+        -:  365:	unsigned char *buf=NULL,*buf2=NULL;
+        -:  366:	int mret=1;
+        -:  367:	long count=0,save_count=0;
+        -:  368:	int i,j,k;
+        -:  369:#if !defined(OPENSSL_NO_RSA) || !defined(OPENSSL_NO_DSA)
+        -:  370:	long rsa_count;
+        -:  371:#endif
+        -:  372:#ifndef OPENSSL_NO_RSA
+        -:  373:	unsigned rsa_num;
+        -:  374:#endif
+        -:  375:	unsigned char md[EVP_MAX_MD_SIZE];
+        -:  376:#ifndef OPENSSL_NO_MD2
+        -:  377:	unsigned char md2[MD2_DIGEST_LENGTH];
+        -:  378:#endif
+        -:  379:#ifndef OPENSSL_NO_MDC2
+        -:  380:	unsigned char mdc2[MDC2_DIGEST_LENGTH];
+        -:  381:#endif
+        -:  382:#ifndef OPENSSL_NO_MD4
+        -:  383:	unsigned char md4[MD4_DIGEST_LENGTH];
+        -:  384:#endif
+        -:  385:#ifndef OPENSSL_NO_MD5
+        -:  386:	unsigned char md5[MD5_DIGEST_LENGTH];
+        -:  387:	unsigned char hmac[MD5_DIGEST_LENGTH];
+        -:  388:#endif
+        -:  389:#ifndef OPENSSL_NO_SHA
+        -:  390:	unsigned char sha[SHA_DIGEST_LENGTH];
+        -:  391:#ifndef OPENSSL_NO_SHA256
+        -:  392:	unsigned char sha256[SHA256_DIGEST_LENGTH];
+        -:  393:#endif
+        -:  394:#ifndef OPENSSL_NO_SHA512
+        -:  395:	unsigned char sha512[SHA512_DIGEST_LENGTH];
+        -:  396:#endif
+        -:  397:#endif
+        -:  398:#ifndef OPENSSL_NO_WHIRLPOOL
+        -:  399:	unsigned char whirlpool[WHIRLPOOL_DIGEST_LENGTH];
+        -:  400:#endif
+        -:  401:#ifndef OPENSSL_NO_RIPEMD
+        -:  402:	unsigned char rmd160[RIPEMD160_DIGEST_LENGTH];
+        -:  403:#endif
+        -:  404:#ifndef OPENSSL_NO_RC4
+        -:  405:	RC4_KEY rc4_ks;
+        -:  406:#endif
+        -:  407:#ifndef OPENSSL_NO_RC5
+        -:  408:	RC5_32_KEY rc5_ks;
+        -:  409:#endif
+        -:  410:#ifndef OPENSSL_NO_RC2
+        -:  411:	RC2_KEY rc2_ks;
+        -:  412:#endif
+        -:  413:#ifndef OPENSSL_NO_IDEA
+        -:  414:	IDEA_KEY_SCHEDULE idea_ks;
+        -:  415:#endif
+        -:  416:#ifndef OPENSSL_NO_SEED
+        -:  417:	SEED_KEY_SCHEDULE seed_ks;
+        -:  418:#endif
+        -:  419:#ifndef OPENSSL_NO_BF
+        -:  420:	BF_KEY bf_ks;
+        -:  421:#endif
+        -:  422:#ifndef OPENSSL_NO_CAST
+        -:  423:	CAST_KEY cast_ks;
+        -:  424:#endif
+        -:  425:	static const unsigned char key16[16]=
+        -:  426:		{0x12,0x34,0x56,0x78,0x9a,0xbc,0xde,0xf0,
+        -:  427:		 0x34,0x56,0x78,0x9a,0xbc,0xde,0xf0,0x12};
+        -:  428:#ifndef OPENSSL_NO_AES
+        -:  429:	static const unsigned char key24[24]=
+        -:  430:		{0x12,0x34,0x56,0x78,0x9a,0xbc,0xde,0xf0,
+        -:  431:		 0x34,0x56,0x78,0x9a,0xbc,0xde,0xf0,0x12,
+        -:  432:		 0x56,0x78,0x9a,0xbc,0xde,0xf0,0x12,0x34};
+        -:  433:	static const unsigned char key32[32]=
+        -:  434:		{0x12,0x34,0x56,0x78,0x9a,0xbc,0xde,0xf0,
+        -:  435:		 0x34,0x56,0x78,0x9a,0xbc,0xde,0xf0,0x12,
+        -:  436:		 0x56,0x78,0x9a,0xbc,0xde,0xf0,0x12,0x34,
+        -:  437:		 0x78,0x9a,0xbc,0xde,0xf0,0x12,0x34,0x56};
+        -:  438:#endif
+        -:  439:#ifndef OPENSSL_NO_CAMELLIA
+        -:  440:	static const unsigned char ckey24[24]=
+        -:  441:		{0x12,0x34,0x56,0x78,0x9a,0xbc,0xde,0xf0,
+        -:  442:		 0x34,0x56,0x78,0x9a,0xbc,0xde,0xf0,0x12,
+        -:  443:		 0x56,0x78,0x9a,0xbc,0xde,0xf0,0x12,0x34};
+        -:  444:	static const unsigned char ckey32[32]=
+        -:  445:		{0x12,0x34,0x56,0x78,0x9a,0xbc,0xde,0xf0,
+        -:  446:		 0x34,0x56,0x78,0x9a,0xbc,0xde,0xf0,0x12,
+        -:  447:		 0x56,0x78,0x9a,0xbc,0xde,0xf0,0x12,0x34,
+        -:  448:		 0x78,0x9a,0xbc,0xde,0xf0,0x12,0x34,0x56};
+        -:  449:#endif
+        -:  450:#ifndef OPENSSL_NO_AES
+        -:  451:#define MAX_BLOCK_SIZE 128
+        -:  452:#else
+        -:  453:#define MAX_BLOCK_SIZE 64
+        -:  454:#endif
+        -:  455:	unsigned char DES_iv[8];
+        -:  456:	unsigned char iv[2*MAX_BLOCK_SIZE/8];
+        -:  457:#ifndef OPENSSL_NO_DES
+        -:  458:	static DES_cblock key ={0x12,0x34,0x56,0x78,0x9a,0xbc,0xde,0xf0};
+        -:  459:	static DES_cblock key2={0x34,0x56,0x78,0x9a,0xbc,0xde,0xf0,0x12};
+        -:  460:	static DES_cblock key3={0x56,0x78,0x9a,0xbc,0xde,0xf0,0x12,0x34};
+        -:  461:	DES_key_schedule sch;
+        -:  462:	DES_key_schedule sch2;
+        -:  463:	DES_key_schedule sch3;
+        -:  464:#endif
+        -:  465:#ifndef OPENSSL_NO_AES
+        -:  466:	AES_KEY aes_ks1, aes_ks2, aes_ks3;
+        -:  467:#endif
+        -:  468:#ifndef OPENSSL_NO_CAMELLIA
+        -:  469:	CAMELLIA_KEY camellia_ks1, camellia_ks2, camellia_ks3;
+        -:  470:#endif
+        -:  471:#define	D_MD2		0
+        -:  472:#define	D_MDC2		1
+        -:  473:#define	D_MD4		2
+        -:  474:#define	D_MD5		3
+        -:  475:#define	D_HMAC		4
+        -:  476:#define	D_SHA1		5
+        -:  477:#define D_RMD160	6
+        -:  478:#define	D_RC4		7
+        -:  479:#define	D_CBC_DES	8
+        -:  480:#define	D_EDE3_DES	9
+        -:  481:#define	D_CBC_IDEA	10
+        -:  482:#define	D_CBC_SEED	11
+        -:  483:#define	D_CBC_RC2	12
+        -:  484:#define	D_CBC_RC5	13
+        -:  485:#define	D_CBC_BF	14
+        -:  486:#define	D_CBC_CAST	15
+        -:  487:#define D_CBC_128_AES	16
+        -:  488:#define D_CBC_192_AES	17
+        -:  489:#define D_CBC_256_AES	18
+        -:  490:#define D_CBC_128_CML   19 
+        -:  491:#define D_CBC_192_CML   20
+        -:  492:#define D_CBC_256_CML   21 
+        -:  493:#define D_EVP		22
+        -:  494:#define D_SHA256	23	
+        -:  495:#define D_SHA512	24
+        -:  496:#define D_WHIRLPOOL	25
+        -:  497:#define D_IGE_128_AES   26
+        -:  498:#define D_IGE_192_AES   27
+        -:  499:#define D_IGE_256_AES   28
+        -:  500:#define D_GHASH		29
+        -:  501:	double d=0.0;
+        -:  502:	long c[ALGOR_NUM][SIZE_NUM];
+        -:  503:#define	R_DSA_512	0
+        -:  504:#define	R_DSA_1024	1
+        -:  505:#define	R_DSA_2048	2
+        -:  506:#define	R_RSA_512	0
+        -:  507:#define	R_RSA_1024	1
+        -:  508:#define	R_RSA_2048	2
+        -:  509:#define	R_RSA_4096	3
+        -:  510:
+        -:  511:#define R_EC_P160    0
+        -:  512:#define R_EC_P192    1	
+        -:  513:#define R_EC_P224    2
+        -:  514:#define R_EC_P256    3
+        -:  515:#define R_EC_P384    4
+        -:  516:#define R_EC_P521    5
+        -:  517:#define R_EC_K163    6
+        -:  518:#define R_EC_K233    7
+        -:  519:#define R_EC_K283    8
+        -:  520:#define R_EC_K409    9
+        -:  521:#define R_EC_K571    10
+        -:  522:#define R_EC_B163    11
+        -:  523:#define R_EC_B233    12
+        -:  524:#define R_EC_B283    13
+        -:  525:#define R_EC_B409    14
+        -:  526:#define R_EC_B571    15
+        -:  527:
+        -:  528:#ifndef OPENSSL_NO_RSA
+        -:  529:	RSA *rsa_key[RSA_NUM];
+        -:  530:	long rsa_c[RSA_NUM][2];
+        -:  531:	static unsigned int rsa_bits[RSA_NUM]={512,1024,2048,4096};
+        -:  532:	static unsigned char *rsa_data[RSA_NUM]=
+        -:  533:		{test512,test1024,test2048,test4096};
+        -:  534:	static int rsa_data_length[RSA_NUM]={
+        -:  535:		sizeof(test512),sizeof(test1024),
+        -:  536:		sizeof(test2048),sizeof(test4096)};
+        -:  537:#endif
+        -:  538:#ifndef OPENSSL_NO_DSA
+        -:  539:	DSA *dsa_key[DSA_NUM];
+        -:  540:	long dsa_c[DSA_NUM][2];
+        -:  541:	static unsigned int dsa_bits[DSA_NUM]={512,1024,2048};
+        -:  542:#endif
+        -:  543:#ifndef OPENSSL_NO_EC
+        -:  544:	/* We only test over the following curves as they are representative, 
+        -:  545:	 * To add tests over more curves, simply add the curve NID
+        -:  546:	 * and curve name to the following arrays and increase the 
+        -:  547:	 * EC_NUM value accordingly. 
+        -:  548:	 */
+        -:  549:	static unsigned int test_curves[EC_NUM] = 
+        -:  550:	{	
+        -:  551:	/* Prime Curves */
+        -:  552:	NID_secp160r1,
+        -:  553:	NID_X9_62_prime192v1,
+        -:  554:	NID_secp224r1,
+        -:  555:	NID_X9_62_prime256v1,
+        -:  556:	NID_secp384r1,
+        -:  557:	NID_secp521r1,
+        -:  558:	/* Binary Curves */
+        -:  559:	NID_sect163k1,
+        -:  560:	NID_sect233k1,
+        -:  561:	NID_sect283k1,
+        -:  562:	NID_sect409k1,
+        -:  563:	NID_sect571k1,
+        -:  564:	NID_sect163r2,
+        -:  565:	NID_sect233r1,
+        -:  566:	NID_sect283r1,
+        -:  567:	NID_sect409r1,
+        -:  568:	NID_sect571r1
+        -:  569:	}; 
+        -:  570:	static const char * test_curves_names[EC_NUM] = 
+        -:  571:	{
+        -:  572:	/* Prime Curves */
+        -:  573:	"secp160r1",
+        -:  574:	"nistp192",
+        -:  575:	"nistp224",
+        -:  576:	"nistp256",
+        -:  577:	"nistp384",
+        -:  578:	"nistp521",
+        -:  579:	/* Binary Curves */
+        -:  580:	"nistk163",
+        -:  581:	"nistk233",
+        -:  582:	"nistk283",
+        -:  583:	"nistk409",
+        -:  584:	"nistk571",
+        -:  585:	"nistb163",
+        -:  586:	"nistb233",
+        -:  587:	"nistb283",
+        -:  588:	"nistb409",
+        -:  589:	"nistb571"
+        -:  590:	};
+        -:  591:	static int test_curves_bits[EC_NUM] =
+        -:  592:        {
+        -:  593:        160, 192, 224, 256, 384, 521,
+        -:  594:        163, 233, 283, 409, 571,
+        -:  595:        163, 233, 283, 409, 571
+        -:  596:        };
+        -:  597:
+        -:  598:#endif
+        -:  599:
+        -:  600:#ifndef OPENSSL_NO_ECDSA
+        -:  601:	unsigned char ecdsasig[256];
+        -:  602:	unsigned int ecdsasiglen;
+        -:  603:	EC_KEY *ecdsa[EC_NUM];
+        -:  604:	long ecdsa_c[EC_NUM][2];
+        -:  605:#endif
+        -:  606:
+        -:  607:#ifndef OPENSSL_NO_ECDH
+        -:  608:	EC_KEY *ecdh_a[EC_NUM], *ecdh_b[EC_NUM];
+        -:  609:	unsigned char secret_a[MAX_ECDH_SIZE], secret_b[MAX_ECDH_SIZE];
+        -:  610:	int secret_size_a, secret_size_b;
+        -:  611:	int ecdh_checks = 0;
+        -:  612:	int secret_idx = 0;
+        -:  613:	long ecdh_c[EC_NUM][2];
+        -:  614:#endif
+        -:  615:
+        -:  616:	int rsa_doit[RSA_NUM];
+        -:  617:	int dsa_doit[DSA_NUM];
+        -:  618:#ifndef OPENSSL_NO_ECDSA
+        -:  619:	int ecdsa_doit[EC_NUM];
+        -:  620:#endif
+        -:  621:#ifndef OPENSSL_NO_ECDH
+        -:  622:        int ecdh_doit[EC_NUM];
+        -:  623:#endif
+        -:  624:	int doit[ALGOR_NUM];
+        -:  625:	int pr_header=0;
+        -:  626:	const EVP_CIPHER *evp_cipher=NULL;
+        -:  627:	const EVP_MD *evp_md=NULL;
+        -:  628:	int decrypt=0;
+        -:  629:#ifndef NO_FORK
+        -:  630:	int multi=0;
+        -:  631:#endif
+        -:  632:
+        -:  633:#ifndef TIMES
+    #####:  634:	usertime=-1;
+        -:  635:#endif
+        -:  636:
+    #####:  637:	apps_startup();
+        -:  638:	memset(results, 0, sizeof(results));
+        -:  639:#ifndef OPENSSL_NO_DSA
+        -:  640:	memset(dsa_key,0,sizeof(dsa_key));
+        -:  641:#endif
+        -:  642:#ifndef OPENSSL_NO_ECDSA
+    #####:  643:	for (i=0; i<EC_NUM; i++) ecdsa[i] = NULL;
+        -:  644:#endif
+        -:  645:#ifndef OPENSSL_NO_ECDH
+    #####:  646:	for (i=0; i<EC_NUM; i++)
+        -:  647:		{
+    #####:  648:		ecdh_a[i] = NULL;
+    #####:  649:		ecdh_b[i] = NULL;
+        -:  650:		}
+        -:  651:#endif
+        -:  652:
+        -:  653:
+    #####:  654:	if (bio_err == NULL)
+    #####:  655:		if ((bio_err=BIO_new(BIO_s_file())) != NULL)
+    #####:  656:			BIO_set_fp(bio_err,stderr,BIO_NOCLOSE|BIO_FP_TEXT);
+        -:  657:
+    #####:  658:	if (!load_config(bio_err, NULL))
+        -:  659:		goto end;
+        -:  660:
+        -:  661:#ifndef OPENSSL_NO_RSA
+        -:  662:	memset(rsa_key,0,sizeof(rsa_key));
+    #####:  663:	for (i=0; i<RSA_NUM; i++)
+    #####:  664:		rsa_key[i]=NULL;
+        -:  665:#endif
+        -:  666:
+    #####:  667:	if ((buf=(unsigned char *)OPENSSL_malloc((int)BUFSIZE)) == NULL)
+        -:  668:		{
+    #####:  669:		BIO_printf(bio_err,"out of memory\n");
+    #####:  670:		goto end;
+        -:  671:		}
+    #####:  672:	if ((buf2=(unsigned char *)OPENSSL_malloc((int)BUFSIZE)) == NULL)
+        -:  673:		{
+    #####:  674:		BIO_printf(bio_err,"out of memory\n");
+    #####:  675:		goto end;
+        -:  676:		}
+        -:  677:
+        -:  678:	memset(c,0,sizeof(c));
+        -:  679:	memset(DES_iv,0,sizeof(DES_iv));
+        -:  680:	memset(iv,0,sizeof(iv));
+        -:  681:
+    #####:  682:	for (i=0; i<ALGOR_NUM; i++)
+    #####:  683:		doit[i]=0;
+    #####:  684:	for (i=0; i<RSA_NUM; i++)
+    #####:  685:		rsa_doit[i]=0;
+    #####:  686:	for (i=0; i<DSA_NUM; i++)
+    #####:  687:		dsa_doit[i]=0;
+        -:  688:#ifndef OPENSSL_NO_ECDSA
+    #####:  689:	for (i=0; i<EC_NUM; i++)
+    #####:  690:		ecdsa_doit[i]=0;
+        -:  691:#endif
+        -:  692:#ifndef OPENSSL_NO_ECDH
+    #####:  693:	for (i=0; i<EC_NUM; i++)
+    #####:  694:		ecdh_doit[i]=0;
+        -:  695:#endif
+        -:  696:
+        -:  697:	
+        -:  698:	j=0;
+    #####:  699:	argc--;
+    #####:  700:	argv++;
+    #####:  701:	while (argc)
+        -:  702:		{
+    #####:  703:		if	((argc > 0) && (strcmp(*argv,"-elapsed") == 0))
+        -:  704:			{
+    #####:  705:			usertime = 0;
+    #####:  706:			j--;	/* Otherwise, -elapsed gets confused with
+        -:  707:				   an algorithm. */
+        -:  708:			}
+    #####:  709:		else if	((argc > 0) && (strcmp(*argv,"-evp") == 0))
+        -:  710:			{
+    #####:  711:			argc--;
+    #####:  712:			argv++;
+    #####:  713:			if(argc == 0)
+        -:  714:				{
+    #####:  715:				BIO_printf(bio_err,"no EVP given\n");
+    #####:  716:				goto end;
+        -:  717:				}
+    #####:  718:			evp_cipher=EVP_get_cipherbyname(*argv);
+    #####:  719:			if(!evp_cipher)
+        -:  720:				{
+    #####:  721:				evp_md=EVP_get_digestbyname(*argv);
+        -:  722:				}
+    #####:  723:			if(!evp_cipher && !evp_md)
+        -:  724:				{
+    #####:  725:				BIO_printf(bio_err,"%s is an unknown cipher or digest\n",*argv);
+    #####:  726:				goto end;
+        -:  727:				}
+    #####:  728:			doit[D_EVP]=1;
+        -:  729:			}
+    #####:  730:		else if (argc > 0 && !strcmp(*argv,"-decrypt"))
+        -:  731:			{
+        -:  732:			decrypt=1;
+    #####:  733:			j--;	/* Otherwise, -elapsed gets confused with
+        -:  734:				   an algorithm. */
+        -:  735:			}
+        -:  736:#ifndef OPENSSL_NO_ENGINE
+    #####:  737:		else if	((argc > 0) && (strcmp(*argv,"-engine") == 0))
+        -:  738:			{
+    #####:  739:			argc--;
+    #####:  740:			argv++;
+    #####:  741:			if(argc == 0)
+        -:  742:				{
+    #####:  743:				BIO_printf(bio_err,"no engine given\n");
+    #####:  744:				goto end;
+        -:  745:				}
+    #####:  746:                        setup_engine(bio_err, *argv, 0);
+        -:  747:			/* j will be increased again further down.  We just
+        -:  748:			   don't want speed to confuse an engine with an
+        -:  749:			   algorithm, especially when none is given (which
+        -:  750:			   means all of them should be run) */
+    #####:  751:			j--;
+        -:  752:			}
+        -:  753:#endif
+        -:  754:#ifndef NO_FORK
+    #####:  755:		else if	((argc > 0) && (strcmp(*argv,"-multi") == 0))
+        -:  756:			{
+    #####:  757:			argc--;
+    #####:  758:			argv++;
+    #####:  759:			if(argc == 0)
+        -:  760:				{
+    #####:  761:				BIO_printf(bio_err,"no multi count given\n");
+    #####:  762:				goto end;
+        -:  763:				}
+    #####:  764:			multi=atoi(argv[0]);
+    #####:  765:			if(multi <= 0)
+        -:  766:			    {
+    #####:  767:				BIO_printf(bio_err,"bad multi count\n");
+    #####:  768:				goto end;
+        -:  769:				}				
+    #####:  770:			j--;	/* Otherwise, -mr gets confused with
+        -:  771:				   an algorithm. */
+        -:  772:			}
+        -:  773:#endif
+    #####:  774:		else if (argc > 0 && !strcmp(*argv,"-mr"))
+        -:  775:			{
+    #####:  776:			mr=1;
+    #####:  777:			j--;	/* Otherwise, -mr gets confused with
+        -:  778:				   an algorithm. */
+        -:  779:			}
+        -:  780:		else
+        -:  781:#ifndef OPENSSL_NO_MD2
+        -:  782:		if	(strcmp(*argv,"md2") == 0) doit[D_MD2]=1;
+        -:  783:		else
+        -:  784:#endif
+        -:  785:#ifndef OPENSSL_NO_MDC2
+    #####:  786:			if (strcmp(*argv,"mdc2") == 0) doit[D_MDC2]=1;
+        -:  787:		else
+        -:  788:#endif
+        -:  789:#ifndef OPENSSL_NO_MD4
+    #####:  790:			if (strcmp(*argv,"md4") == 0) doit[D_MD4]=1;
+        -:  791:		else
+        -:  792:#endif
+        -:  793:#ifndef OPENSSL_NO_MD5
+    #####:  794:			if (strcmp(*argv,"md5") == 0) doit[D_MD5]=1;
+        -:  795:		else
+        -:  796:#endif
+        -:  797:#ifndef OPENSSL_NO_MD5
+    #####:  798:			if (strcmp(*argv,"hmac") == 0) doit[D_HMAC]=1;
+        -:  799:		else
+        -:  800:#endif
+        -:  801:#ifndef OPENSSL_NO_SHA
+    #####:  802:			if (strcmp(*argv,"sha1") == 0) doit[D_SHA1]=1;
+        -:  803:		else
+    #####:  804:			if (strcmp(*argv,"sha") == 0)	doit[D_SHA1]=1,
+    #####:  805:							doit[D_SHA256]=1,
+    #####:  806:							doit[D_SHA512]=1;
+        -:  807:		else
+        -:  808:#ifndef OPENSSL_NO_SHA256
+    #####:  809:			if (strcmp(*argv,"sha256") == 0) doit[D_SHA256]=1;
+        -:  810:		else
+        -:  811:#endif
+        -:  812:#ifndef OPENSSL_NO_SHA512
+    #####:  813:			if (strcmp(*argv,"sha512") == 0) doit[D_SHA512]=1;
+        -:  814:		else
+        -:  815:#endif
+        -:  816:#endif
+        -:  817:#ifndef OPENSSL_NO_WHIRLPOOL
+    #####:  818:			if (strcmp(*argv,"whirlpool") == 0) doit[D_WHIRLPOOL]=1;
+        -:  819:		else
+        -:  820:#endif
+        -:  821:#ifndef OPENSSL_NO_RIPEMD
+    #####:  822:			if (strcmp(*argv,"ripemd") == 0) doit[D_RMD160]=1;
+        -:  823:		else
+    #####:  824:			if (strcmp(*argv,"rmd160") == 0) doit[D_RMD160]=1;
+        -:  825:		else
+    #####:  826:			if (strcmp(*argv,"ripemd160") == 0) doit[D_RMD160]=1;
+        -:  827:		else
+        -:  828:#endif
+        -:  829:#ifndef OPENSSL_NO_RC4
+    #####:  830:			if (strcmp(*argv,"rc4") == 0) doit[D_RC4]=1;
+        -:  831:		else 
+        -:  832:#endif
+        -:  833:#ifndef OPENSSL_NO_DES
+    #####:  834:			if (strcmp(*argv,"des-cbc") == 0) doit[D_CBC_DES]=1;
+    #####:  835:		else	if (strcmp(*argv,"des-ede3") == 0) doit[D_EDE3_DES]=1;
+        -:  836:		else
+        -:  837:#endif
+        -:  838:#ifndef OPENSSL_NO_AES
+    #####:  839:			if (strcmp(*argv,"aes-128-cbc") == 0) doit[D_CBC_128_AES]=1;
+    #####:  840:		else	if (strcmp(*argv,"aes-192-cbc") == 0) doit[D_CBC_192_AES]=1;
+    #####:  841:		else	if (strcmp(*argv,"aes-256-cbc") == 0) doit[D_CBC_256_AES]=1;
+    #####:  842:		else    if (strcmp(*argv,"aes-128-ige") == 0) doit[D_IGE_128_AES]=1;
+    #####:  843:		else	if (strcmp(*argv,"aes-192-ige") == 0) doit[D_IGE_192_AES]=1;
+    #####:  844:		else	if (strcmp(*argv,"aes-256-ige") == 0) doit[D_IGE_256_AES]=1;
+        -:  845:                else
+        -:  846:#endif
+        -:  847:#ifndef OPENSSL_NO_CAMELLIA
+    #####:  848:			if (strcmp(*argv,"camellia-128-cbc") == 0) doit[D_CBC_128_CML]=1;
+    #####:  849:		else    if (strcmp(*argv,"camellia-192-cbc") == 0) doit[D_CBC_192_CML]=1;
+    #####:  850:		else    if (strcmp(*argv,"camellia-256-cbc") == 0) doit[D_CBC_256_CML]=1;
+        -:  851:		else
+        -:  852:#endif
+        -:  853:#ifndef OPENSSL_NO_RSA
+        -:  854:#if 0 /* was: #ifdef RSAref */
+        -:  855:			if (strcmp(*argv,"rsaref") == 0) 
+        -:  856:			{
+        -:  857:			RSA_set_default_openssl_method(RSA_PKCS1_RSAref());
+        -:  858:			j--;
+        -:  859:			}
+        -:  860:		else
+        -:  861:#endif
+        -:  862:#ifndef RSA_NULL
+    #####:  863:			if (strcmp(*argv,"openssl") == 0) 
+        -:  864:			{
+    #####:  865:			RSA_set_default_method(RSA_PKCS1_SSLeay());
+    #####:  866:			j--;
+        -:  867:			}
+        -:  868:		else
+        -:  869:#endif
+        -:  870:#endif /* !OPENSSL_NO_RSA */
+    #####:  871:		     if (strcmp(*argv,"dsa512") == 0) dsa_doit[R_DSA_512]=2;
+    #####:  872:		else if (strcmp(*argv,"dsa1024") == 0) dsa_doit[R_DSA_1024]=2;
+    #####:  873:		else if (strcmp(*argv,"dsa2048") == 0) dsa_doit[R_DSA_2048]=2;
+    #####:  874:		else if (strcmp(*argv,"rsa512") == 0) rsa_doit[R_RSA_512]=2;
+    #####:  875:		else if (strcmp(*argv,"rsa1024") == 0) rsa_doit[R_RSA_1024]=2;
+    #####:  876:		else if (strcmp(*argv,"rsa2048") == 0) rsa_doit[R_RSA_2048]=2;
+    #####:  877:		else if (strcmp(*argv,"rsa4096") == 0) rsa_doit[R_RSA_4096]=2;
+        -:  878:		else
+        -:  879:#ifndef OPENSSL_NO_RC2
+    #####:  880:		     if (strcmp(*argv,"rc2-cbc") == 0) doit[D_CBC_RC2]=1;
+    #####:  881:		else if (strcmp(*argv,"rc2") == 0) doit[D_CBC_RC2]=1;
+        -:  882:		else
+        -:  883:#endif
+        -:  884:#ifndef OPENSSL_NO_RC5
+        -:  885:		     if (strcmp(*argv,"rc5-cbc") == 0) doit[D_CBC_RC5]=1;
+        -:  886:		else if (strcmp(*argv,"rc5") == 0) doit[D_CBC_RC5]=1;
+        -:  887:		else
+        -:  888:#endif
+        -:  889:#ifndef OPENSSL_NO_IDEA
+    #####:  890:		     if (strcmp(*argv,"idea-cbc") == 0) doit[D_CBC_IDEA]=1;
+    #####:  891:		else if (strcmp(*argv,"idea") == 0) doit[D_CBC_IDEA]=1;
+        -:  892:		else
+        -:  893:#endif
+        -:  894:#ifndef OPENSSL_NO_SEED
+    #####:  895:		     if (strcmp(*argv,"seed-cbc") == 0) doit[D_CBC_SEED]=1;
+    #####:  896:		else if (strcmp(*argv,"seed") == 0) doit[D_CBC_SEED]=1;
+        -:  897:		else
+        -:  898:#endif
+        -:  899:#ifndef OPENSSL_NO_BF
+    #####:  900:		     if (strcmp(*argv,"bf-cbc") == 0) doit[D_CBC_BF]=1;
+    #####:  901:		else if (strcmp(*argv,"blowfish") == 0) doit[D_CBC_BF]=1;
+    #####:  902:		else if (strcmp(*argv,"bf") == 0) doit[D_CBC_BF]=1;
+        -:  903:		else
+        -:  904:#endif
+        -:  905:#ifndef OPENSSL_NO_CAST
+    #####:  906:		     if (strcmp(*argv,"cast-cbc") == 0) doit[D_CBC_CAST]=1;
+    #####:  907:		else if (strcmp(*argv,"cast") == 0) doit[D_CBC_CAST]=1;
+    #####:  908:		else if (strcmp(*argv,"cast5") == 0) doit[D_CBC_CAST]=1;
+        -:  909:		else
+        -:  910:#endif
+        -:  911:#ifndef OPENSSL_NO_DES
+    #####:  912:			if (strcmp(*argv,"des") == 0)
+        -:  913:			{
+    #####:  914:			doit[D_CBC_DES]=1;
+    #####:  915:			doit[D_EDE3_DES]=1;
+        -:  916:			}
+        -:  917:		else
+        -:  918:#endif
+        -:  919:#ifndef OPENSSL_NO_AES
+    #####:  920:			if (strcmp(*argv,"aes") == 0)
+        -:  921:			{
+    #####:  922:			doit[D_CBC_128_AES]=1;
+    #####:  923:			doit[D_CBC_192_AES]=1;
+    #####:  924:			doit[D_CBC_256_AES]=1;
+        -:  925:			}
+    #####:  926:		else if (strcmp(*argv,"ghash") == 0)
+        -:  927:			{
+    #####:  928:			doit[D_GHASH]=1;
+        -:  929:			}
+        -:  930:		else
+        -:  931:#endif
+        -:  932:#ifndef OPENSSL_NO_CAMELLIA
+    #####:  933:			if (strcmp(*argv,"camellia") == 0)
+        -:  934:			{
+    #####:  935:			doit[D_CBC_128_CML]=1;
+    #####:  936:			doit[D_CBC_192_CML]=1;
+    #####:  937:			doit[D_CBC_256_CML]=1;
+        -:  938:			}
+        -:  939:		else
+        -:  940:#endif
+        -:  941:#ifndef OPENSSL_NO_RSA
+    #####:  942:			if (strcmp(*argv,"rsa") == 0)
+        -:  943:			{
+    #####:  944:			rsa_doit[R_RSA_512]=1;
+    #####:  945:			rsa_doit[R_RSA_1024]=1;
+    #####:  946:			rsa_doit[R_RSA_2048]=1;
+    #####:  947:			rsa_doit[R_RSA_4096]=1;
+        -:  948:			}
+        -:  949:		else
+        -:  950:#endif
+        -:  951:#ifndef OPENSSL_NO_DSA
+    #####:  952:			if (strcmp(*argv,"dsa") == 0)
+        -:  953:			{
+    #####:  954:			dsa_doit[R_DSA_512]=1;
+    #####:  955:			dsa_doit[R_DSA_1024]=1;
+    #####:  956:			dsa_doit[R_DSA_2048]=1;
+        -:  957:			}
+        -:  958:		else
+        -:  959:#endif
+        -:  960:#ifndef OPENSSL_NO_ECDSA
+    #####:  961:		     if (strcmp(*argv,"ecdsap160") == 0) ecdsa_doit[R_EC_P160]=2;
+    #####:  962:		else if (strcmp(*argv,"ecdsap192") == 0) ecdsa_doit[R_EC_P192]=2;
+    #####:  963:		else if (strcmp(*argv,"ecdsap224") == 0) ecdsa_doit[R_EC_P224]=2;
+    #####:  964:		else if (strcmp(*argv,"ecdsap256") == 0) ecdsa_doit[R_EC_P256]=2;
+    #####:  965:		else if (strcmp(*argv,"ecdsap384") == 0) ecdsa_doit[R_EC_P384]=2;
+    #####:  966:		else if (strcmp(*argv,"ecdsap521") == 0) ecdsa_doit[R_EC_P521]=2;
+    #####:  967:		else if (strcmp(*argv,"ecdsak163") == 0) ecdsa_doit[R_EC_K163]=2;
+    #####:  968:		else if (strcmp(*argv,"ecdsak233") == 0) ecdsa_doit[R_EC_K233]=2;
+    #####:  969:		else if (strcmp(*argv,"ecdsak283") == 0) ecdsa_doit[R_EC_K283]=2;
+    #####:  970:		else if (strcmp(*argv,"ecdsak409") == 0) ecdsa_doit[R_EC_K409]=2;
+    #####:  971:		else if (strcmp(*argv,"ecdsak571") == 0) ecdsa_doit[R_EC_K571]=2;
+    #####:  972:		else if (strcmp(*argv,"ecdsab163") == 0) ecdsa_doit[R_EC_B163]=2;
+    #####:  973:		else if (strcmp(*argv,"ecdsab233") == 0) ecdsa_doit[R_EC_B233]=2;
+    #####:  974:		else if (strcmp(*argv,"ecdsab283") == 0) ecdsa_doit[R_EC_B283]=2;
+    #####:  975:		else if (strcmp(*argv,"ecdsab409") == 0) ecdsa_doit[R_EC_B409]=2;
+    #####:  976:		else if (strcmp(*argv,"ecdsab571") == 0) ecdsa_doit[R_EC_B571]=2;
+    #####:  977:		else if (strcmp(*argv,"ecdsa") == 0)
+        -:  978:			{
+    #####:  979:			for (i=0; i < EC_NUM; i++)
+    #####:  980:				ecdsa_doit[i]=1;
+        -:  981:			}
+        -:  982:		else
+        -:  983:#endif
+        -:  984:#ifndef OPENSSL_NO_ECDH
+    #####:  985:		     if (strcmp(*argv,"ecdhp160") == 0) ecdh_doit[R_EC_P160]=2;
+    #####:  986:		else if (strcmp(*argv,"ecdhp192") == 0) ecdh_doit[R_EC_P192]=2;
+    #####:  987:		else if (strcmp(*argv,"ecdhp224") == 0) ecdh_doit[R_EC_P224]=2;
+    #####:  988:		else if (strcmp(*argv,"ecdhp256") == 0) ecdh_doit[R_EC_P256]=2;
+    #####:  989:		else if (strcmp(*argv,"ecdhp384") == 0) ecdh_doit[R_EC_P384]=2;
+    #####:  990:		else if (strcmp(*argv,"ecdhp521") == 0) ecdh_doit[R_EC_P521]=2;
+    #####:  991:		else if (strcmp(*argv,"ecdhk163") == 0) ecdh_doit[R_EC_K163]=2;
+    #####:  992:		else if (strcmp(*argv,"ecdhk233") == 0) ecdh_doit[R_EC_K233]=2;
+    #####:  993:		else if (strcmp(*argv,"ecdhk283") == 0) ecdh_doit[R_EC_K283]=2;
+    #####:  994:		else if (strcmp(*argv,"ecdhk409") == 0) ecdh_doit[R_EC_K409]=2;
+    #####:  995:		else if (strcmp(*argv,"ecdhk571") == 0) ecdh_doit[R_EC_K571]=2;
+    #####:  996:		else if (strcmp(*argv,"ecdhb163") == 0) ecdh_doit[R_EC_B163]=2;
+    #####:  997:		else if (strcmp(*argv,"ecdhb233") == 0) ecdh_doit[R_EC_B233]=2;
+    #####:  998:		else if (strcmp(*argv,"ecdhb283") == 0) ecdh_doit[R_EC_B283]=2;
+    #####:  999:		else if (strcmp(*argv,"ecdhb409") == 0) ecdh_doit[R_EC_B409]=2;
+    #####: 1000:		else if (strcmp(*argv,"ecdhb571") == 0) ecdh_doit[R_EC_B571]=2;
+    #####: 1001:		else if (strcmp(*argv,"ecdh") == 0)
+        -: 1002:			{
+    #####: 1003:			for (i=0; i < EC_NUM; i++)
+    #####: 1004:				ecdh_doit[i]=1;
+        -: 1005:			}
+        -: 1006:		else
+        -: 1007:#endif
+        -: 1008:			{
+    #####: 1009:			BIO_printf(bio_err,"Error: bad option or value\n");
+    #####: 1010:			BIO_printf(bio_err,"\n");
+    #####: 1011:			BIO_printf(bio_err,"Available values:\n");
+        -: 1012:#ifndef OPENSSL_NO_MD2
+        -: 1013:			BIO_printf(bio_err,"md2      ");
+        -: 1014:#endif
+        -: 1015:#ifndef OPENSSL_NO_MDC2
+    #####: 1016:			BIO_printf(bio_err,"mdc2     ");
+        -: 1017:#endif
+        -: 1018:#ifndef OPENSSL_NO_MD4
+    #####: 1019:			BIO_printf(bio_err,"md4      ");
+        -: 1020:#endif
+        -: 1021:#ifndef OPENSSL_NO_MD5
+    #####: 1022:			BIO_printf(bio_err,"md5      ");
+        -: 1023:#ifndef OPENSSL_NO_HMAC
+    #####: 1024:			BIO_printf(bio_err,"hmac     ");
+        -: 1025:#endif
+        -: 1026:#endif
+        -: 1027:#ifndef OPENSSL_NO_SHA1
+    #####: 1028:			BIO_printf(bio_err,"sha1     ");
+        -: 1029:#endif
+        -: 1030:#ifndef OPENSSL_NO_SHA256
+    #####: 1031:			BIO_printf(bio_err,"sha256   ");
+        -: 1032:#endif
+        -: 1033:#ifndef OPENSSL_NO_SHA512
+    #####: 1034:			BIO_printf(bio_err,"sha512   ");
+        -: 1035:#endif
+        -: 1036:#ifndef OPENSSL_NO_WHIRLPOOL
+    #####: 1037:			BIO_printf(bio_err,"whirlpool");
+        -: 1038:#endif
+        -: 1039:#ifndef OPENSSL_NO_RIPEMD160
+    #####: 1040:			BIO_printf(bio_err,"rmd160");
+        -: 1041:#endif
+        -: 1042:#if !defined(OPENSSL_NO_MD2) || !defined(OPENSSL_NO_MDC2) || \
+        -: 1043:    !defined(OPENSSL_NO_MD4) || !defined(OPENSSL_NO_MD5) || \
+        -: 1044:    !defined(OPENSSL_NO_SHA1) || !defined(OPENSSL_NO_RIPEMD160) || \
+        -: 1045:    !defined(OPENSSL_NO_WHIRLPOOL)
+    #####: 1046:			BIO_printf(bio_err,"\n");
+        -: 1047:#endif
+        -: 1048:
+        -: 1049:#ifndef OPENSSL_NO_IDEA
+    #####: 1050:			BIO_printf(bio_err,"idea-cbc ");
+        -: 1051:#endif
+        -: 1052:#ifndef OPENSSL_NO_SEED
+    #####: 1053:			BIO_printf(bio_err,"seed-cbc ");
+        -: 1054:#endif
+        -: 1055:#ifndef OPENSSL_NO_RC2
+    #####: 1056:			BIO_printf(bio_err,"rc2-cbc  ");
+        -: 1057:#endif
+        -: 1058:#ifndef OPENSSL_NO_RC5
+        -: 1059:			BIO_printf(bio_err,"rc5-cbc  ");
+        -: 1060:#endif
+        -: 1061:#ifndef OPENSSL_NO_BF
+    #####: 1062:			BIO_printf(bio_err,"bf-cbc");
+        -: 1063:#endif
+        -: 1064:#if !defined(OPENSSL_NO_IDEA) || !defined(OPENSSL_NO_SEED) || !defined(OPENSSL_NO_RC2) || \
+        -: 1065:    !defined(OPENSSL_NO_BF) || !defined(OPENSSL_NO_RC5)
+    #####: 1066:			BIO_printf(bio_err,"\n");
+        -: 1067:#endif
+        -: 1068:#ifndef OPENSSL_NO_DES
+    #####: 1069:			BIO_printf(bio_err,"des-cbc  des-ede3 ");
+        -: 1070:#endif
+        -: 1071:#ifndef OPENSSL_NO_AES
+    #####: 1072:			BIO_printf(bio_err,"aes-128-cbc aes-192-cbc aes-256-cbc ");
+    #####: 1073:			BIO_printf(bio_err,"aes-128-ige aes-192-ige aes-256-ige ");
+        -: 1074:#endif
+        -: 1075:#ifndef OPENSSL_NO_CAMELLIA
+    #####: 1076:			BIO_printf(bio_err,"\n");
+    #####: 1077:			BIO_printf(bio_err,"camellia-128-cbc camellia-192-cbc camellia-256-cbc ");
+        -: 1078:#endif
+        -: 1079:#ifndef OPENSSL_NO_RC4
+    #####: 1080:			BIO_printf(bio_err,"rc4");
+        -: 1081:#endif
+    #####: 1082:			BIO_printf(bio_err,"\n");
+        -: 1083:
+        -: 1084:#ifndef OPENSSL_NO_RSA
+    #####: 1085:			BIO_printf(bio_err,"rsa512   rsa1024  rsa2048  rsa4096\n");
+        -: 1086:#endif
+        -: 1087:
+        -: 1088:#ifndef OPENSSL_NO_DSA
+    #####: 1089:			BIO_printf(bio_err,"dsa512   dsa1024  dsa2048\n");
+        -: 1090:#endif
+        -: 1091:#ifndef OPENSSL_NO_ECDSA
+    #####: 1092:			BIO_printf(bio_err,"ecdsap160 ecdsap192 ecdsap224 ecdsap256 ecdsap384 ecdsap521\n");
+    #####: 1093:			BIO_printf(bio_err,"ecdsak163 ecdsak233 ecdsak283 ecdsak409 ecdsak571\n");
+    #####: 1094:			BIO_printf(bio_err,"ecdsab163 ecdsab233 ecdsab283 ecdsab409 ecdsab571\n");
+    #####: 1095:			BIO_printf(bio_err,"ecdsa\n");
+        -: 1096:#endif
+        -: 1097:#ifndef OPENSSL_NO_ECDH
+    #####: 1098:			BIO_printf(bio_err,"ecdhp160  ecdhp192  ecdhp224  ecdhp256  ecdhp384  ecdhp521\n");
+    #####: 1099:			BIO_printf(bio_err,"ecdhk163  ecdhk233  ecdhk283  ecdhk409  ecdhk571\n");
+    #####: 1100:			BIO_printf(bio_err,"ecdhb163  ecdhb233  ecdhb283  ecdhb409  ecdhb571\n");
+    #####: 1101:			BIO_printf(bio_err,"ecdh\n");
+        -: 1102:#endif
+        -: 1103:
+        -: 1104:#ifndef OPENSSL_NO_IDEA
+    #####: 1105:			BIO_printf(bio_err,"idea     ");
+        -: 1106:#endif
+        -: 1107:#ifndef OPENSSL_NO_SEED
+    #####: 1108:			BIO_printf(bio_err,"seed     ");
+        -: 1109:#endif
+        -: 1110:#ifndef OPENSSL_NO_RC2
+    #####: 1111:			BIO_printf(bio_err,"rc2      ");
+        -: 1112:#endif
+        -: 1113:#ifndef OPENSSL_NO_DES
+    #####: 1114:			BIO_printf(bio_err,"des      ");
+        -: 1115:#endif
+        -: 1116:#ifndef OPENSSL_NO_AES
+    #####: 1117:			BIO_printf(bio_err,"aes      ");
+        -: 1118:#endif
+        -: 1119:#ifndef OPENSSL_NO_CAMELLIA
+    #####: 1120:			BIO_printf(bio_err,"camellia ");
+        -: 1121:#endif
+        -: 1122:#ifndef OPENSSL_NO_RSA
+    #####: 1123:			BIO_printf(bio_err,"rsa      ");
+        -: 1124:#endif
+        -: 1125:#ifndef OPENSSL_NO_BF
+    #####: 1126:			BIO_printf(bio_err,"blowfish");
+        -: 1127:#endif
+        -: 1128:#if !defined(OPENSSL_NO_IDEA) || !defined(OPENSSL_NO_SEED) || \
+        -: 1129:    !defined(OPENSSL_NO_RC2) || !defined(OPENSSL_NO_DES) || \
+        -: 1130:    !defined(OPENSSL_NO_RSA) || !defined(OPENSSL_NO_BF) || \
+        -: 1131:    !defined(OPENSSL_NO_AES) || !defined(OPENSSL_NO_CAMELLIA)
+    #####: 1132:			BIO_printf(bio_err,"\n");
+        -: 1133:#endif
+        -: 1134:
+    #####: 1135:			BIO_printf(bio_err,"\n");
+    #####: 1136:			BIO_printf(bio_err,"Available options:\n");
+        -: 1137:#if defined(TIMES) || defined(USE_TOD)
+        -: 1138:			BIO_printf(bio_err,"-elapsed        measure time in real time instead of CPU user time.\n");
+        -: 1139:#endif
+        -: 1140:#ifndef OPENSSL_NO_ENGINE
+    #####: 1141:			BIO_printf(bio_err,"-engine e       use engine e, possibly a hardware device.\n");
+        -: 1142:#endif
+    #####: 1143:			BIO_printf(bio_err,"-evp e          use EVP e.\n");
+    #####: 1144:			BIO_printf(bio_err,"-decrypt        time decryption instead of encryption (only EVP).\n");
+    #####: 1145:			BIO_printf(bio_err,"-mr             produce machine readable output.\n");
+        -: 1146:#ifndef NO_FORK
+    #####: 1147:			BIO_printf(bio_err,"-multi n        run n benchmarks in parallel.\n");
+        -: 1148:#endif
+    #####: 1149:			goto end;
+        -: 1150:			}
+    #####: 1151:		argc--;
+    #####: 1152:		argv++;
+    #####: 1153:		j++;
+        -: 1154:		}
+        -: 1155:
+        -: 1156:#ifndef NO_FORK
+    #####: 1157:	if(multi && do_multi(multi))
+        -: 1158:		goto show_res;
+        -: 1159:#endif
+        -: 1160:
+    #####: 1161:	if (j == 0)
+        -: 1162:		{
+    #####: 1163:		for (i=0; i<ALGOR_NUM; i++)
+        -: 1164:			{
+    #####: 1165:			if (i != D_EVP)
+    #####: 1166:				doit[i]=1;
+        -: 1167:			}
+    #####: 1168:		for (i=0; i<RSA_NUM; i++)
+    #####: 1169:			rsa_doit[i]=1;
+    #####: 1170:		for (i=0; i<DSA_NUM; i++)
+    #####: 1171:			dsa_doit[i]=1;
+        -: 1172:#ifndef OPENSSL_NO_ECDSA
+    #####: 1173:		for (i=0; i<EC_NUM; i++)
+    #####: 1174:			ecdsa_doit[i]=1;
+        -: 1175:#endif
+        -: 1176:#ifndef OPENSSL_NO_ECDH
+    #####: 1177:		for (i=0; i<EC_NUM; i++)
+    #####: 1178:			ecdh_doit[i]=1;
+        -: 1179:#endif
+        -: 1180:		}
+    #####: 1181:	for (i=0; i<ALGOR_NUM; i++)
+    #####: 1182:		if (doit[i]) pr_header++;
+        -: 1183:
+    #####: 1184:	if (usertime == 0 && !mr)
+    #####: 1185:		BIO_printf(bio_err,"You have chosen to measure elapsed time instead of user CPU time.\n");
+        -: 1186:
+        -: 1187:#ifndef OPENSSL_NO_RSA
+    #####: 1188:	for (i=0; i<RSA_NUM; i++)
+        -: 1189:		{
+        -: 1190:		const unsigned char *p;
+        -: 1191:
+    #####: 1192:		p=rsa_data[i];
+    #####: 1193:		rsa_key[i]=d2i_RSAPrivateKey(NULL,&p,rsa_data_length[i]);
+    #####: 1194:		if (rsa_key[i] == NULL)
+        -: 1195:			{
+    #####: 1196:			BIO_printf(bio_err,"internal error loading RSA key number %d\n",i);
+    #####: 1197:			goto end;
+        -: 1198:			}
+        -: 1199:#if 0
+        -: 1200:		else
+        -: 1201:			{
+        -: 1202:			BIO_printf(bio_err,mr ? "+RK:%d:"
+        -: 1203:				   : "Loaded RSA key, %d bit modulus and e= 0x",
+        -: 1204:				   BN_num_bits(rsa_key[i]->n));
+        -: 1205:			BN_print(bio_err,rsa_key[i]->e);
+        -: 1206:			BIO_printf(bio_err,"\n");
+        -: 1207:			}
+        -: 1208:#endif
+        -: 1209:		}
+        -: 1210:#endif
+        -: 1211:
+        -: 1212:#ifndef OPENSSL_NO_DSA
+    #####: 1213:	dsa_key[0]=get_dsa512();
+    #####: 1214:	dsa_key[1]=get_dsa1024();
+    #####: 1215:	dsa_key[2]=get_dsa2048();
+        -: 1216:#endif
+        -: 1217:
+        -: 1218:#ifndef OPENSSL_NO_DES
+    #####: 1219:	DES_set_key_unchecked(&key,&sch);
+    #####: 1220:	DES_set_key_unchecked(&key2,&sch2);
+    #####: 1221:	DES_set_key_unchecked(&key3,&sch3);
+        -: 1222:#endif
+        -: 1223:#ifndef OPENSSL_NO_AES
+    #####: 1224:	AES_set_encrypt_key(key16,128,&aes_ks1);
+    #####: 1225:	AES_set_encrypt_key(key24,192,&aes_ks2);
+    #####: 1226:	AES_set_encrypt_key(key32,256,&aes_ks3);
+        -: 1227:#endif
+        -: 1228:#ifndef OPENSSL_NO_CAMELLIA
+    #####: 1229:	Camellia_set_key(key16,128,&camellia_ks1);
+    #####: 1230:	Camellia_set_key(ckey24,192,&camellia_ks2);
+    #####: 1231:	Camellia_set_key(ckey32,256,&camellia_ks3);
+        -: 1232:#endif
+        -: 1233:#ifndef OPENSSL_NO_IDEA
+    #####: 1234:	idea_set_encrypt_key(key16,&idea_ks);
+        -: 1235:#endif
+        -: 1236:#ifndef OPENSSL_NO_SEED
+    #####: 1237:	SEED_set_key(key16,&seed_ks);
+        -: 1238:#endif
+        -: 1239:#ifndef OPENSSL_NO_RC4
+    #####: 1240:	RC4_set_key(&rc4_ks,16,key16);
+        -: 1241:#endif
+        -: 1242:#ifndef OPENSSL_NO_RC2
+    #####: 1243:	RC2_set_key(&rc2_ks,16,key16,128);
+        -: 1244:#endif
+        -: 1245:#ifndef OPENSSL_NO_RC5
+        -: 1246:	RC5_32_set_key(&rc5_ks,16,key16,12);
+        -: 1247:#endif
+        -: 1248:#ifndef OPENSSL_NO_BF
+    #####: 1249:	BF_set_key(&bf_ks,16,key16);
+        -: 1250:#endif
+        -: 1251:#ifndef OPENSSL_NO_CAST
+    #####: 1252:	CAST_set_key(&cast_ks,16,key16);
+        -: 1253:#endif
+        -: 1254:#ifndef OPENSSL_NO_RSA
+        -: 1255:	memset(rsa_c,0,sizeof(rsa_c));
+        -: 1256:#endif
+        -: 1257:#ifndef SIGALRM
+        -: 1258:#ifndef OPENSSL_NO_DES
+        -: 1259:	BIO_printf(bio_err,"First we calculate the approximate speed ...\n");
+        -: 1260:	count=10;
+        -: 1261:	do	{
+        -: 1262:		long it;
+        -: 1263:		count*=2;
+        -: 1264:		Time_F(START);
+        -: 1265:		for (it=count; it; it--)
+        -: 1266:			DES_ecb_encrypt((DES_cblock *)buf,
+        -: 1267:				(DES_cblock *)buf,
+        -: 1268:				&sch,DES_ENCRYPT);
+        -: 1269:		d=Time_F(STOP);
+        -: 1270:		} while (d <3);
+        -: 1271:	save_count=count;
+        -: 1272:	c[D_MD2][0]=count/10;
+        -: 1273:	c[D_MDC2][0]=count/10;
+        -: 1274:	c[D_MD4][0]=count;
+        -: 1275:	c[D_MD5][0]=count;
+        -: 1276:	c[D_HMAC][0]=count;
+        -: 1277:	c[D_SHA1][0]=count;
+        -: 1278:	c[D_RMD160][0]=count;
+        -: 1279:	c[D_RC4][0]=count*5;
+        -: 1280:	c[D_CBC_DES][0]=count;
+        -: 1281:	c[D_EDE3_DES][0]=count/3;
+        -: 1282:	c[D_CBC_IDEA][0]=count;
+        -: 1283:	c[D_CBC_SEED][0]=count;
+        -: 1284:	c[D_CBC_RC2][0]=count;
+        -: 1285:	c[D_CBC_RC5][0]=count;
+        -: 1286:	c[D_CBC_BF][0]=count;
+        -: 1287:	c[D_CBC_CAST][0]=count;
+        -: 1288:	c[D_CBC_128_AES][0]=count;
+        -: 1289:	c[D_CBC_192_AES][0]=count;
+        -: 1290:	c[D_CBC_256_AES][0]=count;
+        -: 1291:	c[D_CBC_128_CML][0]=count;
+        -: 1292:	c[D_CBC_192_CML][0]=count;
+        -: 1293:	c[D_CBC_256_CML][0]=count;
+        -: 1294:	c[D_SHA256][0]=count;
+        -: 1295:	c[D_SHA512][0]=count;
+        -: 1296:	c[D_WHIRLPOOL][0]=count;
+        -: 1297:	c[D_IGE_128_AES][0]=count;
+        -: 1298:	c[D_IGE_192_AES][0]=count;
+        -: 1299:	c[D_IGE_256_AES][0]=count;
+        -: 1300:	c[D_GHASH][0]=count;
+        -: 1301:
+        -: 1302:	for (i=1; i<SIZE_NUM; i++)
+        -: 1303:		{
+        -: 1304:		c[D_MD2][i]=c[D_MD2][0]*4*lengths[0]/lengths[i];
+        -: 1305:		c[D_MDC2][i]=c[D_MDC2][0]*4*lengths[0]/lengths[i];
+        -: 1306:		c[D_MD4][i]=c[D_MD4][0]*4*lengths[0]/lengths[i];
+        -: 1307:		c[D_MD5][i]=c[D_MD5][0]*4*lengths[0]/lengths[i];
+        -: 1308:		c[D_HMAC][i]=c[D_HMAC][0]*4*lengths[0]/lengths[i];
+        -: 1309:		c[D_SHA1][i]=c[D_SHA1][0]*4*lengths[0]/lengths[i];
+        -: 1310:		c[D_RMD160][i]=c[D_RMD160][0]*4*lengths[0]/lengths[i];
+        -: 1311:		c[D_SHA256][i]=c[D_SHA256][0]*4*lengths[0]/lengths[i];
+        -: 1312:		c[D_SHA512][i]=c[D_SHA512][0]*4*lengths[0]/lengths[i];
+        -: 1313:		c[D_WHIRLPOOL][i]=c[D_WHIRLPOOL][0]*4*lengths[0]/lengths[i];
+        -: 1314:		}
+        -: 1315:	for (i=1; i<SIZE_NUM; i++)
+        -: 1316:		{
+        -: 1317:		long l0,l1;
+        -: 1318:
+        -: 1319:		l0=(long)lengths[i-1];
+        -: 1320:		l1=(long)lengths[i];
+        -: 1321:		c[D_RC4][i]=c[D_RC4][i-1]*l0/l1;
+        -: 1322:		c[D_CBC_DES][i]=c[D_CBC_DES][i-1]*l0/l1;
+        -: 1323:		c[D_EDE3_DES][i]=c[D_EDE3_DES][i-1]*l0/l1;
+        -: 1324:		c[D_CBC_IDEA][i]=c[D_CBC_IDEA][i-1]*l0/l1;
+        -: 1325:		c[D_CBC_SEED][i]=c[D_CBC_SEED][i-1]*l0/l1;
+        -: 1326:		c[D_CBC_RC2][i]=c[D_CBC_RC2][i-1]*l0/l1;
+        -: 1327:		c[D_CBC_RC5][i]=c[D_CBC_RC5][i-1]*l0/l1;
+        -: 1328:		c[D_CBC_BF][i]=c[D_CBC_BF][i-1]*l0/l1;
+        -: 1329:		c[D_CBC_CAST][i]=c[D_CBC_CAST][i-1]*l0/l1;
+        -: 1330:		c[D_CBC_128_AES][i]=c[D_CBC_128_AES][i-1]*l0/l1;
+        -: 1331:		c[D_CBC_192_AES][i]=c[D_CBC_192_AES][i-1]*l0/l1;
+        -: 1332:		c[D_CBC_256_AES][i]=c[D_CBC_256_AES][i-1]*l0/l1;
+        -: 1333: 		c[D_CBC_128_CML][i]=c[D_CBC_128_CML][i-1]*l0/l1;
+        -: 1334:		c[D_CBC_192_CML][i]=c[D_CBC_192_CML][i-1]*l0/l1;
+        -: 1335:		c[D_CBC_256_CML][i]=c[D_CBC_256_CML][i-1]*l0/l1;
+        -: 1336:		c[D_IGE_128_AES][i]=c[D_IGE_128_AES][i-1]*l0/l1;
+        -: 1337:		c[D_IGE_192_AES][i]=c[D_IGE_192_AES][i-1]*l0/l1;
+        -: 1338:		c[D_IGE_256_AES][i]=c[D_IGE_256_AES][i-1]*l0/l1;
+        -: 1339:		}
+        -: 1340:#ifndef OPENSSL_NO_RSA
+        -: 1341:	rsa_c[R_RSA_512][0]=count/2000;
+        -: 1342:	rsa_c[R_RSA_512][1]=count/400;
+        -: 1343:	for (i=1; i<RSA_NUM; i++)
+        -: 1344:		{
+        -: 1345:		rsa_c[i][0]=rsa_c[i-1][0]/8;
+        -: 1346:		rsa_c[i][1]=rsa_c[i-1][1]/4;
+        -: 1347:		if ((rsa_doit[i] <= 1) && (rsa_c[i][0] == 0))
+        -: 1348:			rsa_doit[i]=0;
+        -: 1349:		else
+        -: 1350:			{
+        -: 1351:			if (rsa_c[i][0] == 0)
+        -: 1352:				{
+        -: 1353:				rsa_c[i][0]=1;
+        -: 1354:				rsa_c[i][1]=20;
+        -: 1355:				}
+        -: 1356:			}				
+        -: 1357:		}
+        -: 1358:#endif
+        -: 1359:
+        -: 1360:#ifndef OPENSSL_NO_DSA
+        -: 1361:	dsa_c[R_DSA_512][0]=count/1000;
+        -: 1362:	dsa_c[R_DSA_512][1]=count/1000/2;
+        -: 1363:	for (i=1; i<DSA_NUM; i++)
+        -: 1364:		{
+        -: 1365:		dsa_c[i][0]=dsa_c[i-1][0]/4;
+        -: 1366:		dsa_c[i][1]=dsa_c[i-1][1]/4;
+        -: 1367:		if ((dsa_doit[i] <= 1) && (dsa_c[i][0] == 0))
+        -: 1368:			dsa_doit[i]=0;
+        -: 1369:		else
+        -: 1370:			{
+        -: 1371:			if (dsa_c[i] == 0)
+        -: 1372:				{
+        -: 1373:				dsa_c[i][0]=1;
+        -: 1374:				dsa_c[i][1]=1;
+        -: 1375:				}
+        -: 1376:			}				
+        -: 1377:		}
+        -: 1378:#endif
+        -: 1379:
+        -: 1380:#ifndef OPENSSL_NO_ECDSA
+        -: 1381:	ecdsa_c[R_EC_P160][0]=count/1000;
+        -: 1382:	ecdsa_c[R_EC_P160][1]=count/1000/2;
+        -: 1383:	for (i=R_EC_P192; i<=R_EC_P521; i++)
+        -: 1384:		{
+        -: 1385:		ecdsa_c[i][0]=ecdsa_c[i-1][0]/2;
+        -: 1386:		ecdsa_c[i][1]=ecdsa_c[i-1][1]/2;
+        -: 1387:		if ((ecdsa_doit[i] <= 1) && (ecdsa_c[i][0] == 0))
+        -: 1388:			ecdsa_doit[i]=0;
+        -: 1389:		else
+        -: 1390:			{
+        -: 1391:			if (ecdsa_c[i] == 0)
+        -: 1392:				{
+        -: 1393:				ecdsa_c[i][0]=1;
+        -: 1394:				ecdsa_c[i][1]=1;
+        -: 1395:				}
+        -: 1396:			}
+        -: 1397:		}
+        -: 1398:	ecdsa_c[R_EC_K163][0]=count/1000;
+        -: 1399:	ecdsa_c[R_EC_K163][1]=count/1000/2;
+        -: 1400:	for (i=R_EC_K233; i<=R_EC_K571; i++)
+        -: 1401:		{
+        -: 1402:		ecdsa_c[i][0]=ecdsa_c[i-1][0]/2;
+        -: 1403:		ecdsa_c[i][1]=ecdsa_c[i-1][1]/2;
+        -: 1404:		if ((ecdsa_doit[i] <= 1) && (ecdsa_c[i][0] == 0))
+        -: 1405:			ecdsa_doit[i]=0;
+        -: 1406:		else
+        -: 1407:			{
+        -: 1408:			if (ecdsa_c[i] == 0)
+        -: 1409:				{
+        -: 1410:				ecdsa_c[i][0]=1;
+        -: 1411:				ecdsa_c[i][1]=1;
+        -: 1412:				}
+        -: 1413:			}
+        -: 1414:		}
+        -: 1415:	ecdsa_c[R_EC_B163][0]=count/1000;
+        -: 1416:	ecdsa_c[R_EC_B163][1]=count/1000/2;
+        -: 1417:	for (i=R_EC_B233; i<=R_EC_B571; i++)
+        -: 1418:		{
+        -: 1419:		ecdsa_c[i][0]=ecdsa_c[i-1][0]/2;
+        -: 1420:		ecdsa_c[i][1]=ecdsa_c[i-1][1]/2;
+        -: 1421:		if ((ecdsa_doit[i] <= 1) && (ecdsa_c[i][0] == 0))
+        -: 1422:			ecdsa_doit[i]=0;
+        -: 1423:		else
+        -: 1424:			{
+        -: 1425:			if (ecdsa_c[i] == 0)
+        -: 1426:				{
+        -: 1427:				ecdsa_c[i][0]=1;
+        -: 1428:				ecdsa_c[i][1]=1;
+        -: 1429:				}
+        -: 1430:			}
+        -: 1431:		}
+        -: 1432:#endif
+        -: 1433:
+        -: 1434:#ifndef OPENSSL_NO_ECDH
+        -: 1435:	ecdh_c[R_EC_P160][0]=count/1000;
+        -: 1436:	ecdh_c[R_EC_P160][1]=count/1000;
+        -: 1437:	for (i=R_EC_P192; i<=R_EC_P521; i++)
+        -: 1438:		{
+        -: 1439:		ecdh_c[i][0]=ecdh_c[i-1][0]/2;
+        -: 1440:		ecdh_c[i][1]=ecdh_c[i-1][1]/2;
+        -: 1441:		if ((ecdh_doit[i] <= 1) && (ecdh_c[i][0] == 0))
+        -: 1442:			ecdh_doit[i]=0;
+        -: 1443:		else
+        -: 1444:			{
+        -: 1445:			if (ecdh_c[i] == 0)
+        -: 1446:				{
+        -: 1447:				ecdh_c[i][0]=1;
+        -: 1448:				ecdh_c[i][1]=1;
+        -: 1449:				}
+        -: 1450:			}
+        -: 1451:		}
+        -: 1452:	ecdh_c[R_EC_K163][0]=count/1000;
+        -: 1453:	ecdh_c[R_EC_K163][1]=count/1000;
+        -: 1454:	for (i=R_EC_K233; i<=R_EC_K571; i++)
+        -: 1455:		{
+        -: 1456:		ecdh_c[i][0]=ecdh_c[i-1][0]/2;
+        -: 1457:		ecdh_c[i][1]=ecdh_c[i-1][1]/2;
+        -: 1458:		if ((ecdh_doit[i] <= 1) && (ecdh_c[i][0] == 0))
+        -: 1459:			ecdh_doit[i]=0;
+        -: 1460:		else
+        -: 1461:			{
+        -: 1462:			if (ecdh_c[i] == 0)
+        -: 1463:				{
+        -: 1464:				ecdh_c[i][0]=1;
+        -: 1465:				ecdh_c[i][1]=1;
+        -: 1466:				}
+        -: 1467:			}
+        -: 1468:		}
+        -: 1469:	ecdh_c[R_EC_B163][0]=count/1000;
+        -: 1470:	ecdh_c[R_EC_B163][1]=count/1000;
+        -: 1471:	for (i=R_EC_B233; i<=R_EC_B571; i++)
+        -: 1472:		{
+        -: 1473:		ecdh_c[i][0]=ecdh_c[i-1][0]/2;
+        -: 1474:		ecdh_c[i][1]=ecdh_c[i-1][1]/2;
+        -: 1475:		if ((ecdh_doit[i] <= 1) && (ecdh_c[i][0] == 0))
+        -: 1476:			ecdh_doit[i]=0;
+        -: 1477:		else
+        -: 1478:			{
+        -: 1479:			if (ecdh_c[i] == 0)
+        -: 1480:				{
+        -: 1481:				ecdh_c[i][0]=1;
+        -: 1482:				ecdh_c[i][1]=1;
+        -: 1483:				}
+        -: 1484:			}
+        -: 1485:		}
+        -: 1486:#endif
+        -: 1487:
+        -: 1488:#define COND(d)	(count < (d))
+        -: 1489:#define COUNT(d) (d)
+        -: 1490:#else
+        -: 1491:/* not worth fixing */
+        -: 1492:# error "You cannot disable DES on systems without SIGALRM."
+        -: 1493:#endif /* OPENSSL_NO_DES */
+        -: 1494:#else
+        -: 1495:#define COND(c)	(run && count<0x7fffffff)
+        -: 1496:#define COUNT(d) (count)
+        -: 1497:#ifndef _WIN32
+    #####: 1498:	signal(SIGALRM,sig_done);
+        -: 1499:#endif
+        -: 1500:#endif /* SIGALRM */
+        -: 1501:
+        -: 1502:#ifndef OPENSSL_NO_MD2
+        -: 1503:	if (doit[D_MD2])
+        -: 1504:		{
+        -: 1505:		for (j=0; j<SIZE_NUM; j++)
+        -: 1506:			{
+        -: 1507:			print_message(names[D_MD2],c[D_MD2][j],lengths[j]);
+        -: 1508:			Time_F(START);
+        -: 1509:			for (count=0,run=1; COND(c[D_MD2][j]); count++)
+        -: 1510:				EVP_Digest(buf,(unsigned long)lengths[j],&(md2[0]),NULL,EVP_md2(),NULL);
+        -: 1511:			d=Time_F(STOP);
+        -: 1512:			print_result(D_MD2,j,count,d);
+        -: 1513:			}
+        -: 1514:		}
+        -: 1515:#endif
+        -: 1516:#ifndef OPENSSL_NO_MDC2
+    #####: 1517:	if (doit[D_MDC2])
+        -: 1518:		{
+    #####: 1519:		for (j=0; j<SIZE_NUM; j++)
+        -: 1520:			{
+    #####: 1521:			print_message(names[D_MDC2],c[D_MDC2][j],lengths[j]);
+        -: 1522:			Time_F(START);
+    #####: 1523:			for (count=0,run=1; COND(c[D_MDC2][j]); count++)
+    #####: 1524:				EVP_Digest(buf,(unsigned long)lengths[j],&(mdc2[0]),NULL,EVP_mdc2(),NULL);
+        -: 1525:			d=Time_F(STOP);
+    #####: 1526:			print_result(D_MDC2,j,count,d);
+        -: 1527:			}
+        -: 1528:		}
+        -: 1529:#endif
+        -: 1530:
+        -: 1531:#ifndef OPENSSL_NO_MD4
+    #####: 1532:	if (doit[D_MD4])
+        -: 1533:		{
+    #####: 1534:		for (j=0; j<SIZE_NUM; j++)
+        -: 1535:			{
+    #####: 1536:			print_message(names[D_MD4],c[D_MD4][j],lengths[j]);
+        -: 1537:			Time_F(START);
+    #####: 1538:			for (count=0,run=1; COND(c[D_MD4][j]); count++)
+    #####: 1539:				EVP_Digest(&(buf[0]),(unsigned long)lengths[j],&(md4[0]),NULL,EVP_md4(),NULL);
+        -: 1540:			d=Time_F(STOP);
+    #####: 1541:			print_result(D_MD4,j,count,d);
+        -: 1542:			}
+        -: 1543:		}
+        -: 1544:#endif
+        -: 1545:
+        -: 1546:#ifndef OPENSSL_NO_MD5
+    #####: 1547:	if (doit[D_MD5])
+        -: 1548:		{
+    #####: 1549:		for (j=0; j<SIZE_NUM; j++)
+        -: 1550:			{
+    #####: 1551:			print_message(names[D_MD5],c[D_MD5][j],lengths[j]);
+        -: 1552:			Time_F(START);
+    #####: 1553:			for (count=0,run=1; COND(c[D_MD5][j]); count++)
+    #####: 1554:				EVP_Digest(&(buf[0]),(unsigned long)lengths[j],&(md5[0]),NULL,EVP_get_digestbyname("md5"),NULL);
+        -: 1555:			d=Time_F(STOP);
+    #####: 1556:			print_result(D_MD5,j,count,d);
+        -: 1557:			}
+        -: 1558:		}
+        -: 1559:#endif
+        -: 1560:
+        -: 1561:#if !defined(OPENSSL_NO_MD5) && !defined(OPENSSL_NO_HMAC)
+    #####: 1562:	if (doit[D_HMAC])
+        -: 1563:		{
+        -: 1564:		HMAC_CTX hctx;
+        -: 1565:
+    #####: 1566:		HMAC_CTX_init(&hctx);
+    #####: 1567:		HMAC_Init_ex(&hctx,(unsigned char *)"This is a key...",
+        -: 1568:			16,EVP_md5(), NULL);
+        -: 1569:
+    #####: 1570:		for (j=0; j<SIZE_NUM; j++)
+        -: 1571:			{
+    #####: 1572:			print_message(names[D_HMAC],c[D_HMAC][j],lengths[j]);
+        -: 1573:			Time_F(START);
+    #####: 1574:			for (count=0,run=1; COND(c[D_HMAC][j]); count++)
+        -: 1575:				{
+    #####: 1576:				HMAC_Init_ex(&hctx,NULL,0,NULL,NULL);
+    #####: 1577:				HMAC_Update(&hctx,buf,lengths[j]);
+    #####: 1578:				HMAC_Final(&hctx,&(hmac[0]),NULL);
+        -: 1579:				}
+        -: 1580:			d=Time_F(STOP);
+    #####: 1581:			print_result(D_HMAC,j,count,d);
+        -: 1582:			}
+    #####: 1583:		HMAC_CTX_cleanup(&hctx);
+        -: 1584:		}
+        -: 1585:#endif
+        -: 1586:#ifndef OPENSSL_NO_SHA
+    #####: 1587:	if (doit[D_SHA1])
+        -: 1588:		{
+    #####: 1589:		for (j=0; j<SIZE_NUM; j++)
+        -: 1590:			{
+    #####: 1591:			print_message(names[D_SHA1],c[D_SHA1][j],lengths[j]);
+        -: 1592:			Time_F(START);
+    #####: 1593:			for (count=0,run=1; COND(c[D_SHA1][j]); count++)
+    #####: 1594:				EVP_Digest(buf,(unsigned long)lengths[j],&(sha[0]),NULL,EVP_sha1(),NULL);
+        -: 1595:			d=Time_F(STOP);
+    #####: 1596:			print_result(D_SHA1,j,count,d);
+        -: 1597:			}
+        -: 1598:		}
+        -: 1599:
+        -: 1600:#ifndef OPENSSL_NO_SHA256
+    #####: 1601:	if (doit[D_SHA256])
+        -: 1602:		{
+    #####: 1603:		for (j=0; j<SIZE_NUM; j++)
+        -: 1604:			{
+    #####: 1605:			print_message(names[D_SHA256],c[D_SHA256][j],lengths[j]);
+        -: 1606:			Time_F(START);
+    #####: 1607:			for (count=0,run=1; COND(c[D_SHA256][j]); count++)
+    #####: 1608:				SHA256(buf,lengths[j],sha256);
+        -: 1609:			d=Time_F(STOP);
+    #####: 1610:			print_result(D_SHA256,j,count,d);
+        -: 1611:			}
+        -: 1612:		}
+        -: 1613:#endif
+        -: 1614:
+        -: 1615:#ifndef OPENSSL_NO_SHA512
+    #####: 1616:	if (doit[D_SHA512])
+        -: 1617:		{
+    #####: 1618:		for (j=0; j<SIZE_NUM; j++)
+        -: 1619:			{
+    #####: 1620:			print_message(names[D_SHA512],c[D_SHA512][j],lengths[j]);
+        -: 1621:			Time_F(START);
+    #####: 1622:			for (count=0,run=1; COND(c[D_SHA512][j]); count++)
+    #####: 1623:				SHA512(buf,lengths[j],sha512);
+        -: 1624:			d=Time_F(STOP);
+    #####: 1625:			print_result(D_SHA512,j,count,d);
+        -: 1626:			}
+        -: 1627:		}
+        -: 1628:#endif
+        -: 1629:#endif
+        -: 1630:
+        -: 1631:#ifndef OPENSSL_NO_WHIRLPOOL
+    #####: 1632:	if (doit[D_WHIRLPOOL])
+        -: 1633:		{
+    #####: 1634:		for (j=0; j<SIZE_NUM; j++)
+        -: 1635:			{
+    #####: 1636:			print_message(names[D_WHIRLPOOL],c[D_WHIRLPOOL][j],lengths[j]);
+        -: 1637:			Time_F(START);
+    #####: 1638:			for (count=0,run=1; COND(c[D_WHIRLPOOL][j]); count++)
+    #####: 1639:				WHIRLPOOL(buf,lengths[j],whirlpool);
+        -: 1640:			d=Time_F(STOP);
+    #####: 1641:			print_result(D_WHIRLPOOL,j,count,d);
+        -: 1642:			}
+        -: 1643:		}
+        -: 1644:#endif
+        -: 1645:
+        -: 1646:#ifndef OPENSSL_NO_RIPEMD
+    #####: 1647:	if (doit[D_RMD160])
+        -: 1648:		{
+    #####: 1649:		for (j=0; j<SIZE_NUM; j++)
+        -: 1650:			{
+    #####: 1651:			print_message(names[D_RMD160],c[D_RMD160][j],lengths[j]);
+        -: 1652:			Time_F(START);
+    #####: 1653:			for (count=0,run=1; COND(c[D_RMD160][j]); count++)
+    #####: 1654:				EVP_Digest(buf,(unsigned long)lengths[j],&(rmd160[0]),NULL,EVP_ripemd160(),NULL);
+        -: 1655:			d=Time_F(STOP);
+    #####: 1656:			print_result(D_RMD160,j,count,d);
+        -: 1657:			}
+        -: 1658:		}
+        -: 1659:#endif
+        -: 1660:#ifndef OPENSSL_NO_RC4
+    #####: 1661:	if (doit[D_RC4])
+        -: 1662:		{
+    #####: 1663:		for (j=0; j<SIZE_NUM; j++)
+        -: 1664:			{
+    #####: 1665:			print_message(names[D_RC4],c[D_RC4][j],lengths[j]);
+        -: 1666:			Time_F(START);
+    #####: 1667:			for (count=0,run=1; COND(c[D_RC4][j]); count++)
+    #####: 1668:				RC4(&rc4_ks,(unsigned int)lengths[j],
+        -: 1669:					buf,buf);
+        -: 1670:			d=Time_F(STOP);
+    #####: 1671:			print_result(D_RC4,j,count,d);
+        -: 1672:			}
+        -: 1673:		}
+        -: 1674:#endif
+        -: 1675:#ifndef OPENSSL_NO_DES
+    #####: 1676:	if (doit[D_CBC_DES])
+        -: 1677:		{
+    #####: 1678:		for (j=0; j<SIZE_NUM; j++)
+        -: 1679:			{
+    #####: 1680:			print_message(names[D_CBC_DES],c[D_CBC_DES][j],lengths[j]);
+        -: 1681:			Time_F(START);
+    #####: 1682:			for (count=0,run=1; COND(c[D_CBC_DES][j]); count++)
+    #####: 1683:				DES_ncbc_encrypt(buf,buf,lengths[j],&sch,
+        -: 1684:						 &DES_iv,DES_ENCRYPT);
+        -: 1685:			d=Time_F(STOP);
+    #####: 1686:			print_result(D_CBC_DES,j,count,d);
+        -: 1687:			}
+        -: 1688:		}
+        -: 1689:
+    #####: 1690:	if (doit[D_EDE3_DES])
+        -: 1691:		{
+    #####: 1692:		for (j=0; j<SIZE_NUM; j++)
+        -: 1693:			{
+    #####: 1694:			print_message(names[D_EDE3_DES],c[D_EDE3_DES][j],lengths[j]);
+        -: 1695:			Time_F(START);
+    #####: 1696:			for (count=0,run=1; COND(c[D_EDE3_DES][j]); count++)
+    #####: 1697:				DES_ede3_cbc_encrypt(buf,buf,lengths[j],
+        -: 1698:						     &sch,&sch2,&sch3,
+        -: 1699:						     &DES_iv,DES_ENCRYPT);
+        -: 1700:			d=Time_F(STOP);
+    #####: 1701:			print_result(D_EDE3_DES,j,count,d);
+        -: 1702:			}
+        -: 1703:		}
+        -: 1704:#endif
+        -: 1705:#ifndef OPENSSL_NO_AES
+    #####: 1706:	if (doit[D_CBC_128_AES])
+        -: 1707:		{
+    #####: 1708:		for (j=0; j<SIZE_NUM; j++)
+        -: 1709:			{
+    #####: 1710:			print_message(names[D_CBC_128_AES],c[D_CBC_128_AES][j],lengths[j]);
+        -: 1711:			Time_F(START);
+    #####: 1712:			for (count=0,run=1; COND(c[D_CBC_128_AES][j]); count++)
+    #####: 1713:				AES_cbc_encrypt(buf,buf,
+    #####: 1714:					(unsigned long)lengths[j],&aes_ks1,
+        -: 1715:					iv,AES_ENCRYPT);
+        -: 1716:			d=Time_F(STOP);
+    #####: 1717:			print_result(D_CBC_128_AES,j,count,d);
+        -: 1718:			}
+        -: 1719:		}
+    #####: 1720:	if (doit[D_CBC_192_AES])
+        -: 1721:		{
+    #####: 1722:		for (j=0; j<SIZE_NUM; j++)
+        -: 1723:			{
+    #####: 1724:			print_message(names[D_CBC_192_AES],c[D_CBC_192_AES][j],lengths[j]);
+        -: 1725:			Time_F(START);
+    #####: 1726:			for (count=0,run=1; COND(c[D_CBC_192_AES][j]); count++)
+    #####: 1727:				AES_cbc_encrypt(buf,buf,
+    #####: 1728:					(unsigned long)lengths[j],&aes_ks2,
+        -: 1729:					iv,AES_ENCRYPT);
+        -: 1730:			d=Time_F(STOP);
+    #####: 1731:			print_result(D_CBC_192_AES,j,count,d);
+        -: 1732:			}
+        -: 1733:		}
+    #####: 1734:	if (doit[D_CBC_256_AES])
+        -: 1735:		{
+    #####: 1736:		for (j=0; j<SIZE_NUM; j++)
+        -: 1737:			{
+    #####: 1738:			print_message(names[D_CBC_256_AES],c[D_CBC_256_AES][j],lengths[j]);
+        -: 1739:			Time_F(START);
+    #####: 1740:			for (count=0,run=1; COND(c[D_CBC_256_AES][j]); count++)
+    #####: 1741:				AES_cbc_encrypt(buf,buf,
+    #####: 1742:					(unsigned long)lengths[j],&aes_ks3,
+        -: 1743:					iv,AES_ENCRYPT);
+        -: 1744:			d=Time_F(STOP);
+    #####: 1745:			print_result(D_CBC_256_AES,j,count,d);
+        -: 1746:			}
+        -: 1747:		}
+        -: 1748:
+    #####: 1749:	if (doit[D_IGE_128_AES])
+        -: 1750:		{
+    #####: 1751:		for (j=0; j<SIZE_NUM; j++)
+        -: 1752:			{
+    #####: 1753:			print_message(names[D_IGE_128_AES],c[D_IGE_128_AES][j],lengths[j]);
+        -: 1754:			Time_F(START);
+    #####: 1755:			for (count=0,run=1; COND(c[D_IGE_128_AES][j]); count++)
+    #####: 1756:				AES_ige_encrypt(buf,buf2,
+    #####: 1757:					(unsigned long)lengths[j],&aes_ks1,
+        -: 1758:					iv,AES_ENCRYPT);
+        -: 1759:			d=Time_F(STOP);
+    #####: 1760:			print_result(D_IGE_128_AES,j,count,d);
+        -: 1761:			}
+        -: 1762:		}
+    #####: 1763:	if (doit[D_IGE_192_AES])
+        -: 1764:		{
+    #####: 1765:		for (j=0; j<SIZE_NUM; j++)
+        -: 1766:			{
+    #####: 1767:			print_message(names[D_IGE_192_AES],c[D_IGE_192_AES][j],lengths[j]);
+        -: 1768:			Time_F(START);
+    #####: 1769:			for (count=0,run=1; COND(c[D_IGE_192_AES][j]); count++)
+    #####: 1770:				AES_ige_encrypt(buf,buf2,
+    #####: 1771:					(unsigned long)lengths[j],&aes_ks2,
+        -: 1772:					iv,AES_ENCRYPT);
+        -: 1773:			d=Time_F(STOP);
+    #####: 1774:			print_result(D_IGE_192_AES,j,count,d);
+        -: 1775:			}
+        -: 1776:		}
+    #####: 1777:	if (doit[D_IGE_256_AES])
+        -: 1778:		{
+    #####: 1779:		for (j=0; j<SIZE_NUM; j++)
+        -: 1780:			{
+    #####: 1781:			print_message(names[D_IGE_256_AES],c[D_IGE_256_AES][j],lengths[j]);
+        -: 1782:			Time_F(START);
+    #####: 1783:			for (count=0,run=1; COND(c[D_IGE_256_AES][j]); count++)
+    #####: 1784:				AES_ige_encrypt(buf,buf2,
+    #####: 1785:					(unsigned long)lengths[j],&aes_ks3,
+        -: 1786:					iv,AES_ENCRYPT);
+        -: 1787:			d=Time_F(STOP);
+    #####: 1788:			print_result(D_IGE_256_AES,j,count,d);
+        -: 1789:			}
+        -: 1790:		}
+    #####: 1791:	if (doit[D_GHASH])
+        -: 1792:		{
+    #####: 1793:		GCM128_CONTEXT *ctx = CRYPTO_gcm128_new(&aes_ks1,(block128_f)AES_encrypt);
+    #####: 1794:		CRYPTO_gcm128_setiv (ctx,(unsigned char *)"0123456789ab",12);
+        -: 1795:
+    #####: 1796:		for (j=0; j<SIZE_NUM; j++)
+        -: 1797:			{
+    #####: 1798:			print_message(names[D_GHASH],c[D_GHASH][j],lengths[j]);
+        -: 1799:			Time_F(START);
+    #####: 1800:			for (count=0,run=1; COND(c[D_GHASH][j]); count++)
+    #####: 1801:				CRYPTO_gcm128_aad(ctx,buf,lengths[j]);
+        -: 1802:			d=Time_F(STOP);
+    #####: 1803:			print_result(D_GHASH,j,count,d);
+        -: 1804:			}
+    #####: 1805:		CRYPTO_gcm128_release(ctx);
+        -: 1806:		}
+        -: 1807:
+        -: 1808:#endif
+        -: 1809:#ifndef OPENSSL_NO_CAMELLIA
+    #####: 1810:	if (doit[D_CBC_128_CML])
+        -: 1811:		{
+    #####: 1812:		for (j=0; j<SIZE_NUM; j++)
+        -: 1813:			{
+    #####: 1814:			print_message(names[D_CBC_128_CML],c[D_CBC_128_CML][j],lengths[j]);
+        -: 1815:			Time_F(START);
+    #####: 1816:			for (count=0,run=1; COND(c[D_CBC_128_CML][j]); count++)
+    #####: 1817:				Camellia_cbc_encrypt(buf,buf,
+    #####: 1818:				        (unsigned long)lengths[j],&camellia_ks1,
+        -: 1819:				        iv,CAMELLIA_ENCRYPT);
+        -: 1820:			d=Time_F(STOP);
+    #####: 1821:			print_result(D_CBC_128_CML,j,count,d);
+        -: 1822:			}
+        -: 1823:		}
+    #####: 1824:	if (doit[D_CBC_192_CML])
+        -: 1825:		{
+    #####: 1826:		for (j=0; j<SIZE_NUM; j++)
+        -: 1827:			{
+    #####: 1828:			print_message(names[D_CBC_192_CML],c[D_CBC_192_CML][j],lengths[j]);
+        -: 1829:			Time_F(START);
+    #####: 1830:			for (count=0,run=1; COND(c[D_CBC_192_CML][j]); count++)
+    #####: 1831:				Camellia_cbc_encrypt(buf,buf,
+    #####: 1832:				        (unsigned long)lengths[j],&camellia_ks2,
+        -: 1833:				        iv,CAMELLIA_ENCRYPT);
+        -: 1834:			d=Time_F(STOP);
+    #####: 1835:			print_result(D_CBC_192_CML,j,count,d);
+        -: 1836:			}
+        -: 1837:		}
+    #####: 1838:	if (doit[D_CBC_256_CML])
+        -: 1839:		{
+    #####: 1840:		for (j=0; j<SIZE_NUM; j++)
+        -: 1841:			{
+    #####: 1842:			print_message(names[D_CBC_256_CML],c[D_CBC_256_CML][j],lengths[j]);
+        -: 1843:			Time_F(START);
+    #####: 1844:			for (count=0,run=1; COND(c[D_CBC_256_CML][j]); count++)
+    #####: 1845:				Camellia_cbc_encrypt(buf,buf,
+    #####: 1846:				        (unsigned long)lengths[j],&camellia_ks3,
+        -: 1847:				        iv,CAMELLIA_ENCRYPT);
+        -: 1848:			d=Time_F(STOP);
+    #####: 1849:			print_result(D_CBC_256_CML,j,count,d);
+        -: 1850:			}
+        -: 1851:		}
+        -: 1852:
+        -: 1853:#endif
+        -: 1854:#ifndef OPENSSL_NO_IDEA
+    #####: 1855:	if (doit[D_CBC_IDEA])
+        -: 1856:		{
+    #####: 1857:		for (j=0; j<SIZE_NUM; j++)
+        -: 1858:			{
+    #####: 1859:			print_message(names[D_CBC_IDEA],c[D_CBC_IDEA][j],lengths[j]);
+        -: 1860:			Time_F(START);
+    #####: 1861:			for (count=0,run=1; COND(c[D_CBC_IDEA][j]); count++)
+    #####: 1862:				idea_cbc_encrypt(buf,buf,
+    #####: 1863:					(unsigned long)lengths[j],&idea_ks,
+        -: 1864:					iv,IDEA_ENCRYPT);
+        -: 1865:			d=Time_F(STOP);
+    #####: 1866:			print_result(D_CBC_IDEA,j,count,d);
+        -: 1867:			}
+        -: 1868:		}
+        -: 1869:#endif
+        -: 1870:#ifndef OPENSSL_NO_SEED
+    #####: 1871:	if (doit[D_CBC_SEED])
+        -: 1872:		{
+    #####: 1873:		for (j=0; j<SIZE_NUM; j++)
+        -: 1874:			{
+    #####: 1875:			print_message(names[D_CBC_SEED],c[D_CBC_SEED][j],lengths[j]);
+        -: 1876:			Time_F(START);
+    #####: 1877:			for (count=0,run=1; COND(c[D_CBC_SEED][j]); count++)
+    #####: 1878:				SEED_cbc_encrypt(buf,buf,
+    #####: 1879:					(unsigned long)lengths[j],&seed_ks,iv,1);
+        -: 1880:			d=Time_F(STOP);
+    #####: 1881:			print_result(D_CBC_SEED,j,count,d);
+        -: 1882:			}
+        -: 1883:		}
+        -: 1884:#endif
+        -: 1885:#ifndef OPENSSL_NO_RC2
+    #####: 1886:	if (doit[D_CBC_RC2])
+        -: 1887:		{
+    #####: 1888:		for (j=0; j<SIZE_NUM; j++)
+        -: 1889:			{
+    #####: 1890:			print_message(names[D_CBC_RC2],c[D_CBC_RC2][j],lengths[j]);
+        -: 1891:			Time_F(START);
+    #####: 1892:			for (count=0,run=1; COND(c[D_CBC_RC2][j]); count++)
+    #####: 1893:				RC2_cbc_encrypt(buf,buf,
+    #####: 1894:					(unsigned long)lengths[j],&rc2_ks,
+        -: 1895:					iv,RC2_ENCRYPT);
+        -: 1896:			d=Time_F(STOP);
+    #####: 1897:			print_result(D_CBC_RC2,j,count,d);
+        -: 1898:			}
+        -: 1899:		}
+        -: 1900:#endif
+        -: 1901:#ifndef OPENSSL_NO_RC5
+        -: 1902:	if (doit[D_CBC_RC5])
+        -: 1903:		{
+        -: 1904:		for (j=0; j<SIZE_NUM; j++)
+        -: 1905:			{
+        -: 1906:			print_message(names[D_CBC_RC5],c[D_CBC_RC5][j],lengths[j]);
+        -: 1907:			Time_F(START);
+        -: 1908:			for (count=0,run=1; COND(c[D_CBC_RC5][j]); count++)
+        -: 1909:				RC5_32_cbc_encrypt(buf,buf,
+        -: 1910:					(unsigned long)lengths[j],&rc5_ks,
+        -: 1911:					iv,RC5_ENCRYPT);
+        -: 1912:			d=Time_F(STOP);
+        -: 1913:			print_result(D_CBC_RC5,j,count,d);
+        -: 1914:			}
+        -: 1915:		}
+        -: 1916:#endif
+        -: 1917:#ifndef OPENSSL_NO_BF
+    #####: 1918:	if (doit[D_CBC_BF])
+        -: 1919:		{
+    #####: 1920:		for (j=0; j<SIZE_NUM; j++)
+        -: 1921:			{
+    #####: 1922:			print_message(names[D_CBC_BF],c[D_CBC_BF][j],lengths[j]);
+        -: 1923:			Time_F(START);
+    #####: 1924:			for (count=0,run=1; COND(c[D_CBC_BF][j]); count++)
+    #####: 1925:				BF_cbc_encrypt(buf,buf,
+    #####: 1926:					(unsigned long)lengths[j],&bf_ks,
+        -: 1927:					iv,BF_ENCRYPT);
+        -: 1928:			d=Time_F(STOP);
+    #####: 1929:			print_result(D_CBC_BF,j,count,d);
+        -: 1930:			}
+        -: 1931:		}
+        -: 1932:#endif
+        -: 1933:#ifndef OPENSSL_NO_CAST
+    #####: 1934:	if (doit[D_CBC_CAST])
+        -: 1935:		{
+    #####: 1936:		for (j=0; j<SIZE_NUM; j++)
+        -: 1937:			{
+    #####: 1938:			print_message(names[D_CBC_CAST],c[D_CBC_CAST][j],lengths[j]);
+        -: 1939:			Time_F(START);
+    #####: 1940:			for (count=0,run=1; COND(c[D_CBC_CAST][j]); count++)
+    #####: 1941:				CAST_cbc_encrypt(buf,buf,
+    #####: 1942:					(unsigned long)lengths[j],&cast_ks,
+        -: 1943:					iv,CAST_ENCRYPT);
+        -: 1944:			d=Time_F(STOP);
+    #####: 1945:			print_result(D_CBC_CAST,j,count,d);
+        -: 1946:			}
+        -: 1947:		}
+        -: 1948:#endif
+        -: 1949:
+    #####: 1950:	if (doit[D_EVP])
+        -: 1951:		{
+    #####: 1952:		for (j=0; j<SIZE_NUM; j++)
+        -: 1953:			{
+    #####: 1954:			if (evp_cipher)
+        -: 1955:				{
+        -: 1956:				EVP_CIPHER_CTX ctx;
+        -: 1957:				int outl;
+        -: 1958:
+    #####: 1959:				names[D_EVP]=OBJ_nid2ln(evp_cipher->nid);
+        -: 1960:				/* -O3 -fschedule-insns messes up an
+        -: 1961:				 * optimization here!  names[D_EVP]
+        -: 1962:				 * somehow becomes NULL */
+    #####: 1963:				print_message(names[D_EVP],save_count,
+        -: 1964:					lengths[j]);
+        -: 1965:
+    #####: 1966:				EVP_CIPHER_CTX_init(&ctx);
+    #####: 1967:				if(decrypt)
+    #####: 1968:					EVP_DecryptInit_ex(&ctx,evp_cipher,NULL,key16,iv);
+        -: 1969:				else
+    #####: 1970:					EVP_EncryptInit_ex(&ctx,evp_cipher,NULL,key16,iv);
+    #####: 1971:				EVP_CIPHER_CTX_set_padding(&ctx, 0);
+        -: 1972:
+        -: 1973:				Time_F(START);
+    #####: 1974:				if(decrypt)
+    #####: 1975:					for (count=0,run=1; COND(save_count*4*lengths[0]/lengths[j]); count++)
+    #####: 1976:						EVP_DecryptUpdate(&ctx,buf,&outl,buf,lengths[j]);
+        -: 1977:				else
+    #####: 1978:					for (count=0,run=1; COND(save_count*4*lengths[0]/lengths[j]); count++)
+    #####: 1979:						EVP_EncryptUpdate(&ctx,buf,&outl,buf,lengths[j]);
+    #####: 1980:				if(decrypt)
+    #####: 1981:					EVP_DecryptFinal_ex(&ctx,buf,&outl);
+        -: 1982:				else
+    #####: 1983:					EVP_EncryptFinal_ex(&ctx,buf,&outl);
+        -: 1984:				d=Time_F(STOP);
+    #####: 1985:				EVP_CIPHER_CTX_cleanup(&ctx);
+        -: 1986:				}
+    #####: 1987:			if (evp_md)
+        -: 1988:				{
+    #####: 1989:				names[D_EVP]=OBJ_nid2ln(evp_md->type);
+    #####: 1990:				print_message(names[D_EVP],save_count,
+        -: 1991:					lengths[j]);
+        -: 1992:
+        -: 1993:				Time_F(START);
+    #####: 1994:				for (count=0,run=1; COND(save_count*4*lengths[0]/lengths[j]); count++)
+    #####: 1995:					EVP_Digest(buf,lengths[j],&(md[0]),NULL,evp_md,NULL);
+        -: 1996:
+        -: 1997:				d=Time_F(STOP);
+        -: 1998:				}
+    #####: 1999:			print_result(D_EVP,j,count,d);
+        -: 2000:			}
+        -: 2001:		}
+        -: 2002:
+    #####: 2003:	RAND_pseudo_bytes(buf,36);
+        -: 2004:#ifndef OPENSSL_NO_RSA
+    #####: 2005:	for (j=0; j<RSA_NUM; j++)
+        -: 2006:		{
+        -: 2007:		int ret;
+    #####: 2008:		if (!rsa_doit[j]) continue;
+    #####: 2009:		ret=RSA_sign(NID_md5_sha1, buf,36, buf2, &rsa_num, rsa_key[j]);
+    #####: 2010:		if (ret == 0)
+        -: 2011:			{
+    #####: 2012:			BIO_printf(bio_err,"RSA sign failure.  No RSA sign will be done.\n");
+    #####: 2013:			ERR_print_errors(bio_err);
+        -: 2014:			rsa_count=1;
+        -: 2015:			}
+        -: 2016:		else
+        -: 2017:			{
+    #####: 2018:			pkey_print_message("private","rsa",
+    #####: 2019:				rsa_c[j][0],rsa_bits[j],
+        -: 2020:				RSA_SECONDS);
+        -: 2021:/*			RSA_blinding_on(rsa_key[j],NULL); */
+        -: 2022:			Time_F(START);
+    #####: 2023:			for (count=0,run=1; COND(rsa_c[j][0]); count++)
+        -: 2024:				{
+    #####: 2025:				ret=RSA_sign(NID_md5_sha1, buf,36, buf2,
+        -: 2026:					&rsa_num, rsa_key[j]);
+    #####: 2027:				if (ret == 0)
+        -: 2028:					{
+    #####: 2029:					BIO_printf(bio_err,
+        -: 2030:						"RSA sign failure\n");
+    #####: 2031:					ERR_print_errors(bio_err);
+        -: 2032:					count=1;
+    #####: 2033:					break;
+        -: 2034:					}
+        -: 2035:				}
+        -: 2036:			d=Time_F(STOP);
+    #####: 2037:			BIO_printf(bio_err,mr ? "+R1:%ld:%d:%.2f\n"
+        -: 2038:				   : "%ld %d bit private RSA's in %.2fs\n",
+        -: 2039:				   count,rsa_bits[j],d);
+    #####: 2040:			rsa_results[j][0]=d/(double)count;
+        -: 2041:			rsa_count=count;
+        -: 2042:			}
+        -: 2043:
+        -: 2044:#if 1
+    #####: 2045:		ret=RSA_verify(NID_md5_sha1, buf,36, buf2, rsa_num, rsa_key[j]);
+    #####: 2046:		if (ret <= 0)
+        -: 2047:			{
+    #####: 2048:			BIO_printf(bio_err,"RSA verify failure.  No RSA verify will be done.\n");
+    #####: 2049:			ERR_print_errors(bio_err);
+    #####: 2050:			rsa_doit[j] = 0;
+        -: 2051:			}
+        -: 2052:		else
+        -: 2053:			{
+    #####: 2054:			pkey_print_message("public","rsa",
+    #####: 2055:				rsa_c[j][1],rsa_bits[j],
+        -: 2056:				RSA_SECONDS);
+        -: 2057:			Time_F(START);
+    #####: 2058:			for (count=0,run=1; COND(rsa_c[j][1]); count++)
+        -: 2059:				{
+    #####: 2060:				ret=RSA_verify(NID_md5_sha1, buf,36, buf2,
+        -: 2061:					rsa_num, rsa_key[j]);
+    #####: 2062:				if (ret <= 0)
+        -: 2063:					{
+    #####: 2064:					BIO_printf(bio_err,
+        -: 2065:						"RSA verify failure\n");
+    #####: 2066:					ERR_print_errors(bio_err);
+        -: 2067:					count=1;
+    #####: 2068:					break;
+        -: 2069:					}
+        -: 2070:				}
+        -: 2071:			d=Time_F(STOP);
+    #####: 2072:			BIO_printf(bio_err,mr ? "+R2:%ld:%d:%.2f\n"
+        -: 2073:				   : "%ld %d bit public RSA's in %.2fs\n",
+        -: 2074:				   count,rsa_bits[j],d);
+    #####: 2075:			rsa_results[j][1]=d/(double)count;
+        -: 2076:			}
+        -: 2077:#endif
+        -: 2078:
+    #####: 2079:		if (rsa_count <= 1)
+        -: 2080:			{
+        -: 2081:			/* if longer than 10s, don't do any more */
+    #####: 2082:			for (j++; j<RSA_NUM; j++)
+    #####: 2083:				rsa_doit[j]=0;
+        -: 2084:			}
+        -: 2085:		}
+        -: 2086:#endif
+        -: 2087:
+    #####: 2088:	RAND_pseudo_bytes(buf,20);
+        -: 2089:#ifndef OPENSSL_NO_DSA
+    #####: 2090:	if (RAND_status() != 1)
+        -: 2091:		{
+    #####: 2092:		RAND_seed(rnd_seed, sizeof rnd_seed);
+    #####: 2093:		rnd_fake = 1;
+        -: 2094:		}
+    #####: 2095:	for (j=0; j<DSA_NUM; j++)
+        -: 2096:		{
+        -: 2097:		unsigned int kk;
+        -: 2098:		int ret;
+        -: 2099:
+    #####: 2100:		if (!dsa_doit[j]) continue;
+        -: 2101:/*		DSA_generate_key(dsa_key[j]); */
+        -: 2102:/*		DSA_sign_setup(dsa_key[j],NULL); */
+    #####: 2103:		ret=DSA_sign(EVP_PKEY_DSA,buf,20,buf2,
+        -: 2104:			&kk,dsa_key[j]);
+    #####: 2105:		if (ret == 0)
+        -: 2106:			{
+    #####: 2107:			BIO_printf(bio_err,"DSA sign failure.  No DSA sign will be done.\n");
+    #####: 2108:			ERR_print_errors(bio_err);
+        -: 2109:			rsa_count=1;
+        -: 2110:			}
+        -: 2111:		else
+        -: 2112:			{
+    #####: 2113:			pkey_print_message("sign","dsa",
+    #####: 2114:				dsa_c[j][0],dsa_bits[j],
+        -: 2115:				DSA_SECONDS);
+        -: 2116:			Time_F(START);
+    #####: 2117:			for (count=0,run=1; COND(dsa_c[j][0]); count++)
+        -: 2118:				{
+    #####: 2119:				ret=DSA_sign(EVP_PKEY_DSA,buf,20,buf2,
+        -: 2120:					&kk,dsa_key[j]);
+    #####: 2121:				if (ret == 0)
+        -: 2122:					{
+    #####: 2123:					BIO_printf(bio_err,
+        -: 2124:						"DSA sign failure\n");
+    #####: 2125:					ERR_print_errors(bio_err);
+        -: 2126:					count=1;
+    #####: 2127:					break;
+        -: 2128:					}
+        -: 2129:				}
+        -: 2130:			d=Time_F(STOP);
+    #####: 2131:			BIO_printf(bio_err,mr ? "+R3:%ld:%d:%.2f\n"
+        -: 2132:				   : "%ld %d bit DSA signs in %.2fs\n",
+        -: 2133:				   count,dsa_bits[j],d);
+    #####: 2134:			dsa_results[j][0]=d/(double)count;
+        -: 2135:			rsa_count=count;
+        -: 2136:			}
+        -: 2137:
+    #####: 2138:		ret=DSA_verify(EVP_PKEY_DSA,buf,20,buf2,
+        -: 2139:			kk,dsa_key[j]);
+    #####: 2140:		if (ret <= 0)
+        -: 2141:			{
+    #####: 2142:			BIO_printf(bio_err,"DSA verify failure.  No DSA verify will be done.\n");
+    #####: 2143:			ERR_print_errors(bio_err);
+    #####: 2144:			dsa_doit[j] = 0;
+        -: 2145:			}
+        -: 2146:		else
+        -: 2147:			{
+    #####: 2148:			pkey_print_message("verify","dsa",
+    #####: 2149:				dsa_c[j][1],dsa_bits[j],
+        -: 2150:				DSA_SECONDS);
+        -: 2151:			Time_F(START);
+    #####: 2152:			for (count=0,run=1; COND(dsa_c[j][1]); count++)
+        -: 2153:				{
+    #####: 2154:				ret=DSA_verify(EVP_PKEY_DSA,buf,20,buf2,
+        -: 2155:					kk,dsa_key[j]);
+    #####: 2156:				if (ret <= 0)
+        -: 2157:					{
+    #####: 2158:					BIO_printf(bio_err,
+        -: 2159:						"DSA verify failure\n");
+    #####: 2160:					ERR_print_errors(bio_err);
+        -: 2161:					count=1;
+    #####: 2162:					break;
+        -: 2163:					}
+        -: 2164:				}
+        -: 2165:			d=Time_F(STOP);
+    #####: 2166:			BIO_printf(bio_err,mr ? "+R4:%ld:%d:%.2f\n"
+        -: 2167:				   : "%ld %d bit DSA verify in %.2fs\n",
+        -: 2168:				   count,dsa_bits[j],d);
+    #####: 2169:			dsa_results[j][1]=d/(double)count;
+        -: 2170:			}
+        -: 2171:
+    #####: 2172:		if (rsa_count <= 1)
+        -: 2173:			{
+        -: 2174:			/* if longer than 10s, don't do any more */
+    #####: 2175:			for (j++; j<DSA_NUM; j++)
+    #####: 2176:				dsa_doit[j]=0;
+        -: 2177:			}
+        -: 2178:		}
+    #####: 2179:	if (rnd_fake) RAND_cleanup();
+        -: 2180:#endif
+        -: 2181:
+        -: 2182:#ifndef OPENSSL_NO_ECDSA
+    #####: 2183:	if (RAND_status() != 1) 
+        -: 2184:		{
+    #####: 2185:		RAND_seed(rnd_seed, sizeof rnd_seed);
+    #####: 2186:		rnd_fake = 1;
+        -: 2187:		}
+    #####: 2188:	for (j=0; j<EC_NUM; j++) 
+        -: 2189:		{
+        -: 2190:		int ret;
+        -: 2191:
+    #####: 2192:		if (!ecdsa_doit[j]) continue; /* Ignore Curve */ 
+    #####: 2193:		ecdsa[j] = EC_KEY_new_by_curve_name(test_curves[j]);
+    #####: 2194:		if (ecdsa[j] == NULL) 
+        -: 2195:			{
+    #####: 2196:			BIO_printf(bio_err,"ECDSA failure.\n");
+    #####: 2197:			ERR_print_errors(bio_err);
+        -: 2198:			rsa_count=1;
+        -: 2199:			} 
+        -: 2200:		else 
+        -: 2201:			{
+        -: 2202:#if 1
+    #####: 2203:			EC_KEY_precompute_mult(ecdsa[j], NULL);
+        -: 2204:#endif
+        -: 2205:			/* Perform ECDSA signature test */
+    #####: 2206:			EC_KEY_generate_key(ecdsa[j]);
+    #####: 2207:			ret = ECDSA_sign(0, buf, 20, ecdsasig, 
+        -: 2208:				&ecdsasiglen, ecdsa[j]);
+    #####: 2209:			if (ret == 0) 
+        -: 2210:				{
+    #####: 2211:				BIO_printf(bio_err,"ECDSA sign failure.  No ECDSA sign will be done.\n");
+    #####: 2212:				ERR_print_errors(bio_err);
+        -: 2213:				rsa_count=1;
+        -: 2214:				} 
+        -: 2215:			else 
+        -: 2216:				{
+    #####: 2217:				pkey_print_message("sign","ecdsa",
+        -: 2218:					ecdsa_c[j][0], 
+        -: 2219:					test_curves_bits[j],
+        -: 2220:					ECDSA_SECONDS);
+        -: 2221:
+        -: 2222:				Time_F(START);
+    #####: 2223:				for (count=0,run=1; COND(ecdsa_c[j][0]);
+    #####: 2224:					count++) 
+        -: 2225:					{
+    #####: 2226:					ret=ECDSA_sign(0, buf, 20, 
+        -: 2227:						ecdsasig, &ecdsasiglen,
+        -: 2228:						ecdsa[j]);
+    #####: 2229:					if (ret == 0) 
+        -: 2230:						{
+    #####: 2231:						BIO_printf(bio_err, "ECDSA sign failure\n");
+    #####: 2232:						ERR_print_errors(bio_err);
+        -: 2233:						count=1;
+    #####: 2234:						break;
+        -: 2235:						}
+        -: 2236:					}
+        -: 2237:				d=Time_F(STOP);
+        -: 2238:
+    #####: 2239:				BIO_printf(bio_err, mr ? "+R5:%ld:%d:%.2f\n" :
+        -: 2240:					"%ld %d bit ECDSA signs in %.2fs \n", 
+        -: 2241:					count, test_curves_bits[j], d);
+    #####: 2242:				ecdsa_results[j][0]=d/(double)count;
+        -: 2243:				rsa_count=count;
+        -: 2244:				}
+        -: 2245:
+        -: 2246:			/* Perform ECDSA verification test */
+    #####: 2247:			ret=ECDSA_verify(0, buf, 20, ecdsasig, 
+        -: 2248:				ecdsasiglen, ecdsa[j]);
+    #####: 2249:			if (ret != 1) 
+        -: 2250:				{
+    #####: 2251:				BIO_printf(bio_err,"ECDSA verify failure.  No ECDSA verify will be done.\n");
+    #####: 2252:				ERR_print_errors(bio_err);
+    #####: 2253:				ecdsa_doit[j] = 0;
+        -: 2254:				} 
+        -: 2255:			else 
+        -: 2256:				{
+    #####: 2257:				pkey_print_message("verify","ecdsa",
+        -: 2258:				ecdsa_c[j][1],
+        -: 2259:				test_curves_bits[j],
+        -: 2260:				ECDSA_SECONDS);
+        -: 2261:				Time_F(START);
+    #####: 2262:				for (count=0,run=1; COND(ecdsa_c[j][1]); count++) 
+        -: 2263:					{
+    #####: 2264:					ret=ECDSA_verify(0, buf, 20, ecdsasig, ecdsasiglen, ecdsa[j]);
+    #####: 2265:					if (ret != 1) 
+        -: 2266:						{
+    #####: 2267:						BIO_printf(bio_err, "ECDSA verify failure\n");
+    #####: 2268:						ERR_print_errors(bio_err);
+        -: 2269:						count=1;
+    #####: 2270:						break;
+        -: 2271:						}
+        -: 2272:					}
+        -: 2273:				d=Time_F(STOP);
+    #####: 2274:				BIO_printf(bio_err, mr? "+R6:%ld:%d:%.2f\n"
+        -: 2275:						: "%ld %d bit ECDSA verify in %.2fs\n",
+        -: 2276:				count, test_curves_bits[j], d);
+    #####: 2277:				ecdsa_results[j][1]=d/(double)count;
+        -: 2278:				}
+        -: 2279:
+    #####: 2280:			if (rsa_count <= 1) 
+        -: 2281:				{
+        -: 2282:				/* if longer than 10s, don't do any more */
+    #####: 2283:				for (j++; j<EC_NUM; j++)
+    #####: 2284:				ecdsa_doit[j]=0;
+        -: 2285:				}
+        -: 2286:			}
+        -: 2287:		}
+    #####: 2288:	if (rnd_fake) RAND_cleanup();
+        -: 2289:#endif
+        -: 2290:
+        -: 2291:#ifndef OPENSSL_NO_ECDH
+    #####: 2292:	if (RAND_status() != 1)
+        -: 2293:		{
+    #####: 2294:		RAND_seed(rnd_seed, sizeof rnd_seed);
+    #####: 2295:		rnd_fake = 1;
+        -: 2296:		}
+    #####: 2297:	for (j=0; j<EC_NUM; j++)
+        -: 2298:		{
+    #####: 2299:		if (!ecdh_doit[j]) continue;
+    #####: 2300:		ecdh_a[j] = EC_KEY_new_by_curve_name(test_curves[j]);
+    #####: 2301:		ecdh_b[j] = EC_KEY_new_by_curve_name(test_curves[j]);
+    #####: 2302:		if ((ecdh_a[j] == NULL) || (ecdh_b[j] == NULL))
+        -: 2303:			{
+    #####: 2304:			BIO_printf(bio_err,"ECDH failure.\n");
+    #####: 2305:			ERR_print_errors(bio_err);
+    #####: 2306:			rsa_count=1;
+        -: 2307:			}
+        -: 2308:		else
+        -: 2309:			{
+        -: 2310:			/* generate two ECDH key pairs */
+    #####: 2311:			if (!EC_KEY_generate_key(ecdh_a[j]) ||
+    #####: 2312:				!EC_KEY_generate_key(ecdh_b[j]))
+        -: 2313:				{
+    #####: 2314:				BIO_printf(bio_err,"ECDH key generation failure.\n");
+    #####: 2315:				ERR_print_errors(bio_err);
+    #####: 2316:				rsa_count=1;		
+        -: 2317:				}
+        -: 2318:			else
+        -: 2319:				{
+        -: 2320:				/* If field size is not more than 24 octets, then use SHA-1 hash of result;
+        -: 2321:				 * otherwise, use result (see section 4.8 of draft-ietf-tls-ecc-03.txt).
+        -: 2322:				 */
+        -: 2323:				int field_size, outlen;
+        -: 2324:				void *(*kdf)(const void *in, size_t inlen, void *out, size_t *xoutlen);
+    #####: 2325:				field_size = EC_GROUP_get_degree(EC_KEY_get0_group(ecdh_a[j]));
+    #####: 2326:				if (field_size <= 24 * 8)
+        -: 2327:					{
+        -: 2328:					outlen = KDF1_SHA1_len;
+        -: 2329:					kdf = KDF1_SHA1;
+        -: 2330:					}
+        -: 2331:				else
+        -: 2332:					{
+    #####: 2333:					outlen = (field_size+7)/8;
+        -: 2334:					kdf = NULL;
+        -: 2335:					}
+    #####: 2336:				secret_size_a = ECDH_compute_key(secret_a, outlen,
+        -: 2337:					EC_KEY_get0_public_key(ecdh_b[j]),
+        -: 2338:					ecdh_a[j], kdf);
+    #####: 2339:				secret_size_b = ECDH_compute_key(secret_b, outlen,
+        -: 2340:					EC_KEY_get0_public_key(ecdh_a[j]),
+        -: 2341:					ecdh_b[j], kdf);
+    #####: 2342:				if (secret_size_a != secret_size_b) 
+        -: 2343:					ecdh_checks = 0;
+        -: 2344:				else
+        -: 2345:					ecdh_checks = 1;
+        -: 2346:
+    #####: 2347:				for (secret_idx = 0; 
+    #####: 2348:				    (secret_idx < secret_size_a)
+    #####: 2349:					&& (ecdh_checks == 1);
+    #####: 2350:				    secret_idx++)
+        -: 2351:					{
+    #####: 2352:					if (secret_a[secret_idx] != secret_b[secret_idx])
+        -: 2353:					ecdh_checks = 0;
+        -: 2354:					}
+        -: 2355:
+    #####: 2356:				if (ecdh_checks == 0)
+        -: 2357:					{
+    #####: 2358:					BIO_printf(bio_err,"ECDH computations don't match.\n");
+    #####: 2359:					ERR_print_errors(bio_err);
+        -: 2360:					rsa_count=1;		
+        -: 2361:					}
+        -: 2362:
+    #####: 2363:				pkey_print_message("","ecdh",
+        -: 2364:				ecdh_c[j][0], 
+        -: 2365:				test_curves_bits[j],
+        -: 2366:				ECDH_SECONDS);
+        -: 2367:				Time_F(START);
+    #####: 2368:				for (count=0,run=1; COND(ecdh_c[j][0]); count++)
+        -: 2369:					{
+    #####: 2370:					ECDH_compute_key(secret_a, outlen,
+        -: 2371:					EC_KEY_get0_public_key(ecdh_b[j]),
+        -: 2372:					ecdh_a[j], kdf);
+        -: 2373:					}
+        -: 2374:				d=Time_F(STOP);
+    #####: 2375:				BIO_printf(bio_err, mr ? "+R7:%ld:%d:%.2f\n" :"%ld %d-bit ECDH ops in %.2fs\n",
+        -: 2376:				count, test_curves_bits[j], d);
+    #####: 2377:				ecdh_results[j][0]=d/(double)count;
+        -: 2378:				rsa_count=count;
+        -: 2379:				}
+        -: 2380:			}
+        -: 2381:
+        -: 2382:
+    #####: 2383:		if (rsa_count <= 1)
+        -: 2384:			{
+        -: 2385:			/* if longer than 10s, don't do any more */
+    #####: 2386:			for (j++; j<EC_NUM; j++)
+    #####: 2387:			ecdh_doit[j]=0;
+        -: 2388:			}
+        -: 2389:		}
+    #####: 2390:	if (rnd_fake) RAND_cleanup();
+        -: 2391:#endif
+        -: 2392:#ifndef NO_FORK
+        -: 2393:show_res:
+        -: 2394:#endif
+    #####: 2395:	if(!mr)
+        -: 2396:		{
+    #####: 2397:		fprintf(stdout,"%s\n",SSLeay_version(SSLEAY_VERSION));
+    #####: 2398:        fprintf(stdout,"%s\n",SSLeay_version(SSLEAY_BUILT_ON));
+        -: 2399:		printf("options:");
+    #####: 2400:		printf("%s ",BN_options());
+        -: 2401:#ifndef OPENSSL_NO_MD2
+        -: 2402:		printf("%s ",MD2_options());
+        -: 2403:#endif
+        -: 2404:#ifndef OPENSSL_NO_RC4
+    #####: 2405:		printf("%s ",RC4_options());
+        -: 2406:#endif
+        -: 2407:#ifndef OPENSSL_NO_DES
+    #####: 2408:		printf("%s ",DES_options());
+        -: 2409:#endif
+        -: 2410:#ifndef OPENSSL_NO_AES
+    #####: 2411:		printf("%s ",AES_options());
+        -: 2412:#endif
+        -: 2413:#ifndef OPENSSL_NO_IDEA
+    #####: 2414:		printf("%s ",idea_options());
+        -: 2415:#endif
+        -: 2416:#ifndef OPENSSL_NO_BF
+    #####: 2417:		printf("%s ",BF_options());
+        -: 2418:#endif
+    #####: 2419:		fprintf(stdout,"\n%s\n",SSLeay_version(SSLEAY_CFLAGS));
+        -: 2420:		}
+        -: 2421:
+    #####: 2422:	if (pr_header)
+        -: 2423:		{
+    #####: 2424:		if(mr)
+    #####: 2425:			fprintf(stdout,"+H");
+        -: 2426:		else
+        -: 2427:			{
+    #####: 2428:			fprintf(stdout,"The 'numbers' are in 1000s of bytes per second processed.\n"); 
+    #####: 2429:			fprintf(stdout,"type        ");
+        -: 2430:			}
+    #####: 2431:		for (j=0;  j<SIZE_NUM; j++)
+    #####: 2432:			fprintf(stdout,mr ? ":%d" : "%7d bytes",lengths[j]);
+    #####: 2433:		fprintf(stdout,"\n");
+        -: 2434:		}
+        -: 2435:
+    #####: 2436:	for (k=0; k<ALGOR_NUM; k++)
+        -: 2437:		{
+    #####: 2438:		if (!doit[k]) continue;
+    #####: 2439:		if(mr)
+    #####: 2440:			fprintf(stdout,"+F:%d:%s",k,names[k]);
+        -: 2441:		else
+    #####: 2442:			fprintf(stdout,"%-13s",names[k]);
+    #####: 2443:		for (j=0; j<SIZE_NUM; j++)
+        -: 2444:			{
+    #####: 2445:			if (results[k][j] > 10000 && !mr)
+    #####: 2446:				fprintf(stdout," %11.2fk",results[k][j]/1e3);
+        -: 2447:			else
+    #####: 2448:				fprintf(stdout,mr ? ":%.2f" : " %11.2f ",results[k][j]);
+        -: 2449:			}
+    #####: 2450:		fprintf(stdout,"\n");
+        -: 2451:		}
+        -: 2452:#ifndef OPENSSL_NO_RSA
+        -: 2453:	j=1;
+    #####: 2454:	for (k=0; k<RSA_NUM; k++)
+        -: 2455:		{
+    #####: 2456:		if (!rsa_doit[k]) continue;
+    #####: 2457:		if (j && !mr)
+        -: 2458:			{
+        -: 2459:			printf("%18ssign    verify    sign/s verify/s\n"," ");
+        -: 2460:			j=0;
+        -: 2461:			}
+    #####: 2462:		if(mr)
+    #####: 2463:			fprintf(stdout,"+F2:%u:%u:%f:%f\n",
+        -: 2464:				k,rsa_bits[k],rsa_results[k][0],
+        -: 2465:				rsa_results[k][1]);
+        -: 2466:		else
+    #####: 2467:			fprintf(stdout,"rsa %4u bits %8.6fs %8.6fs %8.1f %8.1f\n",
+        -: 2468:				rsa_bits[k],rsa_results[k][0],rsa_results[k][1],
+    #####: 2469:				1.0/rsa_results[k][0],1.0/rsa_results[k][1]);
+        -: 2470:		}
+        -: 2471:#endif
+        -: 2472:#ifndef OPENSSL_NO_DSA
+        -: 2473:	j=1;
+    #####: 2474:	for (k=0; k<DSA_NUM; k++)
+        -: 2475:		{
+    #####: 2476:		if (!dsa_doit[k]) continue;
+    #####: 2477:		if (j && !mr)
+        -: 2478:			{
+        -: 2479:			printf("%18ssign    verify    sign/s verify/s\n"," ");
+        -: 2480:			j=0;
+        -: 2481:			}
+    #####: 2482:		if(mr)
+    #####: 2483:			fprintf(stdout,"+F3:%u:%u:%f:%f\n",
+        -: 2484:				k,dsa_bits[k],dsa_results[k][0],dsa_results[k][1]);
+        -: 2485:		else
+    #####: 2486:			fprintf(stdout,"dsa %4u bits %8.6fs %8.6fs %8.1f %8.1f\n",
+        -: 2487:				dsa_bits[k],dsa_results[k][0],dsa_results[k][1],
+    #####: 2488:				1.0/dsa_results[k][0],1.0/dsa_results[k][1]);
+        -: 2489:		}
+        -: 2490:#endif
+        -: 2491:#ifndef OPENSSL_NO_ECDSA
+        -: 2492:	j=1;
+    #####: 2493:	for (k=0; k<EC_NUM; k++)
+        -: 2494:		{
+    #####: 2495:		if (!ecdsa_doit[k]) continue;
+    #####: 2496:		if (j && !mr)
+        -: 2497:			{
+        -: 2498:			printf("%30ssign    verify    sign/s verify/s\n"," ");
+        -: 2499:			j=0;
+        -: 2500:			}
+        -: 2501:
+    #####: 2502:		if (mr)
+    #####: 2503:			fprintf(stdout,"+F4:%u:%u:%f:%f\n", 
+        -: 2504:				k, test_curves_bits[k],
+        -: 2505:				ecdsa_results[k][0],ecdsa_results[k][1]);
+        -: 2506:		else
+    #####: 2507:			fprintf(stdout,
+        -: 2508:				"%4u bit ecdsa (%s) %8.4fs %8.4fs %8.1f %8.1f\n", 
+        -: 2509:				test_curves_bits[k],
+        -: 2510:				test_curves_names[k],
+        -: 2511:				ecdsa_results[k][0],ecdsa_results[k][1], 
+    #####: 2512:				1.0/ecdsa_results[k][0],1.0/ecdsa_results[k][1]);
+        -: 2513:		}
+        -: 2514:#endif
+        -: 2515:
+        -: 2516:
+        -: 2517:#ifndef OPENSSL_NO_ECDH
+        -: 2518:	j=1;
+    #####: 2519:	for (k=0; k<EC_NUM; k++)
+        -: 2520:		{
+    #####: 2521:		if (!ecdh_doit[k]) continue;
+    #####: 2522:		if (j && !mr)
+        -: 2523:			{
+        -: 2524:			printf("%30sop      op/s\n"," ");
+        -: 2525:			j=0;
+        -: 2526:			}
+    #####: 2527:		if (mr)
+    #####: 2528:			fprintf(stdout,"+F5:%u:%u:%f:%f\n",
+        -: 2529:				k, test_curves_bits[k],
+    #####: 2530:				ecdh_results[k][0], 1.0/ecdh_results[k][0]);
+        -: 2531:
+        -: 2532:		else
+    #####: 2533:			fprintf(stdout,"%4u bit ecdh (%s) %8.4fs %8.1f\n",
+        -: 2534:				test_curves_bits[k],
+        -: 2535:				test_curves_names[k],
+    #####: 2536:				ecdh_results[k][0], 1.0/ecdh_results[k][0]);
+        -: 2537:		}
+        -: 2538:#endif
+        -: 2539:
+        -: 2540:	mret=0;
+        -: 2541:
+        -: 2542:end:
+    #####: 2543:	ERR_print_errors(bio_err);
+    #####: 2544:	if (buf != NULL) OPENSSL_free(buf);
+    #####: 2545:	if (buf2 != NULL) OPENSSL_free(buf2);
+        -: 2546:#ifndef OPENSSL_NO_RSA
+    #####: 2547:	for (i=0; i<RSA_NUM; i++)
+    #####: 2548:		if (rsa_key[i] != NULL)
+    #####: 2549:			RSA_free(rsa_key[i]);
+        -: 2550:#endif
+        -: 2551:#ifndef OPENSSL_NO_DSA
+    #####: 2552:	for (i=0; i<DSA_NUM; i++)
+    #####: 2553:		if (dsa_key[i] != NULL)
+    #####: 2554:			DSA_free(dsa_key[i]);
+        -: 2555:#endif
+        -: 2556:
+        -: 2557:#ifndef OPENSSL_NO_ECDSA
+    #####: 2558:	for (i=0; i<EC_NUM; i++)
+    #####: 2559:		if (ecdsa[i] != NULL)
+    #####: 2560:			EC_KEY_free(ecdsa[i]);
+        -: 2561:#endif
+        -: 2562:#ifndef OPENSSL_NO_ECDH
+    #####: 2563:	for (i=0; i<EC_NUM; i++)
+        -: 2564:	{
+    #####: 2565:		if (ecdh_a[i] != NULL)
+    #####: 2566:			EC_KEY_free(ecdh_a[i]);
+    #####: 2567:		if (ecdh_b[i] != NULL)
+    #####: 2568:			EC_KEY_free(ecdh_b[i]);
+        -: 2569:	}
+        -: 2570:#endif
+        -: 2571:
+        -: 2572:	apps_shutdown();
+    #####: 2573:	OPENSSL_EXIT(mret);
+        -: 2574:	}
+        -: 2575:
+    #####: 2576:static void print_message(const char *s, long num, int length)
+        -: 2577:	{
+        -: 2578:#ifdef SIGALRM
+    #####: 2579:	BIO_printf(bio_err,mr ? "+DT:%s:%d:%d\n"
+        -: 2580:		   : "Doing %s for %ds on %d size blocks: ",s,SECONDS,length);
+    #####: 2581:	(void)BIO_flush(bio_err);
+    #####: 2582:	alarm(SECONDS);
+        -: 2583:#else
+        -: 2584:	BIO_printf(bio_err,mr ? "+DN:%s:%ld:%d\n"
+        -: 2585:		   : "Doing %s %ld times on %d size blocks: ",s,num,length);
+        -: 2586:	(void)BIO_flush(bio_err);
+        -: 2587:#endif
+        -: 2588:#ifdef LINT
+        -: 2589:	num=num;
+        -: 2590:#endif
+    #####: 2591:	}
+        -: 2592:
+    #####: 2593:static void pkey_print_message(const char *str, const char *str2, long num,
+        -: 2594:	int bits, int tm)
+        -: 2595:	{
+        -: 2596:#ifdef SIGALRM
+    #####: 2597:	BIO_printf(bio_err,mr ? "+DTP:%d:%s:%s:%d\n"
+        -: 2598:			   : "Doing %d bit %s %s's for %ds: ",bits,str,str2,tm);
+    #####: 2599:	(void)BIO_flush(bio_err);
+    #####: 2600:	alarm(tm);
+        -: 2601:#else
+        -: 2602:	BIO_printf(bio_err,mr ? "+DNP:%ld:%d:%s:%s\n"
+        -: 2603:			   : "Doing %ld %d bit %s %s's: ",num,bits,str,str2);
+        -: 2604:	(void)BIO_flush(bio_err);
+        -: 2605:#endif
+        -: 2606:#ifdef LINT
+        -: 2607:	num=num;
+        -: 2608:#endif
+    #####: 2609:	}
+        -: 2610:
+    #####: 2611:static void print_result(int alg,int run_no,int count,double time_used)
+        -: 2612:	{
+    #####: 2613:	BIO_printf(bio_err,mr ? "+R:%d:%s:%f\n"
+        -: 2614:		   : "%d %s's in %.2fs\n",count,names[alg],time_used);
+    #####: 2615:	results[alg][run_no]=((double)count)/time_used*lengths[run_no];
+    #####: 2616:	}
+        -: 2617:
+        -: 2618:#ifndef NO_FORK
+    #####: 2619:static char *sstrsep(char **string, const char *delim)
+        -: 2620:    {
+        -: 2621:    char isdelim[256];
+    #####: 2622:    char *token = *string;
+        -: 2623:
+    #####: 2624:    if (**string == 0)
+        -: 2625:        return NULL;
+        -: 2626:
+        -: 2627:    memset(isdelim, 0, sizeof isdelim);
+    #####: 2628:    isdelim[0] = 1;
+        -: 2629:
+    #####: 2630:    while (*delim)
+        -: 2631:        {
+    #####: 2632:        isdelim[(unsigned char)(*delim)] = 1;
+    #####: 2633:        delim++;
+        -: 2634:        }
+        -: 2635:
+    #####: 2636:    while (!isdelim[(unsigned char)(**string)])
+        -: 2637:        {
+    #####: 2638:        (*string)++;
+        -: 2639:        }
+        -: 2640:
+    #####: 2641:    if (**string)
+        -: 2642:        {
+    #####: 2643:        **string = 0;
+    #####: 2644:        (*string)++;
+        -: 2645:        }
+        -: 2646:
+    #####: 2647:    return token;
+        -: 2648:    }
+        -: 2649:
+    #####: 2650:static int do_multi(int multi)
+        -: 2651:	{
+        -: 2652:	int n;
+        -: 2653:	int fd[2];
+        -: 2654:	int *fds;
+        -: 2655:	static char sep[]=":";
+        -: 2656:
+    #####: 2657:	fds=malloc(multi*sizeof *fds);
+    #####: 2658:	for(n=0 ; n < multi ; ++n)
+        -: 2659:		{
+    #####: 2660:		if (pipe(fd) == -1)
+        -: 2661:			{
+    #####: 2662:			fprintf(stderr, "pipe failure\n");
+    #####: 2663:			exit(1);
+        -: 2664:			}
+    #####: 2665:		fflush(stdout);
+    #####: 2666:		fflush(stderr);
+    #####: 2667:		if(fork())
+        -: 2668:			{
+    #####: 2669:			close(fd[1]);
+    #####: 2670:			fds[n]=fd[0];
+        -: 2671:			}
+        -: 2672:		else
+        -: 2673:			{
+    #####: 2674:			close(fd[0]);
+    #####: 2675:			close(1);
+    #####: 2676:			if (dup(fd[1]) == -1)
+        -: 2677:				{
+    #####: 2678:				fprintf(stderr, "dup failed\n");
+    #####: 2679:				exit(1);
+        -: 2680:				}
+    #####: 2681:			close(fd[1]);
+    #####: 2682:			mr=1;
+    #####: 2683:			usertime=0;
+    #####: 2684:			free(fds);
+    #####: 2685:			return 0;
+        -: 2686:			}
+        -: 2687:		printf("Forked child %d\n",n);
+        -: 2688:		}
+        -: 2689:
+        -: 2690:	/* for now, assume the pipe is long enough to take all the output */
+    #####: 2691:	for(n=0 ; n < multi ; ++n)
+        -: 2692:		{
+        -: 2693:		FILE *f;
+        -: 2694:		char buf[1024];
+        -: 2695:		char *p;
+        -: 2696:
+    #####: 2697:		f=fdopen(fds[n],"r");
+    #####: 2698:		while(fgets(buf,sizeof buf,f))
+        -: 2699:			{
+    #####: 2700:			p=strchr(buf,'\n');
+    #####: 2701:			if(p)
+    #####: 2702:				*p='\0';
+    #####: 2703:			if(buf[0] != '+')
+        -: 2704:				{
+    #####: 2705:				fprintf(stderr,"Don't understand line '%s' from child %d\n",
+        -: 2706:						buf,n);
+    #####: 2707:				continue;
+        -: 2708:				}
+        -: 2709:			printf("Got: %s from %d\n",buf,n);
+    #####: 2710:			if(!strncmp(buf,"+F:",3))
+        -: 2711:				{
+        -: 2712:				int alg;
+        -: 2713:				int j;
+        -: 2714:
+    #####: 2715:				p=buf+3;
+    #####: 2716:				alg=atoi(sstrsep(&p,sep));
+    #####: 2717:				sstrsep(&p,sep);
+    #####: 2718:				for(j=0 ; j < SIZE_NUM ; ++j)
+    #####: 2719:					results[alg][j]+=atof(sstrsep(&p,sep));
+        -: 2720:				}
+    #####: 2721:			else if(!strncmp(buf,"+F2:",4))
+        -: 2722:				{
+        -: 2723:				int k;
+        -: 2724:				double d;
+        -: 2725:				
+    #####: 2726:				p=buf+4;
+    #####: 2727:				k=atoi(sstrsep(&p,sep));
+    #####: 2728:				sstrsep(&p,sep);
+        -: 2729:
+    #####: 2730:				d=atof(sstrsep(&p,sep));
+    #####: 2731:				if(n)
+    #####: 2732:					rsa_results[k][0]=1/(1/rsa_results[k][0]+1/d);
+        -: 2733:				else
+    #####: 2734:					rsa_results[k][0]=d;
+        -: 2735:
+    #####: 2736:				d=atof(sstrsep(&p,sep));
+    #####: 2737:				if(n)
+    #####: 2738:					rsa_results[k][1]=1/(1/rsa_results[k][1]+1/d);
+        -: 2739:				else
+    #####: 2740:					rsa_results[k][1]=d;
+        -: 2741:				}
+    #####: 2742:			else if(!strncmp(buf,"+F2:",4))
+        -: 2743:				{
+        -: 2744:				int k;
+        -: 2745:				double d;
+        -: 2746:				
+    #####: 2747:				p=buf+4;
+    #####: 2748:				k=atoi(sstrsep(&p,sep));
+    #####: 2749:				sstrsep(&p,sep);
+        -: 2750:
+    #####: 2751:				d=atof(sstrsep(&p,sep));
+    #####: 2752:				if(n)
+    #####: 2753:					rsa_results[k][0]=1/(1/rsa_results[k][0]+1/d);
+        -: 2754:				else
+    #####: 2755:					rsa_results[k][0]=d;
+        -: 2756:
+    #####: 2757:				d=atof(sstrsep(&p,sep));
+    #####: 2758:				if(n)
+    #####: 2759:					rsa_results[k][1]=1/(1/rsa_results[k][1]+1/d);
+        -: 2760:				else
+    #####: 2761:					rsa_results[k][1]=d;
+        -: 2762:				}
+        -: 2763:#ifndef OPENSSL_NO_DSA
+    #####: 2764:			else if(!strncmp(buf,"+F3:",4))
+        -: 2765:				{
+        -: 2766:				int k;
+        -: 2767:				double d;
+        -: 2768:				
+    #####: 2769:				p=buf+4;
+    #####: 2770:				k=atoi(sstrsep(&p,sep));
+    #####: 2771:				sstrsep(&p,sep);
+        -: 2772:
+    #####: 2773:				d=atof(sstrsep(&p,sep));
+    #####: 2774:				if(n)
+    #####: 2775:					dsa_results[k][0]=1/(1/dsa_results[k][0]+1/d);
+        -: 2776:				else
+    #####: 2777:					dsa_results[k][0]=d;
+        -: 2778:
+    #####: 2779:				d=atof(sstrsep(&p,sep));
+    #####: 2780:				if(n)
+    #####: 2781:					dsa_results[k][1]=1/(1/dsa_results[k][1]+1/d);
+        -: 2782:				else
+    #####: 2783:					dsa_results[k][1]=d;
+        -: 2784:				}
+        -: 2785:#endif
+        -: 2786:#ifndef OPENSSL_NO_ECDSA
+    #####: 2787:			else if(!strncmp(buf,"+F4:",4))
+        -: 2788:				{
+        -: 2789:				int k;
+        -: 2790:				double d;
+        -: 2791:				
+    #####: 2792:				p=buf+4;
+    #####: 2793:				k=atoi(sstrsep(&p,sep));
+    #####: 2794:				sstrsep(&p,sep);
+        -: 2795:
+    #####: 2796:				d=atof(sstrsep(&p,sep));
+    #####: 2797:				if(n)
+    #####: 2798:					ecdsa_results[k][0]=1/(1/ecdsa_results[k][0]+1/d);
+        -: 2799:				else
+    #####: 2800:					ecdsa_results[k][0]=d;
+        -: 2801:
+    #####: 2802:				d=atof(sstrsep(&p,sep));
+    #####: 2803:				if(n)
+    #####: 2804:					ecdsa_results[k][1]=1/(1/ecdsa_results[k][1]+1/d);
+        -: 2805:				else
+    #####: 2806:					ecdsa_results[k][1]=d;
+        -: 2807:				}
+        -: 2808:#endif 
+        -: 2809:
+        -: 2810:#ifndef OPENSSL_NO_ECDH
+    #####: 2811:			else if(!strncmp(buf,"+F5:",4))
+        -: 2812:				{
+        -: 2813:				int k;
+        -: 2814:				double d;
+        -: 2815:				
+    #####: 2816:				p=buf+4;
+    #####: 2817:				k=atoi(sstrsep(&p,sep));
+    #####: 2818:				sstrsep(&p,sep);
+        -: 2819:
+    #####: 2820:				d=atof(sstrsep(&p,sep));
+    #####: 2821:				if(n)
+    #####: 2822:					ecdh_results[k][0]=1/(1/ecdh_results[k][0]+1/d);
+        -: 2823:				else
+    #####: 2824:					ecdh_results[k][0]=d;
+        -: 2825:
+        -: 2826:				}
+        -: 2827:#endif
+        -: 2828:
+    #####: 2829:			else if(!strncmp(buf,"+H:",3))
+        -: 2830:				{
+        -: 2831:				}
+        -: 2832:			else
+    #####: 2833:				fprintf(stderr,"Unknown type '%s' from child %d\n",buf,n);
+        -: 2834:			}
+        -: 2835:
+    #####: 2836:		fclose(f);
+        -: 2837:		}
+    #####: 2838:	free(fds);
+    #####: 2839:	return 1;
+        -: 2840:	}
+        -: 2841:#endif
+        -: 2842:#endif

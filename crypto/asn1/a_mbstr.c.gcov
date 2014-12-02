@@ -1,0 +1,405 @@
+        -:    0:Source:a_mbstr.c
+        -:    0:Graph:a_mbstr.gcno
+        -:    0:Data:a_mbstr.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* a_mbstr.c */
+        -:    2:/* Written by Dr Stephen N Henson (steve@openssl.org) for the OpenSSL
+        -:    3: * project 1999.
+        -:    4: */
+        -:    5:/* ====================================================================
+        -:    6: * Copyright (c) 1999 The OpenSSL Project.  All rights reserved.
+        -:    7: *
+        -:    8: * Redistribution and use in source and binary forms, with or without
+        -:    9: * modification, are permitted provided that the following conditions
+        -:   10: * are met:
+        -:   11: *
+        -:   12: * 1. Redistributions of source code must retain the above copyright
+        -:   13: *    notice, this list of conditions and the following disclaimer. 
+        -:   14: *
+        -:   15: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   16: *    notice, this list of conditions and the following disclaimer in
+        -:   17: *    the documentation and/or other materials provided with the
+        -:   18: *    distribution.
+        -:   19: *
+        -:   20: * 3. All advertising materials mentioning features or use of this
+        -:   21: *    software must display the following acknowledgment:
+        -:   22: *    "This product includes software developed by the OpenSSL Project
+        -:   23: *    for use in the OpenSSL Toolkit. (http://www.OpenSSL.org/)"
+        -:   24: *
+        -:   25: * 4. The names "OpenSSL Toolkit" and "OpenSSL Project" must not be used to
+        -:   26: *    endorse or promote products derived from this software without
+        -:   27: *    prior written permission. For written permission, please contact
+        -:   28: *    licensing@OpenSSL.org.
+        -:   29: *
+        -:   30: * 5. Products derived from this software may not be called "OpenSSL"
+        -:   31: *    nor may "OpenSSL" appear in their names without prior written
+        -:   32: *    permission of the OpenSSL Project.
+        -:   33: *
+        -:   34: * 6. Redistributions of any form whatsoever must retain the following
+        -:   35: *    acknowledgment:
+        -:   36: *    "This product includes software developed by the OpenSSL Project
+        -:   37: *    for use in the OpenSSL Toolkit (http://www.OpenSSL.org/)"
+        -:   38: *
+        -:   39: * THIS SOFTWARE IS PROVIDED BY THE OpenSSL PROJECT ``AS IS'' AND ANY
+        -:   40: * EXPRESSED OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   41: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+        -:   42: * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE OpenSSL PROJECT OR
+        -:   43: * ITS CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+        -:   44: * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+        -:   45: * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+        -:   46: * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   47: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+        -:   48: * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+        -:   49: * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+        -:   50: * OF THE POSSIBILITY OF SUCH DAMAGE.
+        -:   51: * ====================================================================
+        -:   52: *
+        -:   53: * This product includes cryptographic software written by Eric Young
+        -:   54: * (eay@cryptsoft.com).  This product includes software written by Tim
+        -:   55: * Hudson (tjh@cryptsoft.com).
+        -:   56: *
+        -:   57: */
+        -:   58:
+        -:   59:#include <stdio.h>
+        -:   60:#include <ctype.h>
+        -:   61:#include "cryptlib.h"
+        -:   62:#include <openssl/asn1.h>
+        -:   63:
+        -:   64:static int traverse_string(const unsigned char *p, int len, int inform,
+        -:   65:		 int (*rfunc)(unsigned long value, void *in), void *arg);
+        -:   66:static int in_utf8(unsigned long value, void *arg);
+        -:   67:static int out_utf8(unsigned long value, void *arg);
+        -:   68:static int type_str(unsigned long value, void *arg);
+        -:   69:static int cpy_asc(unsigned long value, void *arg);
+        -:   70:static int cpy_bmp(unsigned long value, void *arg);
+        -:   71:static int cpy_univ(unsigned long value, void *arg);
+        -:   72:static int cpy_utf8(unsigned long value, void *arg);
+        -:   73:static int is_printable(unsigned long value);
+        -:   74:
+        -:   75:/* These functions take a string in UTF8, ASCII or multibyte form and
+        -:   76: * a mask of permissible ASN1 string types. It then works out the minimal
+        -:   77: * type (using the order Printable < IA5 < T61 < BMP < Universal < UTF8)
+        -:   78: * and creates a string of the correct type with the supplied data.
+        -:   79: * Yes this is horrible: it has to be :-(
+        -:   80: * The 'ncopy' form checks minimum and maximum size limits too.
+        -:   81: */
+        -:   82:
+   290008:   83:int ASN1_mbstring_copy(ASN1_STRING **out, const unsigned char *in, int len,
+        -:   84:					int inform, unsigned long mask)
+        -:   85:{
+   290008:   86:	return ASN1_mbstring_ncopy(out, in, len, inform, mask, 0, 0);
+        -:   87:}
+        -:   88:
+   290008:   89:int ASN1_mbstring_ncopy(ASN1_STRING **out, const unsigned char *in, int len,
+        -:   90:					int inform, unsigned long mask, 
+        -:   91:					long minsize, long maxsize)
+        -:   92:{
+        -:   93:	int str_type;
+        -:   94:	int ret;
+        -:   95:	char free_out;
+   290008:   96:	int outform, outlen = 0;
+        -:   97:	ASN1_STRING *dest;
+        -:   98:	unsigned char *p;
+        -:   99:	int nchar;
+        -:  100:	char strbuf[32];
+        -:  101:	int (*cpyfunc)(unsigned long,void *) = NULL;
+   290008:  102:	if(len == -1) len = strlen((const char *)in);
+   290008:  103:	if(!mask) mask = DIRSTRING_TYPE;
+        -:  104:
+        -:  105:	/* First do a string check and work out the number of characters */
+   290008:  106:	switch(inform) {
+        -:  107:
+        -:  108:		case MBSTRING_BMP:
+    #####:  109:		if(len & 1) {
+    #####:  110:			ASN1err(ASN1_F_ASN1_MBSTRING_NCOPY,
+        -:  111:					 ASN1_R_INVALID_BMPSTRING_LENGTH);
+    #####:  112:			return -1;
+        -:  113:		}
+    #####:  114:		nchar = len >> 1;
+    #####:  115:		break;
+        -:  116:
+        -:  117:		case MBSTRING_UNIV:
+    #####:  118:		if(len & 3) {
+    #####:  119:			ASN1err(ASN1_F_ASN1_MBSTRING_NCOPY,
+        -:  120:					 ASN1_R_INVALID_UNIVERSALSTRING_LENGTH);
+    #####:  121:			return -1;
+        -:  122:		}
+    #####:  123:		nchar = len >> 2;
+    #####:  124:		break;
+        -:  125:
+        -:  126:		case MBSTRING_UTF8:
+   103239:  127:		nchar = 0;
+        -:  128:		/* This counts the characters and does utf8 syntax checking */
+   103239:  129:		ret = traverse_string(in, len, MBSTRING_UTF8, in_utf8, &nchar);
+   103239:  130:		if(ret < 0) {
+    #####:  131:			ASN1err(ASN1_F_ASN1_MBSTRING_NCOPY,
+        -:  132:						 ASN1_R_INVALID_UTF8STRING);
+    #####:  133:			return -1;
+        -:  134:		}
+        -:  135:		break;
+        -:  136:
+        -:  137:		case MBSTRING_ASC:
+   186769:  138:		nchar = len;
+   186769:  139:		break;
+        -:  140:
+        -:  141:		default:
+    #####:  142:		ASN1err(ASN1_F_ASN1_MBSTRING_NCOPY, ASN1_R_UNKNOWN_FORMAT);
+    #####:  143:		return -1;
+        -:  144:	}
+        -:  145:
+   290008:  146:	if((minsize > 0) && (nchar < minsize)) {
+    #####:  147:		ASN1err(ASN1_F_ASN1_MBSTRING_NCOPY, ASN1_R_STRING_TOO_SHORT);
+    #####:  148:		BIO_snprintf(strbuf, sizeof strbuf, "%ld", minsize);
+    #####:  149:		ERR_add_error_data(2, "minsize=", strbuf);
+    #####:  150:		return -1;
+        -:  151:	}
+        -:  152:
+   290008:  153:	if((maxsize > 0) && (nchar > maxsize)) {
+    #####:  154:		ASN1err(ASN1_F_ASN1_MBSTRING_NCOPY, ASN1_R_STRING_TOO_LONG);
+    #####:  155:		BIO_snprintf(strbuf, sizeof strbuf, "%ld", maxsize);
+    #####:  156:		ERR_add_error_data(2, "maxsize=", strbuf);
+    #####:  157:		return -1;
+        -:  158:	}
+        -:  159:
+        -:  160:	/* Now work out minimal type (if any) */
+   290008:  161:	if(traverse_string(in, len, inform, type_str, &mask) < 0) {
+    #####:  162:		ASN1err(ASN1_F_ASN1_MBSTRING_NCOPY, ASN1_R_ILLEGAL_CHARACTERS);
+    #####:  163:		return -1;
+        -:  164:	}
+        -:  165:
+        -:  166:
+        -:  167:	/* Now work out output format and string type */
+        -:  168:	outform = MBSTRING_ASC;
+   290008:  169:	if(mask & B_ASN1_PRINTABLESTRING) str_type = V_ASN1_PRINTABLESTRING;
+   290008:  170:	else if(mask & B_ASN1_IA5STRING) str_type = V_ASN1_IA5STRING;
+   290008:  171:	else if(mask & B_ASN1_T61STRING) str_type = V_ASN1_T61STRING;
+   290008:  172:	else if(mask & B_ASN1_BMPSTRING) {
+        -:  173:		str_type = V_ASN1_BMPSTRING;
+        -:  174:		outform = MBSTRING_BMP;
+   290008:  175:	} else if(mask & B_ASN1_UNIVERSALSTRING) {
+        -:  176:		str_type = V_ASN1_UNIVERSALSTRING;
+        -:  177:		outform = MBSTRING_UNIV;
+        -:  178:	} else {
+        -:  179:		str_type = V_ASN1_UTF8STRING;
+        -:  180:		outform = MBSTRING_UTF8;
+        -:  181:	}
+   290008:  182:	if(!out) return str_type;
+   290008:  183:	if(*out) {
+        -:  184:		free_out = 0;
+        -:  185:		dest = *out;
+   290008:  186:		if(dest->data) {
+    #####:  187:			dest->length = 0;
+    #####:  188:			OPENSSL_free(dest->data);
+    #####:  189:			dest->data = NULL;
+        -:  190:		}
+   290008:  191:		dest->type = str_type;
+        -:  192:	} else {
+        -:  193:		free_out = 1;
+    #####:  194:		dest = ASN1_STRING_type_new(str_type);
+    #####:  195:		if(!dest) {
+    #####:  196:			ASN1err(ASN1_F_ASN1_MBSTRING_NCOPY,
+        -:  197:							ERR_R_MALLOC_FAILURE);
+    #####:  198:			return -1;
+        -:  199:		}
+    #####:  200:		*out = dest;
+        -:  201:	}
+        -:  202:	/* If both the same type just copy across */
+   290008:  203:	if(inform == outform) {
+   103239:  204:		if(!ASN1_STRING_set(dest, in, len)) {
+    #####:  205:			ASN1err(ASN1_F_ASN1_MBSTRING_NCOPY,ERR_R_MALLOC_FAILURE);
+    #####:  206:			return -1;
+        -:  207:		}
+        -:  208:		return str_type;
+        -:  209:	} 
+        -:  210:
+        -:  211:	/* Work out how much space the destination will need */
+   186769:  212:	switch(outform) {
+        -:  213:		case MBSTRING_ASC:
+    #####:  214:		outlen = nchar;
+        -:  215:		cpyfunc = cpy_asc;
+    #####:  216:		break;
+        -:  217:
+        -:  218:		case MBSTRING_BMP:
+    #####:  219:		outlen = nchar << 1;
+        -:  220:		cpyfunc = cpy_bmp;
+    #####:  221:		break;
+        -:  222:
+        -:  223:		case MBSTRING_UNIV:
+    #####:  224:		outlen = nchar << 2;
+        -:  225:		cpyfunc = cpy_univ;
+    #####:  226:		break;
+        -:  227:
+        -:  228:		case MBSTRING_UTF8:
+   186769:  229:		outlen = 0;
+   186769:  230:		traverse_string(in, len, inform, out_utf8, &outlen);
+        -:  231:		cpyfunc = cpy_utf8;
+   186769:  232:		break;
+        -:  233:	}
+   186769:  234:	if(!(p = OPENSSL_malloc(outlen + 1))) {
+    #####:  235:		if(free_out) ASN1_STRING_free(dest);
+    #####:  236:		ASN1err(ASN1_F_ASN1_MBSTRING_NCOPY,ERR_R_MALLOC_FAILURE);
+    #####:  237:		return -1;
+        -:  238:	}
+   186769:  239:	dest->length = outlen;
+   186769:  240:	dest->data = p;
+   186769:  241:	p[outlen] = 0;
+   186769:  242:	traverse_string(in, len, inform, cpyfunc, &p);
+   186769:  243:	return str_type;	
+        -:  244:}
+        -:  245:
+        -:  246:/* This function traverses a string and passes the value of each character
+        -:  247: * to an optional function along with a void * argument.
+        -:  248: */
+        -:  249:
+   766785:  250:static int traverse_string(const unsigned char *p, int len, int inform,
+        -:  251:		 int (*rfunc)(unsigned long value, void *in), void *arg)
+        -:  252:{
+        -:  253:	unsigned long value;
+        -:  254:	int ret;
+ 11230447:  255:	while(len) {
+  9696877:  256:		if(inform == MBSTRING_ASC) {
+  6897045:  257:			value = *p++;
+  6897045:  258:			len--;
+  2799832:  259:		} else if(inform == MBSTRING_BMP) {
+    #####:  260:			value = *p++ << 8;
+    #####:  261:			value |= *p++;
+    #####:  262:			len -= 2;
+  2799832:  263:		} else if(inform == MBSTRING_UNIV) {
+    #####:  264:			value = ((unsigned long)*p++) << 24;
+    #####:  265:			value |= ((unsigned long)*p++) << 16;
+    #####:  266:			value |= *p++ << 8;
+    #####:  267:			value |= *p++;
+    #####:  268:			len -= 4;
+        -:  269:		} else {
+  2799832:  270:			ret = UTF8_getc(p, len, &value);
+  2799832:  271:			if(ret < 0) return -1;
+  2799832:  272:			len -= ret;
+  2799832:  273:			p += ret;
+        -:  274:		}
+  9696877:  275:		if(rfunc) {
+  9696877:  276:			ret = rfunc(value, arg);
+  9696877:  277:			if(ret <= 0) return ret;
+        -:  278:		}
+        -:  279:	}
+        -:  280:	return 1;
+        -:  281:}
+        -:  282:
+        -:  283:/* Various utility functions for traverse_string */
+        -:  284:
+        -:  285:/* Just count number of characters */
+        -:  286:
+  1399916:  287:static int in_utf8(unsigned long value, void *arg)
+        -:  288:{
+        -:  289:	int *nchar;
+        -:  290:	nchar = arg;
+  1399916:  291:	(*nchar)++;
+  1399916:  292:	return 1;
+        -:  293:}
+        -:  294:
+        -:  295:/* Determine size of output as a UTF8 String */
+        -:  296:
+  2299015:  297:static int out_utf8(unsigned long value, void *arg)
+        -:  298:{
+        -:  299:	int *outlen;
+        -:  300:	outlen = arg;
+  2299015:  301:	*outlen += UTF8_putc(NULL, -1, value);
+  2299015:  302:	return 1;
+        -:  303:}
+        -:  304:
+        -:  305:/* Determine the "type" of a string: check each character against a
+        -:  306: * supplied "mask".
+        -:  307: */
+        -:  308:
+  3698931:  309:static int type_str(unsigned long value, void *arg)
+        -:  310:{
+        -:  311:	unsigned long types;
+  3698931:  312:	types = *((unsigned long *)arg);
+  3698931:  313:	if((types & B_ASN1_PRINTABLESTRING) && !is_printable(value))
+    #####:  314:					types &= ~B_ASN1_PRINTABLESTRING;
+  3698931:  315:	if((types & B_ASN1_IA5STRING) && (value > 127))
+    #####:  316:					types &= ~B_ASN1_IA5STRING;
+  3698931:  317:	if((types & B_ASN1_T61STRING) && (value > 0xff))
+    #####:  318:					types &= ~B_ASN1_T61STRING;
+  3698931:  319:	if((types & B_ASN1_BMPSTRING) && (value > 0xffff))
+    #####:  320:					types &= ~B_ASN1_BMPSTRING;
+  3698931:  321:	if(!types) return -1;
+  3698931:  322:	*((unsigned long *)arg) = types;
+  3698931:  323:	return 1;
+        -:  324:}
+        -:  325:
+        -:  326:/* Copy one byte per character ASCII like strings */
+        -:  327:
+    #####:  328:static int cpy_asc(unsigned long value, void *arg)
+        -:  329:{
+        -:  330:	unsigned char **p, *q;
+        -:  331:	p = arg;
+    #####:  332:	q = *p;
+    #####:  333:	*q = (unsigned char) value;
+    #####:  334:	(*p)++;
+    #####:  335:	return 1;
+        -:  336:}
+        -:  337:
+        -:  338:/* Copy two byte per character BMPStrings */
+        -:  339:
+    #####:  340:static int cpy_bmp(unsigned long value, void *arg)
+        -:  341:{
+        -:  342:	unsigned char **p, *q;
+        -:  343:	p = arg;
+    #####:  344:	q = *p;
+    #####:  345:	*q++ = (unsigned char) ((value >> 8) & 0xff);
+    #####:  346:	*q = (unsigned char) (value & 0xff);
+    #####:  347:	*p += 2;
+    #####:  348:	return 1;
+        -:  349:}
+        -:  350:
+        -:  351:/* Copy four byte per character UniversalStrings */
+        -:  352:
+    #####:  353:static int cpy_univ(unsigned long value, void *arg)
+        -:  354:{
+        -:  355:	unsigned char **p, *q;
+        -:  356:	p = arg;
+    #####:  357:	q = *p;
+    #####:  358:	*q++ = (unsigned char) ((value >> 24) & 0xff);
+    #####:  359:	*q++ = (unsigned char) ((value >> 16) & 0xff);
+    #####:  360:	*q++ = (unsigned char) ((value >> 8) & 0xff);
+    #####:  361:	*q = (unsigned char) (value & 0xff);
+    #####:  362:	*p += 4;
+    #####:  363:	return 1;
+        -:  364:}
+        -:  365:
+        -:  366:/* Copy to a UTF8String */
+        -:  367:
+  2299015:  368:static int cpy_utf8(unsigned long value, void *arg)
+        -:  369:{
+        -:  370:	unsigned char **p;
+        -:  371:	int ret;
+        -:  372:	p = arg;
+        -:  373:	/* We already know there is enough room so pass 0xff as the length */
+  2299015:  374:	ret = UTF8_putc(*p, 0xff, value);
+  2299015:  375:	*p += ret;
+  2299015:  376:	return 1;
+        -:  377:}
+        -:  378:
+        -:  379:/* Return 1 if the character is permitted in a PrintableString */
+    #####:  380:static int is_printable(unsigned long value)
+        -:  381:{
+        -:  382:	int ch;
+    #####:  383:	if(value > 0x7f) return 0;
+    #####:  384:	ch = (int) value;
+        -:  385:	/* Note: we can't use 'isalnum' because certain accented 
+        -:  386:	 * characters may count as alphanumeric in some environments.
+        -:  387:	 */
+        -:  388:#ifndef CHARSET_EBCDIC
+    #####:  389:	if((ch >= 'a') && (ch <= 'z')) return 1;
+    #####:  390:	if((ch >= 'A') && (ch <= 'Z')) return 1;
+    #####:  391:	if((ch >= '0') && (ch <= '9')) return 1;
+    #####:  392:	if ((ch == ' ') || strchr("'()+,-./:=?", ch)) return 1;
+        -:  393:#else /*CHARSET_EBCDIC*/
+        -:  394:	if((ch >= os_toascii['a']) && (ch <= os_toascii['z'])) return 1;
+        -:  395:	if((ch >= os_toascii['A']) && (ch <= os_toascii['Z'])) return 1;
+        -:  396:	if((ch >= os_toascii['0']) && (ch <= os_toascii['9'])) return 1;
+        -:  397:	if ((ch == os_toascii[' ']) || strchr("'()+,-./:=?", os_toebcdic[ch])) return 1;
+        -:  398:#endif /*CHARSET_EBCDIC*/
+    #####:  399:	return 0;
+        -:  400:}

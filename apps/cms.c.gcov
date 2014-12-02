@@ -1,0 +1,1402 @@
+        -:    0:Source:cms.c
+        -:    0:Graph:cms.gcno
+        -:    0:Data:cms.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* apps/cms.c */
+        -:    2:/* Written by Dr Stephen N Henson (steve@openssl.org) for the OpenSSL
+        -:    3: * project.
+        -:    4: */
+        -:    5:/* ====================================================================
+        -:    6: * Copyright (c) 2008 The OpenSSL Project.  All rights reserved.
+        -:    7: *
+        -:    8: * Redistribution and use in source and binary forms, with or without
+        -:    9: * modification, are permitted provided that the following conditions
+        -:   10: * are met:
+        -:   11: *
+        -:   12: * 1. Redistributions of source code must retain the above copyright
+        -:   13: *    notice, this list of conditions and the following disclaimer. 
+        -:   14: *
+        -:   15: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   16: *    notice, this list of conditions and the following disclaimer in
+        -:   17: *    the documentation and/or other materials provided with the
+        -:   18: *    distribution.
+        -:   19: *
+        -:   20: * 3. All advertising materials mentioning features or use of this
+        -:   21: *    software must display the following acknowledgment:
+        -:   22: *    "This product includes software developed by the OpenSSL Project
+        -:   23: *    for use in the OpenSSL Toolkit. (http://www.OpenSSL.org/)"
+        -:   24: *
+        -:   25: * 4. The names "OpenSSL Toolkit" and "OpenSSL Project" must not be used to
+        -:   26: *    endorse or promote products derived from this software without
+        -:   27: *    prior written permission. For written permission, please contact
+        -:   28: *    licensing@OpenSSL.org.
+        -:   29: *
+        -:   30: * 5. Products derived from this software may not be called "OpenSSL"
+        -:   31: *    nor may "OpenSSL" appear in their names without prior written
+        -:   32: *    permission of the OpenSSL Project.
+        -:   33: *
+        -:   34: * 6. Redistributions of any form whatsoever must retain the following
+        -:   35: *    acknowledgment:
+        -:   36: *    "This product includes software developed by the OpenSSL Project
+        -:   37: *    for use in the OpenSSL Toolkit (http://www.OpenSSL.org/)"
+        -:   38: *
+        -:   39: * THIS SOFTWARE IS PROVIDED BY THE OpenSSL PROJECT ``AS IS'' AND ANY
+        -:   40: * EXPRESSED OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   41: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+        -:   42: * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE OpenSSL PROJECT OR
+        -:   43: * ITS CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+        -:   44: * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+        -:   45: * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+        -:   46: * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   47: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+        -:   48: * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+        -:   49: * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+        -:   50: * OF THE POSSIBILITY OF SUCH DAMAGE.
+        -:   51: * ====================================================================
+        -:   52: */
+        -:   53:
+        -:   54:/* CMS utility function */
+        -:   55:
+        -:   56:#include <stdio.h>
+        -:   57:#include <string.h>
+        -:   58:#include "apps.h"
+        -:   59:
+        -:   60:#ifndef OPENSSL_NO_CMS
+        -:   61:
+        -:   62:#include <openssl/crypto.h>
+        -:   63:#include <openssl/pem.h>
+        -:   64:#include <openssl/err.h>
+        -:   65:#include <openssl/x509_vfy.h>
+        -:   66:#include <openssl/x509v3.h>
+        -:   67:#include <openssl/cms.h>
+        -:   68:
+        -:   69:#undef PROG
+        -:   70:#define PROG cms_main
+        -:   71:static int save_certs(char *signerfile, STACK_OF(X509) *signers);
+        -:   72:static int cms_cb(int ok, X509_STORE_CTX *ctx);
+        -:   73:static void receipt_request_print(BIO *out, CMS_ContentInfo *cms);
+        -:   74:static CMS_ReceiptRequest *make_receipt_request(STACK_OF(OPENSSL_STRING) *rr_to,
+        -:   75:						int rr_allorfirst,
+        -:   76:					STACK_OF(OPENSSL_STRING) *rr_from);
+        -:   77:
+        -:   78:#define SMIME_OP	0x10
+        -:   79:#define SMIME_IP	0x20
+        -:   80:#define SMIME_SIGNERS	0x40
+        -:   81:#define SMIME_ENCRYPT		(1 | SMIME_OP)
+        -:   82:#define SMIME_DECRYPT		(2 | SMIME_IP)
+        -:   83:#define SMIME_SIGN		(3 | SMIME_OP | SMIME_SIGNERS)
+        -:   84:#define SMIME_VERIFY		(4 | SMIME_IP)
+        -:   85:#define SMIME_CMSOUT		(5 | SMIME_IP | SMIME_OP)
+        -:   86:#define SMIME_RESIGN		(6 | SMIME_IP | SMIME_OP | SMIME_SIGNERS)
+        -:   87:#define SMIME_DATAOUT		(7 | SMIME_IP)
+        -:   88:#define SMIME_DATA_CREATE	(8 | SMIME_OP)
+        -:   89:#define SMIME_DIGEST_VERIFY	(9 | SMIME_IP)
+        -:   90:#define SMIME_DIGEST_CREATE	(10 | SMIME_OP)
+        -:   91:#define SMIME_UNCOMPRESS	(11 | SMIME_IP)
+        -:   92:#define SMIME_COMPRESS		(12 | SMIME_OP)
+        -:   93:#define SMIME_ENCRYPTED_DECRYPT	(13 | SMIME_IP)
+        -:   94:#define SMIME_ENCRYPTED_ENCRYPT	(14 | SMIME_OP)
+        -:   95:#define SMIME_SIGN_RECEIPT	(15 | SMIME_IP | SMIME_OP)
+        -:   96:#define SMIME_VERIFY_RECEIPT	(16 | SMIME_IP)
+        -:   97:
+        -:   98:int verify_err = 0;
+        -:   99:
+        -:  100:int MAIN(int, char **);
+        -:  101:
+    #####:  102:int MAIN(int argc, char **argv)
+        -:  103:	{
+        -:  104:	ENGINE *e = NULL;
+        -:  105:	int operation = 0;
+        -:  106:	int ret = 0;
+        -:  107:	char **args;
+        -:  108:	const char *inmode = "r", *outmode = "w";
+        -:  109:	char *infile = NULL, *outfile = NULL, *rctfile = NULL;
+        -:  110:	char *signerfile = NULL, *recipfile = NULL;
+        -:  111:	STACK_OF(OPENSSL_STRING) *sksigners = NULL, *skkeys = NULL;
+        -:  112:	char *certfile = NULL, *keyfile = NULL, *contfile=NULL;
+        -:  113:	char *certsoutfile = NULL;
+        -:  114:	const EVP_CIPHER *cipher = NULL;
+        -:  115:	CMS_ContentInfo *cms = NULL, *rcms = NULL;
+        -:  116:	X509_STORE *store = NULL;
+        -:  117:	X509 *cert = NULL, *recip = NULL, *signer = NULL;
+        -:  118:	EVP_PKEY *key = NULL;
+        -:  119:	STACK_OF(X509) *encerts = NULL, *other = NULL;
+    #####:  120:	BIO *in = NULL, *out = NULL, *indata = NULL, *rctin = NULL;
+    #####:  121:	int badarg = 0;
+        -:  122:	int flags = CMS_DETACHED, noout = 0, print = 0;
+        -:  123:	int verify_retcode = 0;
+        -:  124:	int rr_print = 0, rr_allorfirst = -1;
+        -:  125:	STACK_OF(OPENSSL_STRING) *rr_to = NULL, *rr_from = NULL;
+        -:  126:	CMS_ReceiptRequest *rr = NULL;
+        -:  127:	char *to = NULL, *from = NULL, *subject = NULL;
+        -:  128:	char *CAfile = NULL, *CApath = NULL;
+    #####:  129:	char *passargin = NULL, *passin = NULL;
+        -:  130:	char *inrand = NULL;
+        -:  131:	int need_rand = 0;
+        -:  132:	const EVP_MD *sign_md = NULL;
+        -:  133:	int informat = FORMAT_SMIME, outformat = FORMAT_SMIME;
+        -:  134:        int rctformat = FORMAT_SMIME, keyform = FORMAT_PEM;
+        -:  135:#ifndef OPENSSL_NO_ENGINE
+        -:  136:	char *engine=NULL;
+        -:  137:#endif
+        -:  138:	unsigned char *secret_key = NULL, *secret_keyid = NULL;
+        -:  139:	unsigned char *pwri_pass = NULL, *pwri_tmp = NULL;
+        -:  140:	size_t secret_keylen = 0, secret_keyidlen = 0;
+        -:  141:
+        -:  142:	ASN1_OBJECT *econtent_type = NULL;
+        -:  143:
+    #####:  144:	X509_VERIFY_PARAM *vpm = NULL;
+        -:  145:
+    #####:  146:	args = argv + 1;
+        -:  147:	ret = 1;
+        -:  148:
+    #####:  149:	apps_startup();
+        -:  150:
+    #####:  151:	if (bio_err == NULL)
+        -:  152:		{
+    #####:  153:		if ((bio_err = BIO_new(BIO_s_file())) != NULL)
+    #####:  154:			BIO_set_fp(bio_err, stderr, BIO_NOCLOSE|BIO_FP_TEXT);
+        -:  155:		}
+        -:  156:
+    #####:  157:	if (!load_config(bio_err, NULL))
+        -:  158:		goto end;
+        -:  159:
+    #####:  160:	while (!badarg && *args && *args[0] == '-')
+        -:  161:		{
+    #####:  162:		if (!strcmp (*args, "-encrypt"))
+        -:  163:			operation = SMIME_ENCRYPT;
+    #####:  164:		else if (!strcmp (*args, "-decrypt"))
+        -:  165:			operation = SMIME_DECRYPT;
+    #####:  166:		else if (!strcmp (*args, "-sign"))
+        -:  167:			operation = SMIME_SIGN;
+    #####:  168:		else if (!strcmp (*args, "-sign_receipt"))
+        -:  169:			operation = SMIME_SIGN_RECEIPT;
+    #####:  170:		else if (!strcmp (*args, "-resign"))
+        -:  171:			operation = SMIME_RESIGN;
+    #####:  172:		else if (!strcmp (*args, "-verify"))
+        -:  173:			operation = SMIME_VERIFY;
+    #####:  174:		else if (!strcmp (*args, "-verify_retcode"))
+        -:  175:			verify_retcode = 1;
+    #####:  176:		else if (!strcmp(*args,"-verify_receipt"))
+        -:  177:			{
+        -:  178:			operation = SMIME_VERIFY_RECEIPT;
+    #####:  179:			if (!args[1])
+        -:  180:				goto argerr;
+    #####:  181:			args++;
+        -:  182:			rctfile = *args;
+        -:  183:			}
+    #####:  184:		else if (!strcmp (*args, "-cmsout"))
+        -:  185:			operation = SMIME_CMSOUT;
+    #####:  186:		else if (!strcmp (*args, "-data_out"))
+        -:  187:			operation = SMIME_DATAOUT;
+    #####:  188:		else if (!strcmp (*args, "-data_create"))
+        -:  189:			operation = SMIME_DATA_CREATE;
+    #####:  190:		else if (!strcmp (*args, "-digest_verify"))
+        -:  191:			operation = SMIME_DIGEST_VERIFY;
+    #####:  192:		else if (!strcmp (*args, "-digest_create"))
+        -:  193:			operation = SMIME_DIGEST_CREATE;
+    #####:  194:		else if (!strcmp (*args, "-compress"))
+        -:  195:			operation = SMIME_COMPRESS;
+    #####:  196:		else if (!strcmp (*args, "-uncompress"))
+        -:  197:			operation = SMIME_UNCOMPRESS;
+    #####:  198:		else if (!strcmp (*args, "-EncryptedData_decrypt"))
+        -:  199:			operation = SMIME_ENCRYPTED_DECRYPT;
+    #####:  200:		else if (!strcmp (*args, "-EncryptedData_encrypt"))
+        -:  201:			operation = SMIME_ENCRYPTED_ENCRYPT;
+        -:  202:#ifndef OPENSSL_NO_DES
+    #####:  203:		else if (!strcmp (*args, "-des3")) 
+    #####:  204:				cipher = EVP_des_ede3_cbc();
+    #####:  205:		else if (!strcmp (*args, "-des")) 
+    #####:  206:				cipher = EVP_des_cbc();
+        -:  207:#endif
+        -:  208:#ifndef OPENSSL_NO_SEED
+    #####:  209:		else if (!strcmp (*args, "-seed")) 
+    #####:  210:				cipher = EVP_seed_cbc();
+        -:  211:#endif
+        -:  212:#ifndef OPENSSL_NO_RC2
+    #####:  213:		else if (!strcmp (*args, "-rc2-40")) 
+    #####:  214:				cipher = EVP_rc2_40_cbc();
+    #####:  215:		else if (!strcmp (*args, "-rc2-128")) 
+    #####:  216:				cipher = EVP_rc2_cbc();
+    #####:  217:		else if (!strcmp (*args, "-rc2-64")) 
+    #####:  218:				cipher = EVP_rc2_64_cbc();
+        -:  219:#endif
+        -:  220:#ifndef OPENSSL_NO_AES
+    #####:  221:		else if (!strcmp(*args,"-aes128"))
+    #####:  222:				cipher = EVP_aes_128_cbc();
+    #####:  223:		else if (!strcmp(*args,"-aes192"))
+    #####:  224:				cipher = EVP_aes_192_cbc();
+    #####:  225:		else if (!strcmp(*args,"-aes256"))
+    #####:  226:				cipher = EVP_aes_256_cbc();
+        -:  227:#endif
+        -:  228:#ifndef OPENSSL_NO_CAMELLIA
+    #####:  229:		else if (!strcmp(*args,"-camellia128"))
+    #####:  230:				cipher = EVP_camellia_128_cbc();
+    #####:  231:		else if (!strcmp(*args,"-camellia192"))
+    #####:  232:				cipher = EVP_camellia_192_cbc();
+    #####:  233:		else if (!strcmp(*args,"-camellia256"))
+    #####:  234:				cipher = EVP_camellia_256_cbc();
+        -:  235:#endif
+    #####:  236:		else if (!strcmp (*args, "-debug_decrypt")) 
+    #####:  237:				flags |= CMS_DEBUG_DECRYPT;
+    #####:  238:		else if (!strcmp (*args, "-text")) 
+    #####:  239:				flags |= CMS_TEXT;
+    #####:  240:		else if (!strcmp (*args, "-nointern")) 
+    #####:  241:				flags |= CMS_NOINTERN;
+    #####:  242:		else if (!strcmp (*args, "-noverify") 
+    #####:  243:			|| !strcmp (*args, "-no_signer_cert_verify")) 
+    #####:  244:				flags |= CMS_NO_SIGNER_CERT_VERIFY;
+    #####:  245:		else if (!strcmp (*args, "-nocerts")) 
+    #####:  246:				flags |= CMS_NOCERTS;
+    #####:  247:		else if (!strcmp (*args, "-noattr")) 
+    #####:  248:				flags |= CMS_NOATTR;
+    #####:  249:		else if (!strcmp (*args, "-nodetach")) 
+    #####:  250:				flags &= ~CMS_DETACHED;
+    #####:  251:		else if (!strcmp (*args, "-nosmimecap"))
+    #####:  252:				flags |= CMS_NOSMIMECAP;
+    #####:  253:		else if (!strcmp (*args, "-binary"))
+    #####:  254:				flags |= CMS_BINARY;
+    #####:  255:		else if (!strcmp (*args, "-keyid"))
+    #####:  256:				flags |= CMS_USE_KEYID;
+    #####:  257:		else if (!strcmp (*args, "-nosigs"))
+    #####:  258:				flags |= CMS_NOSIGS;
+    #####:  259:		else if (!strcmp (*args, "-no_content_verify"))
+    #####:  260:				flags |= CMS_NO_CONTENT_VERIFY;
+    #####:  261:		else if (!strcmp (*args, "-no_attr_verify"))
+    #####:  262:				flags |= CMS_NO_ATTR_VERIFY;
+    #####:  263:		else if (!strcmp (*args, "-stream"))
+    #####:  264:				flags |= CMS_STREAM;
+    #####:  265:		else if (!strcmp (*args, "-indef"))
+    #####:  266:				flags |= CMS_STREAM;
+    #####:  267:		else if (!strcmp (*args, "-noindef"))
+    #####:  268:				flags &= ~CMS_STREAM;
+    #####:  269:		else if (!strcmp (*args, "-nooldmime"))
+    #####:  270:				flags |= CMS_NOOLDMIMETYPE;
+    #####:  271:		else if (!strcmp (*args, "-crlfeol"))
+    #####:  272:				flags |= CMS_CRLFEOL;
+    #####:  273:		else if (!strcmp (*args, "-noout"))
+        -:  274:				noout = 1;
+    #####:  275:		else if (!strcmp (*args, "-receipt_request_print"))
+        -:  276:				rr_print = 1;
+    #####:  277:		else if (!strcmp (*args, "-receipt_request_all"))
+        -:  278:				rr_allorfirst = 0;
+    #####:  279:		else if (!strcmp (*args, "-receipt_request_first"))
+        -:  280:				rr_allorfirst = 1;
+    #####:  281:		else if (!strcmp(*args,"-receipt_request_from"))
+        -:  282:			{
+    #####:  283:			if (!args[1])
+        -:  284:				goto argerr;
+    #####:  285:			args++;
+    #####:  286:			if (!rr_from)
+    #####:  287:				rr_from = sk_OPENSSL_STRING_new_null();
+    #####:  288:			sk_OPENSSL_STRING_push(rr_from, *args);
+        -:  289:			}
+    #####:  290:		else if (!strcmp(*args,"-receipt_request_to"))
+        -:  291:			{
+    #####:  292:			if (!args[1])
+        -:  293:				goto argerr;
+    #####:  294:			args++;
+    #####:  295:			if (!rr_to)
+    #####:  296:				rr_to = sk_OPENSSL_STRING_new_null();
+    #####:  297:			sk_OPENSSL_STRING_push(rr_to, *args);
+        -:  298:			}
+    #####:  299:		else if (!strcmp (*args, "-print"))
+        -:  300:				{
+        -:  301:				noout = 1;
+        -:  302:				print = 1;
+        -:  303:				}
+    #####:  304:		else if (!strcmp(*args,"-secretkey"))
+        -:  305:			{
+        -:  306:			long ltmp;
+    #####:  307:			if (!args[1])
+        -:  308:				goto argerr;
+    #####:  309:			args++;
+    #####:  310:			secret_key = string_to_hex(*args, &ltmp);
+    #####:  311:			if (!secret_key)
+        -:  312:				{
+    #####:  313:				BIO_printf(bio_err, "Invalid key %s\n", *args);
+    #####:  314:				goto argerr;
+        -:  315:				}
+    #####:  316:			secret_keylen = (size_t)ltmp;
+        -:  317:			}
+    #####:  318:		else if (!strcmp(*args,"-secretkeyid"))
+        -:  319:			{
+        -:  320:			long ltmp;
+    #####:  321:			if (!args[1])
+        -:  322:				goto argerr;
+    #####:  323:			args++;
+    #####:  324:			secret_keyid = string_to_hex(*args, &ltmp);
+    #####:  325:			if (!secret_keyid)
+        -:  326:				{
+    #####:  327:				BIO_printf(bio_err, "Invalid id %s\n", *args);
+    #####:  328:				goto argerr;
+        -:  329:				}
+    #####:  330:			secret_keyidlen = (size_t)ltmp;
+        -:  331:			}
+    #####:  332:		else if (!strcmp(*args,"-pwri_password"))
+        -:  333:			{
+    #####:  334:			if (!args[1])
+        -:  335:				goto argerr;
+    #####:  336:			args++;
+        -:  337:			pwri_pass = (unsigned char *)*args;
+        -:  338:			}
+    #####:  339:		else if (!strcmp(*args,"-econtent_type"))
+        -:  340:			{
+    #####:  341:			if (!args[1])
+        -:  342:				goto argerr;
+    #####:  343:			args++;
+    #####:  344:			econtent_type = OBJ_txt2obj(*args, 0);
+    #####:  345:			if (!econtent_type)
+        -:  346:				{
+    #####:  347:				BIO_printf(bio_err, "Invalid OID %s\n", *args);
+    #####:  348:				goto argerr;
+        -:  349:				}
+        -:  350:			}
+    #####:  351:		else if (!strcmp(*args,"-rand"))
+        -:  352:			{
+    #####:  353:			if (!args[1])
+        -:  354:				goto argerr;
+    #####:  355:			args++;
+        -:  356:			inrand = *args;
+        -:  357:			need_rand = 1;
+        -:  358:			}
+        -:  359:#ifndef OPENSSL_NO_ENGINE
+    #####:  360:		else if (!strcmp(*args,"-engine"))
+        -:  361:			{
+    #####:  362:			if (!args[1])
+        -:  363:				goto argerr;
+    #####:  364:			engine = *++args;
+        -:  365:			}
+        -:  366:#endif
+    #####:  367:		else if (!strcmp(*args,"-passin"))
+        -:  368:			{
+    #####:  369:			if (!args[1])
+        -:  370:				goto argerr;
+    #####:  371:			passargin = *++args;
+        -:  372:			}
+    #####:  373:		else if (!strcmp (*args, "-to"))
+        -:  374:			{
+    #####:  375:			if (!args[1])
+        -:  376:				goto argerr;
+    #####:  377:			to = *++args;
+        -:  378:			}
+    #####:  379:		else if (!strcmp (*args, "-from"))
+        -:  380:			{
+    #####:  381:			if (!args[1])
+        -:  382:				goto argerr;
+    #####:  383:			from = *++args;
+        -:  384:			}
+    #####:  385:		else if (!strcmp (*args, "-subject"))
+        -:  386:			{
+    #####:  387:			if (!args[1])
+        -:  388:				goto argerr;
+    #####:  389:			subject = *++args;
+        -:  390:			}
+    #####:  391:		else if (!strcmp (*args, "-signer"))
+        -:  392:			{
+    #####:  393:			if (!args[1])
+        -:  394:				goto argerr;
+        -:  395:			/* If previous -signer argument add signer to list */
+        -:  396:
+    #####:  397:			if (signerfile)
+        -:  398:				{
+    #####:  399:				if (!sksigners)
+    #####:  400:					sksigners = sk_OPENSSL_STRING_new_null();
+    #####:  401:				sk_OPENSSL_STRING_push(sksigners, signerfile);
+    #####:  402:				if (!keyfile)
+        -:  403:					keyfile = signerfile;
+    #####:  404:				if (!skkeys)
+    #####:  405:					skkeys = sk_OPENSSL_STRING_new_null();
+    #####:  406:				sk_OPENSSL_STRING_push(skkeys, keyfile);
+        -:  407:				keyfile = NULL;
+        -:  408:				}
+    #####:  409:			signerfile = *++args;
+        -:  410:			}
+    #####:  411:		else if (!strcmp (*args, "-recip"))
+        -:  412:			{
+    #####:  413:			if (!args[1])
+        -:  414:				goto argerr;
+    #####:  415:			recipfile = *++args;
+        -:  416:			}
+    #####:  417:		else if (!strcmp (*args, "-certsout"))
+        -:  418:			{
+    #####:  419:			if (!args[1])
+        -:  420:				goto argerr;
+    #####:  421:			certsoutfile = *++args;
+        -:  422:			}
+    #####:  423:		else if (!strcmp (*args, "-md"))
+        -:  424:			{
+    #####:  425:			if (!args[1])
+        -:  426:				goto argerr;
+    #####:  427:			sign_md = EVP_get_digestbyname(*++args);
+    #####:  428:			if (sign_md == NULL)
+        -:  429:				{
+    #####:  430:				BIO_printf(bio_err, "Unknown digest %s\n",
+        -:  431:							*args);
+    #####:  432:				goto argerr;
+        -:  433:				}
+        -:  434:			}
+    #####:  435:		else if (!strcmp (*args, "-inkey"))
+        -:  436:			{
+    #####:  437:			if (!args[1])	
+        -:  438:				goto argerr;
+        -:  439:			/* If previous -inkey arument add signer to list */
+    #####:  440:			if (keyfile)
+        -:  441:				{
+    #####:  442:				if (!signerfile)
+        -:  443:					{
+    #####:  444:					BIO_puts(bio_err, "Illegal -inkey without -signer\n");
+    #####:  445:					goto argerr;
+        -:  446:					}
+    #####:  447:				if (!sksigners)
+    #####:  448:					sksigners = sk_OPENSSL_STRING_new_null();
+    #####:  449:				sk_OPENSSL_STRING_push(sksigners, signerfile);
+        -:  450:				signerfile = NULL;
+    #####:  451:				if (!skkeys)
+    #####:  452:					skkeys = sk_OPENSSL_STRING_new_null();
+    #####:  453:				sk_OPENSSL_STRING_push(skkeys, keyfile);
+        -:  454:				}
+    #####:  455:			keyfile = *++args;
+        -:  456:			}
+    #####:  457:		else if (!strcmp (*args, "-keyform"))
+        -:  458:			{
+    #####:  459:			if (!args[1])
+        -:  460:				goto argerr;
+    #####:  461:			keyform = str2fmt(*++args);
+        -:  462:			}
+    #####:  463:		else if (!strcmp (*args, "-rctform"))
+        -:  464:			{
+    #####:  465:			if (!args[1])
+        -:  466:				goto argerr;
+    #####:  467:			rctformat = str2fmt(*++args);
+        -:  468:			}
+    #####:  469:		else if (!strcmp (*args, "-certfile"))
+        -:  470:			{
+    #####:  471:			if (!args[1])
+        -:  472:				goto argerr;
+    #####:  473:			certfile = *++args;
+        -:  474:			}
+    #####:  475:		else if (!strcmp (*args, "-CAfile"))
+        -:  476:			{
+    #####:  477:			if (!args[1])
+        -:  478:				goto argerr;
+    #####:  479:			CAfile = *++args;
+        -:  480:			}
+    #####:  481:		else if (!strcmp (*args, "-CApath"))
+        -:  482:			{
+    #####:  483:			if (!args[1])
+        -:  484:				goto argerr;
+    #####:  485:			CApath = *++args;
+        -:  486:			}
+    #####:  487:		else if (!strcmp (*args, "-in"))
+        -:  488:			{
+    #####:  489:			if (!args[1])
+        -:  490:				goto argerr;
+    #####:  491:			infile = *++args;
+        -:  492:			}
+    #####:  493:		else if (!strcmp (*args, "-inform"))
+        -:  494:			{
+    #####:  495:			if (!args[1])
+        -:  496:				goto argerr;
+    #####:  497:			informat = str2fmt(*++args);
+        -:  498:			}
+    #####:  499:		else if (!strcmp (*args, "-outform"))
+        -:  500:			{
+    #####:  501:			if (!args[1])
+        -:  502:				goto argerr;
+    #####:  503:			outformat = str2fmt(*++args);
+        -:  504:			}
+    #####:  505:		else if (!strcmp (*args, "-out"))
+        -:  506:			{
+    #####:  507:			if (!args[1])
+        -:  508:				goto argerr;
+    #####:  509:			outfile = *++args;
+        -:  510:			}
+    #####:  511:		else if (!strcmp (*args, "-content"))
+        -:  512:			{
+    #####:  513:			if (!args[1])
+        -:  514:				goto argerr;
+    #####:  515:			contfile = *++args;
+        -:  516:			}
+    #####:  517:		else if (args_verify(&args, NULL, &badarg, bio_err, &vpm))
+    #####:  518:			continue;
+    #####:  519:		else if ((cipher = EVP_get_cipherbyname(*args + 1)) == NULL)
+    #####:  520:			badarg = 1;
+    #####:  521:		args++;
+        -:  522:		}
+        -:  523:
+    #####:  524:	if (((rr_allorfirst != -1) || rr_from) && !rr_to)
+        -:  525:		{
+    #####:  526:		BIO_puts(bio_err, "No Signed Receipts Recipients\n");
+    #####:  527:		goto argerr;
+        -:  528:		}
+        -:  529:
+    #####:  530:	if (!(operation & SMIME_SIGNERS)  && (rr_to || rr_from))
+        -:  531:		{
+    #####:  532:		BIO_puts(bio_err, "Signed receipts only allowed with -sign\n");
+    #####:  533:		goto argerr;
+        -:  534:		}
+    #####:  535:	if (!(operation & SMIME_SIGNERS) && (skkeys || sksigners))
+        -:  536:		{
+    #####:  537:		BIO_puts(bio_err, "Multiple signers or keys not allowed\n");
+    #####:  538:		goto argerr;
+        -:  539:		}
+        -:  540:
+    #####:  541:	if (operation & SMIME_SIGNERS)
+        -:  542:		{
+    #####:  543:		if (keyfile && !signerfile)
+        -:  544:			{
+    #####:  545:			BIO_puts(bio_err, "Illegal -inkey without -signer\n");
+    #####:  546:			goto argerr;
+        -:  547:			}
+        -:  548:		/* Check to see if any final signer needs to be appended */
+    #####:  549:		if (signerfile)
+        -:  550:			{
+    #####:  551:			if (!sksigners)
+    #####:  552:				sksigners = sk_OPENSSL_STRING_new_null();
+    #####:  553:			sk_OPENSSL_STRING_push(sksigners, signerfile);
+    #####:  554:			if (!skkeys)
+    #####:  555:				skkeys = sk_OPENSSL_STRING_new_null();
+    #####:  556:			if (!keyfile)
+        -:  557:				keyfile = signerfile;
+    #####:  558:			sk_OPENSSL_STRING_push(skkeys, keyfile);
+        -:  559:			}
+    #####:  560:		if (!sksigners)
+        -:  561:			{
+    #####:  562:			BIO_printf(bio_err, "No signer certificate specified\n");
+    #####:  563:			badarg = 1;
+        -:  564:			}
+        -:  565:		signerfile = NULL;
+        -:  566:		keyfile = NULL;
+        -:  567:		need_rand = 1;
+        -:  568:		}
+        -:  569:
+    #####:  570:	else if (operation == SMIME_DECRYPT)
+        -:  571:		{
+    #####:  572:		if (!recipfile && !keyfile && !secret_key && !pwri_pass)
+        -:  573:			{
+    #####:  574:			BIO_printf(bio_err, "No recipient certificate or key specified\n");
+    #####:  575:			badarg = 1;
+        -:  576:			}
+        -:  577:		}
+    #####:  578:	else if (operation == SMIME_ENCRYPT)
+        -:  579:		{
+    #####:  580:		if (!*args && !secret_key && !pwri_pass)
+        -:  581:			{
+    #####:  582:			BIO_printf(bio_err, "No recipient(s) certificate(s) specified\n");
+    #####:  583:			badarg = 1;
+        -:  584:			}
+        -:  585:		need_rand = 1;
+        -:  586:		}
+    #####:  587:	else if (!operation)
+    #####:  588:		badarg = 1;
+        -:  589:
+    #####:  590:	if (badarg)
+        -:  591:		{
+        -:  592:		argerr:
+    #####:  593:		BIO_printf (bio_err, "Usage cms [options] cert.pem ...\n");
+    #####:  594:		BIO_printf (bio_err, "where options are\n");
+    #####:  595:		BIO_printf (bio_err, "-encrypt       encrypt message\n");
+    #####:  596:		BIO_printf (bio_err, "-decrypt       decrypt encrypted message\n");
+    #####:  597:		BIO_printf (bio_err, "-sign          sign message\n");
+    #####:  598:		BIO_printf (bio_err, "-verify        verify signed message\n");
+    #####:  599:		BIO_printf (bio_err, "-cmsout        output CMS structure\n");
+        -:  600:#ifndef OPENSSL_NO_DES
+    #####:  601:		BIO_printf (bio_err, "-des3          encrypt with triple DES\n");
+    #####:  602:		BIO_printf (bio_err, "-des           encrypt with DES\n");
+        -:  603:#endif
+        -:  604:#ifndef OPENSSL_NO_SEED
+    #####:  605:		BIO_printf (bio_err, "-seed          encrypt with SEED\n");
+        -:  606:#endif
+        -:  607:#ifndef OPENSSL_NO_RC2
+    #####:  608:		BIO_printf (bio_err, "-rc2-40        encrypt with RC2-40 (default)\n");
+    #####:  609:		BIO_printf (bio_err, "-rc2-64        encrypt with RC2-64\n");
+    #####:  610:		BIO_printf (bio_err, "-rc2-128       encrypt with RC2-128\n");
+        -:  611:#endif
+        -:  612:#ifndef OPENSSL_NO_AES
+    #####:  613:		BIO_printf (bio_err, "-aes128, -aes192, -aes256\n");
+    #####:  614:		BIO_printf (bio_err, "               encrypt PEM output with cbc aes\n");
+        -:  615:#endif
+        -:  616:#ifndef OPENSSL_NO_CAMELLIA
+    #####:  617:		BIO_printf (bio_err, "-camellia128, -camellia192, -camellia256\n");
+    #####:  618:		BIO_printf (bio_err, "               encrypt PEM output with cbc camellia\n");
+        -:  619:#endif
+    #####:  620:		BIO_printf (bio_err, "-nointern      don't search certificates in message for signer\n");
+    #####:  621:		BIO_printf (bio_err, "-nosigs        don't verify message signature\n");
+    #####:  622:		BIO_printf (bio_err, "-noverify      don't verify signers certificate\n");
+    #####:  623:		BIO_printf (bio_err, "-nocerts       don't include signers certificate when signing\n");
+    #####:  624:		BIO_printf (bio_err, "-nodetach      use opaque signing\n");
+    #####:  625:		BIO_printf (bio_err, "-noattr        don't include any signed attributes\n");
+    #####:  626:		BIO_printf (bio_err, "-binary        don't translate message to text\n");
+    #####:  627:		BIO_printf (bio_err, "-certfile file other certificates file\n");
+    #####:  628:		BIO_printf (bio_err, "-certsout file certificate output file\n");
+    #####:  629:		BIO_printf (bio_err, "-signer file   signer certificate file\n");
+    #####:  630:		BIO_printf (bio_err, "-recip  file   recipient certificate file for decryption\n");
+    #####:  631:		BIO_printf (bio_err, "-keyid         use subject key identifier\n");
+    #####:  632:		BIO_printf (bio_err, "-in file       input file\n");
+    #####:  633:		BIO_printf (bio_err, "-inform arg    input format SMIME (default), PEM or DER\n");
+    #####:  634:		BIO_printf (bio_err, "-inkey file    input private key (if not signer or recipient)\n");
+    #####:  635:		BIO_printf (bio_err, "-keyform arg   input private key format (PEM or ENGINE)\n");
+    #####:  636:		BIO_printf (bio_err, "-out file      output file\n");
+    #####:  637:		BIO_printf (bio_err, "-outform arg   output format SMIME (default), PEM or DER\n");
+    #####:  638:		BIO_printf (bio_err, "-content file  supply or override content for detached signature\n");
+    #####:  639:		BIO_printf (bio_err, "-to addr       to address\n");
+    #####:  640:		BIO_printf (bio_err, "-from ad       from address\n");
+    #####:  641:		BIO_printf (bio_err, "-subject s     subject\n");
+    #####:  642:		BIO_printf (bio_err, "-text          include or delete text MIME headers\n");
+    #####:  643:		BIO_printf (bio_err, "-CApath dir    trusted certificates directory\n");
+    #####:  644:		BIO_printf (bio_err, "-CAfile file   trusted certificates file\n");
+    #####:  645:		BIO_printf (bio_err, "-crl_check     check revocation status of signer's certificate using CRLs\n");
+    #####:  646:		BIO_printf (bio_err, "-crl_check_all check revocation status of signer's certificate chain using CRLs\n");
+        -:  647:#ifndef OPENSSL_NO_ENGINE
+    #####:  648:		BIO_printf (bio_err, "-engine e      use engine e, possibly a hardware device.\n");
+        -:  649:#endif
+    #####:  650:		BIO_printf (bio_err, "-passin arg    input file pass phrase source\n");
+    #####:  651:		BIO_printf(bio_err,  "-rand file%cfile%c...\n", LIST_SEPARATOR_CHAR, LIST_SEPARATOR_CHAR);
+    #####:  652:		BIO_printf(bio_err,  "               load the file (or the files in the directory) into\n");
+    #####:  653:		BIO_printf(bio_err,  "               the random number generator\n");
+    #####:  654:		BIO_printf (bio_err, "cert.pem       recipient certificate(s) for encryption\n");
+    #####:  655:		goto end;
+        -:  656:		}
+        -:  657:
+        -:  658:#ifndef OPENSSL_NO_ENGINE
+    #####:  659:        e = setup_engine(bio_err, engine, 0);
+        -:  660:#endif
+        -:  661:
+    #####:  662:	if (!app_passwd(bio_err, passargin, NULL, &passin, NULL))
+        -:  663:		{
+    #####:  664:		BIO_printf(bio_err, "Error getting password\n");
+    #####:  665:		goto end;
+        -:  666:		}
+        -:  667:
+    #####:  668:	if (need_rand)
+        -:  669:		{
+    #####:  670:		app_RAND_load_file(NULL, bio_err, (inrand != NULL));
+    #####:  671:		if (inrand != NULL)
+    #####:  672:			BIO_printf(bio_err,"%ld semi-random bytes loaded\n",
+        -:  673:				app_RAND_load_files(inrand));
+        -:  674:		}
+        -:  675:
+        -:  676:	ret = 2;
+        -:  677:
+    #####:  678:	if (!(operation & SMIME_SIGNERS))
+    #####:  679:		flags &= ~CMS_DETACHED;
+        -:  680:
+    #####:  681:	if (operation & SMIME_OP)
+        -:  682:		{
+    #####:  683:		if (outformat == FORMAT_ASN1)
+        -:  684:			outmode = "wb";
+        -:  685:		}
+        -:  686:	else
+        -:  687:		{
+    #####:  688:		if (flags & CMS_BINARY)
+        -:  689:			outmode = "wb";
+        -:  690:		}
+        -:  691:
+    #####:  692:	if (operation & SMIME_IP)
+        -:  693:		{
+    #####:  694:		if (informat == FORMAT_ASN1)
+        -:  695:			inmode = "rb";
+        -:  696:		}
+        -:  697:	else
+        -:  698:		{
+    #####:  699:		if (flags & CMS_BINARY)
+        -:  700:			inmode = "rb";
+        -:  701:		}
+        -:  702:
+    #####:  703:	if (operation == SMIME_ENCRYPT)
+        -:  704:		{
+    #####:  705:		if (!cipher)
+        -:  706:			{
+        -:  707:#ifndef OPENSSL_NO_DES			
+    #####:  708:			cipher = EVP_des_ede3_cbc();
+        -:  709:#else
+        -:  710:			BIO_printf(bio_err, "No cipher selected\n");
+        -:  711:			goto end;
+        -:  712:#endif
+        -:  713:			}
+        -:  714:
+    #####:  715:		if (secret_key && !secret_keyid)
+        -:  716:			{
+    #####:  717:			BIO_printf(bio_err, "No secret key id\n");
+    #####:  718:			goto end;
+        -:  719:			}
+        -:  720:
+    #####:  721:		if (*args)
+    #####:  722:			encerts = sk_X509_new_null();
+    #####:  723:		while (*args)
+        -:  724:			{
+    #####:  725:			if (!(cert = load_cert(bio_err,*args,FORMAT_PEM,
+        -:  726:				NULL, e, "recipient certificate file")))
+        -:  727:				goto end;
+    #####:  728:			sk_X509_push(encerts, cert);
+        -:  729:			cert = NULL;
+    #####:  730:			args++;
+        -:  731:			}
+        -:  732:		}
+        -:  733:
+    #####:  734:	if (certfile)
+        -:  735:		{
+    #####:  736:		if (!(other = load_certs(bio_err,certfile,FORMAT_PEM, NULL,
+        -:  737:			e, "certificate file")))
+        -:  738:			{
+    #####:  739:			ERR_print_errors(bio_err);
+    #####:  740:			goto end;
+        -:  741:			}
+        -:  742:		}
+        -:  743:
+    #####:  744:	if (recipfile && (operation == SMIME_DECRYPT))
+        -:  745:		{
+    #####:  746:		if (!(recip = load_cert(bio_err,recipfile,FORMAT_PEM,NULL,
+        -:  747:			e, "recipient certificate file")))
+        -:  748:			{
+    #####:  749:			ERR_print_errors(bio_err);
+    #####:  750:			goto end;
+        -:  751:			}
+        -:  752:		}
+        -:  753:
+    #####:  754:	if (operation == SMIME_SIGN_RECEIPT)
+        -:  755:		{
+    #####:  756:		if (!(signer = load_cert(bio_err,signerfile,FORMAT_PEM,NULL,
+        -:  757:			e, "receipt signer certificate file")))
+        -:  758:			{
+    #####:  759:			ERR_print_errors(bio_err);
+    #####:  760:			goto end;
+        -:  761:			}
+        -:  762:		}
+        -:  763:
+    #####:  764:	if (operation == SMIME_DECRYPT)
+        -:  765:		{
+    #####:  766:		if (!keyfile)
+        -:  767:			keyfile = recipfile;
+        -:  768:		}
+    #####:  769:	else if ((operation == SMIME_SIGN) || (operation == SMIME_SIGN_RECEIPT))
+        -:  770:		{
+    #####:  771:		if (!keyfile)
+        -:  772:			keyfile = signerfile;
+        -:  773:		}
+        -:  774:	else keyfile = NULL;
+        -:  775:
+    #####:  776:	if (keyfile)
+        -:  777:		{
+    #####:  778:		key = load_key(bio_err, keyfile, keyform, 0, passin, e,
+        -:  779:			       "signing key file");
+    #####:  780:		if (!key)
+        -:  781:			goto end;
+        -:  782:		}
+        -:  783:
+    #####:  784:	if (infile)
+        -:  785:		{
+    #####:  786:		if (!(in = BIO_new_file(infile, inmode)))
+        -:  787:			{
+    #####:  788:			BIO_printf (bio_err,
+        -:  789:				 "Can't open input file %s\n", infile);
+    #####:  790:			goto end;
+        -:  791:			}
+        -:  792:		}
+        -:  793:	else
+    #####:  794:		in = BIO_new_fp(stdin, BIO_NOCLOSE);
+        -:  795:
+    #####:  796:	if (operation & SMIME_IP)
+        -:  797:		{
+    #####:  798:		if (informat == FORMAT_SMIME) 
+    #####:  799:			cms = SMIME_read_CMS(in, &indata);
+    #####:  800:		else if (informat == FORMAT_PEM) 
+    #####:  801:			cms = PEM_read_bio_CMS(in, NULL, NULL, NULL);
+    #####:  802:		else if (informat == FORMAT_ASN1) 
+    #####:  803:			cms = d2i_CMS_bio(in, NULL);
+        -:  804:		else
+        -:  805:			{
+    #####:  806:			BIO_printf(bio_err, "Bad input format for CMS file\n");
+    #####:  807:			goto end;
+        -:  808:			}
+        -:  809:
+    #####:  810:		if (!cms)
+        -:  811:			{
+    #####:  812:			BIO_printf(bio_err, "Error reading S/MIME message\n");
+    #####:  813:			goto end;
+        -:  814:			}
+    #####:  815:		if (contfile)
+        -:  816:			{
+    #####:  817:			BIO_free(indata);
+    #####:  818:			if (!(indata = BIO_new_file(contfile, "rb")))
+        -:  819:				{
+    #####:  820:				BIO_printf(bio_err, "Can't read content file %s\n", contfile);
+    #####:  821:				goto end;
+        -:  822:				}
+        -:  823:			}
+    #####:  824:		if (certsoutfile)
+        -:  825:			{
+        -:  826:			STACK_OF(X509) *allcerts;
+    #####:  827:			allcerts = CMS_get1_certs(cms);
+    #####:  828:			if (!save_certs(certsoutfile, allcerts))
+        -:  829:				{
+    #####:  830:				BIO_printf(bio_err,
+        -:  831:						"Error writing certs to %s\n",
+        -:  832:								certsoutfile);
+        -:  833:				ret = 5;
+    #####:  834:				goto end;
+        -:  835:				}
+    #####:  836:			sk_X509_pop_free(allcerts, X509_free);
+        -:  837:			}
+        -:  838:		}
+        -:  839:
+    #####:  840:	if (rctfile)
+        -:  841:		{
+    #####:  842:		char *rctmode = (rctformat == FORMAT_ASN1) ? "rb" : "r";
+    #####:  843:		if (!(rctin = BIO_new_file(rctfile, rctmode)))
+        -:  844:			{
+    #####:  845:			BIO_printf (bio_err,
+        -:  846:				 "Can't open receipt file %s\n", rctfile);
+    #####:  847:			goto end;
+        -:  848:			}
+        -:  849:		
+    #####:  850:		if (rctformat == FORMAT_SMIME) 
+    #####:  851:			rcms = SMIME_read_CMS(rctin, NULL);
+    #####:  852:		else if (rctformat == FORMAT_PEM) 
+    #####:  853:			rcms = PEM_read_bio_CMS(rctin, NULL, NULL, NULL);
+    #####:  854:		else if (rctformat == FORMAT_ASN1) 
+    #####:  855:			rcms = d2i_CMS_bio(rctin, NULL);
+        -:  856:		else
+        -:  857:			{
+    #####:  858:			BIO_printf(bio_err, "Bad input format for receipt\n");
+    #####:  859:			goto end;
+        -:  860:			}
+        -:  861:
+    #####:  862:		if (!rcms)
+        -:  863:			{
+    #####:  864:			BIO_printf(bio_err, "Error reading receipt\n");
+    #####:  865:			goto end;
+        -:  866:			}
+        -:  867:		}
+        -:  868:
+    #####:  869:	if (outfile)
+        -:  870:		{
+    #####:  871:		if (!(out = BIO_new_file(outfile, outmode)))
+        -:  872:			{
+    #####:  873:			BIO_printf (bio_err,
+        -:  874:				 "Can't open output file %s\n", outfile);
+    #####:  875:			goto end;
+        -:  876:			}
+        -:  877:		}
+        -:  878:	else
+        -:  879:		{
+    #####:  880:		out = BIO_new_fp(stdout, BIO_NOCLOSE);
+        -:  881:#ifdef OPENSSL_SYS_VMS
+        -:  882:		{
+        -:  883:		    BIO *tmpbio = BIO_new(BIO_f_linebuffer());
+        -:  884:		    out = BIO_push(tmpbio, out);
+        -:  885:		}
+        -:  886:#endif
+        -:  887:		}
+        -:  888:
+    #####:  889:	if ((operation == SMIME_VERIFY) || (operation == SMIME_VERIFY_RECEIPT))
+        -:  890:		{
+    #####:  891:		if (!(store = setup_verify(bio_err, CAfile, CApath)))
+        -:  892:			goto end;
+    #####:  893:		X509_STORE_set_verify_cb(store, cms_cb);
+    #####:  894:		if (vpm)
+    #####:  895:			X509_STORE_set1_param(store, vpm);
+        -:  896:		}
+        -:  897:
+        -:  898:
+        -:  899:	ret = 3;
+        -:  900:
+    #####:  901:	if (operation == SMIME_DATA_CREATE)
+        -:  902:		{
+    #####:  903:		cms = CMS_data_create(in, flags);
+        -:  904:		}
+    #####:  905:	else if (operation == SMIME_DIGEST_CREATE)
+        -:  906:		{
+    #####:  907:		cms = CMS_digest_create(in, sign_md, flags);
+        -:  908:		}
+    #####:  909:	else if (operation == SMIME_COMPRESS)
+        -:  910:		{
+    #####:  911:		cms = CMS_compress(in, -1, flags);
+        -:  912:		}
+    #####:  913:	else if (operation == SMIME_ENCRYPT)
+        -:  914:		{
+    #####:  915:		flags |= CMS_PARTIAL;
+    #####:  916:		cms = CMS_encrypt(encerts, in, cipher, flags);
+    #####:  917:		if (!cms)
+        -:  918:			goto end;
+    #####:  919:		if (secret_key)
+        -:  920:			{
+    #####:  921:			if (!CMS_add0_recipient_key(cms, NID_undef, 
+        -:  922:						secret_key, secret_keylen,
+        -:  923:						secret_keyid, secret_keyidlen,
+        -:  924:						NULL, NULL, NULL))
+        -:  925:				goto end;
+        -:  926:			/* NULL these because call absorbs them */
+        -:  927:			secret_key = NULL;
+        -:  928:			secret_keyid = NULL;
+        -:  929:			}
+    #####:  930:		if (pwri_pass)
+        -:  931:			{
+    #####:  932:			pwri_tmp = (unsigned char *)BUF_strdup((char *)pwri_pass);
+    #####:  933:			if (!pwri_tmp)
+        -:  934:				goto end;
+    #####:  935:			if (!CMS_add0_recipient_password(cms,
+        -:  936:						-1, NID_undef, NID_undef,
+        -:  937:						 pwri_tmp, -1, NULL))
+        -:  938:				goto end;
+        -:  939:			pwri_tmp = NULL;
+        -:  940:			}
+    #####:  941:		if (!(flags & CMS_STREAM))
+        -:  942:			{
+    #####:  943:			if (!CMS_final(cms, in, NULL, flags))
+        -:  944:				goto end;
+        -:  945:			}
+        -:  946:		}
+    #####:  947:	else if (operation == SMIME_ENCRYPTED_ENCRYPT)
+        -:  948:		{
+    #####:  949:		cms = CMS_EncryptedData_encrypt(in, cipher,
+        -:  950:						secret_key, secret_keylen,
+        -:  951:						flags);
+        -:  952:
+        -:  953:		}
+    #####:  954:	else if (operation == SMIME_SIGN_RECEIPT)
+        -:  955:		{
+        -:  956:		CMS_ContentInfo *srcms = NULL;
+        -:  957:		STACK_OF(CMS_SignerInfo) *sis;
+        -:  958:		CMS_SignerInfo *si;
+    #####:  959:		sis = CMS_get0_SignerInfos(cms);
+    #####:  960:		if (!sis)
+        -:  961:			goto end;
+    #####:  962:		si = sk_CMS_SignerInfo_value(sis, 0);
+    #####:  963:		srcms = CMS_sign_receipt(si, signer, key, other, flags);
+    #####:  964:		if (!srcms)
+        -:  965:			goto end;
+    #####:  966:		CMS_ContentInfo_free(cms);
+        -:  967:		cms = srcms;
+        -:  968:		}
+    #####:  969:	else if (operation & SMIME_SIGNERS)
+        -:  970:		{
+        -:  971:		int i;
+        -:  972:		/* If detached data content we enable streaming if
+        -:  973:		 * S/MIME output format.
+        -:  974:		 */
+    #####:  975:		if (operation == SMIME_SIGN)
+        -:  976:			{
+        -:  977:				
+    #####:  978:			if (flags & CMS_DETACHED)
+        -:  979:				{
+    #####:  980:				if (outformat == FORMAT_SMIME)
+    #####:  981:					flags |= CMS_STREAM;
+        -:  982:				}
+    #####:  983:			flags |= CMS_PARTIAL;
+    #####:  984:			cms = CMS_sign(NULL, NULL, other, in, flags);
+    #####:  985:			if (!cms)
+        -:  986:				goto end;
+    #####:  987:			if (econtent_type)
+    #####:  988:				CMS_set1_eContentType(cms, econtent_type);
+        -:  989:
+    #####:  990:			if (rr_to)
+        -:  991:				{
+    #####:  992:				rr = make_receipt_request(rr_to, rr_allorfirst,
+        -:  993:								rr_from);
+    #####:  994:				if (!rr)
+        -:  995:					{
+    #####:  996:					BIO_puts(bio_err,
+        -:  997:				"Signed Receipt Request Creation Error\n");
+    #####:  998:					goto end;
+        -:  999:					}
+        -: 1000:				}
+        -: 1001:			}
+        -: 1002:		else
+    #####: 1003:			flags |= CMS_REUSE_DIGEST;
+    #####: 1004:		for (i = 0; i < sk_OPENSSL_STRING_num(sksigners); i++)
+        -: 1005:			{
+        -: 1006:			CMS_SignerInfo *si;
+    #####: 1007:			signerfile = sk_OPENSSL_STRING_value(sksigners, i);
+    #####: 1008:			keyfile = sk_OPENSSL_STRING_value(skkeys, i);
+    #####: 1009:			signer = load_cert(bio_err, signerfile,FORMAT_PEM, NULL,
+        -: 1010:					e, "signer certificate");
+    #####: 1011:			if (!signer)
+        -: 1012:				goto end;
+    #####: 1013:			key = load_key(bio_err, keyfile, keyform, 0, passin, e,
+        -: 1014:			       "signing key file");
+    #####: 1015:			if (!key)
+        -: 1016:				goto end;
+    #####: 1017:			si = CMS_add1_signer(cms, signer, key, sign_md, flags);
+    #####: 1018:			if (!si)
+        -: 1019:				goto end;
+    #####: 1020:			if (rr && !CMS_add1_ReceiptRequest(si, rr))
+        -: 1021:				goto end;
+    #####: 1022:			X509_free(signer);
+        -: 1023:			signer = NULL;
+    #####: 1024:			EVP_PKEY_free(key);
+        -: 1025:			key = NULL;
+        -: 1026:			}
+        -: 1027:		/* If not streaming or resigning finalize structure */
+    #####: 1028:		if ((operation == SMIME_SIGN) && !(flags & CMS_STREAM))
+        -: 1029:			{
+    #####: 1030:			if (!CMS_final(cms, in, NULL, flags))
+        -: 1031:				goto end;
+        -: 1032:			}
+        -: 1033:		}
+        -: 1034:
+    #####: 1035:	if (!cms)
+        -: 1036:		{
+    #####: 1037:		BIO_printf(bio_err, "Error creating CMS structure\n");
+    #####: 1038:		goto end;
+        -: 1039:		}
+        -: 1040:
+        -: 1041:	ret = 4;
+    #####: 1042:	if (operation == SMIME_DECRYPT)
+        -: 1043:		{
+    #####: 1044:		if (flags & CMS_DEBUG_DECRYPT)
+    #####: 1045:			CMS_decrypt(cms, NULL, NULL, NULL, NULL, flags);
+        -: 1046:
+    #####: 1047:		if (secret_key)
+        -: 1048:			{
+    #####: 1049:			if (!CMS_decrypt_set1_key(cms,
+        -: 1050:						secret_key, secret_keylen,
+        -: 1051:						secret_keyid, secret_keyidlen))
+        -: 1052:				{
+    #####: 1053:				BIO_puts(bio_err,
+        -: 1054:					"Error decrypting CMS using secret key\n");
+    #####: 1055:				goto end;
+        -: 1056:				}
+        -: 1057:			}
+        -: 1058:
+    #####: 1059:		if (key)
+        -: 1060:			{
+    #####: 1061:			if (!CMS_decrypt_set1_pkey(cms, key, recip))
+        -: 1062:				{
+    #####: 1063:				BIO_puts(bio_err,
+        -: 1064:					"Error decrypting CMS using private key\n");
+    #####: 1065:				goto end;
+        -: 1066:				}
+        -: 1067:			}
+        -: 1068:
+    #####: 1069:		if (pwri_pass)
+        -: 1070:			{
+    #####: 1071:			if (!CMS_decrypt_set1_password(cms, pwri_pass, -1))
+        -: 1072:				{
+    #####: 1073:				BIO_puts(bio_err,
+        -: 1074:					"Error decrypting CMS using password\n");
+    #####: 1075:				goto end;
+        -: 1076:				}
+        -: 1077:			}
+        -: 1078:
+    #####: 1079:		if (!CMS_decrypt(cms, NULL, NULL, indata, out, flags))
+        -: 1080:			{
+    #####: 1081:			BIO_printf(bio_err, "Error decrypting CMS structure\n");
+    #####: 1082:			goto end;
+        -: 1083:			}
+        -: 1084:		}
+    #####: 1085:	else if (operation == SMIME_DATAOUT)
+        -: 1086:		{
+    #####: 1087:		if (!CMS_data(cms, out, flags))
+        -: 1088:			goto end;
+        -: 1089:		}
+    #####: 1090:	else if (operation == SMIME_UNCOMPRESS)
+        -: 1091:		{
+    #####: 1092:		if (!CMS_uncompress(cms, indata, out, flags))
+        -: 1093:			goto end;
+        -: 1094:		}
+    #####: 1095:	else if (operation == SMIME_DIGEST_VERIFY)
+        -: 1096:		{
+    #####: 1097:		if (CMS_digest_verify(cms, indata, out, flags) > 0)
+    #####: 1098:			BIO_printf(bio_err, "Verification successful\n");
+        -: 1099:		else
+        -: 1100:			{
+    #####: 1101:			BIO_printf(bio_err, "Verification failure\n");
+    #####: 1102:			goto end;
+        -: 1103:			}
+        -: 1104:		}
+    #####: 1105:	else if (operation == SMIME_ENCRYPTED_DECRYPT)
+        -: 1106:		{
+    #####: 1107:		if (!CMS_EncryptedData_decrypt(cms, secret_key, secret_keylen,
+        -: 1108:						indata, out, flags))
+        -: 1109:			goto end;
+        -: 1110:		}
+    #####: 1111:	else if (operation == SMIME_VERIFY)
+        -: 1112:		{
+    #####: 1113:		if (CMS_verify(cms, other, store, indata, out, flags) > 0)
+    #####: 1114:			BIO_printf(bio_err, "Verification successful\n");
+        -: 1115:		else
+        -: 1116:			{
+    #####: 1117:			BIO_printf(bio_err, "Verification failure\n");
+    #####: 1118:			if (verify_retcode)
+    #####: 1119:				ret = verify_err + 32;
+        -: 1120:			goto end;
+        -: 1121:			}
+    #####: 1122:		if (signerfile)
+        -: 1123:			{
+        -: 1124:			STACK_OF(X509) *signers;
+    #####: 1125:			signers = CMS_get0_signers(cms);
+    #####: 1126:			if (!save_certs(signerfile, signers))
+        -: 1127:				{
+    #####: 1128:				BIO_printf(bio_err,
+        -: 1129:						"Error writing signers to %s\n",
+        -: 1130:								signerfile);
+        -: 1131:				ret = 5;
+    #####: 1132:				goto end;
+        -: 1133:				}
+    #####: 1134:			sk_X509_free(signers);
+        -: 1135:			}
+    #####: 1136:		if (rr_print)
+    #####: 1137:			receipt_request_print(bio_err, cms);
+        -: 1138:					
+        -: 1139:		}
+    #####: 1140:	else if (operation == SMIME_VERIFY_RECEIPT)
+        -: 1141:		{
+    #####: 1142:		if (CMS_verify_receipt(rcms, cms, other, store, flags) > 0)
+    #####: 1143:			BIO_printf(bio_err, "Verification successful\n");
+        -: 1144:		else
+        -: 1145:			{
+    #####: 1146:			BIO_printf(bio_err, "Verification failure\n");
+    #####: 1147:			goto end;
+        -: 1148:			}
+        -: 1149:		}
+        -: 1150:	else
+        -: 1151:		{
+    #####: 1152:		if (noout)
+        -: 1153:			{
+    #####: 1154:			if (print)
+    #####: 1155:				CMS_ContentInfo_print_ctx(out, cms, 0, NULL);
+        -: 1156:			}
+    #####: 1157:		else if (outformat == FORMAT_SMIME)
+        -: 1158:			{
+    #####: 1159:			if (to)
+    #####: 1160:				BIO_printf(out, "To: %s\n", to);
+    #####: 1161:			if (from)
+    #####: 1162:				BIO_printf(out, "From: %s\n", from);
+    #####: 1163:			if (subject)
+    #####: 1164:				BIO_printf(out, "Subject: %s\n", subject);
+    #####: 1165:			if (operation == SMIME_RESIGN)
+    #####: 1166:				ret = SMIME_write_CMS(out, cms, indata, flags);
+        -: 1167:			else
+    #####: 1168:				ret = SMIME_write_CMS(out, cms, in, flags);
+        -: 1169:			}
+    #####: 1170:		else if (outformat == FORMAT_PEM) 
+    #####: 1171:			ret = PEM_write_bio_CMS_stream(out, cms, in, flags);
+    #####: 1172:		else if (outformat == FORMAT_ASN1) 
+    #####: 1173:			ret = i2d_CMS_bio_stream(out,cms, in, flags);
+        -: 1174:		else
+        -: 1175:			{
+    #####: 1176:			BIO_printf(bio_err, "Bad output format for CMS file\n");
+    #####: 1177:			goto end;
+        -: 1178:			}
+    #####: 1179:		if (ret <= 0)
+        -: 1180:			{
+        -: 1181:			ret = 6;
+        -: 1182:			goto end;
+        -: 1183:			}
+        -: 1184:		}
+        -: 1185:	ret = 0;
+        -: 1186:end:
+    #####: 1187:	if (ret)
+    #####: 1188:		ERR_print_errors(bio_err);
+    #####: 1189:	if (need_rand)
+    #####: 1190:		app_RAND_write_file(NULL, bio_err);
+    #####: 1191:	sk_X509_pop_free(encerts, X509_free);
+    #####: 1192:	sk_X509_pop_free(other, X509_free);
+    #####: 1193:	if (vpm)
+    #####: 1194:		X509_VERIFY_PARAM_free(vpm);
+    #####: 1195:	if (sksigners)
+    #####: 1196:		sk_OPENSSL_STRING_free(sksigners);
+    #####: 1197:	if (skkeys)
+    #####: 1198:		sk_OPENSSL_STRING_free(skkeys);
+    #####: 1199:	if (secret_key)
+    #####: 1200:		OPENSSL_free(secret_key);
+    #####: 1201:	if (secret_keyid)
+    #####: 1202:		OPENSSL_free(secret_keyid);
+    #####: 1203:	if (pwri_tmp)
+    #####: 1204:		OPENSSL_free(pwri_tmp);
+    #####: 1205:	if (econtent_type)
+    #####: 1206:		ASN1_OBJECT_free(econtent_type);
+    #####: 1207:	if (rr)
+    #####: 1208:		CMS_ReceiptRequest_free(rr);
+    #####: 1209:	if (rr_to)
+    #####: 1210:		sk_OPENSSL_STRING_free(rr_to);
+    #####: 1211:	if (rr_from)
+    #####: 1212:		sk_OPENSSL_STRING_free(rr_from);
+    #####: 1213:	X509_STORE_free(store);
+    #####: 1214:	X509_free(cert);
+    #####: 1215:	X509_free(recip);
+    #####: 1216:	X509_free(signer);
+    #####: 1217:	EVP_PKEY_free(key);
+    #####: 1218:	CMS_ContentInfo_free(cms);
+    #####: 1219:	CMS_ContentInfo_free(rcms);
+    #####: 1220:	BIO_free(rctin);
+    #####: 1221:	BIO_free(in);
+    #####: 1222:	BIO_free(indata);
+    #####: 1223:	BIO_free_all(out);
+    #####: 1224:	if (passin) OPENSSL_free(passin);
+    #####: 1225:	return (ret);
+        -: 1226:}
+        -: 1227:
+    #####: 1228:static int save_certs(char *signerfile, STACK_OF(X509) *signers)
+        -: 1229:	{
+        -: 1230:	int i;
+        -: 1231:	BIO *tmp;
+    #####: 1232:	if (!signerfile)
+        -: 1233:		return 1;
+    #####: 1234:	tmp = BIO_new_file(signerfile, "w");
+    #####: 1235:	if (!tmp) return 0;
+    #####: 1236:	for(i = 0; i < sk_X509_num(signers); i++)
+    #####: 1237:		PEM_write_bio_X509(tmp, sk_X509_value(signers, i));
+    #####: 1238:	BIO_free(tmp);
+    #####: 1239:	return 1;
+        -: 1240:	}
+        -: 1241:	
+        -: 1242:
+        -: 1243:/* Minimal callback just to output policy info (if any) */
+        -: 1244:
+    #####: 1245:static int cms_cb(int ok, X509_STORE_CTX *ctx)
+        -: 1246:	{
+        -: 1247:	int error;
+        -: 1248:
+    #####: 1249:	error = X509_STORE_CTX_get_error(ctx);
+        -: 1250:
+    #####: 1251:	verify_err = error;
+        -: 1252:
+    #####: 1253:	if ((error != X509_V_ERR_NO_EXPLICIT_POLICY)
+    #####: 1254:		&& ((error != X509_V_OK) || (ok != 2)))
+        -: 1255:		return ok;
+        -: 1256:
+    #####: 1257:	policies_print(NULL, ctx);
+        -: 1258:
+    #####: 1259:	return ok;
+        -: 1260:
+        -: 1261:	}
+        -: 1262:
+    #####: 1263:static void gnames_stack_print(BIO *out, STACK_OF(GENERAL_NAMES) *gns)
+        -: 1264:	{
+        -: 1265:	STACK_OF(GENERAL_NAME) *gens;
+        -: 1266:	GENERAL_NAME *gen;
+        -: 1267:	int i, j;
+    #####: 1268:	for (i = 0; i < sk_GENERAL_NAMES_num(gns); i++)
+        -: 1269:		{
+    #####: 1270:		gens = sk_GENERAL_NAMES_value(gns, i);
+    #####: 1271:		for (j = 0; j < sk_GENERAL_NAME_num(gens); j++)
+        -: 1272:			{
+    #####: 1273:			gen = sk_GENERAL_NAME_value(gens, j);
+    #####: 1274:			BIO_puts(out, "    ");
+    #####: 1275:			GENERAL_NAME_print(out, gen);
+    #####: 1276:			BIO_puts(out, "\n");
+        -: 1277:			}
+        -: 1278:		}
+    #####: 1279:	return;
+        -: 1280:	}
+        -: 1281:
+    #####: 1282:static void receipt_request_print(BIO *out, CMS_ContentInfo *cms)
+        -: 1283:	{
+        -: 1284:	STACK_OF(CMS_SignerInfo) *sis;
+        -: 1285:	CMS_SignerInfo *si;
+        -: 1286:	CMS_ReceiptRequest *rr;
+        -: 1287:	int allorfirst;
+        -: 1288:	STACK_OF(GENERAL_NAMES) *rto, *rlist;
+        -: 1289:	ASN1_STRING *scid;
+        -: 1290:	int i, rv;
+    #####: 1291:	sis = CMS_get0_SignerInfos(cms);
+    #####: 1292:	for (i = 0; i < sk_CMS_SignerInfo_num(sis); i++)
+        -: 1293:		{
+    #####: 1294:		si = sk_CMS_SignerInfo_value(sis, i);
+    #####: 1295:		rv = CMS_get1_ReceiptRequest(si, &rr);
+    #####: 1296:		BIO_printf(bio_err, "Signer %d:\n", i + 1);
+    #####: 1297:		if (rv == 0)
+    #####: 1298:			BIO_puts(bio_err, "  No Receipt Request\n");
+    #####: 1299:		else if (rv < 0)
+        -: 1300:			{
+    #####: 1301:			BIO_puts(bio_err, "  Receipt Request Parse Error\n");
+    #####: 1302:			ERR_print_errors(bio_err);
+        -: 1303:			}
+        -: 1304:		else
+        -: 1305:			{
+        -: 1306:			char *id;
+        -: 1307:			int idlen;
+    #####: 1308:			CMS_ReceiptRequest_get0_values(rr, &scid, &allorfirst,
+        -: 1309:							&rlist, &rto);
+    #####: 1310:			BIO_puts(out, "  Signed Content ID:\n");
+    #####: 1311:			idlen = ASN1_STRING_length(scid);
+    #####: 1312:			id = (char *)ASN1_STRING_data(scid);
+    #####: 1313:			BIO_dump_indent(out, id, idlen, 4);
+    #####: 1314:			BIO_puts(out, "  Receipts From");
+    #####: 1315:			if (rlist)
+        -: 1316:				{
+    #####: 1317:				BIO_puts(out, " List:\n");
+    #####: 1318:				gnames_stack_print(out, rlist);
+        -: 1319:				}
+    #####: 1320:			else if (allorfirst == 1)
+    #####: 1321:				BIO_puts(out, ": First Tier\n");
+    #####: 1322:			else if (allorfirst == 0)
+    #####: 1323:				BIO_puts(out, ": All\n");
+        -: 1324:			else
+    #####: 1325:				BIO_printf(out, " Unknown (%d)\n", allorfirst);
+    #####: 1326:			BIO_puts(out, "  Receipts To:\n");
+    #####: 1327:			gnames_stack_print(out, rto);
+        -: 1328:			}
+    #####: 1329:		if (rr)
+    #####: 1330:			CMS_ReceiptRequest_free(rr);
+        -: 1331:		}
+    #####: 1332:	}
+        -: 1333:
+    #####: 1334:static STACK_OF(GENERAL_NAMES) *make_names_stack(STACK_OF(OPENSSL_STRING) *ns)
+        -: 1335:	{
+        -: 1336:	int i;
+        -: 1337:	STACK_OF(GENERAL_NAMES) *ret;
+        -: 1338:	GENERAL_NAMES *gens = NULL;
+        -: 1339:	GENERAL_NAME *gen = NULL;
+    #####: 1340:	ret = sk_GENERAL_NAMES_new_null();
+    #####: 1341:	if (!ret)
+        -: 1342:		goto err;
+    #####: 1343:	for (i = 0; i < sk_OPENSSL_STRING_num(ns); i++)
+        -: 1344:		{
+    #####: 1345:		char *str = sk_OPENSSL_STRING_value(ns, i);
+    #####: 1346:		gen = a2i_GENERAL_NAME(NULL, NULL, NULL, GEN_EMAIL, str, 0);
+    #####: 1347:		if (!gen)
+        -: 1348:			goto err;
+    #####: 1349:		gens = GENERAL_NAMES_new();
+    #####: 1350:		if (!gens)
+        -: 1351:			goto err;
+    #####: 1352:		if (!sk_GENERAL_NAME_push(gens, gen))
+        -: 1353:			goto err;
+        -: 1354:		gen = NULL;
+    #####: 1355:		if (!sk_GENERAL_NAMES_push(ret, gens))
+        -: 1356:			goto err;
+        -: 1357:		gens = NULL;
+        -: 1358:		}
+        -: 1359:
+        -: 1360:	return ret;
+        -: 1361:
+        -: 1362:	err:
+    #####: 1363:	if (ret)
+    #####: 1364:		sk_GENERAL_NAMES_pop_free(ret, GENERAL_NAMES_free);
+    #####: 1365:	if (gens)
+    #####: 1366:		GENERAL_NAMES_free(gens);
+    #####: 1367:	if (gen)
+    #####: 1368:		GENERAL_NAME_free(gen);
+        -: 1369:	return NULL;
+        -: 1370:	}
+        -: 1371:
+        -: 1372:
+    #####: 1373:static CMS_ReceiptRequest *make_receipt_request(STACK_OF(OPENSSL_STRING) *rr_to,
+        -: 1374:						int rr_allorfirst,
+        -: 1375:						STACK_OF(OPENSSL_STRING) *rr_from)
+        -: 1376:	{
+        -: 1377:	STACK_OF(GENERAL_NAMES) *rct_to, *rct_from;
+        -: 1378:	CMS_ReceiptRequest *rr;
+    #####: 1379:	rct_to = make_names_stack(rr_to);
+    #####: 1380:	if (!rct_to)
+        -: 1381:		goto err;
+    #####: 1382:	if (rr_from)
+        -: 1383:		{
+    #####: 1384:		rct_from = make_names_stack(rr_from);
+    #####: 1385:		if (!rct_from)
+        -: 1386:			goto err;
+        -: 1387:		}
+        -: 1388:	else
+        -: 1389:		rct_from = NULL;
+    #####: 1390:	rr = CMS_ReceiptRequest_create0(NULL, -1, rr_allorfirst, rct_from,
+        -: 1391:						rct_to);
+    #####: 1392:	return rr;
+        -: 1393:	err:
+        -: 1394:	return NULL;
+        -: 1395:	}
+        -: 1396:
+        -: 1397:#endif

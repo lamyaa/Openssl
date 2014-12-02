@@ -1,0 +1,305 @@
+        -:    0:Source:by_file.c
+        -:    0:Graph:by_file.gcno
+        -:    0:Data:by_file.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* crypto/x509/by_file.c */
+        -:    2:/* Copyright (C) 1995-1998 Eric Young (eay@cryptsoft.com)
+        -:    3: * All rights reserved.
+        -:    4: *
+        -:    5: * This package is an SSL implementation written
+        -:    6: * by Eric Young (eay@cryptsoft.com).
+        -:    7: * The implementation was written so as to conform with Netscapes SSL.
+        -:    8: * 
+        -:    9: * This library is free for commercial and non-commercial use as long as
+        -:   10: * the following conditions are aheared to.  The following conditions
+        -:   11: * apply to all code found in this distribution, be it the RC4, RSA,
+        -:   12: * lhash, DES, etc., code; not just the SSL code.  The SSL documentation
+        -:   13: * included with this distribution is covered by the same copyright terms
+        -:   14: * except that the holder is Tim Hudson (tjh@cryptsoft.com).
+        -:   15: * 
+        -:   16: * Copyright remains Eric Young's, and as such any Copyright notices in
+        -:   17: * the code are not to be removed.
+        -:   18: * If this package is used in a product, Eric Young should be given attribution
+        -:   19: * as the author of the parts of the library used.
+        -:   20: * This can be in the form of a textual message at program startup or
+        -:   21: * in documentation (online or textual) provided with the package.
+        -:   22: * 
+        -:   23: * Redistribution and use in source and binary forms, with or without
+        -:   24: * modification, are permitted provided that the following conditions
+        -:   25: * are met:
+        -:   26: * 1. Redistributions of source code must retain the copyright
+        -:   27: *    notice, this list of conditions and the following disclaimer.
+        -:   28: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   29: *    notice, this list of conditions and the following disclaimer in the
+        -:   30: *    documentation and/or other materials provided with the distribution.
+        -:   31: * 3. All advertising materials mentioning features or use of this software
+        -:   32: *    must display the following acknowledgement:
+        -:   33: *    "This product includes cryptographic software written by
+        -:   34: *     Eric Young (eay@cryptsoft.com)"
+        -:   35: *    The word 'cryptographic' can be left out if the rouines from the library
+        -:   36: *    being used are not cryptographic related :-).
+        -:   37: * 4. If you include any Windows specific code (or a derivative thereof) from 
+        -:   38: *    the apps directory (application code) you must include an acknowledgement:
+        -:   39: *    "This product includes software written by Tim Hudson (tjh@cryptsoft.com)"
+        -:   40: * 
+        -:   41: * THIS SOFTWARE IS PROVIDED BY ERIC YOUNG ``AS IS'' AND
+        -:   42: * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   43: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+        -:   44: * ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+        -:   45: * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+        -:   46: * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+        -:   47: * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   48: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+        -:   49: * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+        -:   50: * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+        -:   51: * SUCH DAMAGE.
+        -:   52: * 
+        -:   53: * The licence and distribution terms for any publically available version or
+        -:   54: * derivative of this code cannot be changed.  i.e. this code cannot simply be
+        -:   55: * copied and put under another distribution licence
+        -:   56: * [including the GNU Public Licence.]
+        -:   57: */
+        -:   58:
+        -:   59:#include <stdio.h>
+        -:   60:#include <time.h>
+        -:   61:#include <errno.h>
+        -:   62:
+        -:   63:#include "cryptlib.h"
+        -:   64:#include <openssl/lhash.h>
+        -:   65:#include <openssl/buffer.h>
+        -:   66:#include <openssl/x509.h>
+        -:   67:#include <openssl/pem.h>
+        -:   68:
+        -:   69:#ifndef OPENSSL_NO_STDIO
+        -:   70:
+        -:   71:static int by_file_ctrl(X509_LOOKUP *ctx, int cmd, const char *argc,
+        -:   72:	long argl, char **ret);
+        -:   73:X509_LOOKUP_METHOD x509_file_lookup=
+        -:   74:	{
+        -:   75:	"Load file into cache",
+        -:   76:	NULL,		/* new */
+        -:   77:	NULL,		/* free */
+        -:   78:	NULL, 		/* init */
+        -:   79:	NULL,		/* shutdown */
+        -:   80:	by_file_ctrl,	/* ctrl */
+        -:   81:	NULL,		/* get_by_subject */
+        -:   82:	NULL,		/* get_by_issuer_serial */
+        -:   83:	NULL,		/* get_by_fingerprint */
+        -:   84:	NULL,		/* get_by_alias */
+        -:   85:	};
+        -:   86:
+    20000:   87:X509_LOOKUP_METHOD *X509_LOOKUP_file(void)
+        -:   88:	{
+    20000:   89:	return(&x509_file_lookup);
+        -:   90:	}
+        -:   91:
+    20000:   92:static int by_file_ctrl(X509_LOOKUP *ctx, int cmd, const char *argp, long argl,
+        -:   93:	     char **ret)
+        -:   94:	{
+        -:   95:	int ok=0;
+        -:   96:	char *file;
+        -:   97:
+    20000:   98:	switch (cmd)
+        -:   99:		{
+        -:  100:	case X509_L_FILE_LOAD:
+    20000:  101:		if (argl == X509_FILETYPE_DEFAULT)
+        -:  102:			{
+    10000:  103:			file = (char *)getenv(X509_get_default_cert_file_env());
+    10000:  104:			if (file)
+    #####:  105:				ok = (X509_load_cert_crl_file(ctx,file,
+    #####:  106:					      X509_FILETYPE_PEM) != 0);
+        -:  107:
+        -:  108:			else
+    20000:  109:				ok = (X509_load_cert_crl_file(ctx,X509_get_default_cert_file(),
+    10000:  110:					      X509_FILETYPE_PEM) != 0);
+        -:  111:
+    10000:  112:			if (!ok)
+        -:  113:				{
+    10000:  114:				X509err(X509_F_BY_FILE_CTRL,X509_R_LOADING_DEFAULTS);
+        -:  115:				}
+        -:  116:			}
+        -:  117:		else
+        -:  118:			{
+    10000:  119:			if(argl == X509_FILETYPE_PEM)
+    20000:  120:				ok = (X509_load_cert_crl_file(ctx,argp,
+    10000:  121:					X509_FILETYPE_PEM) != 0);
+        -:  122:			else
+    #####:  123:				ok = (X509_load_cert_file(ctx,argp,(int)argl) != 0);
+        -:  124:			}
+        -:  125:		break;
+        -:  126:		}
+    20000:  127:	return(ok);
+        -:  128:	}
+        -:  129:
+    #####:  130:int X509_load_cert_file(X509_LOOKUP *ctx, const char *file, int type)
+        -:  131:	{
+        -:  132:	int ret=0;
+        -:  133:	BIO *in=NULL;
+        -:  134:	int i,count=0;
+        -:  135:	X509 *x=NULL;
+        -:  136:
+    #####:  137:	if (file == NULL) return(1);
+    #####:  138:	in=BIO_new(BIO_s_file_internal());
+        -:  139:
+    #####:  140:	if ((in == NULL) || (BIO_read_filename(in,file) <= 0))
+        -:  141:		{
+    #####:  142:		X509err(X509_F_X509_LOAD_CERT_FILE,ERR_R_SYS_LIB);
+    #####:  143:		goto err;
+        -:  144:		}
+        -:  145:
+    #####:  146:	if (type == X509_FILETYPE_PEM)
+        -:  147:		{
+        -:  148:		for (;;)
+        -:  149:			{
+    #####:  150:			x=PEM_read_bio_X509_AUX(in,NULL,NULL,NULL);
+    #####:  151:			if (x == NULL)
+        -:  152:				{
+    #####:  153:				if ((ERR_GET_REASON(ERR_peek_last_error()) ==
+    #####:  154:					PEM_R_NO_START_LINE) && (count > 0))
+        -:  155:					{
+    #####:  156:					ERR_clear_error();
+        -:  157:					break;
+        -:  158:					}
+        -:  159:				else
+        -:  160:					{
+    #####:  161:					X509err(X509_F_X509_LOAD_CERT_FILE,
+        -:  162:						ERR_R_PEM_LIB);
+    #####:  163:					goto err;
+        -:  164:					}
+        -:  165:				}
+    #####:  166:			i=X509_STORE_add_cert(ctx->store_ctx,x);
+    #####:  167:			if (!i) goto err;
+    #####:  168:			count++;
+    #####:  169:			X509_free(x);
+        -:  170:			x=NULL;
+    #####:  171:			}
+        -:  172:		ret=count;
+        -:  173:		}
+    #####:  174:	else if (type == X509_FILETYPE_ASN1)
+        -:  175:		{
+    #####:  176:		x=d2i_X509_bio(in,NULL);
+    #####:  177:		if (x == NULL)
+        -:  178:			{
+    #####:  179:			X509err(X509_F_X509_LOAD_CERT_FILE,ERR_R_ASN1_LIB);
+    #####:  180:			goto err;
+        -:  181:			}
+    #####:  182:		i=X509_STORE_add_cert(ctx->store_ctx,x);
+    #####:  183:		if (!i) goto err;
+        -:  184:		ret=i;
+        -:  185:		}
+        -:  186:	else
+        -:  187:		{
+    #####:  188:		X509err(X509_F_X509_LOAD_CERT_FILE,X509_R_BAD_X509_FILETYPE);
+    #####:  189:		goto err;
+        -:  190:		}
+        -:  191:err:
+    #####:  192:	if (x != NULL) X509_free(x);
+    #####:  193:	if (in != NULL) BIO_free(in);
+    #####:  194:	return(ret);
+        -:  195:	}
+        -:  196:
+    #####:  197:int X509_load_crl_file(X509_LOOKUP *ctx, const char *file, int type)
+        -:  198:	{
+        -:  199:	int ret=0;
+        -:  200:	BIO *in=NULL;
+        -:  201:	int i,count=0;
+        -:  202:	X509_CRL *x=NULL;
+        -:  203:
+    #####:  204:	if (file == NULL) return(1);
+    #####:  205:	in=BIO_new(BIO_s_file_internal());
+        -:  206:
+    #####:  207:	if ((in == NULL) || (BIO_read_filename(in,file) <= 0))
+        -:  208:		{
+    #####:  209:		X509err(X509_F_X509_LOAD_CRL_FILE,ERR_R_SYS_LIB);
+    #####:  210:		goto err;
+        -:  211:		}
+        -:  212:
+    #####:  213:	if (type == X509_FILETYPE_PEM)
+        -:  214:		{
+        -:  215:		for (;;)
+        -:  216:			{
+    #####:  217:			x=PEM_read_bio_X509_CRL(in,NULL,NULL,NULL);
+    #####:  218:			if (x == NULL)
+        -:  219:				{
+    #####:  220:				if ((ERR_GET_REASON(ERR_peek_last_error()) ==
+    #####:  221:					PEM_R_NO_START_LINE) && (count > 0))
+        -:  222:					{
+    #####:  223:					ERR_clear_error();
+        -:  224:					break;
+        -:  225:					}
+        -:  226:				else
+        -:  227:					{
+    #####:  228:					X509err(X509_F_X509_LOAD_CRL_FILE,
+        -:  229:						ERR_R_PEM_LIB);
+    #####:  230:					goto err;
+        -:  231:					}
+        -:  232:				}
+    #####:  233:			i=X509_STORE_add_crl(ctx->store_ctx,x);
+    #####:  234:			if (!i) goto err;
+    #####:  235:			count++;
+    #####:  236:			X509_CRL_free(x);
+        -:  237:			x=NULL;
+    #####:  238:			}
+        -:  239:		ret=count;
+        -:  240:		}
+    #####:  241:	else if (type == X509_FILETYPE_ASN1)
+        -:  242:		{
+    #####:  243:		x=d2i_X509_CRL_bio(in,NULL);
+    #####:  244:		if (x == NULL)
+        -:  245:			{
+    #####:  246:			X509err(X509_F_X509_LOAD_CRL_FILE,ERR_R_ASN1_LIB);
+    #####:  247:			goto err;
+        -:  248:			}
+    #####:  249:		i=X509_STORE_add_crl(ctx->store_ctx,x);
+    #####:  250:		if (!i) goto err;
+        -:  251:		ret=i;
+        -:  252:		}
+        -:  253:	else
+        -:  254:		{
+    #####:  255:		X509err(X509_F_X509_LOAD_CRL_FILE,X509_R_BAD_X509_FILETYPE);
+    #####:  256:		goto err;
+        -:  257:		}
+        -:  258:err:
+    #####:  259:	if (x != NULL) X509_CRL_free(x);
+    #####:  260:	if (in != NULL) BIO_free(in);
+    #####:  261:	return(ret);
+        -:  262:	}
+        -:  263:
+    20000:  264:int X509_load_cert_crl_file(X509_LOOKUP *ctx, const char *file, int type)
+        -:  265:{
+        -:  266:	STACK_OF(X509_INFO) *inf;
+        -:  267:	X509_INFO *itmp;
+        -:  268:	BIO *in;
+        -:  269:	int i, count = 0;
+    20000:  270:	if(type != X509_FILETYPE_PEM)
+    #####:  271:		return X509_load_cert_file(ctx, file, type);
+    20000:  272:	in = BIO_new_file(file, "r");
+    20000:  273:	if(!in) {
+    10000:  274:		X509err(X509_F_X509_LOAD_CERT_CRL_FILE,ERR_R_SYS_LIB);
+    10000:  275:		return 0;
+        -:  276:	}
+    10000:  277:	inf = PEM_X509_INFO_read_bio(in, NULL, NULL, NULL);
+    10000:  278:	BIO_free(in);
+    10000:  279:	if(!inf) {
+    #####:  280:		X509err(X509_F_X509_LOAD_CERT_CRL_FILE,ERR_R_PEM_LIB);
+    #####:  281:		return 0;
+        -:  282:	}
+    10000:  283:	for(i = 0; i < sk_X509_INFO_num(inf); i++) {
+    10000:  284:		itmp = sk_X509_INFO_value(inf, i);
+    10000:  285:		if(itmp->x509) {
+    10000:  286:			X509_STORE_add_cert(ctx->store_ctx, itmp->x509);
+    10000:  287:			count++;
+        -:  288:		}
+    10000:  289:		if(itmp->crl) {
+    #####:  290:			X509_STORE_add_crl(ctx->store_ctx, itmp->crl);
+    #####:  291:			count++;
+        -:  292:		}
+        -:  293:	}
+    10000:  294:	sk_X509_INFO_pop_free(inf, X509_INFO_free);
+    10000:  295:	return count;
+        -:  296:}
+        -:  297:
+        -:  298:
+        -:  299:#endif /* OPENSSL_NO_STDIO */
+        -:  300:

@@ -1,0 +1,360 @@
+        -:    0:Source:dh.c
+        -:    0:Graph:dh.gcno
+        -:    0:Data:dh.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* apps/dh.c */
+        -:    2:/* obsoleted by dhparam.c */
+        -:    3:/* Copyright (C) 1995-1998 Eric Young (eay@cryptsoft.com)
+        -:    4: * All rights reserved.
+        -:    5: *
+        -:    6: * This package is an SSL implementation written
+        -:    7: * by Eric Young (eay@cryptsoft.com).
+        -:    8: * The implementation was written so as to conform with Netscapes SSL.
+        -:    9: * 
+        -:   10: * This library is free for commercial and non-commercial use as long as
+        -:   11: * the following conditions are aheared to.  The following conditions
+        -:   12: * apply to all code found in this distribution, be it the RC4, RSA,
+        -:   13: * lhash, DES, etc., code; not just the SSL code.  The SSL documentation
+        -:   14: * included with this distribution is covered by the same copyright terms
+        -:   15: * except that the holder is Tim Hudson (tjh@cryptsoft.com).
+        -:   16: * 
+        -:   17: * Copyright remains Eric Young's, and as such any Copyright notices in
+        -:   18: * the code are not to be removed.
+        -:   19: * If this package is used in a product, Eric Young should be given attribution
+        -:   20: * as the author of the parts of the library used.
+        -:   21: * This can be in the form of a textual message at program startup or
+        -:   22: * in documentation (online or textual) provided with the package.
+        -:   23: * 
+        -:   24: * Redistribution and use in source and binary forms, with or without
+        -:   25: * modification, are permitted provided that the following conditions
+        -:   26: * are met:
+        -:   27: * 1. Redistributions of source code must retain the copyright
+        -:   28: *    notice, this list of conditions and the following disclaimer.
+        -:   29: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   30: *    notice, this list of conditions and the following disclaimer in the
+        -:   31: *    documentation and/or other materials provided with the distribution.
+        -:   32: * 3. All advertising materials mentioning features or use of this software
+        -:   33: *    must display the following acknowledgement:
+        -:   34: *    "This product includes cryptographic software written by
+        -:   35: *     Eric Young (eay@cryptsoft.com)"
+        -:   36: *    The word 'cryptographic' can be left out if the rouines from the library
+        -:   37: *    being used are not cryptographic related :-).
+        -:   38: * 4. If you include any Windows specific code (or a derivative thereof) from 
+        -:   39: *    the apps directory (application code) you must include an acknowledgement:
+        -:   40: *    "This product includes software written by Tim Hudson (tjh@cryptsoft.com)"
+        -:   41: * 
+        -:   42: * THIS SOFTWARE IS PROVIDED BY ERIC YOUNG ``AS IS'' AND
+        -:   43: * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   44: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+        -:   45: * ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+        -:   46: * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+        -:   47: * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+        -:   48: * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   49: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+        -:   50: * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+        -:   51: * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+        -:   52: * SUCH DAMAGE.
+        -:   53: * 
+        -:   54: * The licence and distribution terms for any publically available version or
+        -:   55: * derivative of this code cannot be changed.  i.e. this code cannot simply be
+        -:   56: * copied and put under another distribution licence
+        -:   57: * [including the GNU Public Licence.]
+        -:   58: */
+        -:   59:
+        -:   60:#include <openssl/opensslconf.h>	/* for OPENSSL_NO_DH */
+        -:   61:#ifndef OPENSSL_NO_DH
+        -:   62:#include <stdio.h>
+        -:   63:#include <stdlib.h>
+        -:   64:#include <time.h>
+        -:   65:#include <string.h>
+        -:   66:#include "apps.h"
+        -:   67:#include <openssl/bio.h>
+        -:   68:#include <openssl/err.h>
+        -:   69:#include <openssl/bn.h>
+        -:   70:#include <openssl/dh.h>
+        -:   71:#include <openssl/x509.h>
+        -:   72:#include <openssl/pem.h>
+        -:   73:
+        -:   74:#undef PROG
+        -:   75:#define PROG	dh_main
+        -:   76:
+        -:   77:/* -inform arg	- input format - default PEM (DER or PEM)
+        -:   78: * -outform arg - output format - default PEM
+        -:   79: * -in arg	- input file - default stdin
+        -:   80: * -out arg	- output file - default stdout
+        -:   81: * -check	- check the parameters are ok
+        -:   82: * -noout
+        -:   83: * -text
+        -:   84: * -C
+        -:   85: */
+        -:   86:
+        -:   87:int MAIN(int, char **);
+        -:   88:
+    #####:   89:int MAIN(int argc, char **argv)
+        -:   90:	{
+        -:   91:	DH *dh=NULL;
+        -:   92:	int i,badops=0,text=0;
+        -:   93:	BIO *in=NULL,*out=NULL;
+        -:   94:	int informat,outformat,check=0,noout=0,C=0,ret=1;
+        -:   95:	char *infile,*outfile,*prog;
+        -:   96:#ifndef OPENSSL_NO_ENGINE
+        -:   97:	char *engine;
+        -:   98:#endif
+        -:   99:
+    #####:  100:	apps_startup();
+        -:  101:
+    #####:  102:	if (bio_err == NULL)
+    #####:  103:		if ((bio_err=BIO_new(BIO_s_file())) != NULL)
+    #####:  104:			BIO_set_fp(bio_err,stderr,BIO_NOCLOSE|BIO_FP_TEXT);
+        -:  105:
+    #####:  106:	if (!load_config(bio_err, NULL))
+        -:  107:		goto end;
+        -:  108:
+        -:  109:#ifndef OPENSSL_NO_ENGINE
+        -:  110:	engine=NULL;
+        -:  111:#endif
+        -:  112:	infile=NULL;
+        -:  113:	outfile=NULL;
+        -:  114:	informat=FORMAT_PEM;
+        -:  115:	outformat=FORMAT_PEM;
+        -:  116:
+    #####:  117:	prog=argv[0];
+    #####:  118:	argc--;
+    #####:  119:	argv++;
+    #####:  120:	while (argc >= 1)
+        -:  121:		{
+    #####:  122:		if 	(strcmp(*argv,"-inform") == 0)
+        -:  123:			{
+    #####:  124:			if (--argc < 1) goto bad;
+    #####:  125:			informat=str2fmt(*(++argv));
+        -:  126:			}
+    #####:  127:		else if (strcmp(*argv,"-outform") == 0)
+        -:  128:			{
+    #####:  129:			if (--argc < 1) goto bad;
+    #####:  130:			outformat=str2fmt(*(++argv));
+        -:  131:			}
+    #####:  132:		else if (strcmp(*argv,"-in") == 0)
+        -:  133:			{
+    #####:  134:			if (--argc < 1) goto bad;
+    #####:  135:			infile= *(++argv);
+        -:  136:			}
+    #####:  137:		else if (strcmp(*argv,"-out") == 0)
+        -:  138:			{
+    #####:  139:			if (--argc < 1) goto bad;
+    #####:  140:			outfile= *(++argv);
+        -:  141:			}
+        -:  142:#ifndef OPENSSL_NO_ENGINE
+    #####:  143:		else if (strcmp(*argv,"-engine") == 0)
+        -:  144:			{
+    #####:  145:			if (--argc < 1) goto bad;
+    #####:  146:			engine= *(++argv);
+        -:  147:			}
+        -:  148:#endif
+    #####:  149:		else if (strcmp(*argv,"-check") == 0)
+        -:  150:			check=1;
+    #####:  151:		else if (strcmp(*argv,"-text") == 0)
+        -:  152:			text=1;
+    #####:  153:		else if (strcmp(*argv,"-C") == 0)
+        -:  154:			C=1;
+    #####:  155:		else if (strcmp(*argv,"-noout") == 0)
+        -:  156:			noout=1;
+        -:  157:		else
+        -:  158:			{
+    #####:  159:			BIO_printf(bio_err,"unknown option %s\n",*argv);
+        -:  160:			badops=1;
+    #####:  161:			break;
+        -:  162:			}
+    #####:  163:		argc--;
+    #####:  164:		argv++;
+        -:  165:		}
+        -:  166:
+    #####:  167:	if (badops)
+        -:  168:		{
+        -:  169:bad:
+    #####:  170:		BIO_printf(bio_err,"%s [options] <infile >outfile\n",prog);
+    #####:  171:		BIO_printf(bio_err,"where options are\n");
+    #####:  172:		BIO_printf(bio_err," -inform arg   input format - one of DER PEM\n");
+    #####:  173:		BIO_printf(bio_err," -outform arg  output format - one of DER PEM\n");
+    #####:  174:		BIO_printf(bio_err," -in arg       input file\n");
+    #####:  175:		BIO_printf(bio_err," -out arg      output file\n");
+    #####:  176:		BIO_printf(bio_err," -check        check the DH parameters\n");
+    #####:  177:		BIO_printf(bio_err," -text         print a text form of the DH parameters\n");
+    #####:  178:		BIO_printf(bio_err," -C            Output C code\n");
+    #####:  179:		BIO_printf(bio_err," -noout        no output\n");
+        -:  180:#ifndef OPENSSL_NO_ENGINE
+    #####:  181:		BIO_printf(bio_err," -engine e     use engine e, possibly a hardware device.\n");
+        -:  182:#endif
+    #####:  183:		goto end;
+        -:  184:		}
+        -:  185:
+    #####:  186:	ERR_load_crypto_strings();
+        -:  187:
+        -:  188:#ifndef OPENSSL_NO_ENGINE
+    #####:  189:        setup_engine(bio_err, engine, 0);
+        -:  190:#endif
+        -:  191:
+    #####:  192:	in=BIO_new(BIO_s_file());
+    #####:  193:	out=BIO_new(BIO_s_file());
+    #####:  194:	if ((in == NULL) || (out == NULL))
+        -:  195:		{
+    #####:  196:		ERR_print_errors(bio_err);
+    #####:  197:		goto end;
+        -:  198:		}
+        -:  199:
+    #####:  200:	if (infile == NULL)
+    #####:  201:		BIO_set_fp(in,stdin,BIO_NOCLOSE);
+        -:  202:	else
+        -:  203:		{
+    #####:  204:		if (BIO_read_filename(in,infile) <= 0)
+        -:  205:			{
+    #####:  206:			perror(infile);
+    #####:  207:			goto end;
+        -:  208:			}
+        -:  209:		}
+    #####:  210:	if (outfile == NULL)
+        -:  211:		{
+    #####:  212:		BIO_set_fp(out,stdout,BIO_NOCLOSE);
+        -:  213:#ifdef OPENSSL_SYS_VMS
+        -:  214:		{
+        -:  215:		BIO *tmpbio = BIO_new(BIO_f_linebuffer());
+        -:  216:		out = BIO_push(tmpbio, out);
+        -:  217:		}
+        -:  218:#endif
+        -:  219:		}
+        -:  220:	else
+        -:  221:		{
+    #####:  222:		if (BIO_write_filename(out,outfile) <= 0)
+        -:  223:			{
+    #####:  224:			perror(outfile);
+    #####:  225:			goto end;
+        -:  226:			}
+        -:  227:		}
+        -:  228:
+    #####:  229:	if	(informat == FORMAT_ASN1)
+    #####:  230:		dh=d2i_DHparams_bio(in,NULL);
+    #####:  231:	else if (informat == FORMAT_PEM)
+    #####:  232:		dh=PEM_read_bio_DHparams(in,NULL,NULL,NULL);
+        -:  233:	else
+        -:  234:		{
+    #####:  235:		BIO_printf(bio_err,"bad input format specified\n");
+    #####:  236:		goto end;
+        -:  237:		}
+    #####:  238:	if (dh == NULL)
+        -:  239:		{
+    #####:  240:		BIO_printf(bio_err,"unable to load DH parameters\n");
+    #####:  241:		ERR_print_errors(bio_err);
+    #####:  242:		goto end;
+        -:  243:		}
+        -:  244:
+        -:  245:	
+        -:  246:
+    #####:  247:	if (text)
+        -:  248:		{
+    #####:  249:		DHparams_print(out,dh);
+        -:  250:#ifdef undef
+        -:  251:		printf("p=");
+        -:  252:		BN_print(stdout,dh->p);
+        -:  253:		printf("\ng=");
+        -:  254:		BN_print(stdout,dh->g);
+        -:  255:		printf("\n");
+        -:  256:		if (dh->length != 0)
+        -:  257:			printf("recommended private length=%ld\n",dh->length);
+        -:  258:#endif
+        -:  259:		}
+        -:  260:	
+    #####:  261:	if (check)
+        -:  262:		{
+    #####:  263:		if (!DH_check(dh,&i))
+        -:  264:			{
+    #####:  265:			ERR_print_errors(bio_err);
+    #####:  266:			goto end;
+        -:  267:			}
+    #####:  268:		if (i & DH_CHECK_P_NOT_PRIME)
+        -:  269:			printf("p value is not prime\n");
+    #####:  270:		if (i & DH_CHECK_P_NOT_SAFE_PRIME)
+        -:  271:			printf("p value is not a safe prime\n");
+    #####:  272:		if (i & DH_UNABLE_TO_CHECK_GENERATOR)
+        -:  273:			printf("unable to check the generator value\n");
+    #####:  274:		if (i & DH_NOT_SUITABLE_GENERATOR)
+        -:  275:			printf("the g value is not a generator\n");
+    #####:  276:		if (i == 0)
+        -:  277:			printf("DH parameters appear to be ok.\n");
+        -:  278:		}
+    #####:  279:	if (C)
+        -:  280:		{
+        -:  281:		unsigned char *data;
+        -:  282:		int len,l,bits;
+        -:  283:
+    #####:  284:		len=BN_num_bytes(dh->p);
+    #####:  285:		bits=BN_num_bits(dh->p);
+    #####:  286:		data=(unsigned char *)OPENSSL_malloc(len);
+    #####:  287:		if (data == NULL)
+        -:  288:			{
+    #####:  289:			perror("OPENSSL_malloc");
+    #####:  290:			goto end;
+        -:  291:			}
+    #####:  292:		l=BN_bn2bin(dh->p,data);
+        -:  293:		printf("static unsigned char dh%d_p[]={",bits);
+    #####:  294:		for (i=0; i<l; i++)
+        -:  295:			{
+    #####:  296:			if ((i%12) == 0) printf("\n\t");
+    #####:  297:			printf("0x%02X,",data[i]);
+        -:  298:			}
+        -:  299:		printf("\n\t};\n");
+        -:  300:
+    #####:  301:		l=BN_bn2bin(dh->g,data);
+        -:  302:		printf("static unsigned char dh%d_g[]={",bits);
+    #####:  303:		for (i=0; i<l; i++)
+        -:  304:			{
+    #####:  305:			if ((i%12) == 0) printf("\n\t");
+    #####:  306:			printf("0x%02X,",data[i]);
+        -:  307:			}
+        -:  308:		printf("\n\t};\n\n");
+        -:  309:
+        -:  310:		printf("DH *get_dh%d()\n\t{\n",bits);
+        -:  311:		printf("\tDH *dh;\n\n");
+        -:  312:		printf("\tif ((dh=DH_new()) == NULL) return(NULL);\n");
+        -:  313:		printf("\tdh->p=BN_bin2bn(dh%d_p,sizeof(dh%d_p),NULL);\n",
+        -:  314:			bits,bits);
+        -:  315:		printf("\tdh->g=BN_bin2bn(dh%d_g,sizeof(dh%d_g),NULL);\n",
+        -:  316:			bits,bits);
+        -:  317:		printf("\tif ((dh->p == NULL) || (dh->g == NULL))\n");
+        -:  318:		printf("\t\treturn(NULL);\n");
+        -:  319:		printf("\treturn(dh);\n\t}\n");
+    #####:  320:		OPENSSL_free(data);
+        -:  321:		}
+        -:  322:
+        -:  323:
+    #####:  324:	if (!noout)
+        -:  325:		{
+    #####:  326:		if 	(outformat == FORMAT_ASN1)
+    #####:  327:			i=i2d_DHparams_bio(out,dh);
+    #####:  328:		else if (outformat == FORMAT_PEM)
+    #####:  329:			i=PEM_write_bio_DHparams(out,dh);
+        -:  330:		else	{
+    #####:  331:			BIO_printf(bio_err,"bad output format specified for outfile\n");
+    #####:  332:			goto end;
+        -:  333:			}
+    #####:  334:		if (!i)
+        -:  335:			{
+    #####:  336:			BIO_printf(bio_err,"unable to write DH parameters\n");
+    #####:  337:			ERR_print_errors(bio_err);
+    #####:  338:			goto end;
+        -:  339:			}
+        -:  340:		}
+        -:  341:	ret=0;
+        -:  342:end:
+    #####:  343:	if (in != NULL) BIO_free(in);
+    #####:  344:	if (out != NULL) BIO_free_all(out);
+    #####:  345:	if (dh != NULL) DH_free(dh);
+        -:  346:	apps_shutdown();
+    #####:  347:	OPENSSL_EXIT(ret);
+        -:  348:	}
+        -:  349:#else /* !OPENSSL_NO_DH */
+        -:  350:
+        -:  351:# if PEDANTIC
+        -:  352:static void *dummy=&dummy;
+        -:  353:# endif
+        -:  354:
+        -:  355:#endif

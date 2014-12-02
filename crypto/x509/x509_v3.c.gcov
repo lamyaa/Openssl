@@ -1,0 +1,279 @@
+        -:    0:Source:x509_v3.c
+        -:    0:Graph:x509_v3.gcno
+        -:    0:Data:x509_v3.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* crypto/x509/x509_v3.c */
+        -:    2:/* Copyright (C) 1995-1998 Eric Young (eay@cryptsoft.com)
+        -:    3: * All rights reserved.
+        -:    4: *
+        -:    5: * This package is an SSL implementation written
+        -:    6: * by Eric Young (eay@cryptsoft.com).
+        -:    7: * The implementation was written so as to conform with Netscapes SSL.
+        -:    8: * 
+        -:    9: * This library is free for commercial and non-commercial use as long as
+        -:   10: * the following conditions are aheared to.  The following conditions
+        -:   11: * apply to all code found in this distribution, be it the RC4, RSA,
+        -:   12: * lhash, DES, etc., code; not just the SSL code.  The SSL documentation
+        -:   13: * included with this distribution is covered by the same copyright terms
+        -:   14: * except that the holder is Tim Hudson (tjh@cryptsoft.com).
+        -:   15: * 
+        -:   16: * Copyright remains Eric Young's, and as such any Copyright notices in
+        -:   17: * the code are not to be removed.
+        -:   18: * If this package is used in a product, Eric Young should be given attribution
+        -:   19: * as the author of the parts of the library used.
+        -:   20: * This can be in the form of a textual message at program startup or
+        -:   21: * in documentation (online or textual) provided with the package.
+        -:   22: * 
+        -:   23: * Redistribution and use in source and binary forms, with or without
+        -:   24: * modification, are permitted provided that the following conditions
+        -:   25: * are met:
+        -:   26: * 1. Redistributions of source code must retain the copyright
+        -:   27: *    notice, this list of conditions and the following disclaimer.
+        -:   28: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   29: *    notice, this list of conditions and the following disclaimer in the
+        -:   30: *    documentation and/or other materials provided with the distribution.
+        -:   31: * 3. All advertising materials mentioning features or use of this software
+        -:   32: *    must display the following acknowledgement:
+        -:   33: *    "This product includes cryptographic software written by
+        -:   34: *     Eric Young (eay@cryptsoft.com)"
+        -:   35: *    The word 'cryptographic' can be left out if the rouines from the library
+        -:   36: *    being used are not cryptographic related :-).
+        -:   37: * 4. If you include any Windows specific code (or a derivative thereof) from 
+        -:   38: *    the apps directory (application code) you must include an acknowledgement:
+        -:   39: *    "This product includes software written by Tim Hudson (tjh@cryptsoft.com)"
+        -:   40: * 
+        -:   41: * THIS SOFTWARE IS PROVIDED BY ERIC YOUNG ``AS IS'' AND
+        -:   42: * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   43: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+        -:   44: * ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+        -:   45: * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+        -:   46: * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+        -:   47: * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   48: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+        -:   49: * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+        -:   50: * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+        -:   51: * SUCH DAMAGE.
+        -:   52: * 
+        -:   53: * The licence and distribution terms for any publically available version or
+        -:   54: * derivative of this code cannot be changed.  i.e. this code cannot simply be
+        -:   55: * copied and put under another distribution licence
+        -:   56: * [including the GNU Public Licence.]
+        -:   57: */
+        -:   58:
+        -:   59:#include <stdio.h>
+        -:   60:#include <openssl/stack.h>
+        -:   61:#include "cryptlib.h"
+        -:   62:#include <openssl/asn1.h>
+        -:   63:#include <openssl/objects.h>
+        -:   64:#include <openssl/evp.h>
+        -:   65:#include <openssl/x509.h>
+        -:   66:#include <openssl/x509v3.h>
+        -:   67:
+    84977:   68:int X509v3_get_ext_count(const STACK_OF(X509_EXTENSION) *x)
+        -:   69:	{
+    84977:   70:	if (x == NULL) return(0);
+    84004:   71:	return(sk_X509_EXTENSION_num(x));
+        -:   72:	}
+        -:   73:
+    #####:   74:int X509v3_get_ext_by_NID(const STACK_OF(X509_EXTENSION) *x, int nid,
+        -:   75:			  int lastpos)
+        -:   76:	{
+        -:   77:	ASN1_OBJECT *obj;
+        -:   78:
+    #####:   79:	obj=OBJ_nid2obj(nid);
+    #####:   80:	if (obj == NULL) return(-2);
+    #####:   81:	return(X509v3_get_ext_by_OBJ(x,obj,lastpos));
+        -:   82:	}
+        -:   83:
+    #####:   84:int X509v3_get_ext_by_OBJ(const STACK_OF(X509_EXTENSION) *sk, ASN1_OBJECT *obj,
+        -:   85:			  int lastpos)
+        -:   86:	{
+        -:   87:	int n;
+        -:   88:	X509_EXTENSION *ex;
+        -:   89:
+    #####:   90:	if (sk == NULL) return(-1);
+    #####:   91:	lastpos++;
+    #####:   92:	if (lastpos < 0)
+        -:   93:		lastpos=0;
+    #####:   94:	n=sk_X509_EXTENSION_num(sk);
+    #####:   95:	for ( ; lastpos < n; lastpos++)
+        -:   96:		{
+    #####:   97:		ex=sk_X509_EXTENSION_value(sk,lastpos);
+    #####:   98:		if (OBJ_cmp(ex->object,obj) == 0)
+        -:   99:			return(lastpos);
+        -:  100:		}
+        -:  101:	return(-1);
+        -:  102:	}
+        -:  103:
+    #####:  104:int X509v3_get_ext_by_critical(const STACK_OF(X509_EXTENSION) *sk, int crit,
+        -:  105:			       int lastpos)
+        -:  106:	{
+        -:  107:	int n;
+        -:  108:	X509_EXTENSION *ex;
+        -:  109:
+    #####:  110:	if (sk == NULL) return(-1);
+    #####:  111:	lastpos++;
+    #####:  112:	if (lastpos < 0)
+        -:  113:		lastpos=0;
+    #####:  114:	n=sk_X509_EXTENSION_num(sk);
+    #####:  115:	for ( ; lastpos < n; lastpos++)
+        -:  116:		{
+    #####:  117:		ex=sk_X509_EXTENSION_value(sk,lastpos);
+    #####:  118:		if (	((ex->critical > 0) && crit) ||
+    #####:  119:			((ex->critical <= 0) && !crit))
+        -:  120:			return(lastpos);
+        -:  121:		}
+        -:  122:	return(-1);
+        -:  123:	}
+        -:  124:
+    74331:  125:X509_EXTENSION *X509v3_get_ext(const STACK_OF(X509_EXTENSION) *x, int loc)
+        -:  126:	{
+    74331:  127:	if (x == NULL || sk_X509_EXTENSION_num(x) <= loc || loc < 0)
+        -:  128:		return NULL;
+        -:  129:	else
+    74331:  130:		return sk_X509_EXTENSION_value(x,loc);
+        -:  131:	}
+        -:  132:
+    #####:  133:X509_EXTENSION *X509v3_delete_ext(STACK_OF(X509_EXTENSION) *x, int loc)
+        -:  134:	{
+        -:  135:	X509_EXTENSION *ret;
+        -:  136:
+    #####:  137:	if (x == NULL || sk_X509_EXTENSION_num(x) <= loc || loc < 0)
+        -:  138:		return(NULL);
+    #####:  139:	ret=sk_X509_EXTENSION_delete(x,loc);
+    #####:  140:	return(ret);
+        -:  141:	}
+        -:  142:
+    #####:  143:STACK_OF(X509_EXTENSION) *X509v3_add_ext(STACK_OF(X509_EXTENSION) **x,
+        -:  144:					 X509_EXTENSION *ex, int loc)
+        -:  145:	{
+        -:  146:	X509_EXTENSION *new_ex=NULL;
+        -:  147:	int n;
+        -:  148:	STACK_OF(X509_EXTENSION) *sk=NULL;
+        -:  149:
+    #####:  150:	if (x == NULL)
+        -:  151:		{
+    #####:  152:		X509err(X509_F_X509V3_ADD_EXT,ERR_R_PASSED_NULL_PARAMETER);
+    #####:  153:		goto err2;
+        -:  154:		}
+        -:  155:
+    #####:  156:	if (*x == NULL)
+        -:  157:		{
+    #####:  158:		if ((sk=sk_X509_EXTENSION_new_null()) == NULL)
+        -:  159:			goto err;
+        -:  160:		}
+        -:  161:	else
+        -:  162:		sk= *x;
+        -:  163:
+    #####:  164:	n=sk_X509_EXTENSION_num(sk);
+    #####:  165:	if (loc > n) loc=n;
+    #####:  166:	else if (loc < 0) loc=n;
+        -:  167:
+    #####:  168:	if ((new_ex=X509_EXTENSION_dup(ex)) == NULL)
+        -:  169:		goto err2;
+    #####:  170:	if (!sk_X509_EXTENSION_insert(sk,new_ex,loc))
+        -:  171:		goto err;
+    #####:  172:	if (*x == NULL)
+    #####:  173:		*x=sk;
+    #####:  174:	return(sk);
+        -:  175:err:
+    #####:  176:	X509err(X509_F_X509V3_ADD_EXT,ERR_R_MALLOC_FAILURE);
+        -:  177:err2:
+    #####:  178:	if (new_ex != NULL) X509_EXTENSION_free(new_ex);
+    #####:  179:	if (sk != NULL) sk_X509_EXTENSION_free(sk);
+        -:  180:	return(NULL);
+        -:  181:	}
+        -:  182:
+    #####:  183:X509_EXTENSION *X509_EXTENSION_create_by_NID(X509_EXTENSION **ex, int nid,
+        -:  184:	     int crit, ASN1_OCTET_STRING *data)
+        -:  185:	{
+        -:  186:	ASN1_OBJECT *obj;
+        -:  187:	X509_EXTENSION *ret;
+        -:  188:
+    #####:  189:	obj=OBJ_nid2obj(nid);
+    #####:  190:	if (obj == NULL)
+        -:  191:		{
+    #####:  192:		X509err(X509_F_X509_EXTENSION_CREATE_BY_NID,X509_R_UNKNOWN_NID);
+    #####:  193:		return(NULL);
+        -:  194:		}
+    #####:  195:	ret=X509_EXTENSION_create_by_OBJ(ex,obj,crit,data);
+    #####:  196:	if (ret == NULL) ASN1_OBJECT_free(obj);
+    #####:  197:	return(ret);
+        -:  198:	}
+        -:  199:
+    #####:  200:X509_EXTENSION *X509_EXTENSION_create_by_OBJ(X509_EXTENSION **ex,
+        -:  201:	     ASN1_OBJECT *obj, int crit, ASN1_OCTET_STRING *data)
+        -:  202:	{
+        -:  203:	X509_EXTENSION *ret;
+        -:  204:
+    #####:  205:	if ((ex == NULL) || (*ex == NULL))
+        -:  206:		{
+    #####:  207:		if ((ret=X509_EXTENSION_new()) == NULL)
+        -:  208:			{
+    #####:  209:			X509err(X509_F_X509_EXTENSION_CREATE_BY_OBJ,ERR_R_MALLOC_FAILURE);
+    #####:  210:			return(NULL);
+        -:  211:			}
+        -:  212:		}
+        -:  213:	else
+        -:  214:		ret= *ex;
+        -:  215:
+    #####:  216:	if (!X509_EXTENSION_set_object(ret,obj))
+        -:  217:		goto err;
+    #####:  218:	if (!X509_EXTENSION_set_critical(ret,crit))
+        -:  219:		goto err;
+    #####:  220:	if (!X509_EXTENSION_set_data(ret,data))
+        -:  221:		goto err;
+        -:  222:	
+    #####:  223:	if ((ex != NULL) && (*ex == NULL)) *ex=ret;
+    #####:  224:	return(ret);
+        -:  225:err:
+    #####:  226:	if ((ex == NULL) || (ret != *ex))
+    #####:  227:		X509_EXTENSION_free(ret);
+        -:  228:	return(NULL);
+        -:  229:	}
+        -:  230:
+    #####:  231:int X509_EXTENSION_set_object(X509_EXTENSION *ex, ASN1_OBJECT *obj)
+        -:  232:	{
+    #####:  233:	if ((ex == NULL) || (obj == NULL))
+        -:  234:		return(0);
+    #####:  235:	ASN1_OBJECT_free(ex->object);
+    #####:  236:	ex->object=OBJ_dup(obj);
+    #####:  237:	return(1);
+        -:  238:	}
+        -:  239:
+    #####:  240:int X509_EXTENSION_set_critical(X509_EXTENSION *ex, int crit)
+        -:  241:	{
+    #####:  242:	if (ex == NULL) return(0);
+    #####:  243:	ex->critical=(crit)?0xFF:-1;
+    #####:  244:	return(1);
+        -:  245:	}
+        -:  246:
+    #####:  247:int X509_EXTENSION_set_data(X509_EXTENSION *ex, ASN1_OCTET_STRING *data)
+        -:  248:	{
+        -:  249:	int i;
+        -:  250:
+    #####:  251:	if (ex == NULL) return(0);
+    #####:  252:	i=M_ASN1_OCTET_STRING_set(ex->value,data->data,data->length);
+    #####:  253:	if (!i) return(0);
+    #####:  254:	return(1);
+        -:  255:	}
+        -:  256:
+   104530:  257:ASN1_OBJECT *X509_EXTENSION_get_object(X509_EXTENSION *ex)
+        -:  258:	{
+   104530:  259:	if (ex == NULL) return(NULL);
+   104530:  260:	return(ex->object);
+        -:  261:	}
+        -:  262:
+    #####:  263:ASN1_OCTET_STRING *X509_EXTENSION_get_data(X509_EXTENSION *ex)
+        -:  264:	{
+    #####:  265:	if (ex == NULL) return(NULL);
+    #####:  266:	return(ex->value);
+        -:  267:	}
+        -:  268:
+    74331:  269:int X509_EXTENSION_get_critical(X509_EXTENSION *ex)
+        -:  270:	{
+    74331:  271:	if (ex == NULL) return(0);
+    74331:  272:	if(ex->critical > 0) return 1;
+    44132:  273:	return 0;
+        -:  274:	}

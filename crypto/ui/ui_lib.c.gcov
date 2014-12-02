@@ -1,0 +1,929 @@
+        -:    0:Source:ui_lib.c
+        -:    0:Graph:ui_lib.gcno
+        -:    0:Data:ui_lib.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* crypto/ui/ui_lib.c -*- mode:C; c-file-style: "eay" -*- */
+        -:    2:/* Written by Richard Levitte (richard@levitte.org) for the OpenSSL
+        -:    3: * project 2001.
+        -:    4: */
+        -:    5:/* ====================================================================
+        -:    6: * Copyright (c) 2001 The OpenSSL Project.  All rights reserved.
+        -:    7: *
+        -:    8: * Redistribution and use in source and binary forms, with or without
+        -:    9: * modification, are permitted provided that the following conditions
+        -:   10: * are met:
+        -:   11: *
+        -:   12: * 1. Redistributions of source code must retain the above copyright
+        -:   13: *    notice, this list of conditions and the following disclaimer. 
+        -:   14: *
+        -:   15: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   16: *    notice, this list of conditions and the following disclaimer in
+        -:   17: *    the documentation and/or other materials provided with the
+        -:   18: *    distribution.
+        -:   19: *
+        -:   20: * 3. All advertising materials mentioning features or use of this
+        -:   21: *    software must display the following acknowledgment:
+        -:   22: *    "This product includes software developed by the OpenSSL Project
+        -:   23: *    for use in the OpenSSL Toolkit. (http://www.openssl.org/)"
+        -:   24: *
+        -:   25: * 4. The names "OpenSSL Toolkit" and "OpenSSL Project" must not be used to
+        -:   26: *    endorse or promote products derived from this software without
+        -:   27: *    prior written permission. For written permission, please contact
+        -:   28: *    openssl-core@openssl.org.
+        -:   29: *
+        -:   30: * 5. Products derived from this software may not be called "OpenSSL"
+        -:   31: *    nor may "OpenSSL" appear in their names without prior written
+        -:   32: *    permission of the OpenSSL Project.
+        -:   33: *
+        -:   34: * 6. Redistributions of any form whatsoever must retain the following
+        -:   35: *    acknowledgment:
+        -:   36: *    "This product includes software developed by the OpenSSL Project
+        -:   37: *    for use in the OpenSSL Toolkit (http://www.openssl.org/)"
+        -:   38: *
+        -:   39: * THIS SOFTWARE IS PROVIDED BY THE OpenSSL PROJECT ``AS IS'' AND ANY
+        -:   40: * EXPRESSED OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   41: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+        -:   42: * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE OpenSSL PROJECT OR
+        -:   43: * ITS CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+        -:   44: * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+        -:   45: * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+        -:   46: * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   47: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+        -:   48: * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+        -:   49: * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+        -:   50: * OF THE POSSIBILITY OF SUCH DAMAGE.
+        -:   51: * ====================================================================
+        -:   52: *
+        -:   53: * This product includes cryptographic software written by Eric Young
+        -:   54: * (eay@cryptsoft.com).  This product includes software written by Tim
+        -:   55: * Hudson (tjh@cryptsoft.com).
+        -:   56: *
+        -:   57: */
+        -:   58:
+        -:   59:#include <string.h>
+        -:   60:#include "cryptlib.h"
+        -:   61:#include <openssl/e_os2.h>
+        -:   62:#include <openssl/buffer.h>
+        -:   63:#include <openssl/ui.h>
+        -:   64:#include <openssl/err.h>
+        -:   65:#include "ui_locl.h"
+        -:   66:
+        -:   67:IMPLEMENT_STACK_OF(UI_STRING_ST)
+        -:   68:
+        -:   69:static const UI_METHOD *default_UI_meth=NULL;
+        -:   70:
+    #####:   71:UI *UI_new(void)
+        -:   72:	{
+    #####:   73:	return(UI_new_method(NULL));
+        -:   74:	}
+        -:   75:
+    #####:   76:UI *UI_new_method(const UI_METHOD *method)
+        -:   77:	{
+        -:   78:	UI *ret;
+        -:   79:
+    #####:   80:	ret=(UI *)OPENSSL_malloc(sizeof(UI));
+    #####:   81:	if (ret == NULL)
+        -:   82:		{
+    #####:   83:		UIerr(UI_F_UI_NEW_METHOD,ERR_R_MALLOC_FAILURE);
+    #####:   84:		return NULL;
+        -:   85:		}
+    #####:   86:	if (method == NULL)
+    #####:   87:		ret->meth=UI_get_default_method();
+        -:   88:	else
+    #####:   89:		ret->meth=method;
+        -:   90:
+    #####:   91:	ret->strings=NULL;
+    #####:   92:	ret->user_data=NULL;
+    #####:   93:	ret->flags=0;
+    #####:   94:	CRYPTO_new_ex_data(CRYPTO_EX_INDEX_UI, ret, &ret->ex_data);
+    #####:   95:	return ret;
+        -:   96:	}
+        -:   97:
+    #####:   98:static void free_string(UI_STRING *uis)
+        -:   99:	{
+    #####:  100:	if (uis->flags & OUT_STRING_FREEABLE)
+        -:  101:		{
+    #####:  102:		OPENSSL_free((char *)uis->out_string);
+    #####:  103:		switch(uis->type)
+        -:  104:			{
+        -:  105:		case UIT_BOOLEAN:
+    #####:  106:			OPENSSL_free((char *)uis->_.boolean_data.action_desc);
+    #####:  107:			OPENSSL_free((char *)uis->_.boolean_data.ok_chars);
+    #####:  108:			OPENSSL_free((char *)uis->_.boolean_data.cancel_chars);
+    #####:  109:			break;
+        -:  110:		default:
+        -:  111:			break;
+        -:  112:			}
+        -:  113:		}
+    #####:  114:	OPENSSL_free(uis);
+    #####:  115:	}
+        -:  116:
+    #####:  117:void UI_free(UI *ui)
+        -:  118:	{
+    #####:  119:	if (ui == NULL)
+    #####:  120:		return;
+    #####:  121:	sk_UI_STRING_pop_free(ui->strings,free_string);
+    #####:  122:	CRYPTO_free_ex_data(CRYPTO_EX_INDEX_UI, ui, &ui->ex_data);
+    #####:  123:	OPENSSL_free(ui);
+        -:  124:	}
+        -:  125:
+        -:  126:static int allocate_string_stack(UI *ui)
+        -:  127:	{
+    #####:  128:	if (ui->strings == NULL)
+        -:  129:		{
+    #####:  130:		ui->strings=sk_UI_STRING_new_null();
+    #####:  131:		if (ui->strings == NULL)
+        -:  132:			{
+        -:  133:			return -1;
+        -:  134:			}
+        -:  135:		}
+        -:  136:	return 0;
+        -:  137:	}
+        -:  138:
+    #####:  139:static UI_STRING *general_allocate_prompt(UI *ui, const char *prompt,
+        -:  140:	int prompt_freeable, enum UI_string_types type, int input_flags,
+        -:  141:	char *result_buf)
+        -:  142:	{
+        -:  143:	UI_STRING *ret = NULL;
+        -:  144:
+    #####:  145:	if (prompt == NULL)
+        -:  146:		{
+    #####:  147:		UIerr(UI_F_GENERAL_ALLOCATE_PROMPT,ERR_R_PASSED_NULL_PARAMETER);
+        -:  148:		}
+    #####:  149:	else if ((type == UIT_PROMPT || type == UIT_VERIFY
+    #####:  150:			 || type == UIT_BOOLEAN) && result_buf == NULL)
+        -:  151:		{
+    #####:  152:		UIerr(UI_F_GENERAL_ALLOCATE_PROMPT,UI_R_NO_RESULT_BUFFER);
+        -:  153:		}
+    #####:  154:	else if ((ret = (UI_STRING *)OPENSSL_malloc(sizeof(UI_STRING))))
+        -:  155:		{
+    #####:  156:		ret->out_string=prompt;
+    #####:  157:		ret->flags=prompt_freeable ? OUT_STRING_FREEABLE : 0;
+    #####:  158:		ret->input_flags=input_flags;
+    #####:  159:		ret->type=type;
+    #####:  160:		ret->result_buf=result_buf;
+        -:  161:		}
+    #####:  162:	return ret;
+        -:  163:	}
+        -:  164:
+    #####:  165:static int general_allocate_string(UI *ui, const char *prompt,
+        -:  166:	int prompt_freeable, enum UI_string_types type, int input_flags,
+        -:  167:	char *result_buf, int minsize, int maxsize, const char *test_buf)
+        -:  168:	{
+        -:  169:	int ret = -1;
+    #####:  170:	UI_STRING *s = general_allocate_prompt(ui, prompt, prompt_freeable,
+        -:  171:		type, input_flags, result_buf);
+        -:  172:
+    #####:  173:	if (s)
+        -:  174:		{
+    #####:  175:		if (allocate_string_stack(ui) >= 0)
+        -:  176:			{
+    #####:  177:			s->_.string_data.result_minsize=minsize;
+    #####:  178:			s->_.string_data.result_maxsize=maxsize;
+    #####:  179:			s->_.string_data.test_buf=test_buf;
+    #####:  180:			ret=sk_UI_STRING_push(ui->strings, s);
+        -:  181:			/* sk_push() returns 0 on error.  Let's addapt that */
+    #####:  182:			if (ret <= 0) ret--;
+        -:  183:			}
+        -:  184:		else
+    #####:  185:			free_string(s);
+        -:  186:		}
+    #####:  187:	return ret;
+        -:  188:	}
+        -:  189:
+    #####:  190:static int general_allocate_boolean(UI *ui,
+        -:  191:	const char *prompt, const char *action_desc,
+        -:  192:	const char *ok_chars, const char *cancel_chars,
+        -:  193:	int prompt_freeable, enum UI_string_types type, int input_flags,
+        -:  194:	char *result_buf)
+        -:  195:	{
+        -:  196:	int ret = -1;
+        -:  197:	UI_STRING *s;
+        -:  198:	const char *p;
+        -:  199:
+    #####:  200:	if (ok_chars == NULL)
+        -:  201:		{
+    #####:  202:		UIerr(UI_F_GENERAL_ALLOCATE_BOOLEAN,ERR_R_PASSED_NULL_PARAMETER);
+        -:  203:		}
+    #####:  204:	else if (cancel_chars == NULL)
+        -:  205:		{
+    #####:  206:		UIerr(UI_F_GENERAL_ALLOCATE_BOOLEAN,ERR_R_PASSED_NULL_PARAMETER);
+        -:  207:		}
+        -:  208:	else
+        -:  209:		{
+    #####:  210:		for(p = ok_chars; *p; p++)
+        -:  211:			{
+    #####:  212:			if (strchr(cancel_chars, *p))
+        -:  213:				{
+    #####:  214:				UIerr(UI_F_GENERAL_ALLOCATE_BOOLEAN,
+        -:  215:					UI_R_COMMON_OK_AND_CANCEL_CHARACTERS);
+        -:  216:				}
+        -:  217:			}
+        -:  218:
+    #####:  219:		s = general_allocate_prompt(ui, prompt, prompt_freeable,
+        -:  220:			type, input_flags, result_buf);
+        -:  221:
+    #####:  222:		if (s)
+        -:  223:			{
+    #####:  224:			if (allocate_string_stack(ui) >= 0)
+        -:  225:				{
+    #####:  226:				s->_.boolean_data.action_desc = action_desc;
+    #####:  227:				s->_.boolean_data.ok_chars = ok_chars;
+    #####:  228:				s->_.boolean_data.cancel_chars = cancel_chars;
+    #####:  229:				ret=sk_UI_STRING_push(ui->strings, s);
+        -:  230:				/* sk_push() returns 0 on error.
+        -:  231:				   Let's addapt that */
+    #####:  232:				if (ret <= 0) ret--;
+        -:  233:				}
+        -:  234:			else
+    #####:  235:				free_string(s);
+        -:  236:			}
+        -:  237:		}
+    #####:  238:	return ret;
+        -:  239:	}
+        -:  240:
+        -:  241:/* Returns the index to the place in the stack or -1 for error.  Uses a
+        -:  242:   direct reference to the prompt.  */
+    #####:  243:int UI_add_input_string(UI *ui, const char *prompt, int flags,
+        -:  244:	char *result_buf, int minsize, int maxsize)
+        -:  245:	{
+    #####:  246:	return general_allocate_string(ui, prompt, 0,
+        -:  247:		UIT_PROMPT, flags, result_buf, minsize, maxsize, NULL);
+        -:  248:	}
+        -:  249:
+        -:  250:/* Same as UI_add_input_string(), excepts it takes a copy of the prompt */
+    #####:  251:int UI_dup_input_string(UI *ui, const char *prompt, int flags,
+        -:  252:	char *result_buf, int minsize, int maxsize)
+        -:  253:	{
+        -:  254:	char *prompt_copy=NULL;
+        -:  255:
+    #####:  256:	if (prompt)
+        -:  257:		{
+    #####:  258:		prompt_copy=BUF_strdup(prompt);
+    #####:  259:		if (prompt_copy == NULL)
+        -:  260:			{
+    #####:  261:			UIerr(UI_F_UI_DUP_INPUT_STRING,ERR_R_MALLOC_FAILURE);
+    #####:  262:			return 0;
+        -:  263:			}
+        -:  264:		}
+        -:  265:	
+    #####:  266:	return general_allocate_string(ui, prompt_copy, 1,
+        -:  267:		UIT_PROMPT, flags, result_buf, minsize, maxsize, NULL);
+        -:  268:	}
+        -:  269:
+    #####:  270:int UI_add_verify_string(UI *ui, const char *prompt, int flags,
+        -:  271:	char *result_buf, int minsize, int maxsize, const char *test_buf)
+        -:  272:	{
+    #####:  273:	return general_allocate_string(ui, prompt, 0,
+        -:  274:		UIT_VERIFY, flags, result_buf, minsize, maxsize, test_buf);
+        -:  275:	}
+        -:  276:
+    #####:  277:int UI_dup_verify_string(UI *ui, const char *prompt, int flags,
+        -:  278:	char *result_buf, int minsize, int maxsize, const char *test_buf)
+        -:  279:	{
+        -:  280:	char *prompt_copy=NULL;
+        -:  281:
+    #####:  282:	if (prompt)
+        -:  283:		{
+    #####:  284:		prompt_copy=BUF_strdup(prompt);
+    #####:  285:		if (prompt_copy == NULL)
+        -:  286:			{
+    #####:  287:			UIerr(UI_F_UI_DUP_VERIFY_STRING,ERR_R_MALLOC_FAILURE);
+    #####:  288:			return -1;
+        -:  289:			}
+        -:  290:		}
+        -:  291:	
+    #####:  292:	return general_allocate_string(ui, prompt_copy, 1,
+        -:  293:		UIT_VERIFY, flags, result_buf, minsize, maxsize, test_buf);
+        -:  294:	}
+        -:  295:
+    #####:  296:int UI_add_input_boolean(UI *ui, const char *prompt, const char *action_desc,
+        -:  297:	const char *ok_chars, const char *cancel_chars,
+        -:  298:	int flags, char *result_buf)
+        -:  299:	{
+    #####:  300:	return general_allocate_boolean(ui, prompt, action_desc,
+        -:  301:		ok_chars, cancel_chars, 0, UIT_BOOLEAN, flags, result_buf);
+        -:  302:	}
+        -:  303:
+    #####:  304:int UI_dup_input_boolean(UI *ui, const char *prompt, const char *action_desc,
+        -:  305:	const char *ok_chars, const char *cancel_chars,
+        -:  306:	int flags, char *result_buf)
+        -:  307:	{
+        -:  308:	char *prompt_copy = NULL;
+        -:  309:	char *action_desc_copy = NULL;
+        -:  310:	char *ok_chars_copy = NULL;
+        -:  311:	char *cancel_chars_copy = NULL;
+        -:  312:
+    #####:  313:	if (prompt)
+        -:  314:		{
+    #####:  315:		prompt_copy=BUF_strdup(prompt);
+    #####:  316:		if (prompt_copy == NULL)
+        -:  317:			{
+    #####:  318:			UIerr(UI_F_UI_DUP_INPUT_BOOLEAN,ERR_R_MALLOC_FAILURE);
+    #####:  319:			goto err;
+        -:  320:			}
+        -:  321:		}
+        -:  322:	
+    #####:  323:	if (action_desc)
+        -:  324:		{
+    #####:  325:		action_desc_copy=BUF_strdup(action_desc);
+    #####:  326:		if (action_desc_copy == NULL)
+        -:  327:			{
+    #####:  328:			UIerr(UI_F_UI_DUP_INPUT_BOOLEAN,ERR_R_MALLOC_FAILURE);
+    #####:  329:			goto err;
+        -:  330:			}
+        -:  331:		}
+        -:  332:	
+    #####:  333:	if (ok_chars)
+        -:  334:		{
+    #####:  335:		ok_chars_copy=BUF_strdup(ok_chars);
+    #####:  336:		if (ok_chars_copy == NULL)
+        -:  337:			{
+    #####:  338:			UIerr(UI_F_UI_DUP_INPUT_BOOLEAN,ERR_R_MALLOC_FAILURE);
+    #####:  339:			goto err;
+        -:  340:			}
+        -:  341:		}
+        -:  342:	
+    #####:  343:	if (cancel_chars)
+        -:  344:		{
+    #####:  345:		cancel_chars_copy=BUF_strdup(cancel_chars);
+    #####:  346:		if (cancel_chars_copy == NULL)
+        -:  347:			{
+    #####:  348:			UIerr(UI_F_UI_DUP_INPUT_BOOLEAN,ERR_R_MALLOC_FAILURE);
+    #####:  349:			goto err;
+        -:  350:			}
+        -:  351:		}
+        -:  352:	
+    #####:  353:	return general_allocate_boolean(ui, prompt_copy, action_desc_copy,
+        -:  354:		ok_chars_copy, cancel_chars_copy, 1, UIT_BOOLEAN, flags,
+        -:  355:		result_buf);
+        -:  356: err:
+    #####:  357:	if (prompt_copy) OPENSSL_free(prompt_copy);
+    #####:  358:	if (action_desc_copy) OPENSSL_free(action_desc_copy);
+    #####:  359:	if (ok_chars_copy) OPENSSL_free(ok_chars_copy);
+    #####:  360:	if (cancel_chars_copy) OPENSSL_free(cancel_chars_copy);
+        -:  361:	return -1;
+        -:  362:	}
+        -:  363:
+    #####:  364:int UI_add_info_string(UI *ui, const char *text)
+        -:  365:	{
+    #####:  366:	return general_allocate_string(ui, text, 0, UIT_INFO, 0, NULL, 0, 0,
+        -:  367:		NULL);
+        -:  368:	}
+        -:  369:
+    #####:  370:int UI_dup_info_string(UI *ui, const char *text)
+        -:  371:	{
+        -:  372:	char *text_copy=NULL;
+        -:  373:
+    #####:  374:	if (text)
+        -:  375:		{
+    #####:  376:		text_copy=BUF_strdup(text);
+    #####:  377:		if (text_copy == NULL)
+        -:  378:			{
+    #####:  379:			UIerr(UI_F_UI_DUP_INFO_STRING,ERR_R_MALLOC_FAILURE);
+    #####:  380:			return -1;
+        -:  381:			}
+        -:  382:		}
+        -:  383:
+    #####:  384:	return general_allocate_string(ui, text_copy, 1, UIT_INFO, 0, NULL,
+        -:  385:		0, 0, NULL);
+        -:  386:	}
+        -:  387:
+    #####:  388:int UI_add_error_string(UI *ui, const char *text)
+        -:  389:	{
+    #####:  390:	return general_allocate_string(ui, text, 0, UIT_ERROR, 0, NULL, 0, 0,
+        -:  391:		NULL);
+        -:  392:	}
+        -:  393:
+    #####:  394:int UI_dup_error_string(UI *ui, const char *text)
+        -:  395:	{
+        -:  396:	char *text_copy=NULL;
+        -:  397:
+    #####:  398:	if (text)
+        -:  399:		{
+    #####:  400:		text_copy=BUF_strdup(text);
+    #####:  401:		if (text_copy == NULL)
+        -:  402:			{
+    #####:  403:			UIerr(UI_F_UI_DUP_ERROR_STRING,ERR_R_MALLOC_FAILURE);
+    #####:  404:			return -1;
+        -:  405:			}
+        -:  406:		}
+    #####:  407:	return general_allocate_string(ui, text_copy, 1, UIT_ERROR, 0, NULL,
+        -:  408:		0, 0, NULL);
+        -:  409:	}
+        -:  410:
+    #####:  411:char *UI_construct_prompt(UI *ui, const char *object_desc,
+        -:  412:	const char *object_name)
+        -:  413:	{
+        -:  414:	char *prompt = NULL;
+        -:  415:
+    #####:  416:	if (ui->meth->ui_construct_prompt)
+    #####:  417:		prompt = ui->meth->ui_construct_prompt(ui,
+        -:  418:			object_desc, object_name);
+        -:  419:	else
+        -:  420:		{
+    #####:  421:		char prompt1[] = "Enter ";
+    #####:  422:		char prompt2[] = " for ";
+    #####:  423:		char prompt3[] = ":";
+        -:  424:		int len = 0;
+        -:  425:
+    #####:  426:		if (object_desc == NULL)
+    #####:  427:			return NULL;
+    #####:  428:		len = sizeof(prompt1) - 1 + strlen(object_desc);
+    #####:  429:		if (object_name)
+    #####:  430:			len += sizeof(prompt2) - 1 + strlen(object_name);
+    #####:  431:		len += sizeof(prompt3) - 1;
+        -:  432:
+    #####:  433:		prompt = (char *)OPENSSL_malloc(len + 1);
+    #####:  434:		BUF_strlcpy(prompt, prompt1, len + 1);
+    #####:  435:		BUF_strlcat(prompt, object_desc, len + 1);
+    #####:  436:		if (object_name)
+        -:  437:			{
+    #####:  438:			BUF_strlcat(prompt, prompt2, len + 1);
+    #####:  439:			BUF_strlcat(prompt, object_name, len + 1);
+        -:  440:			}
+    #####:  441:		BUF_strlcat(prompt, prompt3, len + 1);
+        -:  442:		}
+    #####:  443:	return prompt;
+        -:  444:	}
+        -:  445:
+    #####:  446:void *UI_add_user_data(UI *ui, void *user_data)
+        -:  447:	{
+    #####:  448:	void *old_data = ui->user_data;
+    #####:  449:	ui->user_data = user_data;
+    #####:  450:	return old_data;
+        -:  451:	}
+        -:  452:
+    #####:  453:void *UI_get0_user_data(UI *ui)
+        -:  454:	{
+    #####:  455:	return ui->user_data;
+        -:  456:	}
+        -:  457:
+    #####:  458:const char *UI_get0_result(UI *ui, int i)
+        -:  459:	{
+    #####:  460:	if (i < 0)
+        -:  461:		{
+    #####:  462:		UIerr(UI_F_UI_GET0_RESULT,UI_R_INDEX_TOO_SMALL);
+    #####:  463:		return NULL;
+        -:  464:		}
+    #####:  465:	if (i >= sk_UI_STRING_num(ui->strings))
+        -:  466:		{
+    #####:  467:		UIerr(UI_F_UI_GET0_RESULT,UI_R_INDEX_TOO_LARGE);
+    #####:  468:		return NULL;
+        -:  469:		}
+    #####:  470:	return UI_get0_result_string(sk_UI_STRING_value(ui->strings, i));
+        -:  471:	}
+        -:  472:
+    #####:  473:static int print_error(const char *str, size_t len, UI *ui)
+        -:  474:	{
+        -:  475:	UI_STRING uis;
+        -:  476:
+        -:  477:	memset(&uis, 0, sizeof(uis));
+    #####:  478:	uis.type = UIT_ERROR;
+    #####:  479:	uis.out_string = str;
+        -:  480:
+    #####:  481:	if (ui->meth->ui_write_string
+    #####:  482:		&& !ui->meth->ui_write_string(ui, &uis))
+        -:  483:		return -1;
+        -:  484:	return 0;
+        -:  485:	}
+        -:  486:
+    #####:  487:int UI_process(UI *ui)
+        -:  488:	{
+        -:  489:	int i, ok=0;
+        -:  490:
+    #####:  491:	if (ui->meth->ui_open_session && !ui->meth->ui_open_session(ui))
+        -:  492:		return -1;
+        -:  493:
+    #####:  494:	if (ui->flags & UI_FLAG_PRINT_ERRORS)
+    #####:  495:		ERR_print_errors_cb(
+        -:  496:			(int (*)(const char *, size_t, void *))print_error,
+        -:  497:			(void *)ui);
+        -:  498:
+    #####:  499:	for(i=0; i<sk_UI_STRING_num(ui->strings); i++)
+        -:  500:		{
+    #####:  501:		if (ui->meth->ui_write_string
+    #####:  502:			&& !ui->meth->ui_write_string(ui,
+    #####:  503:				sk_UI_STRING_value(ui->strings, i)))
+        -:  504:			{
+        -:  505:			ok=-1;
+        -:  506:			goto err;
+        -:  507:			}
+        -:  508:		}
+        -:  509:
+    #####:  510:	if (ui->meth->ui_flush)
+    #####:  511:		switch(ui->meth->ui_flush(ui))
+        -:  512:			{
+        -:  513:		case -1: /* Interrupt/Cancel/something... */
+        -:  514:			ok = -2;
+        -:  515:			goto err;
+        -:  516:		case 0: /* Errors */
+        -:  517:			ok = -1;
+    #####:  518:			goto err;
+        -:  519:		default: /* Success */
+        -:  520:			ok = 0;
+        -:  521:			break;
+        -:  522:			}
+        -:  523:
+    #####:  524:	for(i=0; i<sk_UI_STRING_num(ui->strings); i++)
+        -:  525:		{
+    #####:  526:		if (ui->meth->ui_read_string)
+        -:  527:			{
+    #####:  528:			switch(ui->meth->ui_read_string(ui,
+    #####:  529:				sk_UI_STRING_value(ui->strings, i)))
+        -:  530:				{
+        -:  531:			case -1: /* Interrupt/Cancel/something... */
+        -:  532:				ok = -2;
+        -:  533:				goto err;
+        -:  534:			case 0: /* Errors */
+        -:  535:				ok = -1;
+    #####:  536:				goto err;
+        -:  537:			default: /* Success */
+        -:  538:				ok = 0;
+        -:  539:				break;
+        -:  540:				}
+        -:  541:			}
+        -:  542:		}
+        -:  543: err:
+    #####:  544:	if (ui->meth->ui_close_session && !ui->meth->ui_close_session(ui))
+        -:  545:		return -1;
+    #####:  546:	return ok;
+        -:  547:	}
+        -:  548:
+    #####:  549:int UI_ctrl(UI *ui, int cmd, long i, void *p, void (*f)(void))
+        -:  550:	{
+    #####:  551:	if (ui == NULL)
+        -:  552:		{
+    #####:  553:		UIerr(UI_F_UI_CTRL,ERR_R_PASSED_NULL_PARAMETER);
+    #####:  554:		return -1;
+        -:  555:		}
+    #####:  556:	switch(cmd)
+        -:  557:		{
+        -:  558:	case UI_CTRL_PRINT_ERRORS:
+        -:  559:		{
+    #####:  560:		int save_flag = !!(ui->flags & UI_FLAG_PRINT_ERRORS);
+    #####:  561:		if (i)
+    #####:  562:			ui->flags |= UI_FLAG_PRINT_ERRORS;
+        -:  563:		else
+    #####:  564:			ui->flags &= ~UI_FLAG_PRINT_ERRORS;
+    #####:  565:		return save_flag;
+        -:  566:		}
+        -:  567:	case UI_CTRL_IS_REDOABLE:
+    #####:  568:		return !!(ui->flags & UI_FLAG_REDOABLE);
+        -:  569:	default:
+        -:  570:		break;
+        -:  571:		}
+    #####:  572:	UIerr(UI_F_UI_CTRL,UI_R_UNKNOWN_CONTROL_COMMAND);
+    #####:  573:	return -1;
+        -:  574:	}
+        -:  575:
+    #####:  576:int UI_get_ex_new_index(long argl, void *argp, CRYPTO_EX_new *new_func,
+        -:  577:	     CRYPTO_EX_dup *dup_func, CRYPTO_EX_free *free_func)
+        -:  578:        {
+    #####:  579:	return CRYPTO_get_ex_new_index(CRYPTO_EX_INDEX_UI, argl, argp,
+        -:  580:				new_func, dup_func, free_func);
+        -:  581:        }
+        -:  582:
+    #####:  583:int UI_set_ex_data(UI *r, int idx, void *arg)
+        -:  584:	{
+    #####:  585:	return(CRYPTO_set_ex_data(&r->ex_data,idx,arg));
+        -:  586:	}
+        -:  587:
+    #####:  588:void *UI_get_ex_data(UI *r, int idx)
+        -:  589:	{
+    #####:  590:	return(CRYPTO_get_ex_data(&r->ex_data,idx));
+        -:  591:	}
+        -:  592:
+    #####:  593:void UI_set_default_method(const UI_METHOD *meth)
+        -:  594:	{
+    #####:  595:	default_UI_meth=meth;
+    #####:  596:	}
+        -:  597:
+    #####:  598:const UI_METHOD *UI_get_default_method(void)
+        -:  599:	{
+    #####:  600:	if (default_UI_meth == NULL)
+        -:  601:		{
+    #####:  602:		default_UI_meth=UI_OpenSSL();
+        -:  603:		}
+    #####:  604:	return default_UI_meth;
+        -:  605:	}
+        -:  606:
+    #####:  607:const UI_METHOD *UI_get_method(UI *ui)
+        -:  608:	{
+    #####:  609:	return ui->meth;
+        -:  610:	}
+        -:  611:
+    #####:  612:const UI_METHOD *UI_set_method(UI *ui, const UI_METHOD *meth)
+        -:  613:	{
+    #####:  614:	ui->meth=meth;
+    #####:  615:	return ui->meth;
+        -:  616:	}
+        -:  617:
+        -:  618:
+    10000:  619:UI_METHOD *UI_create_method(char *name)
+        -:  620:	{
+    10000:  621:	UI_METHOD *ui_method = (UI_METHOD *)OPENSSL_malloc(sizeof(UI_METHOD));
+        -:  622:
+    10000:  623:	if (ui_method)
+        -:  624:		{
+        -:  625:		memset(ui_method, 0, sizeof(*ui_method));
+    10000:  626:		ui_method->name = BUF_strdup(name);
+        -:  627:		}
+    10000:  628:	return ui_method;
+        -:  629:	}
+        -:  630:
+        -:  631:/* BIG FSCKING WARNING!!!!  If you use this on a statically allocated method
+        -:  632:   (that is, it hasn't been allocated using UI_create_method(), you deserve
+        -:  633:   anything Murphy can throw at you and more!  You have been warned. */
+    10000:  634:void UI_destroy_method(UI_METHOD *ui_method)
+        -:  635:	{
+    10000:  636:	OPENSSL_free(ui_method->name);
+    10000:  637:	ui_method->name = NULL;
+    10000:  638:	OPENSSL_free(ui_method);
+    10000:  639:	}
+        -:  640:
+    10000:  641:int UI_method_set_opener(UI_METHOD *method, int (*opener)(UI *ui))
+        -:  642:	{
+    10000:  643:	if (method)
+        -:  644:		{
+    10000:  645:		method->ui_open_session = opener;
+    10000:  646:		return 0;
+        -:  647:		}
+        -:  648:	else
+        -:  649:		return -1;
+        -:  650:	}
+        -:  651:
+    10000:  652:int UI_method_set_writer(UI_METHOD *method, int (*writer)(UI *ui, UI_STRING *uis))
+        -:  653:	{
+    10000:  654:	if (method)
+        -:  655:		{
+    10000:  656:		method->ui_write_string = writer;
+    10000:  657:		return 0;
+        -:  658:		}
+        -:  659:	else
+        -:  660:		return -1;
+        -:  661:	}
+        -:  662:
+    #####:  663:int UI_method_set_flusher(UI_METHOD *method, int (*flusher)(UI *ui))
+        -:  664:	{
+    #####:  665:	if (method)
+        -:  666:		{
+    #####:  667:		method->ui_flush = flusher;
+    #####:  668:		return 0;
+        -:  669:		}
+        -:  670:	else
+        -:  671:		return -1;
+        -:  672:	}
+        -:  673:
+    10000:  674:int UI_method_set_reader(UI_METHOD *method, int (*reader)(UI *ui, UI_STRING *uis))
+        -:  675:	{
+    10000:  676:	if (method)
+        -:  677:		{
+    10000:  678:		method->ui_read_string = reader;
+    10000:  679:		return 0;
+        -:  680:		}
+        -:  681:	else
+        -:  682:		return -1;
+        -:  683:	}
+        -:  684:
+    10000:  685:int UI_method_set_closer(UI_METHOD *method, int (*closer)(UI *ui))
+        -:  686:	{
+    10000:  687:	if (method)
+        -:  688:		{
+    10000:  689:		method->ui_close_session = closer;
+    10000:  690:		return 0;
+        -:  691:		}
+        -:  692:	else
+        -:  693:		return -1;
+        -:  694:	}
+        -:  695:
+    #####:  696:int UI_method_set_prompt_constructor(UI_METHOD *method, char *(*prompt_constructor)(UI* ui, const char* object_desc, const char* object_name))
+        -:  697:	{
+    #####:  698:	if (method)
+        -:  699:		{
+    #####:  700:		method->ui_construct_prompt = prompt_constructor;
+    #####:  701:		return 0;
+        -:  702:		}
+        -:  703:	else
+        -:  704:		return -1;
+        -:  705:	}
+        -:  706:
+    #####:  707:int (*UI_method_get_opener(UI_METHOD *method))(UI*)
+        -:  708:	{
+    #####:  709:	if (method)
+    #####:  710:		return method->ui_open_session;
+        -:  711:	else
+        -:  712:		return NULL;
+        -:  713:	}
+        -:  714:
+    #####:  715:int (*UI_method_get_writer(UI_METHOD *method))(UI*,UI_STRING*)
+        -:  716:	{
+    #####:  717:	if (method)
+    #####:  718:		return method->ui_write_string;
+        -:  719:	else
+        -:  720:		return NULL;
+        -:  721:	}
+        -:  722:
+    #####:  723:int (*UI_method_get_flusher(UI_METHOD *method))(UI*)
+        -:  724:	{
+    #####:  725:	if (method)
+    #####:  726:		return method->ui_flush;
+        -:  727:	else
+        -:  728:		return NULL;
+        -:  729:	}
+        -:  730:
+    #####:  731:int (*UI_method_get_reader(UI_METHOD *method))(UI*,UI_STRING*)
+        -:  732:	{
+    #####:  733:	if (method)
+    #####:  734:		return method->ui_read_string;
+        -:  735:	else
+        -:  736:		return NULL;
+        -:  737:	}
+        -:  738:
+    #####:  739:int (*UI_method_get_closer(UI_METHOD *method))(UI*)
+        -:  740:	{
+    #####:  741:	if (method)
+    #####:  742:		return method->ui_close_session;
+        -:  743:	else
+        -:  744:		return NULL;
+        -:  745:	}
+        -:  746:
+    #####:  747:char* (*UI_method_get_prompt_constructor(UI_METHOD *method))(UI*, const char*, const char*)
+        -:  748:	{
+    #####:  749:	if (method)
+    #####:  750:		return method->ui_construct_prompt;
+        -:  751:	else
+        -:  752:		return NULL;
+        -:  753:	}
+        -:  754:
+    #####:  755:enum UI_string_types UI_get_string_type(UI_STRING *uis)
+        -:  756:	{
+    #####:  757:	if (!uis)
+        -:  758:		return UIT_NONE;
+    #####:  759:	return uis->type;
+        -:  760:	}
+        -:  761:
+    #####:  762:int UI_get_input_flags(UI_STRING *uis)
+        -:  763:	{
+    #####:  764:	if (!uis)
+        -:  765:		return 0;
+    #####:  766:	return uis->input_flags;
+        -:  767:	}
+        -:  768:
+    #####:  769:const char *UI_get0_output_string(UI_STRING *uis)
+        -:  770:	{
+    #####:  771:	if (!uis)
+        -:  772:		return NULL;
+    #####:  773:	return uis->out_string;
+        -:  774:	}
+        -:  775:
+    #####:  776:const char *UI_get0_action_string(UI_STRING *uis)
+        -:  777:	{
+    #####:  778:	if (!uis)
+        -:  779:		return NULL;
+    #####:  780:	switch(uis->type)
+        -:  781:		{
+        -:  782:	case UIT_PROMPT:
+        -:  783:	case UIT_BOOLEAN:
+    #####:  784:		return uis->_.boolean_data.action_desc;
+        -:  785:	default:
+        -:  786:		return NULL;
+        -:  787:		}
+        -:  788:	}
+        -:  789:
+    #####:  790:const char *UI_get0_result_string(UI_STRING *uis)
+        -:  791:	{
+    #####:  792:	if (!uis)
+        -:  793:		return NULL;
+    #####:  794:	switch(uis->type)
+        -:  795:		{
+        -:  796:	case UIT_PROMPT:
+        -:  797:	case UIT_VERIFY:
+    #####:  798:		return uis->result_buf;
+        -:  799:	default:
+        -:  800:		return NULL;
+        -:  801:		}
+        -:  802:	}
+        -:  803:
+    #####:  804:const char *UI_get0_test_string(UI_STRING *uis)
+        -:  805:	{
+    #####:  806:	if (!uis)
+        -:  807:		return NULL;
+    #####:  808:	switch(uis->type)
+        -:  809:		{
+        -:  810:	case UIT_VERIFY:
+    #####:  811:		return uis->_.string_data.test_buf;
+        -:  812:	default:
+        -:  813:		return NULL;
+        -:  814:		}
+        -:  815:	}
+        -:  816:
+    #####:  817:int UI_get_result_minsize(UI_STRING *uis)
+        -:  818:	{
+    #####:  819:	if (!uis)
+        -:  820:		return -1;
+    #####:  821:	switch(uis->type)
+        -:  822:		{
+        -:  823:	case UIT_PROMPT:
+        -:  824:	case UIT_VERIFY:
+    #####:  825:		return uis->_.string_data.result_minsize;
+        -:  826:	default:
+        -:  827:		return -1;
+        -:  828:		}
+        -:  829:	}
+        -:  830:
+    #####:  831:int UI_get_result_maxsize(UI_STRING *uis)
+        -:  832:	{
+    #####:  833:	if (!uis)
+        -:  834:		return -1;
+    #####:  835:	switch(uis->type)
+        -:  836:		{
+        -:  837:	case UIT_PROMPT:
+        -:  838:	case UIT_VERIFY:
+    #####:  839:		return uis->_.string_data.result_maxsize;
+        -:  840:	default:
+        -:  841:		return -1;
+        -:  842:		}
+        -:  843:	}
+        -:  844:
+    #####:  845:int UI_set_result(UI *ui, UI_STRING *uis, const char *result)
+        -:  846:	{
+    #####:  847:	int l = strlen(result);
+        -:  848:
+    #####:  849:	ui->flags &= ~UI_FLAG_REDOABLE;
+        -:  850:
+    #####:  851:	if (!uis)
+        -:  852:		return -1;
+    #####:  853:	switch (uis->type)
+        -:  854:		{
+        -:  855:	case UIT_PROMPT:
+        -:  856:	case UIT_VERIFY:
+        -:  857:		{
+        -:  858:		char number1[DECIMAL_SIZE(uis->_.string_data.result_minsize)+1];
+        -:  859:		char number2[DECIMAL_SIZE(uis->_.string_data.result_maxsize)+1];
+        -:  860:
+    #####:  861:		BIO_snprintf(number1, sizeof(number1), "%d",
+        -:  862:			uis->_.string_data.result_minsize);
+    #####:  863:		BIO_snprintf(number2, sizeof(number2), "%d",
+        -:  864:			uis->_.string_data.result_maxsize);
+        -:  865:
+    #####:  866:		if (l < uis->_.string_data.result_minsize)
+        -:  867:			{
+    #####:  868:			ui->flags |= UI_FLAG_REDOABLE;
+    #####:  869:			UIerr(UI_F_UI_SET_RESULT,UI_R_RESULT_TOO_SMALL);
+    #####:  870:			ERR_add_error_data(5,"You must type in ",
+        -:  871:				number1," to ",number2," characters");
+    #####:  872:			return -1;
+        -:  873:			}
+    #####:  874:		if (l > uis->_.string_data.result_maxsize)
+        -:  875:			{
+    #####:  876:			ui->flags |= UI_FLAG_REDOABLE;
+    #####:  877:			UIerr(UI_F_UI_SET_RESULT,UI_R_RESULT_TOO_LARGE);
+    #####:  878:			ERR_add_error_data(5,"You must type in ",
+        -:  879:				number1," to ",number2," characters");
+    #####:  880:			return -1;
+        -:  881:			}
+        -:  882:		}
+        -:  883:
+    #####:  884:		if (!uis->result_buf)
+        -:  885:			{
+    #####:  886:			UIerr(UI_F_UI_SET_RESULT,UI_R_NO_RESULT_BUFFER);
+    #####:  887:			return -1;
+        -:  888:			}
+        -:  889:
+    #####:  890:		BUF_strlcpy(uis->result_buf, result,
+    #####:  891:			    uis->_.string_data.result_maxsize + 1);
+    #####:  892:		break;
+        -:  893:	case UIT_BOOLEAN:
+        -:  894:		{
+        -:  895:		const char *p;
+        -:  896:
+    #####:  897:		if (!uis->result_buf)
+        -:  898:			{
+    #####:  899:			UIerr(UI_F_UI_SET_RESULT,UI_R_NO_RESULT_BUFFER);
+    #####:  900:			return -1;
+        -:  901:			}
+        -:  902:
+    #####:  903:		uis->result_buf[0] = '\0';
+    #####:  904:		for(p = result; *p; p++)
+        -:  905:			{
+    #####:  906:			if (strchr(uis->_.boolean_data.ok_chars, *p))
+        -:  907:				{
+    #####:  908:				uis->result_buf[0] =
+    #####:  909:					uis->_.boolean_data.ok_chars[0];
+    #####:  910:				break;
+        -:  911:				}
+    #####:  912:			if (strchr(uis->_.boolean_data.cancel_chars, *p))
+        -:  913:				{
+    #####:  914:				uis->result_buf[0] =
+    #####:  915:					uis->_.boolean_data.cancel_chars[0];
+    #####:  916:				break;
+        -:  917:				}
+        -:  918:			}
+        -:  919:	default:
+        -:  920:		break;
+        -:  921:		}
+        -:  922:		}
+        -:  923:	return 0;
+        -:  924:	}

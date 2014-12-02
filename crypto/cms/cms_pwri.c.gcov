@@ -1,0 +1,459 @@
+        -:    0:Source:cms_pwri.c
+        -:    0:Graph:cms_pwri.gcno
+        -:    0:Data:cms_pwri.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* crypto/cms/cms_pwri.c */
+        -:    2:/* Written by Dr Stephen N Henson (steve@openssl.org) for the OpenSSL
+        -:    3: * project.
+        -:    4: */
+        -:    5:/* ====================================================================
+        -:    6: * Copyright (c) 2009 The OpenSSL Project.  All rights reserved.
+        -:    7: *
+        -:    8: * Redistribution and use in source and binary forms, with or without
+        -:    9: * modification, are permitted provided that the following conditions
+        -:   10: * are met:
+        -:   11: *
+        -:   12: * 1. Redistributions of source code must retain the above copyright
+        -:   13: *    notice, this list of conditions and the following disclaimer. 
+        -:   14: *
+        -:   15: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   16: *    notice, this list of conditions and the following disclaimer in
+        -:   17: *    the documentation and/or other materials provided with the
+        -:   18: *    distribution.
+        -:   19: *
+        -:   20: * 3. All advertising materials mentioning features or use of this
+        -:   21: *    software must display the following acknowledgment:
+        -:   22: *    "This product includes software developed by the OpenSSL Project
+        -:   23: *    for use in the OpenSSL Toolkit. (http://www.OpenSSL.org/)"
+        -:   24: *
+        -:   25: * 4. The names "OpenSSL Toolkit" and "OpenSSL Project" must not be used to
+        -:   26: *    endorse or promote products derived from this software without
+        -:   27: *    prior written permission. For written permission, please contact
+        -:   28: *    licensing@OpenSSL.org.
+        -:   29: *
+        -:   30: * 5. Products derived from this software may not be called "OpenSSL"
+        -:   31: *    nor may "OpenSSL" appear in their names without prior written
+        -:   32: *    permission of the OpenSSL Project.
+        -:   33: *
+        -:   34: * 6. Redistributions of any form whatsoever must retain the following
+        -:   35: *    acknowledgment:
+        -:   36: *    "This product includes software developed by the OpenSSL Project
+        -:   37: *    for use in the OpenSSL Toolkit (http://www.OpenSSL.org/)"
+        -:   38: *
+        -:   39: * THIS SOFTWARE IS PROVIDED BY THE OpenSSL PROJECT ``AS IS'' AND ANY
+        -:   40: * EXPRESSED OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   41: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+        -:   42: * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE OpenSSL PROJECT OR
+        -:   43: * ITS CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+        -:   44: * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+        -:   45: * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+        -:   46: * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   47: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+        -:   48: * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+        -:   49: * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+        -:   50: * OF THE POSSIBILITY OF SUCH DAMAGE.
+        -:   51: * ====================================================================
+        -:   52: */
+        -:   53:
+        -:   54:#include "cryptlib.h"
+        -:   55:#include <openssl/asn1t.h>
+        -:   56:#include <openssl/pem.h>
+        -:   57:#include <openssl/x509v3.h>
+        -:   58:#include <openssl/err.h>
+        -:   59:#include <openssl/cms.h>
+        -:   60:#include <openssl/rand.h>
+        -:   61:#include <openssl/aes.h>
+        -:   62:#include "cms_lcl.h"
+        -:   63:#include "asn1_locl.h"
+        -:   64:
+    #####:   65:int CMS_RecipientInfo_set0_password(CMS_RecipientInfo *ri, 
+        -:   66:				unsigned char *pass, ossl_ssize_t passlen)
+        -:   67:	{
+        -:   68:	CMS_PasswordRecipientInfo *pwri;
+    #####:   69:	if (ri->type != CMS_RECIPINFO_PASS)
+        -:   70:		{
+    #####:   71:		CMSerr(CMS_F_CMS_RECIPIENTINFO_SET0_PASSWORD, CMS_R_NOT_PWRI);
+    #####:   72:		return 0;
+        -:   73:		}
+        -:   74:
+    #####:   75:	pwri = ri->d.pwri;
+    #####:   76:	pwri->pass = pass;
+    #####:   77:	if (pass && passlen < 0)
+    #####:   78:		passlen = strlen((char *)pass);
+    #####:   79:	pwri->passlen = passlen;
+    #####:   80:	return 1;
+        -:   81:	}
+        -:   82:
+    #####:   83:CMS_RecipientInfo *CMS_add0_recipient_password(CMS_ContentInfo *cms,
+        -:   84:					int iter, int wrap_nid, int pbe_nid,
+        -:   85:					unsigned char *pass,
+        -:   86:					ossl_ssize_t passlen,
+        -:   87:					const EVP_CIPHER *kekciph)
+        -:   88:	{
+        -:   89:	CMS_RecipientInfo *ri = NULL;
+        -:   90:	CMS_EnvelopedData *env;
+        -:   91:	CMS_PasswordRecipientInfo *pwri;
+        -:   92:	EVP_CIPHER_CTX ctx;
+        -:   93:	X509_ALGOR *encalg = NULL;
+        -:   94:	unsigned char iv[EVP_MAX_IV_LENGTH];
+        -:   95:	int ivlen;
+    #####:   96:	env = cms_get0_enveloped(cms);
+    #####:   97:	if (!env)
+        -:   98:		goto err;
+        -:   99:
+    #####:  100:	if (wrap_nid <= 0)
+        -:  101:		wrap_nid = NID_id_alg_PWRI_KEK;
+        -:  102:
+        -:  103:	if (pbe_nid <= 0)
+        -:  104:		pbe_nid = NID_id_pbkdf2;
+        -:  105:
+        -:  106:	/* Get from enveloped data */
+    #####:  107:	if (kekciph == NULL)
+    #####:  108:		kekciph = env->encryptedContentInfo->cipher;
+        -:  109:
+    #####:  110:	if (kekciph == NULL)
+        -:  111:		{
+    #####:  112:		CMSerr(CMS_F_CMS_ADD0_RECIPIENT_PASSWORD, CMS_R_NO_CIPHER);
+    #####:  113:		return NULL;
+        -:  114:		}
+    #####:  115:	if (wrap_nid != NID_id_alg_PWRI_KEK)
+        -:  116:		{
+    #####:  117:		CMSerr(CMS_F_CMS_ADD0_RECIPIENT_PASSWORD,
+        -:  118:				CMS_R_UNSUPPORTED_KEY_ENCRYPTION_ALGORITHM);
+    #####:  119:		return NULL;
+        -:  120:		}
+        -:  121:
+        -:  122:	/* Setup algorithm identifier for cipher */
+    #####:  123:	encalg = X509_ALGOR_new();
+    #####:  124:	EVP_CIPHER_CTX_init(&ctx);
+        -:  125:
+    #####:  126:	if (EVP_EncryptInit_ex(&ctx, kekciph, NULL, NULL, NULL) <= 0)
+        -:  127:		{
+    #####:  128:		CMSerr(CMS_F_CMS_ADD0_RECIPIENT_PASSWORD, ERR_R_EVP_LIB);
+    #####:  129:		goto err;
+        -:  130:		}
+        -:  131:
+    #####:  132:	ivlen = EVP_CIPHER_CTX_iv_length(&ctx);
+        -:  133:
+    #####:  134:	if (ivlen > 0)
+        -:  135:		{
+    #####:  136:		if (RAND_pseudo_bytes(iv, ivlen) <= 0)
+        -:  137:			goto err;
+    #####:  138:		if (EVP_EncryptInit_ex(&ctx, NULL, NULL, NULL, iv) <= 0)
+        -:  139:			{
+    #####:  140:			CMSerr(CMS_F_CMS_ADD0_RECIPIENT_PASSWORD,
+        -:  141:							ERR_R_EVP_LIB);
+    #####:  142:			goto err;
+        -:  143:			}
+    #####:  144:		encalg->parameter = ASN1_TYPE_new();
+    #####:  145:		if (!encalg->parameter)
+        -:  146:			{
+    #####:  147:			CMSerr(CMS_F_CMS_ADD0_RECIPIENT_PASSWORD,
+        -:  148:							ERR_R_MALLOC_FAILURE);
+    #####:  149:			goto err;
+        -:  150:			}
+    #####:  151:		if (EVP_CIPHER_param_to_asn1(&ctx, encalg->parameter) <= 0)
+        -:  152:			{
+    #####:  153:			CMSerr(CMS_F_CMS_ADD0_RECIPIENT_PASSWORD,
+        -:  154:				CMS_R_CIPHER_PARAMETER_INITIALISATION_ERROR);
+    #####:  155:			goto err;
+        -:  156:			}
+        -:  157:		}
+        -:  158:
+        -:  159:
+    #####:  160:	encalg->algorithm = OBJ_nid2obj(EVP_CIPHER_CTX_type(&ctx));
+        -:  161:
+    #####:  162:	EVP_CIPHER_CTX_cleanup(&ctx);
+        -:  163:
+        -:  164:	/* Initialize recipient info */
+    #####:  165:	ri = M_ASN1_new_of(CMS_RecipientInfo);
+    #####:  166:	if (!ri)
+        -:  167:		goto merr;
+        -:  168:
+    #####:  169:	ri->d.pwri = M_ASN1_new_of(CMS_PasswordRecipientInfo);
+    #####:  170:	if (!ri->d.pwri)
+        -:  171:		goto merr;
+    #####:  172:	ri->type = CMS_RECIPINFO_PASS;
+        -:  173:
+        -:  174:	pwri = ri->d.pwri;
+        -:  175:	/* Since this is overwritten, free up empty structure already there */
+    #####:  176:	X509_ALGOR_free(pwri->keyEncryptionAlgorithm);
+    #####:  177:	pwri->keyEncryptionAlgorithm = X509_ALGOR_new();
+    #####:  178:	if (!pwri->keyEncryptionAlgorithm)
+        -:  179:		goto merr;
+    #####:  180:	pwri->keyEncryptionAlgorithm->algorithm = OBJ_nid2obj(wrap_nid);
+    #####:  181:	pwri->keyEncryptionAlgorithm->parameter = ASN1_TYPE_new();
+    #####:  182:	if (!pwri->keyEncryptionAlgorithm->parameter)
+        -:  183:		goto merr;
+        -:  184:
+    #####:  185:        if(!ASN1_item_pack(encalg, ASN1_ITEM_rptr(X509_ALGOR),
+    #####:  186:	    &pwri->keyEncryptionAlgorithm->parameter->value.sequence))
+        -:  187:		goto merr;
+    #####:  188:        pwri->keyEncryptionAlgorithm->parameter->type = V_ASN1_SEQUENCE;
+        -:  189:
+    #####:  190:	X509_ALGOR_free(encalg);
+        -:  191:	encalg = NULL;
+        -:  192:
+        -:  193:	/* Setup PBE algorithm */
+        -:  194:
+    #####:  195:	pwri->keyDerivationAlgorithm = PKCS5_pbkdf2_set(iter, NULL, 0, -1, -1);
+        -:  196:
+    #####:  197:	if (!pwri->keyDerivationAlgorithm)
+        -:  198:		goto err;
+        -:  199:
+    #####:  200:	CMS_RecipientInfo_set0_password(ri, pass, passlen);
+    #####:  201:	pwri->version = 0;
+        -:  202:
+    #####:  203:	if (!sk_CMS_RecipientInfo_push(env->recipientInfos, ri))
+        -:  204:		goto merr;
+        -:  205:
+        -:  206:	return ri;
+        -:  207:
+        -:  208:	merr:
+    #####:  209:	CMSerr(CMS_F_CMS_ADD0_RECIPIENT_PASSWORD, ERR_R_MALLOC_FAILURE);
+        -:  210:	err:
+    #####:  211:	EVP_CIPHER_CTX_cleanup(&ctx);
+    #####:  212:	if (ri)
+    #####:  213:		M_ASN1_free_of(ri, CMS_RecipientInfo);
+    #####:  214:	if (encalg)
+    #####:  215:		X509_ALGOR_free(encalg);
+        -:  216:	return NULL;
+        -:  217:
+        -:  218:	}
+        -:  219:
+        -:  220:/* This is an implementation of the key wrapping mechanism in RFC3211,
+        -:  221: * at some point this should go into EVP.
+        -:  222: */
+        -:  223:
+    #####:  224:static int kek_unwrap_key(unsigned char *out, size_t *outlen,
+        -:  225:		const unsigned char *in, size_t inlen, EVP_CIPHER_CTX *ctx)
+        -:  226:	{
+    #####:  227:	size_t blocklen = EVP_CIPHER_CTX_block_size(ctx);
+        -:  228:	unsigned char *tmp;
+        -:  229:	int outl, rv = 0;
+    #####:  230:	if (inlen < 2 * blocklen)
+        -:  231:		{
+        -:  232:		/* too small */
+        -:  233:		return 0;
+        -:  234:		}
+    #####:  235:	if (inlen % blocklen)
+        -:  236:		{
+        -:  237:		/* Invalid size */
+        -:  238:		return 0;
+        -:  239:		}
+    #####:  240:	tmp = OPENSSL_malloc(inlen);
+        -:  241:	/* setup IV by decrypting last two blocks */
+    #####:  242:	EVP_DecryptUpdate(ctx, tmp + inlen - 2 * blocklen, &outl,
+    #####:  243:				in  + inlen - 2 * blocklen, blocklen * 2);
+        -:  244:	/* Do a decrypt of last decrypted block to set IV to correct value
+        -:  245:	 * output it to start of buffer so we don't corrupt decrypted block
+        -:  246:	 * this works because buffer is at least two block lengths long.
+        -:  247:	 */
+    #####:  248:	EVP_DecryptUpdate(ctx, tmp, &outl,
+    #####:  249:				tmp  + inlen - blocklen, blocklen);
+        -:  250:	/* Can now decrypt first n - 1 blocks */
+    #####:  251:	EVP_DecryptUpdate(ctx, tmp, &outl, in, inlen - blocklen);
+        -:  252:
+        -:  253:	/* Reset IV to original value */
+    #####:  254:	EVP_DecryptInit_ex(ctx, NULL, NULL, NULL, NULL);
+        -:  255:	/* Decrypt again */
+    #####:  256:	EVP_DecryptUpdate(ctx, tmp, &outl, tmp, inlen);
+        -:  257:	/* Check check bytes */
+    #####:  258:	if (((tmp[1] ^ tmp[4]) & (tmp[2] ^ tmp[5]) & (tmp[3] ^ tmp[6])) != 0xff)
+        -:  259:		{
+        -:  260:		/* Check byte failure */
+        -:  261:		goto err;
+        -:  262:		}
+    #####:  263:	if (inlen < (size_t)(tmp[0] - 4 ))
+        -:  264:		{
+        -:  265:		/* Invalid length value */
+        -:  266:		goto err;
+        -:  267:		}
+    #####:  268:	*outlen = (size_t)tmp[0];
+    #####:  269:	memcpy(out, tmp + 4, *outlen);
+        -:  270:	rv = 1;
+        -:  271:	err:
+    #####:  272:	OPENSSL_cleanse(tmp, inlen);
+    #####:  273:	OPENSSL_free(tmp);
+    #####:  274:	return rv;
+        -:  275:
+        -:  276:	}
+        -:  277:
+    #####:  278:static int kek_wrap_key(unsigned char *out, size_t *outlen,
+        -:  279:		const unsigned char *in, size_t inlen, EVP_CIPHER_CTX *ctx)
+        -:  280:	{
+    #####:  281:	size_t blocklen = EVP_CIPHER_CTX_block_size(ctx);
+        -:  282:	size_t olen;
+        -:  283:	int dummy;
+        -:  284:	/* First decide length of output buffer: need header and round up to
+        -:  285:	 * multiple of block length.
+        -:  286:	 */
+    #####:  287:	olen = (inlen + 4 + blocklen - 1)/blocklen;
+    #####:  288:	olen *= blocklen;
+    #####:  289:	if (olen < 2 * blocklen)
+        -:  290:		{
+        -:  291:		/* Key too small */
+        -:  292:		return 0;
+        -:  293:		}
+    #####:  294:	if (inlen > 0xFF)
+        -:  295:		{
+        -:  296:		/* Key too large */
+        -:  297:		return 0;
+        -:  298:		}
+    #####:  299:	if (out)
+        -:  300:		{
+        -:  301:		/* Set header */
+    #####:  302:		out[0] = (unsigned char)inlen;
+    #####:  303:		out[1] = in[0] ^ 0xFF;
+    #####:  304:		out[2] = in[1] ^ 0xFF;
+    #####:  305:		out[3] = in[2] ^ 0xFF;
+    #####:  306:		memcpy(out + 4, in, inlen);
+        -:  307:		/* Add random padding to end */
+    #####:  308:		if (olen > inlen + 4)
+    #####:  309:			RAND_pseudo_bytes(out + 4 + inlen, olen - 4 - inlen);
+        -:  310:		/* Encrypt twice */
+    #####:  311:		EVP_EncryptUpdate(ctx, out, &dummy, out, olen);
+    #####:  312:		EVP_EncryptUpdate(ctx, out, &dummy, out, olen);
+        -:  313:		}
+        -:  314:
+    #####:  315:	*outlen = olen;
+        -:  316:
+    #####:  317:	return 1;
+        -:  318:	}
+        -:  319:
+        -:  320:/* Encrypt/Decrypt content key in PWRI recipient info */
+        -:  321:
+    #####:  322:int cms_RecipientInfo_pwri_crypt(CMS_ContentInfo *cms, CMS_RecipientInfo *ri,
+        -:  323:							int en_de)
+        -:  324:	{
+        -:  325:	CMS_EncryptedContentInfo *ec;
+        -:  326:	CMS_PasswordRecipientInfo *pwri;
+    #####:  327:	const unsigned char *p = NULL;
+        -:  328:	int plen;
+        -:  329:	int r = 0;
+        -:  330:	X509_ALGOR *algtmp, *kekalg = NULL;
+        -:  331:	EVP_CIPHER_CTX kekctx;
+        -:  332:	const EVP_CIPHER *kekcipher;
+        -:  333:	unsigned char *key = NULL;
+        -:  334:	size_t keylen;
+        -:  335:
+    #####:  336:	ec = cms->d.envelopedData->encryptedContentInfo;
+        -:  337:
+    #####:  338:	pwri = ri->d.pwri;
+    #####:  339:	EVP_CIPHER_CTX_init(&kekctx);
+        -:  340:
+    #####:  341:	if (!pwri->pass)
+        -:  342:		{
+    #####:  343:		CMSerr(CMS_F_CMS_RECIPIENTINFO_PWRI_CRYPT, CMS_R_NO_PASSWORD);
+    #####:  344:		return 0;
+        -:  345:		}
+    #####:  346:	algtmp = pwri->keyEncryptionAlgorithm;
+        -:  347:
+    #####:  348:	if (!algtmp || OBJ_obj2nid(algtmp->algorithm) != NID_id_alg_PWRI_KEK)
+        -:  349:		{
+    #####:  350:		CMSerr(CMS_F_CMS_RECIPIENTINFO_PWRI_CRYPT,
+        -:  351:				CMS_R_UNSUPPORTED_KEY_ENCRYPTION_ALGORITHM);
+    #####:  352:		return 0;
+        -:  353:		}
+        -:  354:
+    #####:  355:	if (algtmp->parameter->type == V_ASN1_SEQUENCE)
+        -:  356:		{
+    #####:  357:		p = algtmp->parameter->value.sequence->data;
+    #####:  358:		plen = algtmp->parameter->value.sequence->length;
+    #####:  359:		kekalg = d2i_X509_ALGOR(NULL, &p, plen);
+        -:  360:		}
+    #####:  361:	if (kekalg == NULL)
+        -:  362:		{
+    #####:  363:		CMSerr(CMS_F_CMS_RECIPIENTINFO_PWRI_CRYPT,
+        -:  364:				CMS_R_INVALID_KEY_ENCRYPTION_PARAMETER);
+    #####:  365:		return 0;
+        -:  366:		}
+        -:  367:
+    #####:  368:	kekcipher = EVP_get_cipherbyobj(kekalg->algorithm);
+        -:  369:		
+    #####:  370:	if(!kekcipher)
+        -:  371:		{
+    #####:  372:		CMSerr(CMS_F_CMS_RECIPIENTINFO_PWRI_CRYPT,
+        -:  373:				CMS_R_UNKNOWN_CIPHER);
+    #####:  374:		goto err;
+        -:  375:		}
+        -:  376:
+        -:  377:	/* Fixup cipher based on AlgorithmIdentifier to set IV etc */
+    #####:  378:	if (!EVP_CipherInit_ex(&kekctx, kekcipher, NULL, NULL, NULL, en_de))
+        -:  379:		goto err;
+    #####:  380:	EVP_CIPHER_CTX_set_padding(&kekctx, 0);
+    #####:  381:	if(EVP_CIPHER_asn1_to_param(&kekctx, kekalg->parameter) < 0)
+        -:  382:		{
+    #####:  383:		CMSerr(CMS_F_CMS_RECIPIENTINFO_PWRI_CRYPT,
+        -:  384:				CMS_R_CIPHER_PARAMETER_INITIALISATION_ERROR);
+    #####:  385:		goto err;
+        -:  386:		}
+        -:  387:
+    #####:  388:	algtmp = pwri->keyDerivationAlgorithm;
+        -:  389:
+        -:  390:	/* Finish password based key derivation to setup key in "ctx" */
+        -:  391:
+    #####:  392:	if (EVP_PBE_CipherInit(algtmp->algorithm,
+    #####:  393:				(char *)pwri->pass, pwri->passlen,
+        -:  394:				algtmp->parameter, &kekctx, en_de) < 0)
+        -:  395:		{
+    #####:  396:		CMSerr(CMS_F_CMS_RECIPIENTINFO_PWRI_CRYPT, ERR_R_EVP_LIB);
+    #####:  397:		goto err;
+        -:  398:		}
+        -:  399:
+        -:  400:	/* Finally wrap/unwrap the key */
+        -:  401:
+    #####:  402:	if (en_de)
+        -:  403:		{
+        -:  404:
+    #####:  405:		if (!kek_wrap_key(NULL, &keylen, ec->key, ec->keylen, &kekctx))
+        -:  406:			goto err;
+        -:  407:
+    #####:  408:		key = OPENSSL_malloc(keylen);
+        -:  409:
+    #####:  410:		if (!key)
+        -:  411:			goto err;
+        -:  412:
+    #####:  413:		if (!kek_wrap_key(key, &keylen, ec->key, ec->keylen, &kekctx))
+        -:  414:			goto err;
+    #####:  415:		pwri->encryptedKey->data = key;
+    #####:  416:		pwri->encryptedKey->length = keylen;
+        -:  417:		}
+        -:  418:	else
+        -:  419:		{
+    #####:  420:		key = OPENSSL_malloc(pwri->encryptedKey->length);
+        -:  421:
+    #####:  422:		if (!key)
+        -:  423:			{
+    #####:  424:			CMSerr(CMS_F_CMS_RECIPIENTINFO_PWRI_CRYPT,
+        -:  425:							ERR_R_MALLOC_FAILURE);
+    #####:  426:			goto err;
+        -:  427:			}
+    #####:  428:		if (!kek_unwrap_key(key, &keylen,
+    #####:  429:					pwri->encryptedKey->data,
+    #####:  430:					pwri->encryptedKey->length, &kekctx))
+        -:  431:			{
+    #####:  432:			CMSerr(CMS_F_CMS_RECIPIENTINFO_PWRI_CRYPT,
+        -:  433:							CMS_R_UNWRAP_FAILURE);
+    #####:  434:			goto err;
+        -:  435:			}
+        -:  436:
+    #####:  437:		ec->key = key;
+    #####:  438:		ec->keylen = keylen;
+        -:  439:
+        -:  440:		}
+        -:  441:
+        -:  442:	r = 1;
+        -:  443:
+        -:  444:	err:
+        -:  445:
+    #####:  446:	EVP_CIPHER_CTX_cleanup(&kekctx);
+        -:  447:
+    #####:  448:	if (!r && key)
+    #####:  449:		OPENSSL_free(key);
+    #####:  450:	X509_ALGOR_free(kekalg);
+        -:  451:
+    #####:  452:	return r;
+        -:  453:
+        -:  454:	}

@@ -1,0 +1,509 @@
+        -:    0:Source:ocsp_ht.c
+        -:    0:Graph:ocsp_ht.gcno
+        -:    0:Data:ocsp_ht.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* ocsp_ht.c */
+        -:    2:/* Written by Dr Stephen N Henson (steve@openssl.org) for the OpenSSL
+        -:    3: * project 2006.
+        -:    4: */
+        -:    5:/* ====================================================================
+        -:    6: * Copyright (c) 2006 The OpenSSL Project.  All rights reserved.
+        -:    7: *
+        -:    8: * Redistribution and use in source and binary forms, with or without
+        -:    9: * modification, are permitted provided that the following conditions
+        -:   10: * are met:
+        -:   11: *
+        -:   12: * 1. Redistributions of source code must retain the above copyright
+        -:   13: *    notice, this list of conditions and the following disclaimer. 
+        -:   14: *
+        -:   15: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   16: *    notice, this list of conditions and the following disclaimer in
+        -:   17: *    the documentation and/or other materials provided with the
+        -:   18: *    distribution.
+        -:   19: *
+        -:   20: * 3. All advertising materials mentioning features or use of this
+        -:   21: *    software must display the following acknowledgment:
+        -:   22: *    "This product includes software developed by the OpenSSL Project
+        -:   23: *    for use in the OpenSSL Toolkit. (http://www.OpenSSL.org/)"
+        -:   24: *
+        -:   25: * 4. The names "OpenSSL Toolkit" and "OpenSSL Project" must not be used to
+        -:   26: *    endorse or promote products derived from this software without
+        -:   27: *    prior written permission. For written permission, please contact
+        -:   28: *    licensing@OpenSSL.org.
+        -:   29: *
+        -:   30: * 5. Products derived from this software may not be called "OpenSSL"
+        -:   31: *    nor may "OpenSSL" appear in their names without prior written
+        -:   32: *    permission of the OpenSSL Project.
+        -:   33: *
+        -:   34: * 6. Redistributions of any form whatsoever must retain the following
+        -:   35: *    acknowledgment:
+        -:   36: *    "This product includes software developed by the OpenSSL Project
+        -:   37: *    for use in the OpenSSL Toolkit (http://www.OpenSSL.org/)"
+        -:   38: *
+        -:   39: * THIS SOFTWARE IS PROVIDED BY THE OpenSSL PROJECT ``AS IS'' AND ANY
+        -:   40: * EXPRESSED OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   41: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+        -:   42: * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE OpenSSL PROJECT OR
+        -:   43: * ITS CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+        -:   44: * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+        -:   45: * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+        -:   46: * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   47: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+        -:   48: * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+        -:   49: * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+        -:   50: * OF THE POSSIBILITY OF SUCH DAMAGE.
+        -:   51: * ====================================================================
+        -:   52: *
+        -:   53: * This product includes cryptographic software written by Eric Young
+        -:   54: * (eay@cryptsoft.com).  This product includes software written by Tim
+        -:   55: * Hudson (tjh@cryptsoft.com).
+        -:   56: *
+        -:   57: */
+        -:   58:
+        -:   59:#include <stdio.h>
+        -:   60:#include <stdlib.h>
+        -:   61:#include <ctype.h>
+        -:   62:#include <string.h>
+        -:   63:#include "e_os.h"
+        -:   64:#include <openssl/asn1.h>
+        -:   65:#include <openssl/ocsp.h>
+        -:   66:#include <openssl/err.h>
+        -:   67:#include <openssl/buffer.h>
+        -:   68:#ifdef OPENSSL_SYS_SUNOS
+        -:   69:#define strtoul (unsigned long)strtol
+        -:   70:#endif /* OPENSSL_SYS_SUNOS */
+        -:   71:
+        -:   72:/* Stateful OCSP request code, supporting non-blocking I/O */
+        -:   73:
+        -:   74:/* Opaque OCSP request status structure */
+        -:   75:
+        -:   76:struct ocsp_req_ctx_st {
+        -:   77:	int state;		/* Current I/O state */
+        -:   78:	unsigned char *iobuf;	/* Line buffer */
+        -:   79:	int iobuflen;		/* Line buffer length */
+        -:   80:	BIO *io;		/* BIO to perform I/O with */
+        -:   81:	BIO *mem;		/* Memory BIO response is built into */
+        -:   82:	unsigned long asn1_len;	/* ASN1 length of response */
+        -:   83:	};
+        -:   84:
+        -:   85:#define OCSP_MAX_REQUEST_LENGTH	(100 * 1024)
+        -:   86:#define OCSP_MAX_LINE_LEN	4096;
+        -:   87:
+        -:   88:/* OCSP states */
+        -:   89:
+        -:   90:/* If set no reading should be performed */
+        -:   91:#define OHS_NOREAD		0x1000
+        -:   92:/* Error condition */
+        -:   93:#define OHS_ERROR		(0 | OHS_NOREAD)
+        -:   94:/* First line being read */
+        -:   95:#define OHS_FIRSTLINE		1
+        -:   96:/* MIME headers being read */
+        -:   97:#define OHS_HEADERS		2
+        -:   98:/* OCSP initial header (tag + length) being read */
+        -:   99:#define OHS_ASN1_HEADER		3
+        -:  100:/* OCSP content octets being read */
+        -:  101:#define OHS_ASN1_CONTENT	4
+        -:  102:/* Request being sent */
+        -:  103:#define OHS_ASN1_WRITE		(6 | OHS_NOREAD)
+        -:  104:/* Request being flushed */
+        -:  105:#define OHS_ASN1_FLUSH		(7 | OHS_NOREAD)
+        -:  106:/* Completed */
+        -:  107:#define OHS_DONE		(8 | OHS_NOREAD)
+        -:  108:
+        -:  109:
+        -:  110:static int parse_http_line1(char *line);
+        -:  111:
+    #####:  112:void OCSP_REQ_CTX_free(OCSP_REQ_CTX *rctx)
+        -:  113:	{
+    #####:  114:	if (rctx->mem)
+    #####:  115:		BIO_free(rctx->mem);
+    #####:  116:	if (rctx->iobuf)
+    #####:  117:		OPENSSL_free(rctx->iobuf);
+    #####:  118:	OPENSSL_free(rctx);
+    #####:  119:	}
+        -:  120:
+    #####:  121:int OCSP_REQ_CTX_set1_req(OCSP_REQ_CTX *rctx, OCSP_REQUEST *req)
+        -:  122:	{
+        -:  123:	static const char req_hdr[] =
+        -:  124:	"Content-Type: application/ocsp-request\r\n"
+        -:  125:	"Content-Length: %d\r\n\r\n";
+    #####:  126:        if (BIO_printf(rctx->mem, req_hdr, i2d_OCSP_REQUEST(req, NULL)) <= 0)
+        -:  127:		return 0;
+    #####:  128:        if (i2d_OCSP_REQUEST_bio(rctx->mem, req) <= 0)
+        -:  129:		return 0;
+    #####:  130:	rctx->state = OHS_ASN1_WRITE;
+    #####:  131:	rctx->asn1_len = BIO_get_mem_data(rctx->mem, NULL);
+    #####:  132:	return 1;
+        -:  133:	}
+        -:  134:
+    #####:  135:int OCSP_REQ_CTX_add1_header(OCSP_REQ_CTX *rctx,
+        -:  136:		const char *name, const char *value)
+        -:  137:	{
+    #####:  138:	if (!name)
+        -:  139:		return 0;
+    #####:  140:	if (BIO_puts(rctx->mem, name) <= 0)
+        -:  141:		return 0;
+    #####:  142:	if (value)
+        -:  143:		{
+    #####:  144:		if (BIO_write(rctx->mem, ": ", 2) != 2)
+        -:  145:			return 0;
+    #####:  146:		if (BIO_puts(rctx->mem, value) <= 0)
+        -:  147:			return 0;
+        -:  148:		}
+    #####:  149:	if (BIO_write(rctx->mem, "\r\n", 2) != 2)
+        -:  150:		return 0;
+    #####:  151:	return 1;
+        -:  152:	}
+        -:  153:
+    #####:  154:OCSP_REQ_CTX *OCSP_sendreq_new(BIO *io, char *path, OCSP_REQUEST *req,
+        -:  155:								int maxline)
+        -:  156:	{
+        -:  157:	static const char post_hdr[] = "POST %s HTTP/1.0\r\n";
+        -:  158:
+        -:  159:	OCSP_REQ_CTX *rctx;
+    #####:  160:	rctx = OPENSSL_malloc(sizeof(OCSP_REQ_CTX));
+    #####:  161:	rctx->state = OHS_ERROR;
+    #####:  162:	rctx->mem = BIO_new(BIO_s_mem());
+    #####:  163:	rctx->io = io;
+    #####:  164:	rctx->asn1_len = 0;
+    #####:  165:	if (maxline > 0)
+    #####:  166:		rctx->iobuflen = maxline;
+        -:  167:	else
+    #####:  168:		rctx->iobuflen = OCSP_MAX_LINE_LEN;
+    #####:  169:	rctx->iobuf = OPENSSL_malloc(rctx->iobuflen);
+    #####:  170:	if (!rctx->iobuf)
+        -:  171:		return 0;
+    #####:  172:	if (!path)
+        -:  173:		path = "/";
+        -:  174:
+    #####:  175:        if (BIO_printf(rctx->mem, post_hdr, path) <= 0)
+        -:  176:		return 0;
+        -:  177:
+    #####:  178:	if (req && !OCSP_REQ_CTX_set1_req(rctx, req))
+        -:  179:		return 0;
+        -:  180:
+    #####:  181:	return rctx;
+        -:  182:	}
+        -:  183:
+        -:  184:/* Parse the HTTP response. This will look like this:
+        -:  185: * "HTTP/1.0 200 OK". We need to obtain the numeric code and
+        -:  186: * (optional) informational message.
+        -:  187: */
+        -:  188:
+    #####:  189:static int parse_http_line1(char *line)
+        -:  190:	{
+        -:  191:	int retcode;
+        -:  192:	char *p, *q, *r;
+        -:  193:	/* Skip to first white space (passed protocol info) */
+        -:  194:
+    #####:  195:	for(p = line; *p && !isspace((unsigned char)*p); p++)
+    #####:  196:		continue;
+    #####:  197:	if(!*p)
+        -:  198:		{
+    #####:  199:		OCSPerr(OCSP_F_PARSE_HTTP_LINE1,
+        -:  200:					OCSP_R_SERVER_RESPONSE_PARSE_ERROR);
+    #####:  201:		return 0;
+        -:  202:		}
+        -:  203:
+        -:  204:	/* Skip past white space to start of response code */
+    #####:  205:	while(*p && isspace((unsigned char)*p))
+    #####:  206:		p++;
+        -:  207:
+    #####:  208:	if(!*p)
+        -:  209:		{
+    #####:  210:		OCSPerr(OCSP_F_PARSE_HTTP_LINE1,
+        -:  211:					OCSP_R_SERVER_RESPONSE_PARSE_ERROR);
+    #####:  212:		return 0;
+        -:  213:		}
+        -:  214:
+        -:  215:	/* Find end of response code: first whitespace after start of code */
+    #####:  216:	for(q = p; *q && !isspace((unsigned char)*q); q++)
+    #####:  217:		continue;
+        -:  218:
+    #####:  219:	if(!*q)
+        -:  220:		{
+    #####:  221:		OCSPerr(OCSP_F_PARSE_HTTP_LINE1,
+        -:  222:					OCSP_R_SERVER_RESPONSE_PARSE_ERROR);
+    #####:  223:		return 0;
+        -:  224:		}
+        -:  225:
+        -:  226:	/* Set end of response code and start of message */ 
+    #####:  227:	*q++ = 0;
+        -:  228:
+        -:  229:	/* Attempt to parse numeric code */
+    #####:  230:	retcode = strtoul(p, &r, 10);
+        -:  231:
+    #####:  232:	if(*r)
+        -:  233:		return 0;
+        -:  234:
+        -:  235:	/* Skip over any leading white space in message */
+    #####:  236:	while(*q && isspace((unsigned char)*q))
+    #####:  237:		q++;
+        -:  238:
+    #####:  239:	if(*q)
+        -:  240:		{
+        -:  241:		/* Finally zap any trailing white space in message (include
+        -:  242:		 * CRLF) */
+        -:  243:
+        -:  244:		/* We know q has a non white space character so this is OK */
+    #####:  245:		for(r = q + strlen(q) - 1; isspace((unsigned char)*r); r--)
+    #####:  246:			*r = 0;
+        -:  247:		}
+    #####:  248:	if(retcode != 200)
+        -:  249:		{
+    #####:  250:		OCSPerr(OCSP_F_PARSE_HTTP_LINE1, OCSP_R_SERVER_RESPONSE_ERROR);
+    #####:  251:		if(!*q)
+    #####:  252:			ERR_add_error_data(2, "Code=", p);
+        -:  253:		else
+    #####:  254:			ERR_add_error_data(4, "Code=", p, ",Reason=", q);
+        -:  255:		return 0;
+        -:  256:		}
+        -:  257:
+        -:  258:
+        -:  259:	return 1;
+        -:  260:
+        -:  261:	}
+        -:  262:
+    #####:  263:int OCSP_sendreq_nbio(OCSP_RESPONSE **presp, OCSP_REQ_CTX *rctx)
+        -:  264:	{
+        -:  265:	int i, n;
+        -:  266:	const unsigned char *p;
+        -:  267:	next_io:
+    #####:  268:	if (!(rctx->state & OHS_NOREAD))
+        -:  269:		{
+    #####:  270:		n = BIO_read(rctx->io, rctx->iobuf, rctx->iobuflen);
+        -:  271:
+    #####:  272:		if (n <= 0)
+        -:  273:			{
+    #####:  274:			if (BIO_should_retry(rctx->io))
+        -:  275:				return -1;
+    #####:  276:			return 0;
+        -:  277:			}
+        -:  278:
+        -:  279:		/* Write data to memory BIO */
+        -:  280:
+    #####:  281:		if (BIO_write(rctx->mem, rctx->iobuf, n) != n)
+        -:  282:			return 0;
+        -:  283:		}
+        -:  284:
+    #####:  285:	switch(rctx->state)
+        -:  286:		{
+        -:  287:
+        -:  288:		case OHS_ASN1_WRITE:
+    #####:  289:		n = BIO_get_mem_data(rctx->mem, &p);
+        -:  290:
+    #####:  291:		i = BIO_write(rctx->io,
+    #####:  292:			p + (n - rctx->asn1_len), rctx->asn1_len);
+        -:  293:
+    #####:  294:		if (i <= 0)
+        -:  295:			{
+    #####:  296:			if (BIO_should_retry(rctx->io))
+        -:  297:				return -1;
+    #####:  298:			rctx->state = OHS_ERROR;
+    #####:  299:			return 0;
+        -:  300:			}
+        -:  301:
+    #####:  302:		rctx->asn1_len -= i;
+        -:  303:
+    #####:  304:		if (rctx->asn1_len > 0)
+        -:  305:			goto next_io;
+        -:  306:
+    #####:  307:		rctx->state = OHS_ASN1_FLUSH;
+        -:  308:
+    #####:  309:		(void)BIO_reset(rctx->mem);
+        -:  310:
+        -:  311:		case OHS_ASN1_FLUSH:
+        -:  312:
+    #####:  313:		i = BIO_flush(rctx->io);
+        -:  314:
+    #####:  315:		if (i > 0)
+        -:  316:			{
+    #####:  317:			rctx->state = OHS_FIRSTLINE;
+    #####:  318:			goto next_io;
+        -:  319:			}
+        -:  320:
+    #####:  321:		if (BIO_should_retry(rctx->io))
+        -:  322:			return -1;
+        -:  323:
+    #####:  324:		rctx->state = OHS_ERROR;
+    #####:  325:		return 0;
+        -:  326:
+        -:  327:		case OHS_ERROR:
+        -:  328:		return 0;
+        -:  329:
+        -:  330:		case OHS_FIRSTLINE:
+        -:  331:		case OHS_HEADERS:
+        -:  332:
+        -:  333:		/* Attempt to read a line in */
+        -:  334:
+        -:  335:		next_line:
+        -:  336:		/* Due to &%^*$" memory BIO behaviour with BIO_gets we
+        -:  337:		 * have to check there's a complete line in there before
+        -:  338:		 * calling BIO_gets or we'll just get a partial read.
+        -:  339:		 */
+    #####:  340:		n = BIO_get_mem_data(rctx->mem, &p);
+    #####:  341:		if ((n <= 0) || !memchr(p, '\n', n))
+        -:  342:			{
+    #####:  343:			if (n >= rctx->iobuflen)
+        -:  344:				{
+    #####:  345:				rctx->state = OHS_ERROR;
+    #####:  346:				return 0;
+        -:  347:				}
+        -:  348:			goto next_io;
+        -:  349:			}
+    #####:  350:		n = BIO_gets(rctx->mem, (char *)rctx->iobuf, rctx->iobuflen);
+        -:  351:
+    #####:  352:		if (n <= 0)
+        -:  353:			{
+    #####:  354:			if (BIO_should_retry(rctx->mem))
+        -:  355:				goto next_io;
+    #####:  356:			rctx->state = OHS_ERROR;
+    #####:  357:			return 0;
+        -:  358:			}
+        -:  359:
+        -:  360:		/* Don't allow excessive lines */
+    #####:  361:		if (n == rctx->iobuflen)
+        -:  362:			{
+    #####:  363:			rctx->state = OHS_ERROR;
+    #####:  364:			return 0;
+        -:  365:			}
+        -:  366:
+        -:  367:		/* First line */
+    #####:  368:		if (rctx->state == OHS_FIRSTLINE)
+        -:  369:			{
+    #####:  370:			if (parse_http_line1((char *)rctx->iobuf))
+        -:  371:				{
+    #####:  372:				rctx->state = OHS_HEADERS;
+    #####:  373:				goto next_line;
+        -:  374:				}
+        -:  375:			else
+        -:  376:				{
+    #####:  377:				rctx->state = OHS_ERROR;
+    #####:  378:				return 0;
+        -:  379:				}
+        -:  380:			}
+        -:  381:		else
+        -:  382:			{
+        -:  383:			/* Look for blank line: end of headers */
+    #####:  384:			for (p = rctx->iobuf; *p; p++)
+        -:  385:				{
+    #####:  386:				if ((*p != '\r') && (*p != '\n'))
+        -:  387:					break;
+        -:  388:				}
+    #####:  389:			if (*p)
+        -:  390:				goto next_line;
+        -:  391:
+    #####:  392:			rctx->state = OHS_ASN1_HEADER;
+        -:  393:
+        -:  394:			}
+        -:  395: 
+        -:  396:		/* Fall thru */
+        -:  397:
+        -:  398:
+        -:  399:		case OHS_ASN1_HEADER:
+        -:  400:		/* Now reading ASN1 header: can read at least 2 bytes which
+        -:  401:		 * is enough for ASN1 SEQUENCE header and either length field
+        -:  402:		 * or at least the length of the length field.
+        -:  403:		 */
+    #####:  404:		n = BIO_get_mem_data(rctx->mem, &p);
+    #####:  405:		if (n < 2)
+        -:  406:			goto next_io;
+        -:  407:
+        -:  408:		/* Check it is an ASN1 SEQUENCE */
+    #####:  409:		if (*p++ != (V_ASN1_SEQUENCE|V_ASN1_CONSTRUCTED))
+        -:  410:			{
+    #####:  411:			rctx->state = OHS_ERROR;
+    #####:  412:			return 0;
+        -:  413:			}
+        -:  414:
+        -:  415:		/* Check out length field */
+    #####:  416:		if (*p & 0x80)
+        -:  417:			{
+        -:  418:			/* If MSB set on initial length octet we can now
+        -:  419:			 * always read 6 octets: make sure we have them.
+        -:  420:			 */
+    #####:  421:			if (n < 6)
+        -:  422:				goto next_io;
+    #####:  423:			n = *p & 0x7F;
+        -:  424:			/* Not NDEF or excessive length */
+    #####:  425:			if (!n || (n > 4))
+        -:  426:				{
+    #####:  427:				rctx->state = OHS_ERROR;
+    #####:  428:				return 0;
+        -:  429:				}
+    #####:  430:			p++;
+    #####:  431:			rctx->asn1_len = 0;
+    #####:  432:			for (i = 0; i < n; i++)
+        -:  433:				{
+    #####:  434:				rctx->asn1_len <<= 8;
+    #####:  435:				rctx->asn1_len |= *p++;
+        -:  436:				}
+        -:  437:
+    #####:  438:			if (rctx->asn1_len > OCSP_MAX_REQUEST_LENGTH)
+        -:  439:				{
+    #####:  440:				rctx->state = OHS_ERROR;
+    #####:  441:				return 0;
+        -:  442:				}
+        -:  443:
+    #####:  444:			rctx->asn1_len += n + 2;
+        -:  445:			}
+        -:  446:		else
+    #####:  447:			rctx->asn1_len = *p + 2;
+        -:  448:
+    #####:  449:		rctx->state = OHS_ASN1_CONTENT;
+        -:  450:
+        -:  451:		/* Fall thru */
+        -:  452:		
+        -:  453:		case OHS_ASN1_CONTENT:
+    #####:  454:		n = BIO_get_mem_data(rctx->mem, &p);
+    #####:  455:		if (n < (int)rctx->asn1_len)
+        -:  456:			goto next_io;
+        -:  457:
+        -:  458:
+    #####:  459:		*presp = d2i_OCSP_RESPONSE(NULL, &p, rctx->asn1_len);
+    #####:  460:		if (*presp)
+        -:  461:			{
+    #####:  462:			rctx->state = OHS_DONE;
+    #####:  463:			return 1;
+        -:  464:			}
+        -:  465:
+    #####:  466:		rctx->state = OHS_ERROR;
+    #####:  467:		return 0;
+        -:  468:
+        -:  469:		break;
+        -:  470:
+        -:  471:		case OHS_DONE:
+    #####:  472:		return 1;
+        -:  473:
+        -:  474:		}
+        -:  475:
+        -:  476:
+        -:  477:
+        -:  478:	return 0;
+        -:  479:
+        -:  480:
+        -:  481:	}
+        -:  482:
+        -:  483:/* Blocking OCSP request handler: now a special case of non-blocking I/O */
+        -:  484:
+    #####:  485:OCSP_RESPONSE *OCSP_sendreq_bio(BIO *b, char *path, OCSP_REQUEST *req)
+        -:  486:	{
+    #####:  487:	OCSP_RESPONSE *resp = NULL;
+        -:  488:	OCSP_REQ_CTX *ctx;
+        -:  489:	int rv;
+        -:  490:
+    #####:  491:	ctx = OCSP_sendreq_new(b, path, req, -1);
+        -:  492:
+        -:  493:	do
+        -:  494:		{
+    #####:  495:		rv = OCSP_sendreq_nbio(&resp, ctx);
+    #####:  496:		} while ((rv == -1) && BIO_should_retry(b));
+        -:  497:
+    #####:  498:	OCSP_REQ_CTX_free(ctx);
+        -:  499:
+    #####:  500:	if (rv)
+    #####:  501:		return resp;
+        -:  502:
+        -:  503:	return NULL;
+        -:  504:	}

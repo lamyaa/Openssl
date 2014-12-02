@@ -1,0 +1,185 @@
+        -:    0:Source:x_x509a.c
+        -:    0:Graph:x_x509a.gcno
+        -:    0:Data:x_x509a.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* a_x509a.c */
+        -:    2:/* Written by Dr Stephen N Henson (steve@openssl.org) for the OpenSSL
+        -:    3: * project 1999.
+        -:    4: */
+        -:    5:/* ====================================================================
+        -:    6: * Copyright (c) 1999 The OpenSSL Project.  All rights reserved.
+        -:    7: *
+        -:    8: * Redistribution and use in source and binary forms, with or without
+        -:    9: * modification, are permitted provided that the following conditions
+        -:   10: * are met:
+        -:   11: *
+        -:   12: * 1. Redistributions of source code must retain the above copyright
+        -:   13: *    notice, this list of conditions and the following disclaimer. 
+        -:   14: *
+        -:   15: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   16: *    notice, this list of conditions and the following disclaimer in
+        -:   17: *    the documentation and/or other materials provided with the
+        -:   18: *    distribution.
+        -:   19: *
+        -:   20: * 3. All advertising materials mentioning features or use of this
+        -:   21: *    software must display the following acknowledgment:
+        -:   22: *    "This product includes software developed by the OpenSSL Project
+        -:   23: *    for use in the OpenSSL Toolkit. (http://www.OpenSSL.org/)"
+        -:   24: *
+        -:   25: * 4. The names "OpenSSL Toolkit" and "OpenSSL Project" must not be used to
+        -:   26: *    endorse or promote products derived from this software without
+        -:   27: *    prior written permission. For written permission, please contact
+        -:   28: *    licensing@OpenSSL.org.
+        -:   29: *
+        -:   30: * 5. Products derived from this software may not be called "OpenSSL"
+        -:   31: *    nor may "OpenSSL" appear in their names without prior written
+        -:   32: *    permission of the OpenSSL Project.
+        -:   33: *
+        -:   34: * 6. Redistributions of any form whatsoever must retain the following
+        -:   35: *    acknowledgment:
+        -:   36: *    "This product includes software developed by the OpenSSL Project
+        -:   37: *    for use in the OpenSSL Toolkit (http://www.OpenSSL.org/)"
+        -:   38: *
+        -:   39: * THIS SOFTWARE IS PROVIDED BY THE OpenSSL PROJECT ``AS IS'' AND ANY
+        -:   40: * EXPRESSED OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   41: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+        -:   42: * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE OpenSSL PROJECT OR
+        -:   43: * ITS CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+        -:   44: * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+        -:   45: * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+        -:   46: * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   47: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+        -:   48: * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+        -:   49: * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+        -:   50: * OF THE POSSIBILITY OF SUCH DAMAGE.
+        -:   51: * ====================================================================
+        -:   52: *
+        -:   53: * This product includes cryptographic software written by Eric Young
+        -:   54: * (eay@cryptsoft.com).  This product includes software written by Tim
+        -:   55: * Hudson (tjh@cryptsoft.com).
+        -:   56: *
+        -:   57: */
+        -:   58:
+        -:   59:#include <stdio.h>
+        -:   60:#include "cryptlib.h"
+        -:   61:#include <openssl/evp.h>
+        -:   62:#include <openssl/asn1t.h>
+        -:   63:#include <openssl/x509.h>
+        -:   64:
+        -:   65:/* X509_CERT_AUX routines. These are used to encode additional
+        -:   66: * user modifiable data about a certificate. This data is
+        -:   67: * appended to the X509 encoding when the *_X509_AUX routines
+        -:   68: * are used. This means that the "traditional" X509 routines
+        -:   69: * will simply ignore the extra data. 
+        -:   70: */
+        -:   71:
+        -:   72:static X509_CERT_AUX *aux_get(X509 *x);
+        -:   73:
+        -:   74:ASN1_SEQUENCE(X509_CERT_AUX) = {
+        -:   75:	ASN1_SEQUENCE_OF_OPT(X509_CERT_AUX, trust, ASN1_OBJECT),
+        -:   76:	ASN1_IMP_SEQUENCE_OF_OPT(X509_CERT_AUX, reject, ASN1_OBJECT, 0),
+        -:   77:	ASN1_OPT(X509_CERT_AUX, alias, ASN1_UTF8STRING),
+        -:   78:	ASN1_OPT(X509_CERT_AUX, keyid, ASN1_OCTET_STRING),
+        -:   79:	ASN1_IMP_SEQUENCE_OF_OPT(X509_CERT_AUX, other, X509_ALGOR, 1)
+        -:   80:} ASN1_SEQUENCE_END(X509_CERT_AUX)
+        -:   81:
+    29975:   82:IMPLEMENT_ASN1_FUNCTIONS(X509_CERT_AUX)
+        -:   83:
+    #####:   84:static X509_CERT_AUX *aux_get(X509 *x)
+        -:   85:{
+    #####:   86:	if(!x) return NULL;
+    #####:   87:	if(!x->aux && !(x->aux = X509_CERT_AUX_new())) return NULL;
+    #####:   88:	return x->aux;
+        -:   89:}
+        -:   90:
+    #####:   91:int X509_alias_set1(X509 *x, unsigned char *name, int len)
+        -:   92:{
+        -:   93:	X509_CERT_AUX *aux;
+    #####:   94:	if (!name)
+        -:   95:		{
+    #####:   96:		if (!x || !x->aux || !x->aux->alias)
+        -:   97:			return 1;
+    #####:   98:		ASN1_UTF8STRING_free(x->aux->alias);
+    #####:   99:		x->aux->alias = NULL;
+    #####:  100:		return 1;
+        -:  101:		}
+    #####:  102:	if(!(aux = aux_get(x))) return 0;
+    #####:  103:	if(!aux->alias && !(aux->alias = ASN1_UTF8STRING_new())) return 0;
+    #####:  104:	return ASN1_STRING_set(aux->alias, name, len);
+        -:  105:}
+        -:  106:
+    #####:  107:int X509_keyid_set1(X509 *x, unsigned char *id, int len)
+        -:  108:{
+        -:  109:	X509_CERT_AUX *aux;
+    #####:  110:	if (!id)
+        -:  111:		{
+    #####:  112:		if (!x || !x->aux || !x->aux->keyid)
+        -:  113:			return 1;
+    #####:  114:		ASN1_OCTET_STRING_free(x->aux->keyid);
+    #####:  115:		x->aux->keyid = NULL;
+    #####:  116:		return 1;
+        -:  117:		}
+    #####:  118:	if(!(aux = aux_get(x))) return 0;
+    #####:  119:	if(!aux->keyid && !(aux->keyid = ASN1_OCTET_STRING_new())) return 0;
+    #####:  120:	return ASN1_STRING_set(aux->keyid, id, len);
+        -:  121:}
+        -:  122:
+    #####:  123:unsigned char *X509_alias_get0(X509 *x, int *len)
+        -:  124:{
+    #####:  125:	if(!x->aux || !x->aux->alias) return NULL;
+    #####:  126:	if(len) *len = x->aux->alias->length;
+    #####:  127:	return x->aux->alias->data;
+        -:  128:}
+        -:  129:
+    #####:  130:unsigned char *X509_keyid_get0(X509 *x, int *len)
+        -:  131:{
+    #####:  132:	if(!x->aux || !x->aux->keyid) return NULL;
+    #####:  133:	if(len) *len = x->aux->keyid->length;
+    #####:  134:	return x->aux->keyid->data;
+        -:  135:}
+        -:  136:
+    #####:  137:int X509_add1_trust_object(X509 *x, ASN1_OBJECT *obj)
+        -:  138:{
+        -:  139:	X509_CERT_AUX *aux;
+        -:  140:	ASN1_OBJECT *objtmp;
+    #####:  141:	if(!(objtmp = OBJ_dup(obj))) return 0;
+    #####:  142:	if(!(aux = aux_get(x))) return 0;
+    #####:  143:	if(!aux->trust
+    #####:  144:		&& !(aux->trust = sk_ASN1_OBJECT_new_null())) return 0;
+    #####:  145:	return sk_ASN1_OBJECT_push(aux->trust, objtmp);
+        -:  146:}
+        -:  147:
+    #####:  148:int X509_add1_reject_object(X509 *x, ASN1_OBJECT *obj)
+        -:  149:{
+        -:  150:	X509_CERT_AUX *aux;
+        -:  151:	ASN1_OBJECT *objtmp;
+    #####:  152:	if(!(objtmp = OBJ_dup(obj))) return 0;
+    #####:  153:	if(!(aux = aux_get(x))) return 0;
+    #####:  154:	if(!aux->reject
+    #####:  155:		&& !(aux->reject = sk_ASN1_OBJECT_new_null())) return 0;
+    #####:  156:	return sk_ASN1_OBJECT_push(aux->reject, objtmp);
+        -:  157:}
+        -:  158:
+    #####:  159:void X509_trust_clear(X509 *x)
+        -:  160:{
+    #####:  161:	if(x->aux && x->aux->trust) {
+    #####:  162:		sk_ASN1_OBJECT_pop_free(x->aux->trust, ASN1_OBJECT_free);
+    #####:  163:		x->aux->trust = NULL;
+        -:  164:	}
+    #####:  165:}
+        -:  166:
+    #####:  167:void X509_reject_clear(X509 *x)
+        -:  168:{
+    #####:  169:	if(x->aux && x->aux->reject) {
+    #####:  170:		sk_ASN1_OBJECT_pop_free(x->aux->reject, ASN1_OBJECT_free);
+    #####:  171:		x->aux->reject = NULL;
+        -:  172:	}
+    #####:  173:}
+        -:  174:
+        -:  175:ASN1_SEQUENCE(X509_CERT_PAIR) = {
+        -:  176:	ASN1_EXP_OPT(X509_CERT_PAIR, forward, X509, 0),
+        -:  177:	ASN1_EXP_OPT(X509_CERT_PAIR, reverse, X509, 1)
+        -:  178:} ASN1_SEQUENCE_END(X509_CERT_PAIR)
+        -:  179:
+    #####:  180:IMPLEMENT_ASN1_FUNCTIONS(X509_CERT_PAIR)

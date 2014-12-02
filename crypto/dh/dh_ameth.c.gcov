@@ -1,0 +1,506 @@
+        -:    0:Source:dh_ameth.c
+        -:    0:Graph:dh_ameth.gcno
+        -:    0:Data:dh_ameth.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* Written by Dr Stephen N Henson (steve@openssl.org) for the OpenSSL
+        -:    2: * project 2006.
+        -:    3: */
+        -:    4:/* ====================================================================
+        -:    5: * Copyright (c) 2006 The OpenSSL Project.  All rights reserved.
+        -:    6: *
+        -:    7: * Redistribution and use in source and binary forms, with or without
+        -:    8: * modification, are permitted provided that the following conditions
+        -:    9: * are met:
+        -:   10: *
+        -:   11: * 1. Redistributions of source code must retain the above copyright
+        -:   12: *    notice, this list of conditions and the following disclaimer. 
+        -:   13: *
+        -:   14: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   15: *    notice, this list of conditions and the following disclaimer in
+        -:   16: *    the documentation and/or other materials provided with the
+        -:   17: *    distribution.
+        -:   18: *
+        -:   19: * 3. All advertising materials mentioning features or use of this
+        -:   20: *    software must display the following acknowledgment:
+        -:   21: *    "This product includes software developed by the OpenSSL Project
+        -:   22: *    for use in the OpenSSL Toolkit. (http://www.OpenSSL.org/)"
+        -:   23: *
+        -:   24: * 4. The names "OpenSSL Toolkit" and "OpenSSL Project" must not be used to
+        -:   25: *    endorse or promote products derived from this software without
+        -:   26: *    prior written permission. For written permission, please contact
+        -:   27: *    licensing@OpenSSL.org.
+        -:   28: *
+        -:   29: * 5. Products derived from this software may not be called "OpenSSL"
+        -:   30: *    nor may "OpenSSL" appear in their names without prior written
+        -:   31: *    permission of the OpenSSL Project.
+        -:   32: *
+        -:   33: * 6. Redistributions of any form whatsoever must retain the following
+        -:   34: *    acknowledgment:
+        -:   35: *    "This product includes software developed by the OpenSSL Project
+        -:   36: *    for use in the OpenSSL Toolkit (http://www.OpenSSL.org/)"
+        -:   37: *
+        -:   38: * THIS SOFTWARE IS PROVIDED BY THE OpenSSL PROJECT ``AS IS'' AND ANY
+        -:   39: * EXPRESSED OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   40: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+        -:   41: * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE OpenSSL PROJECT OR
+        -:   42: * ITS CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+        -:   43: * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+        -:   44: * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+        -:   45: * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   46: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+        -:   47: * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+        -:   48: * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+        -:   49: * OF THE POSSIBILITY OF SUCH DAMAGE.
+        -:   50: * ====================================================================
+        -:   51: *
+        -:   52: * This product includes cryptographic software written by Eric Young
+        -:   53: * (eay@cryptsoft.com).  This product includes software written by Tim
+        -:   54: * Hudson (tjh@cryptsoft.com).
+        -:   55: *
+        -:   56: */
+        -:   57:
+        -:   58:#include <stdio.h>
+        -:   59:#include "cryptlib.h"
+        -:   60:#include <openssl/x509.h>
+        -:   61:#include <openssl/asn1.h>
+        -:   62:#include <openssl/dh.h>
+        -:   63:#include <openssl/bn.h>
+        -:   64:#include "asn1_locl.h"
+        -:   65:
+    #####:   66:static void int_dh_free(EVP_PKEY *pkey)
+        -:   67:	{
+    #####:   68:	DH_free(pkey->pkey.dh);
+    #####:   69:	}
+        -:   70:
+    #####:   71:static int dh_pub_decode(EVP_PKEY *pkey, X509_PUBKEY *pubkey)
+        -:   72:	{
+        -:   73:	const unsigned char *p, *pm;
+        -:   74:	int pklen, pmlen;
+        -:   75:	int ptype;
+        -:   76:	void *pval;
+        -:   77:	ASN1_STRING *pstr;
+        -:   78:	X509_ALGOR *palg;
+        -:   79:	ASN1_INTEGER *public_key = NULL;
+        -:   80:
+        -:   81:	DH *dh = NULL;
+        -:   82:
+    #####:   83:	if (!X509_PUBKEY_get0_param(NULL, &p, &pklen, &palg, pubkey))
+        -:   84:		return 0;
+    #####:   85:	X509_ALGOR_get0(NULL, &ptype, &pval, palg);
+        -:   86:
+    #####:   87:	if (ptype != V_ASN1_SEQUENCE)
+        -:   88:		{
+    #####:   89:		DHerr(DH_F_DH_PUB_DECODE, DH_R_PARAMETER_ENCODING_ERROR);
+    #####:   90:		goto err;
+        -:   91:		}
+        -:   92:
+    #####:   93:	pstr = pval;	
+    #####:   94:	pm = pstr->data;
+    #####:   95:	pmlen = pstr->length;
+        -:   96:
+    #####:   97:	if (!(dh = d2i_DHparams(NULL, &pm, pmlen)))
+        -:   98:		{
+    #####:   99:		DHerr(DH_F_DH_PUB_DECODE, DH_R_DECODE_ERROR);
+    #####:  100:		goto err;
+        -:  101:		}
+        -:  102:
+    #####:  103:	if (!(public_key=d2i_ASN1_INTEGER(NULL, &p, pklen)))
+        -:  104:		{
+    #####:  105:		DHerr(DH_F_DH_PUB_DECODE, DH_R_DECODE_ERROR);
+    #####:  106:		goto err;
+        -:  107:		}
+        -:  108:
+        -:  109:	/* We have parameters now set public key */
+    #####:  110:	if (!(dh->pub_key = ASN1_INTEGER_to_BN(public_key, NULL)))
+        -:  111:		{
+    #####:  112:		DHerr(DH_F_DH_PUB_DECODE, DH_R_BN_DECODE_ERROR);
+    #####:  113:		goto err;
+        -:  114:		}
+        -:  115:
+    #####:  116:	ASN1_INTEGER_free(public_key);
+    #####:  117:	EVP_PKEY_assign_DH(pkey, dh);
+    #####:  118:	return 1;
+        -:  119:
+        -:  120:	err:
+    #####:  121:	if (public_key)
+    #####:  122:		ASN1_INTEGER_free(public_key);
+    #####:  123:	if (dh)
+    #####:  124:		DH_free(dh);
+        -:  125:	return 0;
+        -:  126:
+        -:  127:	}
+        -:  128:
+    #####:  129:static int dh_pub_encode(X509_PUBKEY *pk, const EVP_PKEY *pkey)
+        -:  130:	{
+        -:  131:	DH *dh;
+        -:  132:	void *pval = NULL;
+        -:  133:	int ptype;
+    #####:  134:	unsigned char *penc = NULL;
+        -:  135:	int penclen;
+        -:  136:	ASN1_STRING *str;
+        -:  137:	ASN1_INTEGER *pub_key = NULL;
+        -:  138:
+    #####:  139:	dh=pkey->pkey.dh;
+        -:  140:
+    #####:  141:	str = ASN1_STRING_new();
+    #####:  142:	str->length = i2d_DHparams(dh, &str->data);
+    #####:  143:	if (str->length <= 0)
+        -:  144:		{
+    #####:  145:		DHerr(DH_F_DH_PUB_ENCODE, ERR_R_MALLOC_FAILURE);
+    #####:  146:		goto err;
+        -:  147:		}
+        -:  148:	pval = str;
+        -:  149:	ptype = V_ASN1_SEQUENCE;
+        -:  150:
+    #####:  151:	pub_key = BN_to_ASN1_INTEGER(dh->pub_key, NULL);
+    #####:  152:	if (!pub_key)
+        -:  153:		goto err;
+        -:  154:
+    #####:  155:	penclen = i2d_ASN1_INTEGER(pub_key, &penc);
+        -:  156:
+    #####:  157:	ASN1_INTEGER_free(pub_key);
+        -:  158:
+    #####:  159:	if (penclen <= 0)
+        -:  160:		{
+    #####:  161:		DHerr(DH_F_DH_PUB_ENCODE, ERR_R_MALLOC_FAILURE);
+    #####:  162:		goto err;
+        -:  163:		}
+        -:  164:
+    #####:  165:	if (X509_PUBKEY_set0_param(pk, OBJ_nid2obj(EVP_PKEY_DH),
+        -:  166:				ptype, pval, penc, penclen))
+        -:  167:		return 1;
+        -:  168:
+        -:  169:	err:
+    #####:  170:	if (penc)
+    #####:  171:		OPENSSL_free(penc);
+    #####:  172:	if (pval)
+    #####:  173:		ASN1_STRING_free(pval);
+        -:  174:
+        -:  175:	return 0;
+        -:  176:	}
+        -:  177:
+        -:  178:
+        -:  179:/* PKCS#8 DH is defined in PKCS#11 of all places. It is similar to DH in
+        -:  180: * that the AlgorithmIdentifier contains the paramaters, the private key
+        -:  181: * is explcitly included and the pubkey must be recalculated.
+        -:  182: */
+        -:  183:	
+    #####:  184:static int dh_priv_decode(EVP_PKEY *pkey, PKCS8_PRIV_KEY_INFO *p8)
+        -:  185:	{
+        -:  186:	const unsigned char *p, *pm;
+        -:  187:	int pklen, pmlen;
+        -:  188:	int ptype;
+        -:  189:	void *pval;
+        -:  190:	ASN1_STRING *pstr;
+        -:  191:	X509_ALGOR *palg;
+        -:  192:	ASN1_INTEGER *privkey = NULL;
+        -:  193:
+        -:  194:	DH *dh = NULL;
+        -:  195:
+    #####:  196:	if (!PKCS8_pkey_get0(NULL, &p, &pklen, &palg, p8))
+        -:  197:		return 0;
+        -:  198:
+    #####:  199:	X509_ALGOR_get0(NULL, &ptype, &pval, palg);
+        -:  200:
+    #####:  201:	if (ptype != V_ASN1_SEQUENCE)
+        -:  202:			goto decerr;
+        -:  203:
+    #####:  204:	if (!(privkey=d2i_ASN1_INTEGER(NULL, &p, pklen)))
+        -:  205:		goto decerr;
+        -:  206:
+        -:  207:
+    #####:  208:	pstr = pval;	
+    #####:  209:	pm = pstr->data;
+    #####:  210:	pmlen = pstr->length;
+    #####:  211:	if (!(dh = d2i_DHparams(NULL, &pm, pmlen)))
+        -:  212:		goto decerr;
+        -:  213:	/* We have parameters now set private key */
+    #####:  214:	if (!(dh->priv_key = ASN1_INTEGER_to_BN(privkey, NULL)))
+        -:  215:		{
+    #####:  216:		DHerr(DH_F_DH_PRIV_DECODE,DH_R_BN_ERROR);
+    #####:  217:		goto dherr;
+        -:  218:		}
+        -:  219:	/* Calculate public key */
+    #####:  220:	if (!DH_generate_key(dh))
+        -:  221:		goto dherr;
+        -:  222:
+    #####:  223:	EVP_PKEY_assign_DH(pkey, dh);
+        -:  224:
+    #####:  225:	ASN1_INTEGER_free(privkey);
+        -:  226:
+    #####:  227:	return 1;
+        -:  228:
+        -:  229:	decerr:
+    #####:  230:	DHerr(DH_F_DH_PRIV_DECODE, EVP_R_DECODE_ERROR);
+        -:  231:	dherr:
+    #####:  232:	DH_free(dh);
+    #####:  233:	return 0;
+        -:  234:	}
+        -:  235:
+    #####:  236:static int dh_priv_encode(PKCS8_PRIV_KEY_INFO *p8, const EVP_PKEY *pkey)
+        -:  237:{
+        -:  238:	ASN1_STRING *params = NULL;
+        -:  239:	ASN1_INTEGER *prkey = NULL;
+    #####:  240:	unsigned char *dp = NULL;
+        -:  241:	int dplen;
+        -:  242:
+    #####:  243:	params = ASN1_STRING_new();
+        -:  244:
+    #####:  245:	if (!params)
+        -:  246:		{
+    #####:  247:		DHerr(DH_F_DH_PRIV_ENCODE,ERR_R_MALLOC_FAILURE);
+    #####:  248:		goto err;
+        -:  249:		}
+        -:  250:
+    #####:  251:	params->length = i2d_DHparams(pkey->pkey.dh, &params->data);
+    #####:  252:	if (params->length <= 0)
+        -:  253:		{
+    #####:  254:		DHerr(DH_F_DH_PRIV_ENCODE,ERR_R_MALLOC_FAILURE);
+    #####:  255:		goto err;
+        -:  256:		}
+    #####:  257:	params->type = V_ASN1_SEQUENCE;
+        -:  258:
+        -:  259:	/* Get private key into integer */
+    #####:  260:	prkey = BN_to_ASN1_INTEGER(pkey->pkey.dh->priv_key, NULL);
+        -:  261:
+    #####:  262:	if (!prkey)
+        -:  263:		{
+    #####:  264:		DHerr(DH_F_DH_PRIV_ENCODE,DH_R_BN_ERROR);
+    #####:  265:		goto err;
+        -:  266:		}
+        -:  267:
+    #####:  268:	dplen = i2d_ASN1_INTEGER(prkey, &dp);
+        -:  269:
+    #####:  270:	ASN1_INTEGER_free(prkey);
+        -:  271:
+    #####:  272:	if (!PKCS8_pkey_set0(p8, OBJ_nid2obj(NID_dhKeyAgreement), 0,
+        -:  273:				V_ASN1_SEQUENCE, params, dp, dplen))
+        -:  274:		goto err;
+        -:  275:
+        -:  276:	return 1;
+        -:  277:
+        -:  278:err:
+    #####:  279:	if (dp != NULL)
+    #####:  280:		OPENSSL_free(dp);
+    #####:  281:	if (params != NULL)
+    #####:  282:		ASN1_STRING_free(params);
+    #####:  283:	if (prkey != NULL)
+    #####:  284:		ASN1_INTEGER_free(prkey);
+        -:  285:	return 0;
+        -:  286:}
+        -:  287:
+        -:  288:
+    #####:  289:static void update_buflen(const BIGNUM *b, size_t *pbuflen)
+        -:  290:	{
+        -:  291:	size_t i;
+    #####:  292:	if (!b)
+    #####:  293:		return;
+    #####:  294:	if (*pbuflen < (i = (size_t)BN_num_bytes(b)))
+    #####:  295:			*pbuflen = i;
+        -:  296:	}
+        -:  297:
+    #####:  298:static int dh_param_decode(EVP_PKEY *pkey,
+        -:  299:					const unsigned char **pder, int derlen)
+        -:  300:	{
+        -:  301:	DH *dh;
+    #####:  302:	if (!(dh = d2i_DHparams(NULL, pder, derlen)))
+        -:  303:		{
+    #####:  304:		DHerr(DH_F_DH_PARAM_DECODE, ERR_R_DH_LIB);
+    #####:  305:		return 0;
+        -:  306:		}
+    #####:  307:	EVP_PKEY_assign_DH(pkey, dh);
+    #####:  308:	return 1;
+        -:  309:	}
+        -:  310:
+    #####:  311:static int dh_param_encode(const EVP_PKEY *pkey, unsigned char **pder)
+        -:  312:	{
+    #####:  313:	return i2d_DHparams(pkey->pkey.dh, pder);
+        -:  314:	}
+        -:  315:
+    #####:  316:static int do_dh_print(BIO *bp, const DH *x, int indent,
+        -:  317:						ASN1_PCTX *ctx, int ptype)
+        -:  318:	{
+        -:  319:	unsigned char *m=NULL;
+        -:  320:	int reason=ERR_R_BUF_LIB,ret=0;
+    #####:  321:	size_t buf_len=0;
+        -:  322:
+        -:  323:	const char *ktype = NULL;
+        -:  324:
+        -:  325:	BIGNUM *priv_key, *pub_key;
+        -:  326:
+    #####:  327:	if (ptype == 2)
+    #####:  328:		priv_key = x->priv_key;
+        -:  329:	else
+        -:  330:		priv_key = NULL;
+        -:  331:
+    #####:  332:	if (ptype > 0)
+    #####:  333:		pub_key = x->pub_key;
+        -:  334:	else
+        -:  335:		pub_key = NULL;
+        -:  336:
+    #####:  337:	update_buflen(x->p, &buf_len);
+        -:  338:
+    #####:  339:	if (buf_len == 0)
+        -:  340:		{
+        -:  341:		reason = ERR_R_PASSED_NULL_PARAMETER;
+        -:  342:		goto err;
+        -:  343:		}
+        -:  344:
+    #####:  345:	update_buflen(x->g, &buf_len);
+    #####:  346:	update_buflen(pub_key, &buf_len);
+    #####:  347:	update_buflen(priv_key, &buf_len);
+        -:  348:
+    #####:  349:	if (ptype == 2)
+        -:  350:		ktype = "PKCS#3 DH Private-Key";
+    #####:  351:	else if (ptype == 1)
+        -:  352:		ktype = "PKCS#3 DH Public-Key";
+        -:  353:	else
+        -:  354:		ktype = "PKCS#3 DH Parameters";
+        -:  355:
+    #####:  356:	m= OPENSSL_malloc(buf_len+10);
+    #####:  357:	if (m == NULL)
+        -:  358:		{
+        -:  359:		reason=ERR_R_MALLOC_FAILURE;
+        -:  360:		goto err;
+        -:  361:		}
+        -:  362:
+    #####:  363:	BIO_indent(bp, indent, 128);
+    #####:  364:	if (BIO_printf(bp,"%s: (%d bit)\n", ktype, BN_num_bits(x->p)) <= 0)
+        -:  365:		goto err;
+    #####:  366:	indent += 4;
+        -:  367:
+    #####:  368:	if (!ASN1_bn_print(bp,"private-key:",priv_key,m,indent)) goto err;
+    #####:  369:	if (!ASN1_bn_print(bp,"public-key:",pub_key,m,indent)) goto err;
+        -:  370:
+    #####:  371:	if (!ASN1_bn_print(bp,"prime:",x->p,m,indent)) goto err;
+    #####:  372:	if (!ASN1_bn_print(bp,"generator:",x->g,m,indent)) goto err;
+    #####:  373:	if (x->length != 0)
+        -:  374:		{
+    #####:  375:		BIO_indent(bp, indent, 128);
+    #####:  376:		if (BIO_printf(bp,"recommended-private-length: %d bits\n",
+    #####:  377:			(int)x->length) <= 0) goto err;
+        -:  378:		}
+        -:  379:
+        -:  380:
+        -:  381:	ret=1;
+        -:  382:	if (0)
+        -:  383:		{
+        -:  384:err:
+    #####:  385:		DHerr(DH_F_DO_DH_PRINT,reason);
+        -:  386:		}
+    #####:  387:	if (m != NULL) OPENSSL_free(m);
+    #####:  388:	return(ret);
+        -:  389:	}
+        -:  390:
+    #####:  391:static int int_dh_size(const EVP_PKEY *pkey)
+        -:  392:	{
+    #####:  393:	return(DH_size(pkey->pkey.dh));
+        -:  394:	}
+        -:  395:
+    #####:  396:static int dh_bits(const EVP_PKEY *pkey)
+        -:  397:	{
+    #####:  398:	return BN_num_bits(pkey->pkey.dh->p);
+        -:  399:	}
+        -:  400:
+    #####:  401:static int dh_cmp_parameters(const EVP_PKEY *a, const EVP_PKEY *b)
+        -:  402:	{
+    #####:  403:	if (	BN_cmp(a->pkey.dh->p,b->pkey.dh->p) ||
+    #####:  404:		BN_cmp(a->pkey.dh->g,b->pkey.dh->g))
+        -:  405:		return 0;
+        -:  406:	else
+        -:  407:		return 1;
+        -:  408:	}
+        -:  409:
+    #####:  410:static int dh_copy_parameters(EVP_PKEY *to, const EVP_PKEY *from)
+        -:  411:	{
+        -:  412:	BIGNUM *a;
+        -:  413:
+    #####:  414:	if ((a=BN_dup(from->pkey.dh->p)) == NULL)
+        -:  415:		return 0;
+    #####:  416:	if (to->pkey.dh->p != NULL)
+    #####:  417:		BN_free(to->pkey.dh->p);
+    #####:  418:	to->pkey.dh->p=a;
+        -:  419:
+    #####:  420:	if ((a=BN_dup(from->pkey.dh->g)) == NULL)
+        -:  421:		return 0;
+    #####:  422:	if (to->pkey.dh->g != NULL)
+    #####:  423:		BN_free(to->pkey.dh->g);
+    #####:  424:	to->pkey.dh->g=a;
+        -:  425:
+    #####:  426:	return 1;
+        -:  427:	}
+        -:  428:
+    #####:  429:static int dh_missing_parameters(const EVP_PKEY *a)
+        -:  430:	{
+    #####:  431:	if (!a->pkey.dh->p || !a->pkey.dh->g)
+        -:  432:		return 1;
+    #####:  433:	return 0;
+        -:  434:	}
+        -:  435:
+    #####:  436:static int dh_pub_cmp(const EVP_PKEY *a, const EVP_PKEY *b)
+        -:  437:	{
+    #####:  438:	if (dh_cmp_parameters(a, b) == 0)
+        -:  439:		return 0;
+    #####:  440:	if (BN_cmp(b->pkey.dh->pub_key,a->pkey.dh->pub_key) != 0)
+        -:  441:		return 0;
+        -:  442:	else
+    #####:  443:		return 1;
+        -:  444:	}
+        -:  445:
+    #####:  446:static int dh_param_print(BIO *bp, const EVP_PKEY *pkey, int indent,
+        -:  447:							ASN1_PCTX *ctx)
+        -:  448:	{
+    #####:  449:	return do_dh_print(bp, pkey->pkey.dh, indent, ctx, 0);
+        -:  450:	}
+        -:  451:
+    #####:  452:static int dh_public_print(BIO *bp, const EVP_PKEY *pkey, int indent,
+        -:  453:							ASN1_PCTX *ctx)
+        -:  454:	{
+    #####:  455:	return do_dh_print(bp, pkey->pkey.dh, indent, ctx, 1);
+        -:  456:	}
+        -:  457:
+    #####:  458:static int dh_private_print(BIO *bp, const EVP_PKEY *pkey, int indent,
+        -:  459:							ASN1_PCTX *ctx)
+        -:  460:	{
+    #####:  461:	return do_dh_print(bp, pkey->pkey.dh, indent, ctx, 2);
+        -:  462:	}
+        -:  463:
+    #####:  464:int DHparams_print(BIO *bp, const DH *x)
+        -:  465:	{
+    #####:  466:	return do_dh_print(bp, x, 4, NULL, 0);
+        -:  467:	}
+        -:  468:
+        -:  469:const EVP_PKEY_ASN1_METHOD dh_asn1_meth = 
+        -:  470:	{
+        -:  471:	EVP_PKEY_DH,
+        -:  472:	EVP_PKEY_DH,
+        -:  473:	0,
+        -:  474:
+        -:  475:	"DH",
+        -:  476:	"OpenSSL PKCS#3 DH method",
+        -:  477:
+        -:  478:	dh_pub_decode,
+        -:  479:	dh_pub_encode,
+        -:  480:	dh_pub_cmp,
+        -:  481:	dh_public_print,
+        -:  482:
+        -:  483:	dh_priv_decode,
+        -:  484:	dh_priv_encode,
+        -:  485:	dh_private_print,
+        -:  486:
+        -:  487:	int_dh_size,
+        -:  488:	dh_bits,
+        -:  489:
+        -:  490:	dh_param_decode,
+        -:  491:	dh_param_encode,
+        -:  492:	dh_missing_parameters,
+        -:  493:	dh_copy_parameters,
+        -:  494:	dh_cmp_parameters,
+        -:  495:	dh_param_print,
+        -:  496:	0,
+        -:  497:
+        -:  498:	int_dh_free,
+        -:  499:	0
+        -:  500:	};
+        -:  501:

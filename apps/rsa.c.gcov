@@ -1,0 +1,455 @@
+        -:    0:Source:rsa.c
+        -:    0:Graph:rsa.gcno
+        -:    0:Data:rsa.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* apps/rsa.c */
+        -:    2:/* Copyright (C) 1995-1998 Eric Young (eay@cryptsoft.com)
+        -:    3: * All rights reserved.
+        -:    4: *
+        -:    5: * This package is an SSL implementation written
+        -:    6: * by Eric Young (eay@cryptsoft.com).
+        -:    7: * The implementation was written so as to conform with Netscapes SSL.
+        -:    8: * 
+        -:    9: * This library is free for commercial and non-commercial use as long as
+        -:   10: * the following conditions are aheared to.  The following conditions
+        -:   11: * apply to all code found in this distribution, be it the RC4, RSA,
+        -:   12: * lhash, DES, etc., code; not just the SSL code.  The SSL documentation
+        -:   13: * included with this distribution is covered by the same copyright terms
+        -:   14: * except that the holder is Tim Hudson (tjh@cryptsoft.com).
+        -:   15: * 
+        -:   16: * Copyright remains Eric Young's, and as such any Copyright notices in
+        -:   17: * the code are not to be removed.
+        -:   18: * If this package is used in a product, Eric Young should be given attribution
+        -:   19: * as the author of the parts of the library used.
+        -:   20: * This can be in the form of a textual message at program startup or
+        -:   21: * in documentation (online or textual) provided with the package.
+        -:   22: * 
+        -:   23: * Redistribution and use in source and binary forms, with or without
+        -:   24: * modification, are permitted provided that the following conditions
+        -:   25: * are met:
+        -:   26: * 1. Redistributions of source code must retain the copyright
+        -:   27: *    notice, this list of conditions and the following disclaimer.
+        -:   28: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   29: *    notice, this list of conditions and the following disclaimer in the
+        -:   30: *    documentation and/or other materials provided with the distribution.
+        -:   31: * 3. All advertising materials mentioning features or use of this software
+        -:   32: *    must display the following acknowledgement:
+        -:   33: *    "This product includes cryptographic software written by
+        -:   34: *     Eric Young (eay@cryptsoft.com)"
+        -:   35: *    The word 'cryptographic' can be left out if the rouines from the library
+        -:   36: *    being used are not cryptographic related :-).
+        -:   37: * 4. If you include any Windows specific code (or a derivative thereof) from 
+        -:   38: *    the apps directory (application code) you must include an acknowledgement:
+        -:   39: *    "This product includes software written by Tim Hudson (tjh@cryptsoft.com)"
+        -:   40: * 
+        -:   41: * THIS SOFTWARE IS PROVIDED BY ERIC YOUNG ``AS IS'' AND
+        -:   42: * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   43: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+        -:   44: * ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+        -:   45: * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+        -:   46: * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+        -:   47: * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   48: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+        -:   49: * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+        -:   50: * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+        -:   51: * SUCH DAMAGE.
+        -:   52: * 
+        -:   53: * The licence and distribution terms for any publically available version or
+        -:   54: * derivative of this code cannot be changed.  i.e. this code cannot simply be
+        -:   55: * copied and put under another distribution licence
+        -:   56: * [including the GNU Public Licence.]
+        -:   57: */
+        -:   58:
+        -:   59:#include <openssl/opensslconf.h>
+        -:   60:#ifndef OPENSSL_NO_RSA
+        -:   61:#include <stdio.h>
+        -:   62:#include <stdlib.h>
+        -:   63:#include <string.h>
+        -:   64:#include <time.h>
+        -:   65:#include "apps.h"
+        -:   66:#include <openssl/bio.h>
+        -:   67:#include <openssl/err.h>
+        -:   68:#include <openssl/rsa.h>
+        -:   69:#include <openssl/evp.h>
+        -:   70:#include <openssl/x509.h>
+        -:   71:#include <openssl/pem.h>
+        -:   72:#include <openssl/bn.h>
+        -:   73:
+        -:   74:#undef PROG
+        -:   75:#define PROG	rsa_main
+        -:   76:
+        -:   77:/* -inform arg	- input format - default PEM (one of DER, NET or PEM)
+        -:   78: * -outform arg - output format - default PEM
+        -:   79: * -in arg	- input file - default stdin
+        -:   80: * -out arg	- output file - default stdout
+        -:   81: * -des		- encrypt output if PEM format with DES in cbc mode
+        -:   82: * -des3	- encrypt output if PEM format
+        -:   83: * -idea	- encrypt output if PEM format
+        -:   84: * -seed	- encrypt output if PEM format
+        -:   85: * -aes128	- encrypt output if PEM format
+        -:   86: * -aes192	- encrypt output if PEM format
+        -:   87: * -aes256	- encrypt output if PEM format
+        -:   88: * -camellia128 - encrypt output if PEM format
+        -:   89: * -camellia192 - encrypt output if PEM format
+        -:   90: * -camellia256 - encrypt output if PEM format
+        -:   91: * -text	- print a text version
+        -:   92: * -modulus	- print the RSA key modulus
+        -:   93: * -check	- verify key consistency
+        -:   94: * -pubin	- Expect a public key in input file.
+        -:   95: * -pubout	- Output a public key.
+        -:   96: */
+        -:   97:
+        -:   98:int MAIN(int, char **);
+        -:   99:
+    #####:  100:int MAIN(int argc, char **argv)
+        -:  101:	{
+        -:  102:	ENGINE *e = NULL;
+        -:  103:	int ret=1;
+        -:  104:	RSA *rsa=NULL;
+        -:  105:	int i,badops=0, sgckey=0;
+        -:  106:	const EVP_CIPHER *enc=NULL;
+        -:  107:	BIO *out=NULL;
+        -:  108:	int informat,outformat,text=0,check=0,noout=0;
+        -:  109:	int pubin = 0, pubout = 0;
+        -:  110:	char *infile,*outfile,*prog;
+        -:  111:	char *passargin = NULL, *passargout = NULL;
+    #####:  112:	char *passin = NULL, *passout = NULL;
+        -:  113:#ifndef OPENSSL_NO_ENGINE
+        -:  114:	char *engine=NULL;
+        -:  115:#endif
+        -:  116:	int modulus=0;
+        -:  117:
+        -:  118:	int pvk_encr = 2;
+        -:  119:
+    #####:  120:	apps_startup();
+        -:  121:
+    #####:  122:	if (bio_err == NULL)
+    #####:  123:		if ((bio_err=BIO_new(BIO_s_file())) != NULL)
+    #####:  124:			BIO_set_fp(bio_err,stderr,BIO_NOCLOSE|BIO_FP_TEXT);
+        -:  125:
+    #####:  126:	if (!load_config(bio_err, NULL))
+        -:  127:		goto end;
+        -:  128:
+        -:  129:	infile=NULL;
+        -:  130:	outfile=NULL;
+        -:  131:	informat=FORMAT_PEM;
+        -:  132:	outformat=FORMAT_PEM;
+        -:  133:
+    #####:  134:	prog=argv[0];
+    #####:  135:	argc--;
+    #####:  136:	argv++;
+    #####:  137:	while (argc >= 1)
+        -:  138:		{
+    #####:  139:		if 	(strcmp(*argv,"-inform") == 0)
+        -:  140:			{
+    #####:  141:			if (--argc < 1) goto bad;
+    #####:  142:			informat=str2fmt(*(++argv));
+        -:  143:			}
+    #####:  144:		else if (strcmp(*argv,"-outform") == 0)
+        -:  145:			{
+    #####:  146:			if (--argc < 1) goto bad;
+    #####:  147:			outformat=str2fmt(*(++argv));
+        -:  148:			}
+    #####:  149:		else if (strcmp(*argv,"-in") == 0)
+        -:  150:			{
+    #####:  151:			if (--argc < 1) goto bad;
+    #####:  152:			infile= *(++argv);
+        -:  153:			}
+    #####:  154:		else if (strcmp(*argv,"-out") == 0)
+        -:  155:			{
+    #####:  156:			if (--argc < 1) goto bad;
+    #####:  157:			outfile= *(++argv);
+        -:  158:			}
+    #####:  159:		else if (strcmp(*argv,"-passin") == 0)
+        -:  160:			{
+    #####:  161:			if (--argc < 1) goto bad;
+    #####:  162:			passargin= *(++argv);
+        -:  163:			}
+    #####:  164:		else if (strcmp(*argv,"-passout") == 0)
+        -:  165:			{
+    #####:  166:			if (--argc < 1) goto bad;
+    #####:  167:			passargout= *(++argv);
+        -:  168:			}
+        -:  169:#ifndef OPENSSL_NO_ENGINE
+    #####:  170:		else if (strcmp(*argv,"-engine") == 0)
+        -:  171:			{
+    #####:  172:			if (--argc < 1) goto bad;
+    #####:  173:			engine= *(++argv);
+        -:  174:			}
+        -:  175:#endif
+    #####:  176:		else if (strcmp(*argv,"-sgckey") == 0)
+        -:  177:			sgckey=1;
+    #####:  178:		else if (strcmp(*argv,"-pubin") == 0)
+        -:  179:			pubin=1;
+    #####:  180:		else if (strcmp(*argv,"-pubout") == 0)
+        -:  181:			pubout=1;
+    #####:  182:		else if (strcmp(*argv,"-RSAPublicKey_in") == 0)
+        -:  183:			pubin = 2;
+    #####:  184:		else if (strcmp(*argv,"-RSAPublicKey_out") == 0)
+        -:  185:			pubout = 2;
+    #####:  186:		else if (strcmp(*argv,"-pvk-strong") == 0)
+        -:  187:			pvk_encr=2;
+    #####:  188:		else if (strcmp(*argv,"-pvk-weak") == 0)
+        -:  189:			pvk_encr=1;
+    #####:  190:		else if (strcmp(*argv,"-pvk-none") == 0)
+        -:  191:			pvk_encr=0;
+    #####:  192:		else if (strcmp(*argv,"-noout") == 0)
+        -:  193:			noout=1;
+    #####:  194:		else if (strcmp(*argv,"-text") == 0)
+        -:  195:			text=1;
+    #####:  196:		else if (strcmp(*argv,"-modulus") == 0)
+        -:  197:			modulus=1;
+    #####:  198:		else if (strcmp(*argv,"-check") == 0)
+        -:  199:			check=1;
+    #####:  200:		else if ((enc=EVP_get_cipherbyname(&(argv[0][1]))) == NULL)
+        -:  201:			{
+    #####:  202:			BIO_printf(bio_err,"unknown option %s\n",*argv);
+        -:  203:			badops=1;
+    #####:  204:			break;
+        -:  205:			}
+    #####:  206:		argc--;
+    #####:  207:		argv++;
+        -:  208:		}
+        -:  209:
+    #####:  210:	if (badops)
+        -:  211:		{
+        -:  212:bad:
+    #####:  213:		BIO_printf(bio_err,"%s [options] <infile >outfile\n",prog);
+    #####:  214:		BIO_printf(bio_err,"where options are\n");
+    #####:  215:		BIO_printf(bio_err," -inform arg     input format - one of DER NET PEM\n");
+    #####:  216:		BIO_printf(bio_err," -outform arg    output format - one of DER NET PEM\n");
+    #####:  217:		BIO_printf(bio_err," -in arg         input file\n");
+    #####:  218:		BIO_printf(bio_err," -sgckey         Use IIS SGC key format\n");
+    #####:  219:		BIO_printf(bio_err," -passin arg     input file pass phrase source\n");
+    #####:  220:		BIO_printf(bio_err," -out arg        output file\n");
+    #####:  221:		BIO_printf(bio_err," -passout arg    output file pass phrase source\n");
+    #####:  222:		BIO_printf(bio_err," -des            encrypt PEM output with cbc des\n");
+    #####:  223:		BIO_printf(bio_err," -des3           encrypt PEM output with ede cbc des using 168 bit key\n");
+        -:  224:#ifndef OPENSSL_NO_IDEA
+    #####:  225:		BIO_printf(bio_err," -idea           encrypt PEM output with cbc idea\n");
+        -:  226:#endif
+        -:  227:#ifndef OPENSSL_NO_SEED
+    #####:  228:		BIO_printf(bio_err," -seed           encrypt PEM output with cbc seed\n");
+        -:  229:#endif
+        -:  230:#ifndef OPENSSL_NO_AES
+    #####:  231:		BIO_printf(bio_err," -aes128, -aes192, -aes256\n");
+    #####:  232:		BIO_printf(bio_err,"                 encrypt PEM output with cbc aes\n");
+        -:  233:#endif
+        -:  234:#ifndef OPENSSL_NO_CAMELLIA
+    #####:  235:		BIO_printf(bio_err," -camellia128, -camellia192, -camellia256\n");
+    #####:  236:		BIO_printf(bio_err,"                 encrypt PEM output with cbc camellia\n");
+        -:  237:#endif
+    #####:  238:		BIO_printf(bio_err," -text           print the key in text\n");
+    #####:  239:		BIO_printf(bio_err," -noout          don't print key out\n");
+    #####:  240:		BIO_printf(bio_err," -modulus        print the RSA key modulus\n");
+    #####:  241:		BIO_printf(bio_err," -check          verify key consistency\n");
+    #####:  242:		BIO_printf(bio_err," -pubin          expect a public key in input file\n");
+    #####:  243:		BIO_printf(bio_err," -pubout         output a public key\n");
+        -:  244:#ifndef OPENSSL_NO_ENGINE
+    #####:  245:		BIO_printf(bio_err," -engine e       use engine e, possibly a hardware device.\n");
+        -:  246:#endif
+    #####:  247:		goto end;
+        -:  248:		}
+        -:  249:
+    #####:  250:	ERR_load_crypto_strings();
+        -:  251:
+        -:  252:#ifndef OPENSSL_NO_ENGINE
+    #####:  253:        e = setup_engine(bio_err, engine, 0);
+        -:  254:#endif
+        -:  255:
+    #####:  256:	if(!app_passwd(bio_err, passargin, passargout, &passin, &passout)) {
+    #####:  257:		BIO_printf(bio_err, "Error getting passwords\n");
+    #####:  258:		goto end;
+        -:  259:	}
+        -:  260:
+    #####:  261:	if(check && pubin) {
+    #####:  262:		BIO_printf(bio_err, "Only private keys can be checked\n");
+    #####:  263:		goto end;
+        -:  264:	}
+        -:  265:
+    #####:  266:	out=BIO_new(BIO_s_file());
+        -:  267:
+        -:  268:	{
+        -:  269:		EVP_PKEY	*pkey;
+        -:  270:
+    #####:  271:		if (pubin)
+        -:  272:			{
+        -:  273:			int tmpformat=-1;
+    #####:  274:			if (pubin == 2)
+        -:  275:				{
+    #####:  276:				if (informat == FORMAT_PEM)
+        -:  277:					tmpformat = FORMAT_PEMRSA;
+    #####:  278:				else if (informat == FORMAT_ASN1)
+        -:  279:					tmpformat = FORMAT_ASN1RSA;
+        -:  280:				}
+    #####:  281:			else if (informat == FORMAT_NETSCAPE && sgckey)
+        -:  282:				tmpformat = FORMAT_IISSGC;
+        -:  283:			else
+        -:  284:				tmpformat = informat;
+        -:  285:					
+    #####:  286:			pkey = load_pubkey(bio_err, infile, tmpformat, 1,
+        -:  287:				passin, e, "Public Key");
+        -:  288:			}
+        -:  289:		else
+    #####:  290:			pkey = load_key(bio_err, infile,
+    #####:  291:				(informat == FORMAT_NETSCAPE && sgckey ?
+        -:  292:					FORMAT_IISSGC : informat), 1,
+        -:  293:				passin, e, "Private Key");
+        -:  294:
+    #####:  295:		if (pkey != NULL)
+    #####:  296:			rsa = EVP_PKEY_get1_RSA(pkey);
+    #####:  297:		EVP_PKEY_free(pkey);
+        -:  298:	}
+        -:  299:
+    #####:  300:	if (rsa == NULL)
+        -:  301:		{
+    #####:  302:		ERR_print_errors(bio_err);
+    #####:  303:		goto end;
+        -:  304:		}
+        -:  305:
+    #####:  306:	if (outfile == NULL)
+        -:  307:		{
+    #####:  308:		BIO_set_fp(out,stdout,BIO_NOCLOSE);
+        -:  309:#ifdef OPENSSL_SYS_VMS
+        -:  310:		{
+        -:  311:		BIO *tmpbio = BIO_new(BIO_f_linebuffer());
+        -:  312:		out = BIO_push(tmpbio, out);
+        -:  313:		}
+        -:  314:#endif
+        -:  315:		}
+        -:  316:	else
+        -:  317:		{
+    #####:  318:		if (BIO_write_filename(out,outfile) <= 0)
+        -:  319:			{
+    #####:  320:			perror(outfile);
+    #####:  321:			goto end;
+        -:  322:			}
+        -:  323:		}
+        -:  324:
+    #####:  325:	if (text) 
+    #####:  326:		if (!RSA_print(out,rsa,0))
+        -:  327:			{
+    #####:  328:			perror(outfile);
+    #####:  329:			ERR_print_errors(bio_err);
+    #####:  330:			goto end;
+        -:  331:			}
+        -:  332:
+    #####:  333:	if (modulus)
+        -:  334:		{
+    #####:  335:		BIO_printf(out,"Modulus=");
+    #####:  336:		BN_print(out,rsa->n);
+    #####:  337:		BIO_printf(out,"\n");
+        -:  338:		}
+        -:  339:
+    #####:  340:	if (check)
+        -:  341:		{
+    #####:  342:		int r = RSA_check_key(rsa);
+        -:  343:
+    #####:  344:		if (r == 1)
+    #####:  345:			BIO_printf(out,"RSA key ok\n");
+    #####:  346:		else if (r == 0)
+        -:  347:			{
+        -:  348:			unsigned long err;
+        -:  349:
+    #####:  350:			while ((err = ERR_peek_error()) != 0 &&
+    #####:  351:				ERR_GET_LIB(err) == ERR_LIB_RSA &&
+    #####:  352:				ERR_GET_FUNC(err) == RSA_F_RSA_CHECK_KEY &&
+    #####:  353:				ERR_GET_REASON(err) != ERR_R_MALLOC_FAILURE)
+        -:  354:				{
+    #####:  355:				BIO_printf(out, "RSA key error: %s\n", ERR_reason_error_string(err));
+    #####:  356:				ERR_get_error(); /* remove e from error stack */
+        -:  357:				}
+        -:  358:			}
+        -:  359:		
+    #####:  360:		if (r == -1 || ERR_peek_error() != 0) /* should happen only if r == -1 */
+        -:  361:			{
+    #####:  362:			ERR_print_errors(bio_err);
+    #####:  363:			goto end;
+        -:  364:			}
+        -:  365:		}
+        -:  366:		
+    #####:  367:	if (noout)
+        -:  368:		{
+        -:  369:		ret = 0;
+        -:  370:		goto end;
+        -:  371:		}
+    #####:  372:	BIO_printf(bio_err,"writing RSA key\n");
+    #####:  373:	if 	(outformat == FORMAT_ASN1) {
+    #####:  374:		if(pubout || pubin) 
+        -:  375:			{
+    #####:  376:			if (pubout == 2)
+    #####:  377:				i=i2d_RSAPublicKey_bio(out,rsa);
+        -:  378:			else
+    #####:  379:				i=i2d_RSA_PUBKEY_bio(out,rsa);
+        -:  380:			}
+    #####:  381:		else i=i2d_RSAPrivateKey_bio(out,rsa);
+        -:  382:	}
+        -:  383:#ifndef OPENSSL_NO_RC4
+    #####:  384:	else if (outformat == FORMAT_NETSCAPE)
+        -:  385:		{
+        -:  386:		unsigned char *p,*pp;
+        -:  387:		int size;
+        -:  388:
+        -:  389:		i=1;
+    #####:  390:		size=i2d_RSA_NET(rsa,NULL,NULL, sgckey);
+    #####:  391:		if ((p=(unsigned char *)OPENSSL_malloc(size)) == NULL)
+        -:  392:			{
+    #####:  393:			BIO_printf(bio_err,"Memory allocation failure\n");
+    #####:  394:			goto end;
+        -:  395:			}
+        -:  396:		pp=p;
+    #####:  397:		i2d_RSA_NET(rsa,&p,NULL, sgckey);
+    #####:  398:		BIO_write(out,(char *)pp,size);
+    #####:  399:		OPENSSL_free(pp);
+        -:  400:		}
+        -:  401:#endif
+    #####:  402:	else if (outformat == FORMAT_PEM) {
+    #####:  403:		if(pubout || pubin)
+        -:  404:			{
+    #####:  405:			if (pubout == 2)
+    #####:  406:		    		i=PEM_write_bio_RSAPublicKey(out,rsa);
+        -:  407:			else
+    #####:  408:		    		i=PEM_write_bio_RSA_PUBKEY(out,rsa);
+        -:  409:			}
+    #####:  410:		else i=PEM_write_bio_RSAPrivateKey(out,rsa,
+        -:  411:						enc,NULL,0,NULL,passout);
+        -:  412:#if !defined(OPENSSL_NO_DSA) && !defined(OPENSSL_NO_RC4)
+    #####:  413:	} else if (outformat == FORMAT_MSBLOB || outformat == FORMAT_PVK) {
+        -:  414:		EVP_PKEY *pk;
+    #####:  415:		pk = EVP_PKEY_new();
+    #####:  416:		EVP_PKEY_set1_RSA(pk, rsa);
+    #####:  417:		if (outformat == FORMAT_PVK)
+    #####:  418:			i = i2b_PVK_bio(out, pk, pvk_encr, 0, passout);
+    #####:  419:		else if (pubin || pubout)
+    #####:  420:			i = i2b_PublicKey_bio(out, pk);
+        -:  421:		else
+    #####:  422:			i = i2b_PrivateKey_bio(out, pk);
+    #####:  423:		EVP_PKEY_free(pk);
+        -:  424:#endif
+        -:  425:	} else	{
+    #####:  426:		BIO_printf(bio_err,"bad output format specified for outfile\n");
+    #####:  427:		goto end;
+        -:  428:		}
+    #####:  429:	if (i <= 0)
+        -:  430:		{
+    #####:  431:		BIO_printf(bio_err,"unable to write key\n");
+    #####:  432:		ERR_print_errors(bio_err);
+        -:  433:		}
+        -:  434:	else
+        -:  435:		ret=0;
+        -:  436:end:
+    #####:  437:	if(out != NULL) BIO_free_all(out);
+    #####:  438:	if(rsa != NULL) RSA_free(rsa);
+    #####:  439:	if(passin) OPENSSL_free(passin);
+    #####:  440:	if(passout) OPENSSL_free(passout);
+        -:  441:	apps_shutdown();
+    #####:  442:	OPENSSL_EXIT(ret);
+        -:  443:	}
+        -:  444:#else /* !OPENSSL_NO_RSA */
+        -:  445:
+        -:  446:# if PEDANTIC
+        -:  447:static void *dummy=&dummy;
+        -:  448:# endif
+        -:  449:
+        -:  450:#endif

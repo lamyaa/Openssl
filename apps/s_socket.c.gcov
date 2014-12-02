@@ -1,0 +1,624 @@
+        -:    0:Source:s_socket.c
+        -:    0:Graph:s_socket.gcno
+        -:    0:Data:s_socket.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* apps/s_socket.c -  socket-related functions used by s_client and s_server */
+        -:    2:/* Copyright (C) 1995-1998 Eric Young (eay@cryptsoft.com)
+        -:    3: * All rights reserved.
+        -:    4: *
+        -:    5: * This package is an SSL implementation written
+        -:    6: * by Eric Young (eay@cryptsoft.com).
+        -:    7: * The implementation was written so as to conform with Netscapes SSL.
+        -:    8: * 
+        -:    9: * This library is free for commercial and non-commercial use as long as
+        -:   10: * the following conditions are aheared to.  The following conditions
+        -:   11: * apply to all code found in this distribution, be it the RC4, RSA,
+        -:   12: * lhash, DES, etc., code; not just the SSL code.  The SSL documentation
+        -:   13: * included with this distribution is covered by the same copyright terms
+        -:   14: * except that the holder is Tim Hudson (tjh@cryptsoft.com).
+        -:   15: * 
+        -:   16: * Copyright remains Eric Young's, and as such any Copyright notices in
+        -:   17: * the code are not to be removed.
+        -:   18: * If this package is used in a product, Eric Young should be given attribution
+        -:   19: * as the author of the parts of the library used.
+        -:   20: * This can be in the form of a textual message at program startup or
+        -:   21: * in documentation (online or textual) provided with the package.
+        -:   22: * 
+        -:   23: * Redistribution and use in source and binary forms, with or without
+        -:   24: * modification, are permitted provided that the following conditions
+        -:   25: * are met:
+        -:   26: * 1. Redistributions of source code must retain the copyright
+        -:   27: *    notice, this list of conditions and the following disclaimer.
+        -:   28: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   29: *    notice, this list of conditions and the following disclaimer in the
+        -:   30: *    documentation and/or other materials provided with the distribution.
+        -:   31: * 3. All advertising materials mentioning features or use of this software
+        -:   32: *    must display the following acknowledgement:
+        -:   33: *    "This product includes cryptographic software written by
+        -:   34: *     Eric Young (eay@cryptsoft.com)"
+        -:   35: *    The word 'cryptographic' can be left out if the rouines from the library
+        -:   36: *    being used are not cryptographic related :-).
+        -:   37: * 4. If you include any Windows specific code (or a derivative thereof) from 
+        -:   38: *    the apps directory (application code) you must include an acknowledgement:
+        -:   39: *    "This product includes software written by Tim Hudson (tjh@cryptsoft.com)"
+        -:   40: * 
+        -:   41: * THIS SOFTWARE IS PROVIDED BY ERIC YOUNG ``AS IS'' AND
+        -:   42: * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   43: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+        -:   44: * ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+        -:   45: * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+        -:   46: * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+        -:   47: * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   48: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+        -:   49: * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+        -:   50: * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+        -:   51: * SUCH DAMAGE.
+        -:   52: * 
+        -:   53: * The licence and distribution terms for any publically available version or
+        -:   54: * derivative of this code cannot be changed.  i.e. this code cannot simply be
+        -:   55: * copied and put under another distribution licence
+        -:   56: * [including the GNU Public Licence.]
+        -:   57: */
+        -:   58:
+        -:   59:#include <stdio.h>
+        -:   60:#include <stdlib.h>
+        -:   61:#include <string.h>
+        -:   62:#include <errno.h>
+        -:   63:#include <signal.h>
+        -:   64:
+        -:   65:#ifdef FLAT_INC
+        -:   66:#include "e_os2.h"
+        -:   67:#else
+        -:   68:#include "../e_os2.h"
+        -:   69:#endif
+        -:   70:
+        -:   71:/* With IPv6, it looks like Digital has mixed up the proper order of
+        -:   72:   recursive header file inclusion, resulting in the compiler complaining
+        -:   73:   that u_int isn't defined, but only if _POSIX_C_SOURCE is defined, which
+        -:   74:   is needed to have fileno() declared correctly...  So let's define u_int */
+        -:   75:#if defined(OPENSSL_SYS_VMS_DECC) && !defined(__U_INT)
+        -:   76:#define __U_INT
+        -:   77:typedef unsigned int u_int;
+        -:   78:#endif
+        -:   79:
+        -:   80:#define USE_SOCKETS
+        -:   81:#define NON_MAIN
+        -:   82:#include "apps.h"
+        -:   83:#undef USE_SOCKETS
+        -:   84:#undef NON_MAIN
+        -:   85:#include "s_apps.h"
+        -:   86:#include <openssl/ssl.h>
+        -:   87:
+        -:   88:#ifdef FLAT_INC
+        -:   89:#include "e_os.h"
+        -:   90:#else
+        -:   91:#include "../e_os.h"
+        -:   92:#endif
+        -:   93:
+        -:   94:#ifndef OPENSSL_NO_SOCK
+        -:   95:
+        -:   96:#if defined(OPENSSL_SYS_NETWARE) && defined(NETWARE_BSDSOCK)
+        -:   97:#include "netdb.h"
+        -:   98:#endif
+        -:   99:
+        -:  100:static struct hostent *GetHostByName(char *name);
+        -:  101:#if defined(OPENSSL_SYS_WINDOWS) || (defined(OPENSSL_SYS_NETWARE) && !defined(NETWARE_BSDSOCK))
+        -:  102:static void ssl_sock_cleanup(void);
+        -:  103:#endif
+        -:  104:static int ssl_sock_init(void);
+        -:  105:static int init_client_ip(int *sock,unsigned char ip[4], int port, int type);
+        -:  106:static int init_server(int *sock, int port, int type);
+        -:  107:static int init_server_long(int *sock, int port,char *ip, int type);
+        -:  108:static int do_accept(int acc_sock, int *sock, char **host);
+        -:  109:static int host_ip(char *str, unsigned char ip[4]);
+        -:  110:
+        -:  111:#ifdef OPENSSL_SYS_WIN16
+        -:  112:#define SOCKET_PROTOCOL	0 /* more microsoft stupidity */
+        -:  113:#else
+        -:  114:#define SOCKET_PROTOCOL	IPPROTO_TCP
+        -:  115:#endif
+        -:  116:
+        -:  117:#if defined(OPENSSL_SYS_NETWARE) && !defined(NETWARE_BSDSOCK)
+        -:  118:static int wsa_init_done=0;
+        -:  119:#endif
+        -:  120:
+        -:  121:#ifdef OPENSSL_SYS_WINDOWS
+        -:  122:static struct WSAData wsa_state;
+        -:  123:static int wsa_init_done=0;
+        -:  124:
+        -:  125:#ifdef OPENSSL_SYS_WIN16
+        -:  126:static HWND topWnd=0;
+        -:  127:static FARPROC lpTopWndProc=NULL;
+        -:  128:static FARPROC lpTopHookProc=NULL;
+        -:  129:extern HINSTANCE _hInstance;  /* nice global CRT provides */
+        -:  130:
+        -:  131:static LONG FAR PASCAL topHookProc(HWND hwnd, UINT message, WPARAM wParam,
+        -:  132:	     LPARAM lParam)
+        -:  133:	{
+        -:  134:	if (hwnd == topWnd)
+        -:  135:		{
+        -:  136:		switch(message)
+        -:  137:			{
+        -:  138:		case WM_DESTROY:
+        -:  139:		case WM_CLOSE:
+        -:  140:			SetWindowLong(topWnd,GWL_WNDPROC,(LONG)lpTopWndProc);
+        -:  141:			ssl_sock_cleanup();
+        -:  142:			break;
+        -:  143:			}
+        -:  144:		}
+        -:  145:	return CallWindowProc(lpTopWndProc,hwnd,message,wParam,lParam);
+        -:  146:	}
+        -:  147:
+        -:  148:static BOOL CALLBACK enumproc(HWND hwnd,LPARAM lParam)
+        -:  149:	{
+        -:  150:	topWnd=hwnd;
+        -:  151:	return(FALSE);
+        -:  152:	}
+        -:  153:
+        -:  154:#endif /* OPENSSL_SYS_WIN32 */
+        -:  155:#endif /* OPENSSL_SYS_WINDOWS */
+        -:  156:
+        -:  157:#ifdef OPENSSL_SYS_WINDOWS
+        -:  158:static void ssl_sock_cleanup(void)
+        -:  159:	{
+        -:  160:	if (wsa_init_done)
+        -:  161:		{
+        -:  162:		wsa_init_done=0;
+        -:  163:#ifndef OPENSSL_SYS_WINCE
+        -:  164:		WSACancelBlockingCall();
+        -:  165:#endif
+        -:  166:		WSACleanup();
+        -:  167:		}
+        -:  168:	}
+        -:  169:#elif defined(OPENSSL_SYS_NETWARE) && !defined(NETWARE_BSDSOCK)
+        -:  170:static void sock_cleanup(void)
+        -:  171:    {
+        -:  172:    if (wsa_init_done)
+        -:  173:        {
+        -:  174:        wsa_init_done=0;
+        -:  175:		WSACleanup();
+        -:  176:		}
+        -:  177:	}
+        -:  178:#endif
+        -:  179:
+        -:  180:static int ssl_sock_init(void)
+        -:  181:	{
+        -:  182:#ifdef WATT32
+        -:  183:	extern int _watt_do_exit;
+        -:  184:	_watt_do_exit = 0;
+        -:  185:	if (sock_init())
+        -:  186:		return (0);
+        -:  187:#elif defined(OPENSSL_SYS_WINDOWS)
+        -:  188:	if (!wsa_init_done)
+        -:  189:		{
+        -:  190:		int err;
+        -:  191:	  
+        -:  192:#ifdef SIGINT
+        -:  193:		signal(SIGINT,(void (*)(int))ssl_sock_cleanup);
+        -:  194:#endif
+        -:  195:		wsa_init_done=1;
+        -:  196:		memset(&wsa_state,0,sizeof(wsa_state));
+        -:  197:		if (WSAStartup(0x0101,&wsa_state)!=0)
+        -:  198:			{
+        -:  199:			err=WSAGetLastError();
+        -:  200:			BIO_printf(bio_err,"unable to start WINSOCK, error code=%d\n",err);
+        -:  201:			return(0);
+        -:  202:			}
+        -:  203:
+        -:  204:#ifdef OPENSSL_SYS_WIN16
+        -:  205:		EnumTaskWindows(GetCurrentTask(),enumproc,0L);
+        -:  206:		lpTopWndProc=(FARPROC)GetWindowLong(topWnd,GWL_WNDPROC);
+        -:  207:		lpTopHookProc=MakeProcInstance((FARPROC)topHookProc,_hInstance);
+        -:  208:
+        -:  209:		SetWindowLong(topWnd,GWL_WNDPROC,(LONG)lpTopHookProc);
+        -:  210:#endif /* OPENSSL_SYS_WIN16 */
+        -:  211:		}
+        -:  212:#elif defined(OPENSSL_SYS_NETWARE) && !defined(NETWARE_BSDSOCK)
+        -:  213:   WORD wVerReq;
+        -:  214:   WSADATA wsaData;
+        -:  215:   int err;
+        -:  216:
+        -:  217:   if (!wsa_init_done)
+        -:  218:      {
+        -:  219:   
+        -:  220:# ifdef SIGINT
+        -:  221:      signal(SIGINT,(void (*)(int))sock_cleanup);
+        -:  222:# endif
+        -:  223:
+        -:  224:      wsa_init_done=1;
+        -:  225:      wVerReq = MAKEWORD( 2, 0 );
+        -:  226:      err = WSAStartup(wVerReq,&wsaData);
+        -:  227:      if (err != 0)
+        -:  228:         {
+        -:  229:         BIO_printf(bio_err,"unable to start WINSOCK2, error code=%d\n",err);
+        -:  230:         return(0);
+        -:  231:         }
+        -:  232:      }
+        -:  233:#endif /* OPENSSL_SYS_WINDOWS */
+        -:  234:	return(1);
+        -:  235:	}
+        -:  236:
+    10000:  237:int init_client(int *sock, char *host, int port, int type)
+        -:  238:	{
+        -:  239:	unsigned char ip[4];
+        -:  240:
+        -:  241:	memset(ip, '\0', sizeof ip);
+    10000:  242:	if (!host_ip(host,&(ip[0])))
+        -:  243:		return 0;
+    10000:  244:	return init_client_ip(sock,ip,port,type);
+        -:  245:	}
+        -:  246:
+    10000:  247:static int init_client_ip(int *sock, unsigned char ip[4], int port, int type)
+        -:  248:	{
+        -:  249:	unsigned long addr;
+        -:  250:	struct sockaddr_in them;
+        -:  251:	int s,i;
+        -:  252:
+        -:  253:	if (!ssl_sock_init()) return(0);
+        -:  254:
+        -:  255:	memset((char *)&them,0,sizeof(them));
+    10000:  256:	them.sin_family=AF_INET;
+    10000:  257:	them.sin_port=htons((unsigned short)port);
+    20000:  258:	addr=(unsigned long)
+    20000:  259:		((unsigned long)ip[0]<<24L)|
+    20000:  260:		((unsigned long)ip[1]<<16L)|
+    10000:  261:		((unsigned long)ip[2]<< 8L)|
+    10000:  262:		((unsigned long)ip[3]);
+    20000:  263:	them.sin_addr.s_addr=htonl(addr);
+        -:  264:
+    10000:  265:	if (type == SOCK_STREAM)
+    10000:  266:		s=socket(AF_INET,SOCK_STREAM,SOCKET_PROTOCOL);
+        -:  267:	else /* ( type == SOCK_DGRAM) */
+    #####:  268:		s=socket(AF_INET,SOCK_DGRAM,IPPROTO_UDP);
+        -:  269:			
+    10000:  270:	if (s == INVALID_SOCKET) { perror("socket"); return(0); }
+        -:  271:
+        -:  272:#if defined(SO_KEEPALIVE) && !defined(OPENSSL_SYS_MPE)
+    10000:  273:	if (type == SOCK_STREAM)
+        -:  274:		{
+    10000:  275:		i=0;
+    10000:  276:		i=setsockopt(s,SOL_SOCKET,SO_KEEPALIVE,(char *)&i,sizeof(i));
+    10000:  277:		if (i < 0) { perror("keepalive"); return(0); }
+        -:  278:		}
+        -:  279:#endif
+        -:  280:
+    10000:  281:	if (connect(s,(struct sockaddr *)&them,sizeof(them)) == -1)
+    #####:  282:		{ closesocket(s); perror("connect"); return(0); }
+    10000:  283:	*sock=s;
+    10000:  284:	return(1);
+        -:  285:	}
+        -:  286:
+    #####:  287:int do_server(int port, int type, int *ret, int (*cb)(char *hostname, int s, unsigned char *context), unsigned char *context)
+        -:  288:	{
+        -:  289:	int sock;
+    #####:  290:	char *name = NULL;
+    #####:  291:	int accept_socket = 0;
+        -:  292:	int i;
+        -:  293:
+    #####:  294:	if (!init_server(&accept_socket,port,type)) return(0);
+        -:  295:
+    #####:  296:	if (ret != NULL)
+        -:  297:		{
+    #####:  298:		*ret=accept_socket;
+        -:  299:		/* return(1);*/
+        -:  300:		}
+        -:  301:  	for (;;)
+        -:  302:  		{
+    #####:  303:		if (type==SOCK_STREAM)
+        -:  304:			{
+    #####:  305:			if (do_accept(accept_socket,&sock,&name) == 0)
+        -:  306:				{
+    #####:  307:				SHUTDOWN(accept_socket);
+    #####:  308:				return(0);
+        -:  309:				}
+        -:  310:			}
+        -:  311:		else
+    #####:  312:			sock = accept_socket;
+    #####:  313:		i=(*cb)(name,sock, context);
+    #####:  314:		if (name != NULL) OPENSSL_free(name);
+    #####:  315:		if (type==SOCK_STREAM)
+    #####:  316:			SHUTDOWN2(sock);
+    #####:  317:		if (i < 0)
+        -:  318:			{
+    #####:  319:			SHUTDOWN2(accept_socket);
+    #####:  320:			return(i);
+        -:  321:			}
+        -:  322:		}
+        -:  323:	}
+        -:  324:
+    #####:  325:static int init_server_long(int *sock, int port, char *ip, int type)
+        -:  326:	{
+        -:  327:	int ret=0;
+        -:  328:	struct sockaddr_in server;
+        -:  329:	int s= -1;
+        -:  330:
+        -:  331:	if (!ssl_sock_init()) return(0);
+        -:  332:
+        -:  333:	memset((char *)&server,0,sizeof(server));
+    #####:  334:	server.sin_family=AF_INET;
+    #####:  335:	server.sin_port=htons((unsigned short)port);
+    #####:  336:	if (ip == NULL)
+        -:  337:		server.sin_addr.s_addr=INADDR_ANY;
+        -:  338:	else
+        -:  339:/* Added for T3E, address-of fails on bit field (beckman@acl.lanl.gov) */
+        -:  340:#ifndef BIT_FIELD_LIMITS
+        -:  341:		memcpy(&server.sin_addr.s_addr,ip,4);
+        -:  342:#else
+        -:  343:		memcpy(&server.sin_addr,ip,4);
+        -:  344:#endif
+        -:  345:	
+    #####:  346:		if (type == SOCK_STREAM)
+    #####:  347:			s=socket(AF_INET,SOCK_STREAM,SOCKET_PROTOCOL);
+        -:  348:		else /* type == SOCK_DGRAM */
+    #####:  349:			s=socket(AF_INET, SOCK_DGRAM,IPPROTO_UDP);
+        -:  350:
+    #####:  351:	if (s == INVALID_SOCKET) goto err;
+        -:  352:#if defined SOL_SOCKET && defined SO_REUSEADDR
+        -:  353:		{
+    #####:  354:		int j = 1;
+    #####:  355:		setsockopt(s, SOL_SOCKET, SO_REUSEADDR,
+        -:  356:			   (void *) &j, sizeof j);
+        -:  357:		}
+        -:  358:#endif
+    #####:  359:	if (bind(s,(struct sockaddr *)&server,sizeof(server)) == -1)
+        -:  360:		{
+        -:  361:#ifndef OPENSSL_SYS_WINDOWS
+    #####:  362:		perror("bind");
+        -:  363:#endif
+    #####:  364:		goto err;
+        -:  365:		}
+        -:  366:	/* Make it 128 for linux */
+    #####:  367:	if (type==SOCK_STREAM && listen(s,128) == -1) goto err;
+    #####:  368:	*sock=s;
+        -:  369:	ret=1;
+        -:  370:err:
+    #####:  371:	if ((ret == 0) && (s != -1))
+        -:  372:		{
+    #####:  373:		SHUTDOWN(s);
+        -:  374:		}
+        -:  375:	return(ret);
+        -:  376:	}
+        -:  377:
+        -:  378:static int init_server(int *sock, int port, int type)
+        -:  379:	{
+    #####:  380:	return(init_server_long(sock, port, NULL, type));
+        -:  381:	}
+        -:  382:
+    #####:  383:static int do_accept(int acc_sock, int *sock, char **host)
+        -:  384:	{
+        -:  385:	int ret;
+        -:  386:	struct hostent *h1,*h2;
+        -:  387:	static struct sockaddr_in from;
+        -:  388:	int len;
+        -:  389:/*	struct linger ling; */
+        -:  390:
+        -:  391:	if (!ssl_sock_init()) return(0);
+        -:  392:
+        -:  393:#ifndef OPENSSL_SYS_WINDOWS
+        -:  394:redoit:
+        -:  395:#endif
+        -:  396:
+        -:  397:	memset((char *)&from,0,sizeof(from));
+    #####:  398:	len=sizeof(from);
+        -:  399:	/* Note: under VMS with SOCKETSHR the fourth parameter is currently
+        -:  400:	 * of type (int *) whereas under other systems it is (void *) if
+        -:  401:	 * you don't have a cast it will choke the compiler: if you do
+        -:  402:	 * have a cast then you can either go for (int *) or (void *).
+        -:  403:	 */
+    #####:  404:	ret=accept(acc_sock,(struct sockaddr *)&from,(void *)&len);
+    #####:  405:	if (ret == INVALID_SOCKET)
+        -:  406:		{
+        -:  407:#if defined(OPENSSL_SYS_WINDOWS) || (defined(OPENSSL_SYS_NETWARE) && !defined(NETWARE_BSDSOCK))
+        -:  408:		int i;
+        -:  409:		i=WSAGetLastError();
+        -:  410:		BIO_printf(bio_err,"accept error %d\n",i);
+        -:  411:#else
+    #####:  412:		if (errno == EINTR)
+        -:  413:			{
+        -:  414:			/*check_timeout(); */
+        -:  415:			goto redoit;
+        -:  416:			}
+    #####:  417:		fprintf(stderr,"errno=%d ",errno);
+    #####:  418:		perror("accept");
+        -:  419:#endif
+    #####:  420:		return(0);
+        -:  421:		}
+        -:  422:
+        -:  423:/*
+        -:  424:	ling.l_onoff=1;
+        -:  425:	ling.l_linger=0;
+        -:  426:	i=setsockopt(ret,SOL_SOCKET,SO_LINGER,(char *)&ling,sizeof(ling));
+        -:  427:	if (i < 0) { perror("linger"); return(0); }
+        -:  428:	i=0;
+        -:  429:	i=setsockopt(ret,SOL_SOCKET,SO_KEEPALIVE,(char *)&i,sizeof(i));
+        -:  430:	if (i < 0) { perror("keepalive"); return(0); }
+        -:  431:*/
+        -:  432:
+    #####:  433:	if (host == NULL) goto end;
+        -:  434:#ifndef BIT_FIELD_LIMITS
+        -:  435:	/* I should use WSAAsyncGetHostByName() under windows */
+    #####:  436:	h1=gethostbyaddr((char *)&from.sin_addr.s_addr,
+        -:  437:		sizeof(from.sin_addr.s_addr),AF_INET);
+        -:  438:#else
+        -:  439:	h1=gethostbyaddr((char *)&from.sin_addr,
+        -:  440:		sizeof(struct in_addr),AF_INET);
+        -:  441:#endif
+    #####:  442:	if (h1 == NULL)
+        -:  443:		{
+    #####:  444:		BIO_printf(bio_err,"bad gethostbyaddr\n");
+    #####:  445:		*host=NULL;
+        -:  446:		/* return(0); */
+        -:  447:		}
+        -:  448:	else
+        -:  449:		{
+    #####:  450:		if ((*host=(char *)OPENSSL_malloc(strlen(h1->h_name)+1)) == NULL)
+        -:  451:			{
+    #####:  452:			perror("OPENSSL_malloc");
+    #####:  453:			return(0);
+        -:  454:			}
+    #####:  455:		BUF_strlcpy(*host,h1->h_name,strlen(h1->h_name)+1);
+        -:  456:
+    #####:  457:		h2=GetHostByName(*host);
+    #####:  458:		if (h2 == NULL)
+        -:  459:			{
+    #####:  460:			BIO_printf(bio_err,"gethostbyname failure\n");
+    #####:  461:			return(0);
+        -:  462:			}
+    #####:  463:		if (h2->h_addrtype != AF_INET)
+        -:  464:			{
+    #####:  465:			BIO_printf(bio_err,"gethostbyname addr is not AF_INET\n");
+    #####:  466:			return(0);
+        -:  467:			}
+        -:  468:		}
+        -:  469:end:
+    #####:  470:	*sock=ret;
+    #####:  471:	return(1);
+        -:  472:	}
+        -:  473:
+    10000:  474:int extract_host_port(char *str, char **host_ptr, unsigned char *ip,
+        -:  475:	     short *port_ptr)
+        -:  476:	{
+        -:  477:	char *h,*p;
+        -:  478:
+        -:  479:	h=str;
+    10000:  480:	p=strchr(str,':');
+    10000:  481:	if (p == NULL)
+        -:  482:		{
+    #####:  483:		BIO_printf(bio_err,"no port defined\n");
+    #####:  484:		return(0);
+        -:  485:		}
+    10000:  486:	*(p++)='\0';
+        -:  487:
+    10000:  488:	if ((ip != NULL) && !host_ip(str,ip))
+        -:  489:		goto err;
+    10000:  490:	if (host_ptr != NULL) *host_ptr=h;
+        -:  491:
+    10000:  492:	if (!extract_port(p,port_ptr))
+        -:  493:		goto err;
+        -:  494:	return(1);
+        -:  495:err:
+        -:  496:	return(0);
+        -:  497:	}
+        -:  498:
+    10000:  499:static int host_ip(char *str, unsigned char ip[4])
+        -:  500:	{
+        -:  501:	unsigned int in[4]; 
+        -:  502:	int i;
+        -:  503:
+    10000:  504:	if (sscanf(str,"%u.%u.%u.%u",&(in[0]),&(in[1]),&(in[2]),&(in[3])) == 4)
+        -:  505:		{
+    40000:  506:		for (i=0; i<4; i++)
+    40000:  507:			if (in[i] > 255)
+        -:  508:				{
+    #####:  509:				BIO_printf(bio_err,"invalid IP address\n");
+    #####:  510:				goto err;
+        -:  511:				}
+    10000:  512:		ip[0]=in[0];
+    10000:  513:		ip[1]=in[1];
+    10000:  514:		ip[2]=in[2];
+    10000:  515:		ip[3]=in[3];
+        -:  516:		}
+        -:  517:	else
+        -:  518:		{ /* do a gethostbyname */
+        -:  519:		struct hostent *he;
+        -:  520:
+        -:  521:		if (!ssl_sock_init()) return(0);
+        -:  522:
+    #####:  523:		he=GetHostByName(str);
+    #####:  524:		if (he == NULL)
+        -:  525:			{
+    #####:  526:			BIO_printf(bio_err,"gethostbyname failure\n");
+    #####:  527:			goto err;
+        -:  528:			}
+        -:  529:		/* cast to short because of win16 winsock definition */
+    #####:  530:		if ((short)he->h_addrtype != AF_INET)
+        -:  531:			{
+    #####:  532:			BIO_printf(bio_err,"gethostbyname addr is not AF_INET\n");
+    #####:  533:			return(0);
+        -:  534:			}
+    #####:  535:		ip[0]=he->h_addr_list[0][0];
+    #####:  536:		ip[1]=he->h_addr_list[0][1];
+    #####:  537:		ip[2]=he->h_addr_list[0][2];
+    #####:  538:		ip[3]=he->h_addr_list[0][3];
+        -:  539:		}
+        -:  540:	return(1);
+        -:  541:err:
+        -:  542:	return(0);
+        -:  543:	}
+        -:  544:
+    10000:  545:int extract_port(char *str, short *port_ptr)
+        -:  546:	{
+        -:  547:	int i;
+        -:  548:	struct servent *s;
+        -:  549:
+        -:  550:	i=atoi(str);
+    10000:  551:	if (i != 0)
+    10000:  552:		*port_ptr=(unsigned short)i;
+        -:  553:	else
+        -:  554:		{
+    #####:  555:		s=getservbyname(str,"tcp");
+    #####:  556:		if (s == NULL)
+        -:  557:			{
+    #####:  558:			BIO_printf(bio_err,"getservbyname failure for %s\n",str);
+    #####:  559:			return(0);
+        -:  560:			}
+    #####:  561:		*port_ptr=ntohs((unsigned short)s->s_port);
+        -:  562:		}
+        -:  563:	return(1);
+        -:  564:	}
+        -:  565:
+        -:  566:#define GHBN_NUM	4
+        -:  567:static struct ghbn_cache_st
+        -:  568:	{
+        -:  569:	char name[128];
+        -:  570:	struct hostent ent;
+        -:  571:	unsigned long order;
+        -:  572:	} ghbn_cache[GHBN_NUM];
+        -:  573:
+        -:  574:static unsigned long ghbn_hits=0L;
+        -:  575:static unsigned long ghbn_miss=0L;
+        -:  576:
+    #####:  577:static struct hostent *GetHostByName(char *name)
+        -:  578:	{
+        -:  579:	struct hostent *ret;
+        -:  580:	int i,lowi=0;
+        -:  581:	unsigned long low= (unsigned long)-1;
+        -:  582:
+    #####:  583:	for (i=0; i<GHBN_NUM; i++)
+        -:  584:		{
+    #####:  585:		if (low > ghbn_cache[i].order)
+        -:  586:			{
+        -:  587:			low=ghbn_cache[i].order;
+        -:  588:			lowi=i;
+        -:  589:			}
+    #####:  590:		if (ghbn_cache[i].order > 0)
+        -:  591:			{
+    #####:  592:			if (strncmp(name,ghbn_cache[i].name,128) == 0)
+        -:  593:				break;
+        -:  594:			}
+        -:  595:		}
+    #####:  596:	if (i == GHBN_NUM) /* no hit*/
+        -:  597:		{
+    #####:  598:		ghbn_miss++;
+    #####:  599:		ret=gethostbyname(name);
+    #####:  600:		if (ret == NULL) return(NULL);
+        -:  601:		/* else add to cache */
+    #####:  602:		if(strlen(name) < sizeof ghbn_cache[0].name)
+        -:  603:			{
+    #####:  604:			strcpy(ghbn_cache[lowi].name,name);
+    #####:  605:			memcpy((char *)&(ghbn_cache[lowi].ent),ret,sizeof(struct hostent));
+    #####:  606:			ghbn_cache[lowi].order=ghbn_miss+ghbn_hits;
+        -:  607:			}
+    #####:  608:		return(ret);
+        -:  609:		}
+        -:  610:	else
+        -:  611:		{
+    #####:  612:		ghbn_hits++;
+        -:  613:		ret= &(ghbn_cache[i].ent);
+    #####:  614:		ghbn_cache[i].order=ghbn_miss+ghbn_hits;
+    #####:  615:		return(ret);
+        -:  616:		}
+        -:  617:	}
+        -:  618:
+        -:  619:#endif

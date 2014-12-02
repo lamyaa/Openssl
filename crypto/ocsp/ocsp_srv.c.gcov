@@ -1,0 +1,269 @@
+        -:    0:Source:ocsp_srv.c
+        -:    0:Graph:ocsp_srv.gcno
+        -:    0:Data:ocsp_srv.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* ocsp_srv.c */
+        -:    2:/* Written by Dr Stephen N Henson (steve@openssl.org) for the OpenSSL
+        -:    3: * project 2001.
+        -:    4: */
+        -:    5:/* ====================================================================
+        -:    6: * Copyright (c) 1998-2001 The OpenSSL Project.  All rights reserved.
+        -:    7: *
+        -:    8: * Redistribution and use in source and binary forms, with or without
+        -:    9: * modification, are permitted provided that the following conditions
+        -:   10: * are met:
+        -:   11: *
+        -:   12: * 1. Redistributions of source code must retain the above copyright
+        -:   13: *    notice, this list of conditions and the following disclaimer. 
+        -:   14: *
+        -:   15: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   16: *    notice, this list of conditions and the following disclaimer in
+        -:   17: *    the documentation and/or other materials provided with the
+        -:   18: *    distribution.
+        -:   19: *
+        -:   20: * 3. All advertising materials mentioning features or use of this
+        -:   21: *    software must display the following acknowledgment:
+        -:   22: *    "This product includes software developed by the OpenSSL Project
+        -:   23: *    for use in the OpenSSL Toolkit. (http://www.openssl.org/)"
+        -:   24: *
+        -:   25: * 4. The names "OpenSSL Toolkit" and "OpenSSL Project" must not be used to
+        -:   26: *    endorse or promote products derived from this software without
+        -:   27: *    prior written permission. For written permission, please contact
+        -:   28: *    openssl-core@openssl.org.
+        -:   29: *
+        -:   30: * 5. Products derived from this software may not be called "OpenSSL"
+        -:   31: *    nor may "OpenSSL" appear in their names without prior written
+        -:   32: *    permission of the OpenSSL Project.
+        -:   33: *
+        -:   34: * 6. Redistributions of any form whatsoever must retain the following
+        -:   35: *    acknowledgment:
+        -:   36: *    "This product includes software developed by the OpenSSL Project
+        -:   37: *    for use in the OpenSSL Toolkit (http://www.openssl.org/)"
+        -:   38: *
+        -:   39: * THIS SOFTWARE IS PROVIDED BY THE OpenSSL PROJECT ``AS IS'' AND ANY
+        -:   40: * EXPRESSED OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   41: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+        -:   42: * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE OpenSSL PROJECT OR
+        -:   43: * ITS CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+        -:   44: * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+        -:   45: * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+        -:   46: * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   47: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+        -:   48: * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+        -:   49: * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+        -:   50: * OF THE POSSIBILITY OF SUCH DAMAGE.
+        -:   51: * ====================================================================
+        -:   52: *
+        -:   53: * This product includes cryptographic software written by Eric Young
+        -:   54: * (eay@cryptsoft.com).  This product includes software written by Tim
+        -:   55: * Hudson (tjh@cryptsoft.com).
+        -:   56: *
+        -:   57: */
+        -:   58:
+        -:   59:#include <stdio.h>
+        -:   60:#include <cryptlib.h>
+        -:   61:#include <openssl/objects.h>
+        -:   62:#include <openssl/rand.h>
+        -:   63:#include <openssl/x509.h>
+        -:   64:#include <openssl/pem.h>
+        -:   65:#include <openssl/x509v3.h>
+        -:   66:#include <openssl/ocsp.h>
+        -:   67:
+        -:   68:/* Utility functions related to sending OCSP responses and extracting
+        -:   69: * relevant information from the request.
+        -:   70: */
+        -:   71:
+    #####:   72:int OCSP_request_onereq_count(OCSP_REQUEST *req)
+        -:   73:	{
+    #####:   74:	return sk_OCSP_ONEREQ_num(req->tbsRequest->requestList);
+        -:   75:	}
+        -:   76:
+    #####:   77:OCSP_ONEREQ *OCSP_request_onereq_get0(OCSP_REQUEST *req, int i)
+        -:   78:	{
+    #####:   79:	return sk_OCSP_ONEREQ_value(req->tbsRequest->requestList, i);
+        -:   80:	}
+        -:   81:
+    #####:   82:OCSP_CERTID *OCSP_onereq_get0_id(OCSP_ONEREQ *one)
+        -:   83:	{
+    #####:   84:	return one->reqCert;
+        -:   85:	}
+        -:   86:
+    #####:   87:int OCSP_id_get0_info(ASN1_OCTET_STRING **piNameHash, ASN1_OBJECT **pmd,
+        -:   88:			ASN1_OCTET_STRING **pikeyHash,
+        -:   89:			ASN1_INTEGER **pserial, OCSP_CERTID *cid)
+        -:   90:	{
+    #####:   91:	if (!cid) return 0;
+    #####:   92:	if (pmd) *pmd = cid->hashAlgorithm->algorithm;
+    #####:   93:	if(piNameHash) *piNameHash = cid->issuerNameHash;
+    #####:   94:	if (pikeyHash) *pikeyHash = cid->issuerKeyHash;
+    #####:   95:	if (pserial) *pserial = cid->serialNumber;
+        -:   96:	return 1;
+        -:   97:	}
+        -:   98:
+    #####:   99:int OCSP_request_is_signed(OCSP_REQUEST *req)
+        -:  100:	{
+    #####:  101:	if(req->optionalSignature) return 1;
+    #####:  102:	return 0;
+        -:  103:	}
+        -:  104:
+        -:  105:/* Create an OCSP response and encode an optional basic response */
+    #####:  106:OCSP_RESPONSE *OCSP_response_create(int status, OCSP_BASICRESP *bs)
+        -:  107:        {
+        -:  108:        OCSP_RESPONSE *rsp = NULL;
+        -:  109:
+    #####:  110:	if (!(rsp = OCSP_RESPONSE_new())) goto err;
+    #####:  111:	if (!(ASN1_ENUMERATED_set(rsp->responseStatus, status))) goto err;
+    #####:  112:	if (!bs) return rsp;
+    #####:  113:	if (!(rsp->responseBytes = OCSP_RESPBYTES_new())) goto err;
+    #####:  114:	rsp->responseBytes->responseType = OBJ_nid2obj(NID_id_pkix_OCSP_basic);
+    #####:  115:	if (!ASN1_item_pack(bs, ASN1_ITEM_rptr(OCSP_BASICRESP), &rsp->responseBytes->response))
+        -:  116:				goto err;
+        -:  117:	return rsp;
+        -:  118:err:
+    #####:  119:	if (rsp) OCSP_RESPONSE_free(rsp);
+        -:  120:	return NULL;
+        -:  121:	}
+        -:  122:
+        -:  123:
+    #####:  124:OCSP_SINGLERESP *OCSP_basic_add1_status(OCSP_BASICRESP *rsp,
+        -:  125:						OCSP_CERTID *cid,
+        -:  126:						int status, int reason,
+        -:  127:						ASN1_TIME *revtime,
+        -:  128:					ASN1_TIME *thisupd, ASN1_TIME *nextupd)
+        -:  129:	{
+        -:  130:	OCSP_SINGLERESP *single = NULL;
+        -:  131:	OCSP_CERTSTATUS *cs;
+        -:  132:	OCSP_REVOKEDINFO *ri;
+        -:  133:
+    #####:  134:	if(!rsp->tbsResponseData->responses &&
+    #####:  135:	    !(rsp->tbsResponseData->responses = sk_OCSP_SINGLERESP_new_null()))
+        -:  136:		goto err;
+        -:  137:
+    #####:  138:	if (!(single = OCSP_SINGLERESP_new()))
+        -:  139:		goto err;
+        -:  140:
+        -:  141:
+        -:  142:
+    #####:  143:	if (!ASN1_TIME_to_generalizedtime(thisupd, &single->thisUpdate))
+        -:  144:		goto err;
+    #####:  145:	if (nextupd &&
+    #####:  146:		!ASN1_TIME_to_generalizedtime(nextupd, &single->nextUpdate))
+        -:  147:		goto err;
+        -:  148:
+    #####:  149:	OCSP_CERTID_free(single->certId);
+        -:  150:
+    #####:  151:	if(!(single->certId = OCSP_CERTID_dup(cid)))
+        -:  152:		goto err;
+        -:  153:
+    #####:  154:	cs = single->certStatus;
+    #####:  155:	switch(cs->type = status)
+        -:  156:		{
+        -:  157:	case V_OCSP_CERTSTATUS_REVOKED:
+    #####:  158:		if (!revtime)
+        -:  159:		        {
+    #####:  160:		        OCSPerr(OCSP_F_OCSP_BASIC_ADD1_STATUS,OCSP_R_NO_REVOKED_TIME);
+    #####:  161:			goto err;
+        -:  162:		        }
+    #####:  163:		if (!(cs->value.revoked = ri = OCSP_REVOKEDINFO_new())) goto err;
+    #####:  164:		if (!ASN1_TIME_to_generalizedtime(revtime, &ri->revocationTime))
+        -:  165:			goto err;	
+    #####:  166:		if (reason != OCSP_REVOKED_STATUS_NOSTATUS)
+        -:  167:		        {
+    #####:  168:			if (!(ri->revocationReason = ASN1_ENUMERATED_new())) 
+        -:  169:			        goto err;
+    #####:  170:			if (!(ASN1_ENUMERATED_set(ri->revocationReason, 
+        -:  171:						  reason)))
+        -:  172:			        goto err;	
+        -:  173:			}
+        -:  174:		break;
+        -:  175:
+        -:  176:	case V_OCSP_CERTSTATUS_GOOD:
+    #####:  177:		cs->value.good = ASN1_NULL_new();
+    #####:  178:		break;
+        -:  179:
+        -:  180:	case V_OCSP_CERTSTATUS_UNKNOWN:
+    #####:  181:		cs->value.unknown = ASN1_NULL_new();
+    #####:  182:		break;
+        -:  183:
+        -:  184:	default:
+        -:  185:		goto err;
+        -:  186:
+        -:  187:		}
+    #####:  188:	if (!(sk_OCSP_SINGLERESP_push(rsp->tbsResponseData->responses, single)))
+        -:  189:		goto err;
+        -:  190:	return single;
+        -:  191:err:
+    #####:  192:	OCSP_SINGLERESP_free(single);
+    #####:  193:	return NULL;
+        -:  194:	}
+        -:  195:
+        -:  196:/* Add a certificate to an OCSP request */
+        -:  197:
+    #####:  198:int OCSP_basic_add1_cert(OCSP_BASICRESP *resp, X509 *cert)
+        -:  199:	{
+    #####:  200:	if (!resp->certs && !(resp->certs = sk_X509_new_null()))
+        -:  201:		return 0;
+        -:  202:
+    #####:  203:	if(!sk_X509_push(resp->certs, cert)) return 0;
+    #####:  204:	CRYPTO_add(&cert->references, 1, CRYPTO_LOCK_X509);
+    #####:  205:	return 1;
+        -:  206:	}
+        -:  207:
+    #####:  208:int OCSP_basic_sign(OCSP_BASICRESP *brsp, 
+        -:  209:			X509 *signer, EVP_PKEY *key, const EVP_MD *dgst,
+        -:  210:			STACK_OF(X509) *certs, unsigned long flags)
+        -:  211:        {
+        -:  212:	int i;
+        -:  213:	OCSP_RESPID *rid;
+        -:  214:
+    #####:  215:	if (!X509_check_private_key(signer, key))
+        -:  216:		{
+    #####:  217:		OCSPerr(OCSP_F_OCSP_BASIC_SIGN, OCSP_R_PRIVATE_KEY_DOES_NOT_MATCH_CERTIFICATE);
+    #####:  218:		goto err;
+        -:  219:		}
+        -:  220:
+    #####:  221:	if(!(flags & OCSP_NOCERTS))
+        -:  222:		{
+    #####:  223:		if(!OCSP_basic_add1_cert(brsp, signer))
+        -:  224:			goto err;
+    #####:  225:		for (i = 0; i < sk_X509_num(certs); i++)
+        -:  226:			{
+    #####:  227:			X509 *tmpcert = sk_X509_value(certs, i);
+    #####:  228:			if(!OCSP_basic_add1_cert(brsp, tmpcert))
+        -:  229:				goto err;
+        -:  230:			}
+        -:  231:		}
+        -:  232:
+    #####:  233:	rid = brsp->tbsResponseData->responderId;
+    #####:  234:	if (flags & OCSP_RESPID_KEY)
+        -:  235:		{
+        -:  236:		unsigned char md[SHA_DIGEST_LENGTH];
+    #####:  237:		X509_pubkey_digest(signer, EVP_sha1(), md, NULL);
+    #####:  238:		if (!(rid->value.byKey = ASN1_OCTET_STRING_new()))
+        -:  239:			goto err;
+    #####:  240:		if (!(ASN1_OCTET_STRING_set(rid->value.byKey, md, SHA_DIGEST_LENGTH)))
+        -:  241:				goto err;
+    #####:  242:		rid->type = V_OCSP_RESPID_KEY;
+        -:  243:		}
+        -:  244:	else
+        -:  245:		{
+    #####:  246:		if (!X509_NAME_set(&rid->value.byName,
+        -:  247:					X509_get_subject_name(signer)))
+        -:  248:				goto err;
+    #####:  249:		rid->type = V_OCSP_RESPID_NAME;
+        -:  250:		}
+        -:  251:
+    #####:  252:	if (!(flags & OCSP_NOTIME) &&
+    #####:  253:		!X509_gmtime_adj(brsp->tbsResponseData->producedAt, 0))
+        -:  254:		goto err;
+        -:  255:
+        -:  256:	/* Right now, I think that not doing double hashing is the right
+        -:  257:	   thing.	-- Richard Levitte */
+        -:  258:
+    #####:  259:	if (!OCSP_BASICRESP_sign(brsp, key, dgst, 0)) goto err;
+        -:  260:
+        -:  261:	return 1;
+        -:  262:err:
+        -:  263:	return 0;
+        -:  264:	}

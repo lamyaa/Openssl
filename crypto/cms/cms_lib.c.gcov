@@ -1,0 +1,629 @@
+        -:    0:Source:cms_lib.c
+        -:    0:Graph:cms_lib.gcno
+        -:    0:Data:cms_lib.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* crypto/cms/cms_lib.c */
+        -:    2:/* Written by Dr Stephen N Henson (steve@openssl.org) for the OpenSSL
+        -:    3: * project.
+        -:    4: */
+        -:    5:/* ====================================================================
+        -:    6: * Copyright (c) 2008 The OpenSSL Project.  All rights reserved.
+        -:    7: *
+        -:    8: * Redistribution and use in source and binary forms, with or without
+        -:    9: * modification, are permitted provided that the following conditions
+        -:   10: * are met:
+        -:   11: *
+        -:   12: * 1. Redistributions of source code must retain the above copyright
+        -:   13: *    notice, this list of conditions and the following disclaimer. 
+        -:   14: *
+        -:   15: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   16: *    notice, this list of conditions and the following disclaimer in
+        -:   17: *    the documentation and/or other materials provided with the
+        -:   18: *    distribution.
+        -:   19: *
+        -:   20: * 3. All advertising materials mentioning features or use of this
+        -:   21: *    software must display the following acknowledgment:
+        -:   22: *    "This product includes software developed by the OpenSSL Project
+        -:   23: *    for use in the OpenSSL Toolkit. (http://www.OpenSSL.org/)"
+        -:   24: *
+        -:   25: * 4. The names "OpenSSL Toolkit" and "OpenSSL Project" must not be used to
+        -:   26: *    endorse or promote products derived from this software without
+        -:   27: *    prior written permission. For written permission, please contact
+        -:   28: *    licensing@OpenSSL.org.
+        -:   29: *
+        -:   30: * 5. Products derived from this software may not be called "OpenSSL"
+        -:   31: *    nor may "OpenSSL" appear in their names without prior written
+        -:   32: *    permission of the OpenSSL Project.
+        -:   33: *
+        -:   34: * 6. Redistributions of any form whatsoever must retain the following
+        -:   35: *    acknowledgment:
+        -:   36: *    "This product includes software developed by the OpenSSL Project
+        -:   37: *    for use in the OpenSSL Toolkit (http://www.OpenSSL.org/)"
+        -:   38: *
+        -:   39: * THIS SOFTWARE IS PROVIDED BY THE OpenSSL PROJECT ``AS IS'' AND ANY
+        -:   40: * EXPRESSED OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   41: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+        -:   42: * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE OpenSSL PROJECT OR
+        -:   43: * ITS CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+        -:   44: * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+        -:   45: * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+        -:   46: * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   47: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+        -:   48: * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+        -:   49: * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+        -:   50: * OF THE POSSIBILITY OF SUCH DAMAGE.
+        -:   51: * ====================================================================
+        -:   52: */
+        -:   53:
+        -:   54:#include <openssl/asn1t.h>
+        -:   55:#include <openssl/x509.h>
+        -:   56:#include <openssl/err.h>
+        -:   57:#include <openssl/pem.h>
+        -:   58:#include <openssl/bio.h>
+        -:   59:#include <openssl/asn1.h>
+        -:   60:#include "cms.h"
+        -:   61:#include "cms_lcl.h"
+        -:   62:
+    #####:   63:IMPLEMENT_ASN1_FUNCTIONS(CMS_ContentInfo)
+    #####:   64:IMPLEMENT_ASN1_PRINT_FUNCTION(CMS_ContentInfo)
+        -:   65:
+        -:   66:DECLARE_ASN1_ITEM(CMS_CertificateChoices)
+        -:   67:DECLARE_ASN1_ITEM(CMS_RevocationInfoChoice)
+        -:   68:DECLARE_STACK_OF(CMS_CertificateChoices)
+        -:   69:DECLARE_STACK_OF(CMS_RevocationInfoChoice)
+        -:   70:
+    #####:   71:const ASN1_OBJECT *CMS_get0_type(CMS_ContentInfo *cms)
+        -:   72:	{
+    #####:   73:	return cms->contentType;
+        -:   74:	}
+        -:   75:
+    #####:   76:CMS_ContentInfo *cms_Data_create(void)
+        -:   77:	{
+        -:   78:	CMS_ContentInfo *cms;
+        -:   79:	cms = CMS_ContentInfo_new();
+    #####:   80:	if (cms)
+        -:   81:		{
+    #####:   82:		cms->contentType = OBJ_nid2obj(NID_pkcs7_data);
+        -:   83:		/* Never detached */
+    #####:   84:		CMS_set_detached(cms, 0);
+        -:   85:		}
+    #####:   86:	return cms;
+        -:   87:	}
+        -:   88:
+    #####:   89:BIO *cms_content_bio(CMS_ContentInfo *cms)
+        -:   90:	{
+    #####:   91:	ASN1_OCTET_STRING **pos = CMS_get0_content(cms);
+    #####:   92:	if (!pos)
+        -:   93:		return NULL;
+        -:   94:	/* If content detached data goes nowhere: create NULL BIO */
+    #####:   95:	if (!*pos)
+    #####:   96:		return BIO_new(BIO_s_null());
+        -:   97:	/* If content not detached and created return memory BIO
+        -:   98:	 */
+    #####:   99:	if (!*pos || ((*pos)->flags == ASN1_STRING_FLAG_CONT))
+    #####:  100:		return BIO_new(BIO_s_mem());
+        -:  101:	/* Else content was read in: return read only BIO for it */
+    #####:  102:	return BIO_new_mem_buf((*pos)->data, (*pos)->length);
+        -:  103:	}
+        -:  104:
+    #####:  105:BIO *CMS_dataInit(CMS_ContentInfo *cms, BIO *icont)
+        -:  106:	{
+        -:  107:	BIO *cmsbio, *cont;
+    #####:  108:	if (icont)
+        -:  109:		cont = icont;
+        -:  110:	else
+    #####:  111:		cont = cms_content_bio(cms);
+    #####:  112:	if (!cont)
+        -:  113:		{
+    #####:  114:		CMSerr(CMS_F_CMS_DATAINIT, CMS_R_NO_CONTENT);
+    #####:  115:		return NULL;
+        -:  116:		}
+    #####:  117:	switch (OBJ_obj2nid(cms->contentType))
+        -:  118:		{
+        -:  119:
+        -:  120:		case NID_pkcs7_data:
+        -:  121:		return cont;
+        -:  122:
+        -:  123:		case NID_pkcs7_signed:
+    #####:  124:		cmsbio = cms_SignedData_init_bio(cms);
+    #####:  125:		break;
+        -:  126:
+        -:  127:		case NID_pkcs7_digest:
+    #####:  128:		cmsbio = cms_DigestedData_init_bio(cms);
+    #####:  129:		break;
+        -:  130:#ifdef ZLIB
+        -:  131:		case NID_id_smime_ct_compressedData:
+        -:  132:		cmsbio = cms_CompressedData_init_bio(cms);
+        -:  133:		break;
+        -:  134:#endif
+        -:  135:
+        -:  136:		case NID_pkcs7_encrypted:
+    #####:  137:		cmsbio = cms_EncryptedData_init_bio(cms);
+    #####:  138:		break;
+        -:  139:
+        -:  140:		case NID_pkcs7_enveloped:
+    #####:  141:		cmsbio = cms_EnvelopedData_init_bio(cms);
+    #####:  142:		break;
+        -:  143:
+        -:  144:		default:
+    #####:  145:		CMSerr(CMS_F_CMS_DATAINIT, CMS_R_UNSUPPORTED_TYPE);
+    #####:  146:		return NULL;
+        -:  147:		}
+        -:  148:
+    #####:  149:	if (cmsbio)
+    #####:  150:		return BIO_push(cmsbio, cont);
+        -:  151:
+    #####:  152:	if (!icont)
+    #####:  153:		BIO_free(cont);
+        -:  154:	return NULL;
+        -:  155:
+        -:  156:	}
+        -:  157:
+    #####:  158:int CMS_dataFinal(CMS_ContentInfo *cms, BIO *cmsbio)
+        -:  159:	{
+    #####:  160:	ASN1_OCTET_STRING **pos = CMS_get0_content(cms);
+    #####:  161:	if (!pos)
+        -:  162:		return 0;
+        -:  163:	/* If ebmedded content find memory BIO and set content */
+    #####:  164:	if (*pos && ((*pos)->flags & ASN1_STRING_FLAG_CONT))
+        -:  165:		{
+        -:  166:		BIO *mbio;
+        -:  167:		unsigned char *cont;
+        -:  168:		long contlen;
+    #####:  169:		mbio = BIO_find_type(cmsbio, BIO_TYPE_MEM);
+    #####:  170:		if (!mbio)
+        -:  171:			{
+    #####:  172:			CMSerr(CMS_F_CMS_DATAFINAL, CMS_R_CONTENT_NOT_FOUND);
+    #####:  173:			return 0;
+        -:  174:			}
+    #####:  175:		contlen = BIO_get_mem_data(mbio, &cont);
+        -:  176:		/* Set bio as read only so its content can't be clobbered */
+    #####:  177:		BIO_set_flags(mbio, BIO_FLAGS_MEM_RDONLY);
+    #####:  178:		BIO_set_mem_eof_return(mbio, 0);
+    #####:  179:		ASN1_STRING_set0(*pos, cont, contlen);
+    #####:  180:		(*pos)->flags &= ~ASN1_STRING_FLAG_CONT;
+        -:  181:		}
+        -:  182:
+    #####:  183:	switch (OBJ_obj2nid(cms->contentType))
+        -:  184:		{
+        -:  185:
+        -:  186:		case NID_pkcs7_data:
+        -:  187:		case NID_pkcs7_enveloped:
+        -:  188:		case NID_pkcs7_encrypted:
+        -:  189:		case NID_id_smime_ct_compressedData:
+        -:  190:		/* Nothing to do */
+        -:  191:		return 1;
+        -:  192:
+        -:  193:		case NID_pkcs7_signed:
+    #####:  194:		return cms_SignedData_final(cms, cmsbio);
+        -:  195:
+        -:  196:		case NID_pkcs7_digest:
+    #####:  197:		return cms_DigestedData_do_final(cms, cmsbio, 0);
+        -:  198:
+        -:  199:		default:
+    #####:  200:		CMSerr(CMS_F_CMS_DATAFINAL, CMS_R_UNSUPPORTED_TYPE);
+    #####:  201:		return 0;
+        -:  202:		}
+        -:  203:	}
+        -:  204:
+        -:  205:/* Return an OCTET STRING pointer to content. This allows it to
+        -:  206: * be accessed or set later.
+        -:  207: */
+        -:  208:
+    #####:  209:ASN1_OCTET_STRING **CMS_get0_content(CMS_ContentInfo *cms)
+        -:  210:	{
+    #####:  211:	switch (OBJ_obj2nid(cms->contentType))
+        -:  212:		{
+        -:  213:
+        -:  214:		case NID_pkcs7_data:
+    #####:  215:		return &cms->d.data;
+        -:  216:
+        -:  217:		case NID_pkcs7_signed:
+    #####:  218:		return &cms->d.signedData->encapContentInfo->eContent;
+        -:  219:
+        -:  220:		case NID_pkcs7_enveloped:
+    #####:  221:		return &cms->d.envelopedData->encryptedContentInfo->encryptedContent;
+        -:  222:
+        -:  223:		case NID_pkcs7_digest:
+    #####:  224:		return &cms->d.digestedData->encapContentInfo->eContent;
+        -:  225:
+        -:  226:		case NID_pkcs7_encrypted:
+    #####:  227:		return &cms->d.encryptedData->encryptedContentInfo->encryptedContent;
+        -:  228:
+        -:  229:		case NID_id_smime_ct_authData:
+    #####:  230:		return &cms->d.authenticatedData->encapContentInfo->eContent;
+        -:  231:
+        -:  232:		case NID_id_smime_ct_compressedData:
+    #####:  233:		return &cms->d.compressedData->encapContentInfo->eContent;
+        -:  234:
+        -:  235:		default:
+    #####:  236:		if (cms->d.other->type == V_ASN1_OCTET_STRING)
+    #####:  237:			return &cms->d.other->value.octet_string;
+    #####:  238:		CMSerr(CMS_F_CMS_GET0_CONTENT, CMS_R_UNSUPPORTED_CONTENT_TYPE);
+    #####:  239:		return NULL;
+        -:  240:
+        -:  241:		}
+        -:  242:	}
+        -:  243:
+        -:  244:/* Return an ASN1_OBJECT pointer to content type. This allows it to
+        -:  245: * be accessed or set later.
+        -:  246: */
+        -:  247:
+    #####:  248:static ASN1_OBJECT **cms_get0_econtent_type(CMS_ContentInfo *cms)
+        -:  249:	{
+    #####:  250:	switch (OBJ_obj2nid(cms->contentType))
+        -:  251:		{
+        -:  252:
+        -:  253:		case NID_pkcs7_signed:
+    #####:  254:		return &cms->d.signedData->encapContentInfo->eContentType;
+        -:  255:
+        -:  256:		case NID_pkcs7_enveloped:
+    #####:  257:		return &cms->d.envelopedData->encryptedContentInfo->contentType;
+        -:  258:
+        -:  259:		case NID_pkcs7_digest:
+    #####:  260:		return &cms->d.digestedData->encapContentInfo->eContentType;
+        -:  261:
+        -:  262:		case NID_pkcs7_encrypted:
+    #####:  263:		return &cms->d.encryptedData->encryptedContentInfo->contentType;
+        -:  264:
+        -:  265:		case NID_id_smime_ct_authData:
+    #####:  266:		return &cms->d.authenticatedData->encapContentInfo->eContentType;
+        -:  267:
+        -:  268:		case NID_id_smime_ct_compressedData:
+    #####:  269:		return &cms->d.compressedData->encapContentInfo->eContentType;
+        -:  270:
+        -:  271:		default:
+    #####:  272:		CMSerr(CMS_F_CMS_GET0_ECONTENT_TYPE,
+        -:  273:					CMS_R_UNSUPPORTED_CONTENT_TYPE);
+    #####:  274:		return NULL;
+        -:  275:
+        -:  276:		}
+        -:  277:	}
+        -:  278:
+    #####:  279:const ASN1_OBJECT *CMS_get0_eContentType(CMS_ContentInfo *cms)
+        -:  280:	{
+        -:  281:	ASN1_OBJECT **petype;
+    #####:  282:	petype = cms_get0_econtent_type(cms);
+    #####:  283:	if (petype)
+    #####:  284:		return *petype;
+        -:  285:	return NULL;
+        -:  286:	}
+        -:  287:
+    #####:  288:int CMS_set1_eContentType(CMS_ContentInfo *cms, const ASN1_OBJECT *oid)
+        -:  289:	{
+        -:  290:	ASN1_OBJECT **petype, *etype;
+    #####:  291:	petype = cms_get0_econtent_type(cms);
+    #####:  292:	if (!petype)
+        -:  293:		return 0;
+    #####:  294:	if (!oid)
+        -:  295:		return 1;
+    #####:  296:	etype = OBJ_dup(oid);
+    #####:  297:	if (!etype)
+        -:  298:		return 0;
+    #####:  299:	ASN1_OBJECT_free(*petype);
+    #####:  300:	*petype = etype;
+    #####:  301:	return 1;
+        -:  302:	}
+        -:  303:
+    #####:  304:int CMS_is_detached(CMS_ContentInfo *cms)
+        -:  305:	{
+        -:  306:	ASN1_OCTET_STRING **pos;
+    #####:  307:	pos = CMS_get0_content(cms);
+    #####:  308:	if (!pos)
+        -:  309:		return -1;
+    #####:  310:	if (*pos)
+        -:  311:		return 0;
+    #####:  312:	return 1;
+        -:  313:	}
+        -:  314:
+    #####:  315:int CMS_set_detached(CMS_ContentInfo *cms, int detached)
+        -:  316:	{
+        -:  317:	ASN1_OCTET_STRING **pos;
+    #####:  318:	pos = CMS_get0_content(cms);
+    #####:  319:	if (!pos)
+        -:  320:		return 0;
+    #####:  321:	if (detached)
+        -:  322:		{
+    #####:  323:		if (*pos)
+        -:  324:			{
+    #####:  325:			ASN1_OCTET_STRING_free(*pos);
+    #####:  326:			*pos = NULL;
+        -:  327:			}
+        -:  328:		return 1;
+        -:  329:		}
+    #####:  330:	if (!*pos)
+    #####:  331:		*pos = ASN1_OCTET_STRING_new();
+    #####:  332:	if (*pos)
+        -:  333:		{
+        -:  334:		/* NB: special flag to show content is created and not
+        -:  335:		 * read in.
+        -:  336:		 */
+    #####:  337:		(*pos)->flags |= ASN1_STRING_FLAG_CONT;
+    #####:  338:		return 1;
+        -:  339:		}
+    #####:  340:	CMSerr(CMS_F_CMS_SET_DETACHED, ERR_R_MALLOC_FAILURE);
+    #####:  341:	return 0;
+        -:  342:	}
+        -:  343:
+        -:  344:/* Set up an X509_ALGOR DigestAlgorithmIdentifier from an EVP_MD */
+        -:  345:
+    #####:  346:void cms_DigestAlgorithm_set(X509_ALGOR *alg, const EVP_MD *md)
+        -:  347:	{
+        -:  348:	int param_type;
+        -:  349:
+    #####:  350:	if (md->flags & EVP_MD_FLAG_DIGALGID_ABSENT)
+        -:  351:		param_type = V_ASN1_UNDEF;
+        -:  352:	else
+        -:  353:		param_type = V_ASN1_NULL;
+        -:  354:
+    #####:  355:	X509_ALGOR_set0(alg, OBJ_nid2obj(EVP_MD_type(md)), param_type, NULL);
+        -:  356:
+    #####:  357:	}
+        -:  358:
+        -:  359:/* Create a digest BIO from an X509_ALGOR structure */
+        -:  360:
+    #####:  361:BIO *cms_DigestAlgorithm_init_bio(X509_ALGOR *digestAlgorithm)
+        -:  362:	{
+        -:  363:	BIO *mdbio = NULL;
+        -:  364:	ASN1_OBJECT *digestoid;
+        -:  365:	const EVP_MD *digest;
+    #####:  366:	X509_ALGOR_get0(&digestoid, NULL, NULL, digestAlgorithm);
+    #####:  367:	digest = EVP_get_digestbyobj(digestoid);
+    #####:  368:	if (!digest)
+        -:  369:		{
+    #####:  370:		CMSerr(CMS_F_CMS_DIGESTALGORITHM_INIT_BIO,
+        -:  371:				CMS_R_UNKNOWN_DIGEST_ALGORIHM);
+    #####:  372:		goto err;	
+        -:  373:		}
+    #####:  374:	mdbio = BIO_new(BIO_f_md());
+    #####:  375:	if (!mdbio || !BIO_set_md(mdbio, digest))
+        -:  376:		{
+    #####:  377:		CMSerr(CMS_F_CMS_DIGESTALGORITHM_INIT_BIO,
+        -:  378:				CMS_R_MD_BIO_INIT_ERROR);
+    #####:  379:		goto err;	
+        -:  380:		}
+        -:  381:	return mdbio;
+        -:  382:	err:
+    #####:  383:	if (mdbio)
+    #####:  384:		BIO_free(mdbio);
+        -:  385:	return NULL;
+        -:  386:	}
+        -:  387:
+        -:  388:/* Locate a message digest content from a BIO chain based on SignerInfo */
+        -:  389:
+    #####:  390:int cms_DigestAlgorithm_find_ctx(EVP_MD_CTX *mctx, BIO *chain,
+        -:  391:					X509_ALGOR *mdalg)
+        -:  392:	{
+        -:  393:	int nid;
+        -:  394:	ASN1_OBJECT *mdoid;
+    #####:  395:	X509_ALGOR_get0(&mdoid, NULL, NULL, mdalg);
+    #####:  396:	nid = OBJ_obj2nid(mdoid);
+        -:  397:	/* Look for digest type to match signature */
+        -:  398:	for (;;)
+        -:  399:		{
+        -:  400:		EVP_MD_CTX *mtmp;
+    #####:  401:		chain = BIO_find_type(chain, BIO_TYPE_MD);
+    #####:  402:		if (chain == NULL)
+        -:  403:			{
+    #####:  404:			CMSerr(CMS_F_CMS_DIGESTALGORITHM_FIND_CTX,
+        -:  405:						CMS_R_NO_MATCHING_DIGEST);
+    #####:  406:			return 0;
+        -:  407:			}
+    #####:  408:		BIO_get_md_ctx(chain, &mtmp);
+    #####:  409:		if (EVP_MD_CTX_type(mtmp) == nid
+        -:  410:		/* Workaround for broken implementations that use signature
+        -:  411:		 * algorithm  OID instead of digest.
+        -:  412:		 */
+    #####:  413:			|| EVP_MD_pkey_type(EVP_MD_CTX_md(mtmp)) == nid)
+    #####:  414:			return EVP_MD_CTX_copy_ex(mctx, mtmp);
+    #####:  415:		chain = BIO_next(chain);
+    #####:  416:		}
+        -:  417:	}
+        -:  418:
+    #####:  419:static STACK_OF(CMS_CertificateChoices) **cms_get0_certificate_choices(CMS_ContentInfo *cms)
+        -:  420:	{
+    #####:  421:	switch (OBJ_obj2nid(cms->contentType))
+        -:  422:		{
+        -:  423:
+        -:  424:		case NID_pkcs7_signed:
+    #####:  425:		return &cms->d.signedData->certificates;
+        -:  426:
+        -:  427:		case NID_pkcs7_enveloped:
+    #####:  428:		return &cms->d.envelopedData->originatorInfo->certificates;
+        -:  429:
+        -:  430:		default:
+    #####:  431:		CMSerr(CMS_F_CMS_GET0_CERTIFICATE_CHOICES,
+        -:  432:					CMS_R_UNSUPPORTED_CONTENT_TYPE);
+    #####:  433:		return NULL;
+        -:  434:
+        -:  435:		}
+        -:  436:	}
+        -:  437:
+    #####:  438:CMS_CertificateChoices *CMS_add0_CertificateChoices(CMS_ContentInfo *cms)
+        -:  439:	{
+        -:  440:	STACK_OF(CMS_CertificateChoices) **pcerts;
+        -:  441:	CMS_CertificateChoices *cch;
+    #####:  442:	pcerts = cms_get0_certificate_choices(cms);
+    #####:  443:	if (!pcerts)
+        -:  444:		return NULL;
+    #####:  445:	if (!*pcerts)
+    #####:  446:		*pcerts = sk_CMS_CertificateChoices_new_null();
+    #####:  447:	if (!*pcerts)
+        -:  448:		return NULL;
+    #####:  449:	cch = M_ASN1_new_of(CMS_CertificateChoices);
+    #####:  450:	if (!cch)
+        -:  451:		return NULL;
+    #####:  452:	if (!sk_CMS_CertificateChoices_push(*pcerts, cch))
+        -:  453:		{
+    #####:  454:		M_ASN1_free_of(cch, CMS_CertificateChoices);
+    #####:  455:		return NULL;
+        -:  456:		}
+        -:  457:	return cch;
+        -:  458:	}
+        -:  459:
+    #####:  460:int CMS_add0_cert(CMS_ContentInfo *cms, X509 *cert)
+        -:  461:	{
+        -:  462:	CMS_CertificateChoices *cch;
+        -:  463:	STACK_OF(CMS_CertificateChoices) **pcerts;
+        -:  464:	int i;
+    #####:  465:	pcerts = cms_get0_certificate_choices(cms);
+    #####:  466:	if (!pcerts)
+        -:  467:		return 0;
+    #####:  468:	if (!pcerts)
+        -:  469:		return 0;
+    #####:  470:	for (i = 0; i < sk_CMS_CertificateChoices_num(*pcerts); i++)
+        -:  471:		{
+    #####:  472:		cch = sk_CMS_CertificateChoices_value(*pcerts, i);
+    #####:  473:		if (cch->type == CMS_CERTCHOICE_CERT)
+        -:  474:			{
+    #####:  475:			if (!X509_cmp(cch->d.certificate, cert))
+        -:  476:				{
+    #####:  477:				CMSerr(CMS_F_CMS_ADD0_CERT, 
+        -:  478:					CMS_R_CERTIFICATE_ALREADY_PRESENT);
+    #####:  479:				return 0;
+        -:  480:				}
+        -:  481:			}
+        -:  482:		}
+    #####:  483:	cch = CMS_add0_CertificateChoices(cms);
+    #####:  484:	if (!cch)
+        -:  485:		return 0;
+    #####:  486:	cch->type = CMS_CERTCHOICE_CERT;
+    #####:  487:	cch->d.certificate = cert;
+    #####:  488:	return 1;
+        -:  489:	}
+        -:  490:
+    #####:  491:int CMS_add1_cert(CMS_ContentInfo *cms, X509 *cert)
+        -:  492:	{
+        -:  493:	int r;
+    #####:  494:	r = CMS_add0_cert(cms, cert);
+    #####:  495:	if (r > 0)
+    #####:  496:		CRYPTO_add(&cert->references, 1, CRYPTO_LOCK_X509);
+    #####:  497:	return r;
+        -:  498:	}
+        -:  499:
+    #####:  500:static STACK_OF(CMS_RevocationInfoChoice) **cms_get0_revocation_choices(CMS_ContentInfo *cms)
+        -:  501:	{
+    #####:  502:	switch (OBJ_obj2nid(cms->contentType))
+        -:  503:		{
+        -:  504:
+        -:  505:		case NID_pkcs7_signed:
+    #####:  506:		return &cms->d.signedData->crls;
+        -:  507:
+        -:  508:		case NID_pkcs7_enveloped:
+    #####:  509:		return &cms->d.envelopedData->originatorInfo->crls;
+        -:  510:
+        -:  511:		default:
+    #####:  512:		CMSerr(CMS_F_CMS_GET0_REVOCATION_CHOICES,
+        -:  513:					CMS_R_UNSUPPORTED_CONTENT_TYPE);
+    #####:  514:		return NULL;
+        -:  515:
+        -:  516:		}
+        -:  517:	}
+        -:  518:
+    #####:  519:CMS_RevocationInfoChoice *CMS_add0_RevocationInfoChoice(CMS_ContentInfo *cms)
+        -:  520:	{
+        -:  521:	STACK_OF(CMS_RevocationInfoChoice) **pcrls;
+        -:  522:	CMS_RevocationInfoChoice *rch;
+    #####:  523:	pcrls = cms_get0_revocation_choices(cms);
+    #####:  524:	if (!pcrls)
+        -:  525:		return NULL;
+    #####:  526:	if (!*pcrls)
+    #####:  527:		*pcrls = sk_CMS_RevocationInfoChoice_new_null();
+    #####:  528:	if (!*pcrls)
+        -:  529:		return NULL;
+    #####:  530:	rch = M_ASN1_new_of(CMS_RevocationInfoChoice);
+    #####:  531:	if (!rch)
+        -:  532:		return NULL;
+    #####:  533:	if (!sk_CMS_RevocationInfoChoice_push(*pcrls, rch))
+        -:  534:		{
+    #####:  535:		M_ASN1_free_of(rch, CMS_RevocationInfoChoice);
+    #####:  536:		return NULL;
+        -:  537:		}
+        -:  538:	return rch;
+        -:  539:	}
+        -:  540:
+    #####:  541:int CMS_add0_crl(CMS_ContentInfo *cms, X509_CRL *crl)
+        -:  542:	{
+        -:  543:	CMS_RevocationInfoChoice *rch;
+    #####:  544:	rch = CMS_add0_RevocationInfoChoice(cms);
+    #####:  545:	if (!rch)
+        -:  546:		return 0;
+    #####:  547:	rch->type = CMS_REVCHOICE_CRL;
+    #####:  548:	rch->d.crl = crl;
+    #####:  549:	return 1;
+        -:  550:	}
+        -:  551:
+    #####:  552:int CMS_add1_crl(CMS_ContentInfo *cms, X509_CRL *crl)
+        -:  553:	{
+        -:  554:	int r;
+        -:  555:	r = CMS_add0_crl(cms, crl);
+    #####:  556:	if (r > 0)
+    #####:  557:		CRYPTO_add(&crl->references, 1, CRYPTO_LOCK_X509_CRL);
+    #####:  558:	return r;
+        -:  559:	}
+        -:  560:
+    #####:  561:STACK_OF(X509) *CMS_get1_certs(CMS_ContentInfo *cms)
+        -:  562:	{
+        -:  563:	STACK_OF(X509) *certs = NULL;
+        -:  564:	CMS_CertificateChoices *cch;
+        -:  565:	STACK_OF(CMS_CertificateChoices) **pcerts;
+        -:  566:	int i;
+    #####:  567:	pcerts = cms_get0_certificate_choices(cms);
+    #####:  568:	if (!pcerts)
+        -:  569:		return NULL;
+    #####:  570:	for (i = 0; i < sk_CMS_CertificateChoices_num(*pcerts); i++)
+        -:  571:		{
+    #####:  572:		cch = sk_CMS_CertificateChoices_value(*pcerts, i);
+    #####:  573:		if (cch->type == 0)
+        -:  574:			{
+    #####:  575:			if (!certs)
+        -:  576:				{
+    #####:  577:				certs = sk_X509_new_null();
+    #####:  578:				if (!certs)
+        -:  579:					return NULL;
+        -:  580:				}
+    #####:  581:			if (!sk_X509_push(certs, cch->d.certificate))
+        -:  582:				{
+    #####:  583:				sk_X509_pop_free(certs, X509_free);
+    #####:  584:				return NULL;
+        -:  585:				}
+    #####:  586:			CRYPTO_add(&cch->d.certificate->references,
+        -:  587:						1, CRYPTO_LOCK_X509);
+        -:  588:			}
+        -:  589:		}
+        -:  590:	return certs;
+        -:  591:
+        -:  592:	}
+        -:  593:
+    #####:  594:STACK_OF(X509_CRL) *CMS_get1_crls(CMS_ContentInfo *cms)
+        -:  595:	{
+        -:  596:	STACK_OF(X509_CRL) *crls = NULL;
+        -:  597:	STACK_OF(CMS_RevocationInfoChoice) **pcrls;
+        -:  598:	CMS_RevocationInfoChoice *rch;
+        -:  599:	int i;
+    #####:  600:	pcrls = cms_get0_revocation_choices(cms);
+    #####:  601:	if (!pcrls)
+        -:  602:		return NULL;
+    #####:  603:	for (i = 0; i < sk_CMS_RevocationInfoChoice_num(*pcrls); i++)
+        -:  604:		{
+    #####:  605:		rch = sk_CMS_RevocationInfoChoice_value(*pcrls, i);
+    #####:  606:		if (rch->type == 0)
+        -:  607:			{
+    #####:  608:			if (!crls)
+        -:  609:				{
+    #####:  610:				crls = sk_X509_CRL_new_null();
+    #####:  611:				if (!crls)
+        -:  612:					return NULL;
+        -:  613:				}
+    #####:  614:			if (!sk_X509_CRL_push(crls, rch->d.crl))
+        -:  615:				{
+    #####:  616:				sk_X509_CRL_pop_free(crls, X509_CRL_free);
+    #####:  617:				return NULL;
+        -:  618:				}
+    #####:  619:			CRYPTO_add(&rch->d.crl->references,
+        -:  620:						1, CRYPTO_LOCK_X509_CRL);
+        -:  621:			}
+        -:  622:		}
+        -:  623:	return crls;
+        -:  624:	}

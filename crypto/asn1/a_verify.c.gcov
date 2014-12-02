@@ -1,0 +1,239 @@
+        -:    0:Source:a_verify.c
+        -:    0:Graph:a_verify.gcno
+        -:    0:Data:a_verify.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* crypto/asn1/a_verify.c */
+        -:    2:/* Copyright (C) 1995-1998 Eric Young (eay@cryptsoft.com)
+        -:    3: * All rights reserved.
+        -:    4: *
+        -:    5: * This package is an SSL implementation written
+        -:    6: * by Eric Young (eay@cryptsoft.com).
+        -:    7: * The implementation was written so as to conform with Netscapes SSL.
+        -:    8: * 
+        -:    9: * This library is free for commercial and non-commercial use as long as
+        -:   10: * the following conditions are aheared to.  The following conditions
+        -:   11: * apply to all code found in this distribution, be it the RC4, RSA,
+        -:   12: * lhash, DES, etc., code; not just the SSL code.  The SSL documentation
+        -:   13: * included with this distribution is covered by the same copyright terms
+        -:   14: * except that the holder is Tim Hudson (tjh@cryptsoft.com).
+        -:   15: * 
+        -:   16: * Copyright remains Eric Young's, and as such any Copyright notices in
+        -:   17: * the code are not to be removed.
+        -:   18: * If this package is used in a product, Eric Young should be given attribution
+        -:   19: * as the author of the parts of the library used.
+        -:   20: * This can be in the form of a textual message at program startup or
+        -:   21: * in documentation (online or textual) provided with the package.
+        -:   22: * 
+        -:   23: * Redistribution and use in source and binary forms, with or without
+        -:   24: * modification, are permitted provided that the following conditions
+        -:   25: * are met:
+        -:   26: * 1. Redistributions of source code must retain the copyright
+        -:   27: *    notice, this list of conditions and the following disclaimer.
+        -:   28: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   29: *    notice, this list of conditions and the following disclaimer in the
+        -:   30: *    documentation and/or other materials provided with the distribution.
+        -:   31: * 3. All advertising materials mentioning features or use of this software
+        -:   32: *    must display the following acknowledgement:
+        -:   33: *    "This product includes cryptographic software written by
+        -:   34: *     Eric Young (eay@cryptsoft.com)"
+        -:   35: *    The word 'cryptographic' can be left out if the rouines from the library
+        -:   36: *    being used are not cryptographic related :-).
+        -:   37: * 4. If you include any Windows specific code (or a derivative thereof) from 
+        -:   38: *    the apps directory (application code) you must include an acknowledgement:
+        -:   39: *    "This product includes software written by Tim Hudson (tjh@cryptsoft.com)"
+        -:   40: * 
+        -:   41: * THIS SOFTWARE IS PROVIDED BY ERIC YOUNG ``AS IS'' AND
+        -:   42: * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   43: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+        -:   44: * ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+        -:   45: * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+        -:   46: * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+        -:   47: * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   48: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+        -:   49: * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+        -:   50: * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+        -:   51: * SUCH DAMAGE.
+        -:   52: * 
+        -:   53: * The licence and distribution terms for any publically available version or
+        -:   54: * derivative of this code cannot be changed.  i.e. this code cannot simply be
+        -:   55: * copied and put under another distribution licence
+        -:   56: * [including the GNU Public Licence.]
+        -:   57: */
+        -:   58:
+        -:   59:#include <stdio.h>
+        -:   60:#include <time.h>
+        -:   61:
+        -:   62:#include "cryptlib.h"
+        -:   63:#include "asn1_locl.h"
+        -:   64:
+        -:   65:#ifndef NO_SYS_TYPES_H
+        -:   66:# include <sys/types.h>
+        -:   67:#endif
+        -:   68:
+        -:   69:#include <openssl/bn.h>
+        -:   70:#include <openssl/x509.h>
+        -:   71:#include <openssl/objects.h>
+        -:   72:#include <openssl/buffer.h>
+        -:   73:#include <openssl/evp.h>
+        -:   74:
+        -:   75:#ifndef NO_ASN1_OLD
+        -:   76:
+    #####:   77:int ASN1_verify(i2d_of_void *i2d, X509_ALGOR *a, ASN1_BIT_STRING *signature,
+        -:   78:		char *data, EVP_PKEY *pkey)
+        -:   79:	{
+        -:   80:	EVP_MD_CTX ctx;
+        -:   81:	const EVP_MD *type;
+        -:   82:	unsigned char *p,*buf_in=NULL;
+        -:   83:	int ret= -1,i,inl;
+        -:   84:
+    #####:   85:	EVP_MD_CTX_init(&ctx);
+    #####:   86:	i=OBJ_obj2nid(a->algorithm);
+    #####:   87:	type=EVP_get_digestbyname(OBJ_nid2sn(i));
+    #####:   88:	if (type == NULL)
+        -:   89:		{
+    #####:   90:		ASN1err(ASN1_F_ASN1_VERIFY,ASN1_R_UNKNOWN_MESSAGE_DIGEST_ALGORITHM);
+    #####:   91:		goto err;
+        -:   92:		}
+        -:   93:	
+    #####:   94:	inl=i2d(data,NULL);
+    #####:   95:	buf_in=OPENSSL_malloc((unsigned int)inl);
+    #####:   96:	if (buf_in == NULL)
+        -:   97:		{
+    #####:   98:		ASN1err(ASN1_F_ASN1_VERIFY,ERR_R_MALLOC_FAILURE);
+    #####:   99:		goto err;
+        -:  100:		}
+    #####:  101:	p=buf_in;
+        -:  102:
+    #####:  103:	i2d(data,&p);
+    #####:  104:	if (!EVP_VerifyInit_ex(&ctx,type, NULL)
+    #####:  105:		|| !EVP_VerifyUpdate(&ctx,(unsigned char *)buf_in,inl))
+        -:  106:		{
+    #####:  107:		ASN1err(ASN1_F_ASN1_VERIFY,ERR_R_EVP_LIB);
+        -:  108:		ret=0;
+    #####:  109:		goto err;
+        -:  110:		}
+        -:  111:
+    #####:  112:	OPENSSL_cleanse(buf_in,(unsigned int)inl);
+    #####:  113:	OPENSSL_free(buf_in);
+        -:  114:
+    #####:  115:	if (EVP_VerifyFinal(&ctx,(unsigned char *)signature->data,
+    #####:  116:			(unsigned int)signature->length,pkey) <= 0)
+        -:  117:		{
+    #####:  118:		ASN1err(ASN1_F_ASN1_VERIFY,ERR_R_EVP_LIB);
+        -:  119:		ret=0;
+    #####:  120:		goto err;
+        -:  121:		}
+        -:  122:	/* we don't need to zero the 'ctx' because we just checked
+        -:  123:	 * public information */
+        -:  124:	/* memset(&ctx,0,sizeof(ctx)); */
+        -:  125:	ret=1;
+        -:  126:err:
+    #####:  127:	EVP_MD_CTX_cleanup(&ctx);
+    #####:  128:	return(ret);
+        -:  129:	}
+        -:  130:
+        -:  131:#endif
+        -:  132:
+        -:  133:
+     1942:  134:int ASN1_item_verify(const ASN1_ITEM *it, X509_ALGOR *a,
+        -:  135:		ASN1_BIT_STRING *signature, void *asn, EVP_PKEY *pkey)
+        -:  136:	{
+        -:  137:	EVP_MD_CTX ctx;
+     1942:  138:	unsigned char *buf_in=NULL;
+        -:  139:	int ret= -1,inl;
+        -:  140:
+        -:  141:	int mdnid, pknid;
+        -:  142:
+     1942:  143:	if (!pkey)
+        -:  144:		{
+    #####:  145:		ASN1err(ASN1_F_ASN1_ITEM_VERIFY, ERR_R_PASSED_NULL_PARAMETER);
+    #####:  146:		return -1;
+        -:  147:		}
+        -:  148:
+     1942:  149:	EVP_MD_CTX_init(&ctx);
+        -:  150:
+        -:  151:	/* Convert signature OID into digest and public key OIDs */
+     1942:  152:	if (!OBJ_find_sigid_algs(OBJ_obj2nid(a->algorithm), &mdnid, &pknid))
+        -:  153:		{
+    #####:  154:		ASN1err(ASN1_F_ASN1_ITEM_VERIFY,ASN1_R_UNKNOWN_SIGNATURE_ALGORITHM);
+    #####:  155:		goto err;
+        -:  156:		}
+     1942:  157:	if (mdnid == NID_undef)
+        -:  158:		{
+    #####:  159:		if (!pkey->ameth || !pkey->ameth->item_verify)
+        -:  160:			{
+    #####:  161:			ASN1err(ASN1_F_ASN1_ITEM_VERIFY,ASN1_R_UNKNOWN_SIGNATURE_ALGORITHM);
+    #####:  162:			goto err;
+        -:  163:			}
+    #####:  164:		ret = pkey->ameth->item_verify(&ctx, it, asn, a,
+        -:  165:							signature, pkey);
+        -:  166:		/* Return value of 2 means carry on, anything else means we
+        -:  167:		 * exit straight away: either a fatal error of the underlying
+        -:  168:		 * verification routine handles all verification.
+        -:  169:		 */
+    #####:  170:		if (ret != 2)
+        -:  171:			goto err;
+        -:  172:		ret = -1;
+        -:  173:		}
+        -:  174:	else
+        -:  175:		{
+        -:  176:		const EVP_MD *type;
+     1942:  177:		type=EVP_get_digestbynid(mdnid);
+     1942:  178:		if (type == NULL)
+        -:  179:			{
+    #####:  180:			ASN1err(ASN1_F_ASN1_ITEM_VERIFY,ASN1_R_UNKNOWN_MESSAGE_DIGEST_ALGORITHM);
+    #####:  181:			goto err;
+        -:  182:			}
+        -:  183:
+        -:  184:		/* Check public key OID matches public key type */
+     1942:  185:		if (EVP_PKEY_type(pknid) != pkey->ameth->pkey_id)
+        -:  186:			{
+    #####:  187:			ASN1err(ASN1_F_ASN1_ITEM_VERIFY,ASN1_R_WRONG_PUBLIC_KEY_TYPE);
+    #####:  188:			goto err;
+        -:  189:			}
+        -:  190:
+     1942:  191:		if (!EVP_DigestVerifyInit(&ctx, NULL, type, NULL, pkey))
+        -:  192:			{
+    #####:  193:			ASN1err(ASN1_F_ASN1_ITEM_VERIFY,ERR_R_EVP_LIB);
+        -:  194:			ret=0;
+    #####:  195:			goto err;
+        -:  196:			}
+        -:  197:
+        -:  198:		}
+        -:  199:
+     1942:  200:	inl = ASN1_item_i2d(asn, &buf_in, it);
+        -:  201:	
+     1942:  202:	if (buf_in == NULL)
+        -:  203:		{
+    #####:  204:		ASN1err(ASN1_F_ASN1_ITEM_VERIFY,ERR_R_MALLOC_FAILURE);
+    #####:  205:		goto err;
+        -:  206:		}
+        -:  207:
+     1942:  208:	if (!EVP_DigestVerifyUpdate(&ctx,buf_in,inl))
+        -:  209:		{
+    #####:  210:		ASN1err(ASN1_F_ASN1_ITEM_VERIFY,ERR_R_EVP_LIB);
+        -:  211:		ret=0;
+    #####:  212:		goto err;
+        -:  213:		}
+        -:  214:
+     1942:  215:	OPENSSL_cleanse(buf_in,(unsigned int)inl);
+     1942:  216:	OPENSSL_free(buf_in);
+        -:  217:
+     1942:  218:	if (EVP_DigestVerifyFinal(&ctx,signature->data,
+     1942:  219:			(size_t)signature->length) <= 0)
+        -:  220:		{
+    #####:  221:		ASN1err(ASN1_F_ASN1_ITEM_VERIFY,ERR_R_EVP_LIB);
+        -:  222:		ret=0;
+    #####:  223:		goto err;
+        -:  224:		}
+        -:  225:	/* we don't need to zero the 'ctx' because we just checked
+        -:  226:	 * public information */
+        -:  227:	/* memset(&ctx,0,sizeof(ctx)); */
+        -:  228:	ret=1;
+        -:  229:err:
+     1942:  230:	EVP_MD_CTX_cleanup(&ctx);
+     1942:  231:	return(ret);
+        -:  232:	}
+        -:  233:
+        -:  234:

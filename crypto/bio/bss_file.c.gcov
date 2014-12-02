@@ -1,0 +1,482 @@
+        -:    0:Source:bss_file.c
+        -:    0:Graph:bss_file.gcno
+        -:    0:Data:bss_file.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* crypto/bio/bss_file.c */
+        -:    2:/* Copyright (C) 1995-1998 Eric Young (eay@cryptsoft.com)
+        -:    3: * All rights reserved.
+        -:    4: *
+        -:    5: * This package is an SSL implementation written
+        -:    6: * by Eric Young (eay@cryptsoft.com).
+        -:    7: * The implementation was written so as to conform with Netscapes SSL.
+        -:    8: * 
+        -:    9: * This library is free for commercial and non-commercial use as long as
+        -:   10: * the following conditions are aheared to.  The following conditions
+        -:   11: * apply to all code found in this distribution, be it the RC4, RSA,
+        -:   12: * lhash, DES, etc., code; not just the SSL code.  The SSL documentation
+        -:   13: * included with this distribution is covered by the same copyright terms
+        -:   14: * except that the holder is Tim Hudson (tjh@cryptsoft.com).
+        -:   15: * 
+        -:   16: * Copyright remains Eric Young's, and as such any Copyright notices in
+        -:   17: * the code are not to be removed.
+        -:   18: * If this package is used in a product, Eric Young should be given attribution
+        -:   19: * as the author of the parts of the library used.
+        -:   20: * This can be in the form of a textual message at program startup or
+        -:   21: * in documentation (online or textual) provided with the package.
+        -:   22: * 
+        -:   23: * Redistribution and use in source and binary forms, with or without
+        -:   24: * modification, are permitted provided that the following conditions
+        -:   25: * are met:
+        -:   26: * 1. Redistributions of source code must retain the copyright
+        -:   27: *    notice, this list of conditions and the following disclaimer.
+        -:   28: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   29: *    notice, this list of conditions and the following disclaimer in the
+        -:   30: *    documentation and/or other materials provided with the distribution.
+        -:   31: * 3. All advertising materials mentioning features or use of this software
+        -:   32: *    must display the following acknowledgement:
+        -:   33: *    "This product includes cryptographic software written by
+        -:   34: *     Eric Young (eay@cryptsoft.com)"
+        -:   35: *    The word 'cryptographic' can be left out if the rouines from the library
+        -:   36: *    being used are not cryptographic related :-).
+        -:   37: * 4. If you include any Windows specific code (or a derivative thereof) from 
+        -:   38: *    the apps directory (application code) you must include an acknowledgement:
+        -:   39: *    "This product includes software written by Tim Hudson (tjh@cryptsoft.com)"
+        -:   40: * 
+        -:   41: * THIS SOFTWARE IS PROVIDED BY ERIC YOUNG ``AS IS'' AND
+        -:   42: * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   43: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+        -:   44: * ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+        -:   45: * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+        -:   46: * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+        -:   47: * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   48: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+        -:   49: * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+        -:   50: * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+        -:   51: * SUCH DAMAGE.
+        -:   52: * 
+        -:   53: * The licence and distribution terms for any publically available version or
+        -:   54: * derivative of this code cannot be changed.  i.e. this code cannot simply be
+        -:   55: * copied and put under another distribution licence
+        -:   56: * [including the GNU Public Licence.]
+        -:   57: */
+        -:   58:
+        -:   59:/*
+        -:   60: * 03-Dec-1997	rdenny@dc3.com  Fix bug preventing use of stdin/stdout
+        -:   61: *		with binary data (e.g. asn1parse -inform DER < xxx) under
+        -:   62: *		Windows
+        -:   63: */
+        -:   64:
+        -:   65:#ifndef HEADER_BSS_FILE_C
+        -:   66:#define HEADER_BSS_FILE_C
+        -:   67:
+        -:   68:#if defined(__linux) || defined(__sun) || defined(__hpux)
+        -:   69:/* Following definition aliases fopen to fopen64 on above mentioned
+        -:   70: * platforms. This makes it possible to open and sequentially access
+        -:   71: * files larger than 2GB from 32-bit application. It does not allow to
+        -:   72: * traverse them beyond 2GB with fseek/ftell, but on the other hand *no*
+        -:   73: * 32-bit platform permits that, not with fseek/ftell. Not to mention
+        -:   74: * that breaking 2GB limit for seeking would require surgery to *our*
+        -:   75: * API. But sequential access suffices for practical cases when you
+        -:   76: * can run into large files, such as fingerprinting, so we can let API
+        -:   77: * alone. For reference, the list of 32-bit platforms which allow for
+        -:   78: * sequential access of large files without extra "magic" comprise *BSD,
+        -:   79: * Darwin, IRIX...
+        -:   80: */
+        -:   81:#ifndef _FILE_OFFSET_BITS
+        -:   82:#define _FILE_OFFSET_BITS 64
+        -:   83:#endif
+        -:   84:#endif
+        -:   85:
+        -:   86:#include <stdio.h>
+        -:   87:#include <errno.h>
+        -:   88:#include "cryptlib.h"
+        -:   89:#include "bio_lcl.h"
+        -:   90:#include <openssl/err.h>
+        -:   91:
+        -:   92:#if defined(OPENSSL_SYS_NETWARE) && defined(NETWARE_CLIB)
+        -:   93:#include <nwfileio.h>
+        -:   94:#endif
+        -:   95:
+        -:   96:#if !defined(OPENSSL_NO_STDIO)
+        -:   97:
+        -:   98:static int MS_CALLBACK file_write(BIO *h, const char *buf, int num);
+        -:   99:static int MS_CALLBACK file_read(BIO *h, char *buf, int size);
+        -:  100:static int MS_CALLBACK file_puts(BIO *h, const char *str);
+        -:  101:static int MS_CALLBACK file_gets(BIO *h, char *str, int size);
+        -:  102:static long MS_CALLBACK file_ctrl(BIO *h, int cmd, long arg1, void *arg2);
+        -:  103:static int MS_CALLBACK file_new(BIO *h);
+        -:  104:static int MS_CALLBACK file_free(BIO *data);
+        -:  105:static BIO_METHOD methods_filep=
+        -:  106:	{
+        -:  107:	BIO_TYPE_FILE,
+        -:  108:	"FILE pointer",
+        -:  109:	file_write,
+        -:  110:	file_read,
+        -:  111:	file_puts,
+        -:  112:	file_gets,
+        -:  113:	file_ctrl,
+        -:  114:	file_new,
+        -:  115:	file_free,
+        -:  116:	NULL,
+        -:  117:	};
+        -:  118:
+    30000:  119:BIO *BIO_new_file(const char *filename, const char *mode)
+        -:  120:	{
+        -:  121:	BIO  *ret;
+        -:  122:	FILE *file=NULL;
+        -:  123:
+        -:  124:#if defined(_WIN32) && defined(CP_UTF8)
+        -:  125:	int sz, len_0 = (int)strlen(filename)+1;
+        -:  126:	DWORD flags;
+        -:  127:
+        -:  128:	/*
+        -:  129:	 * Basically there are three cases to cover: a) filename is
+        -:  130:	 * pure ASCII string; b) actual UTF-8 encoded string and
+        -:  131:	 * c) locale-ized string, i.e. one containing 8-bit
+        -:  132:	 * characters that are meaningful in current system locale.
+        -:  133:	 * If filename is pure ASCII or real UTF-8 encoded string,
+        -:  134:	 * MultiByteToWideChar succeeds and _wfopen works. If
+        -:  135:	 * filename is locale-ized string, chances are that
+        -:  136:	 * MultiByteToWideChar fails reporting
+        -:  137:	 * ERROR_NO_UNICODE_TRANSLATION, in which case we fall
+        -:  138:	 * back to fopen...
+        -:  139:	 */
+        -:  140:	if ((sz=MultiByteToWideChar(CP_UTF8,(flags=MB_ERR_INVALID_CHARS),
+        -:  141:					filename,len_0,NULL,0))>0 ||
+        -:  142:	    (GetLastError()==ERROR_INVALID_FLAGS &&
+        -:  143:	     (sz=MultiByteToWideChar(CP_UTF8,(flags=0),
+        -:  144:					filename,len_0,NULL,0))>0)
+        -:  145:	   )
+        -:  146:		{
+        -:  147:		WCHAR  wmode[8];
+        -:  148:		WCHAR *wfilename = _alloca(sz*sizeof(WCHAR));
+        -:  149:
+        -:  150:		if (MultiByteToWideChar(CP_UTF8,flags,
+        -:  151:					filename,len_0,wfilename,sz) &&
+        -:  152:		    MultiByteToWideChar(CP_UTF8,0,mode,strlen(mode)+1,
+        -:  153:			    		wmode,sizeof(wmode)/sizeof(wmode[0])) &&
+        -:  154:		    (file=_wfopen(wfilename,wmode))==NULL &&
+        -:  155:		    (errno==ENOENT || errno==EBADF)
+        -:  156:		   )	/* UTF-8 decode succeeded, but no file, filename
+        -:  157:			 * could still have been locale-ized... */
+        -:  158:			file = fopen(filename,mode);
+        -:  159:		}
+        -:  160:	else if (GetLastError()==ERROR_NO_UNICODE_TRANSLATION)
+        -:  161:		{
+        -:  162:		file = fopen(filename,mode);
+        -:  163:		}
+        -:  164:#else
+    30000:  165:	file=fopen(filename,mode);	
+        -:  166:#endif
+    30000:  167:	if (file == NULL)
+        -:  168:		{
+    10000:  169:		SYSerr(SYS_F_FOPEN,get_last_sys_error());
+    10000:  170:		ERR_add_error_data(5,"fopen('",filename,"','",mode,"')");
+    10000:  171:		if (errno == ENOENT)
+    10000:  172:			BIOerr(BIO_F_BIO_NEW_FILE,BIO_R_NO_SUCH_FILE);
+        -:  173:		else
+    #####:  174:			BIOerr(BIO_F_BIO_NEW_FILE,ERR_R_SYS_LIB);
+        -:  175:		return(NULL);
+        -:  176:		}
+    20000:  177:	if ((ret=BIO_new(BIO_s_file())) == NULL)
+        -:  178:		{
+    #####:  179:		fclose(file);
+    #####:  180:		return(NULL);
+        -:  181:		}
+        -:  182:
+    20000:  183:	BIO_clear_flags(ret,BIO_FLAGS_UPLINK); /* we did fopen -> we disengage UPLINK */
+    20000:  184:	BIO_set_fp(ret,file,BIO_CLOSE);
+    20000:  185:	return(ret);
+        -:  186:	}
+        -:  187:
+    10000:  188:BIO *BIO_new_fp(FILE *stream, int close_flag)
+        -:  189:	{
+        -:  190:	BIO *ret;
+        -:  191:
+    10000:  192:	if ((ret=BIO_new(BIO_s_file())) == NULL)
+        -:  193:		return(NULL);
+        -:  194:
+    10000:  195:	BIO_set_flags(ret,BIO_FLAGS_UPLINK); /* redundant, left for documentation puposes */
+    10000:  196:	BIO_set_fp(ret,stream,close_flag);
+    10000:  197:	return(ret);
+        -:  198:	}
+        -:  199:
+    10000:  200:BIO_METHOD *BIO_s_file(void)
+        -:  201:	{
+    10000:  202:	return(&methods_filep);
+        -:  203:	}
+        -:  204:
+    40000:  205:static int MS_CALLBACK file_new(BIO *bi)
+        -:  206:	{
+    40000:  207:	bi->init=0;
+    40000:  208:	bi->num=0;
+    40000:  209:	bi->ptr=NULL;
+    40000:  210:	bi->flags=BIO_FLAGS_UPLINK; /* default to UPLINK */
+    40000:  211:	return(1);
+        -:  212:	}
+        -:  213:
+    80000:  214:static int MS_CALLBACK file_free(BIO *a)
+        -:  215:	{
+    80000:  216:	if (a == NULL) return(0);
+    80000:  217:	if (a->shutdown)
+        -:  218:		{
+    60000:  219:		if ((a->init) && (a->ptr != NULL))
+        -:  220:			{
+        -:  221:			if (a->flags&BIO_FLAGS_UPLINK)
+        -:  222:				UP_fclose (a->ptr);
+        -:  223:			else
+    20000:  224:				fclose (a->ptr);
+    20000:  225:			a->ptr=NULL;
+    20000:  226:			a->flags=BIO_FLAGS_UPLINK;
+        -:  227:			}
+    60000:  228:		a->init=0;
+        -:  229:		}
+        -:  230:	return(1);
+        -:  231:	}
+        -:  232:	
+    #####:  233:static int MS_CALLBACK file_read(BIO *b, char *out, int outl)
+        -:  234:	{
+        -:  235:	int ret=0;
+        -:  236:
+    #####:  237:	if (b->init && (out != NULL))
+        -:  238:		{
+        -:  239:		if (b->flags&BIO_FLAGS_UPLINK)
+        -:  240:			ret=UP_fread(out,1,(int)outl,b->ptr);
+        -:  241:		else
+    #####:  242:			ret=fread(out,1,(int)outl,(FILE *)b->ptr);
+    #####:  243:		if(ret == 0 && (b->flags&BIO_FLAGS_UPLINK)?UP_ferror((FILE *)b->ptr):ferror((FILE *)b->ptr))
+        -:  244:			{
+    #####:  245:			SYSerr(SYS_F_FREAD,get_last_sys_error());
+    #####:  246:			BIOerr(BIO_F_FILE_READ,ERR_R_SYS_LIB);
+        -:  247:			ret=-1;
+        -:  248:			}
+        -:  249:		}
+    #####:  250:	return(ret);
+        -:  251:	}
+        -:  252:
+  3678949:  253:static int MS_CALLBACK file_write(BIO *b, const char *in, int inl)
+        -:  254:	{
+        -:  255:	int ret=0;
+        -:  256:
+  3678949:  257:	if (b->init && (in != NULL))
+        -:  258:		{
+        -:  259:		if (b->flags&BIO_FLAGS_UPLINK)
+        -:  260:			ret=UP_fwrite(in,(int)inl,1,b->ptr);
+        -:  261:		else
+  3678949:  262:			ret=fwrite(in,(int)inl,1,(FILE *)b->ptr);
+  3678949:  263:		if (ret)
+        -:  264:			ret=inl;
+        -:  265:		/* ret=fwrite(in,1,(int)inl,(FILE *)b->ptr); */
+        -:  266:		/* according to Tim Hudson <tjh@cryptsoft.com>, the commented
+        -:  267:		 * out version above can cause 'inl' write calls under
+        -:  268:		 * some stupid stdio implementations (VMS) */
+        -:  269:		}
+  3678949:  270:	return(ret);
+        -:  271:	}
+        -:  272:
+    50000:  273:static long MS_CALLBACK file_ctrl(BIO *b, int cmd, long num, void *ptr)
+        -:  274:	{
+        -:  275:	long ret=1;
+    50000:  276:	FILE *fp=(FILE *)b->ptr;
+        -:  277:	FILE **fpp;
+        -:  278:	char p[4];
+        -:  279:
+    50000:  280:	switch (cmd)
+        -:  281:		{
+        -:  282:	case BIO_C_FILE_SEEK:
+        -:  283:	case BIO_CTRL_RESET:
+        -:  284:		if (b->flags&BIO_FLAGS_UPLINK)
+        -:  285:			ret=(long)UP_fseek(b->ptr,num,0);
+        -:  286:		else
+    #####:  287:			ret=(long)fseek(fp,num,0);
+    #####:  288:		break;
+        -:  289:	case BIO_CTRL_EOF:
+        -:  290:		if (b->flags&BIO_FLAGS_UPLINK)
+        -:  291:			ret=(long)UP_feof(fp);
+        -:  292:		else
+    #####:  293:			ret=(long)feof(fp);
+    #####:  294:		break;
+        -:  295:	case BIO_C_FILE_TELL:
+        -:  296:	case BIO_CTRL_INFO:
+        -:  297:		if (b->flags&BIO_FLAGS_UPLINK)
+        -:  298:			ret=UP_ftell(b->ptr);
+        -:  299:		else
+    #####:  300:			ret=ftell(fp);
+    #####:  301:		break;
+        -:  302:	case BIO_C_SET_FILE_PTR:
+    40000:  303:		file_free(b);
+    40000:  304:		b->shutdown=(int)num&BIO_CLOSE;
+    40000:  305:		b->ptr=ptr;
+    40000:  306:		b->init=1;
+        -:  307:#if BIO_FLAGS_UPLINK!=0
+        -:  308:#if defined(__MINGW32__) && defined(__MSVCRT__) && !defined(_IOB_ENTRIES)
+        -:  309:#define _IOB_ENTRIES 20
+        -:  310:#endif
+        -:  311:#if defined(_IOB_ENTRIES)
+        -:  312:		/* Safety net to catch purely internal BIO_set_fp calls */
+        -:  313:		if ((size_t)ptr >= (size_t)stdin &&
+        -:  314:		    (size_t)ptr <  (size_t)(stdin+_IOB_ENTRIES))
+        -:  315:			BIO_clear_flags(b,BIO_FLAGS_UPLINK);
+        -:  316:#endif
+        -:  317:#endif
+        -:  318:#ifdef UP_fsetmod
+        -:  319:		if (b->flags&BIO_FLAGS_UPLINK)
+        -:  320:			UP_fsetmod(b->ptr,(char)((num&BIO_FP_TEXT)?'t':'b'));
+        -:  321:		else
+        -:  322:#endif
+        -:  323:		{
+        -:  324:#if defined(OPENSSL_SYS_WINDOWS)
+        -:  325:		int fd = _fileno((FILE*)ptr);
+        -:  326:		if (num & BIO_FP_TEXT)
+        -:  327:			_setmode(fd,_O_TEXT);
+        -:  328:		else
+        -:  329:			_setmode(fd,_O_BINARY);
+        -:  330:#elif defined(OPENSSL_SYS_NETWARE) && defined(NETWARE_CLIB)
+        -:  331:		int fd = fileno((FILE*)ptr);
+        -:  332:		/* Under CLib there are differences in file modes */
+        -:  333:		if (num & BIO_FP_TEXT)
+        -:  334:			setmode(fd,O_TEXT);
+        -:  335:		else
+        -:  336:			setmode(fd,O_BINARY);
+        -:  337:#elif defined(OPENSSL_SYS_MSDOS)
+        -:  338:		int fd = fileno((FILE*)ptr);
+        -:  339:		/* Set correct text/binary mode */
+        -:  340:		if (num & BIO_FP_TEXT)
+        -:  341:			_setmode(fd,_O_TEXT);
+        -:  342:		/* Dangerous to set stdin/stdout to raw (unless redirected) */
+        -:  343:		else
+        -:  344:			{
+        -:  345:			if (fd == STDIN_FILENO || fd == STDOUT_FILENO)
+        -:  346:				{
+        -:  347:				if (isatty(fd) <= 0)
+        -:  348:					_setmode(fd,_O_BINARY);
+        -:  349:				}
+        -:  350:			else
+        -:  351:				_setmode(fd,_O_BINARY);
+        -:  352:			}
+        -:  353:#elif defined(OPENSSL_SYS_OS2) || defined(OPENSSL_SYS_WIN32_CYGWIN)
+        -:  354:		int fd = fileno((FILE*)ptr);
+        -:  355:		if (num & BIO_FP_TEXT)
+        -:  356:			setmode(fd, O_TEXT);
+        -:  357:		else
+        -:  358:			setmode(fd, O_BINARY);
+        -:  359:#endif
+        -:  360:		}
+    40000:  361:		break;
+        -:  362:	case BIO_C_SET_FILENAME:
+    #####:  363:		file_free(b);
+    #####:  364:		b->shutdown=(int)num&BIO_CLOSE;
+    #####:  365:		if (num & BIO_FP_APPEND)
+        -:  366:			{
+    #####:  367:			if (num & BIO_FP_READ)
+    #####:  368:				BUF_strlcpy(p,"a+",sizeof p);
+    #####:  369:			else	BUF_strlcpy(p,"a",sizeof p);
+        -:  370:			}
+    #####:  371:		else if ((num & BIO_FP_READ) && (num & BIO_FP_WRITE))
+    #####:  372:			BUF_strlcpy(p,"r+",sizeof p);
+    #####:  373:		else if (num & BIO_FP_WRITE)
+    #####:  374:			BUF_strlcpy(p,"w",sizeof p);
+    #####:  375:		else if (num & BIO_FP_READ)
+    #####:  376:			BUF_strlcpy(p,"r",sizeof p);
+        -:  377:		else
+        -:  378:			{
+    #####:  379:			BIOerr(BIO_F_FILE_CTRL,BIO_R_BAD_FOPEN_MODE);
+        -:  380:			ret=0;
+    #####:  381:			break;
+        -:  382:			}
+        -:  383:#if defined(OPENSSL_SYS_MSDOS) || defined(OPENSSL_SYS_WINDOWS) || defined(OPENSSL_SYS_OS2) || defined(OPENSSL_SYS_WIN32_CYGWIN)
+        -:  384:		if (!(num & BIO_FP_TEXT))
+        -:  385:			strcat(p,"b");
+        -:  386:		else
+        -:  387:			strcat(p,"t");
+        -:  388:#endif
+        -:  389:#if defined(OPENSSL_SYS_NETWARE)
+        -:  390:		if (!(num & BIO_FP_TEXT))
+        -:  391:			strcat(p,"b");
+        -:  392:		else
+        -:  393:			strcat(p,"t");
+        -:  394:#endif
+    #####:  395:		fp=fopen(ptr,p);
+    #####:  396:		if (fp == NULL)
+        -:  397:			{
+    #####:  398:			SYSerr(SYS_F_FOPEN,get_last_sys_error());
+    #####:  399:			ERR_add_error_data(5,"fopen('",ptr,"','",p,"')");
+    #####:  400:			BIOerr(BIO_F_FILE_CTRL,ERR_R_SYS_LIB);
+        -:  401:			ret=0;
+    #####:  402:			break;
+        -:  403:			}
+    #####:  404:		b->ptr=fp;
+    #####:  405:		b->init=1;
+    #####:  406:		BIO_clear_flags(b,BIO_FLAGS_UPLINK); /* we did fopen -> we disengage UPLINK */
+    #####:  407:		break;
+        -:  408:	case BIO_C_GET_FILE_PTR:
+        -:  409:		/* the ptr parameter is actually a FILE ** in this case. */
+    #####:  410:		if (ptr != NULL)
+        -:  411:			{
+        -:  412:			fpp=(FILE **)ptr;
+    #####:  413:			*fpp=(FILE *)b->ptr;
+        -:  414:			}
+        -:  415:		break;
+        -:  416:	case BIO_CTRL_GET_CLOSE:
+    #####:  417:		ret=(long)b->shutdown;
+    #####:  418:		break;
+        -:  419:	case BIO_CTRL_SET_CLOSE:
+    #####:  420:		b->shutdown=(int)num;
+    #####:  421:		break;
+        -:  422:	case BIO_CTRL_FLUSH:
+        -:  423:		if (b->flags&BIO_FLAGS_UPLINK)
+        -:  424:			UP_fflush(b->ptr);
+        -:  425:		else
+    10000:  426:			fflush((FILE *)b->ptr);
+    10000:  427:		break;
+        -:  428:	case BIO_CTRL_DUP:
+        -:  429:		ret=1;
+        -:  430:		break;
+        -:  431:
+        -:  432:	case BIO_CTRL_WPENDING:
+        -:  433:	case BIO_CTRL_PENDING:
+        -:  434:	case BIO_CTRL_PUSH:
+        -:  435:	case BIO_CTRL_POP:
+        -:  436:	default:
+        -:  437:		ret=0;
+    #####:  438:		break;
+        -:  439:		}
+    50000:  440:	return(ret);
+        -:  441:	}
+        -:  442:
+  3830000:  443:static int MS_CALLBACK file_gets(BIO *bp, char *buf, int size)
+        -:  444:	{
+        -:  445:	int ret=0;
+        -:  446:
+  3830000:  447:	buf[0]='\0';
+        -:  448:	if (bp->flags&BIO_FLAGS_UPLINK)
+        -:  449:		{
+        -:  450:		if (!UP_fgets(buf,size,bp->ptr))
+        -:  451:			goto err;
+        -:  452:		}
+        -:  453:	else
+        -:  454:		{
+  7660000:  455:		if (!fgets(buf,size,(FILE *)bp->ptr))
+        -:  456:			goto err;
+        -:  457:		}
+  3810000:  458:	if (buf[0] != '\0')
+  3810000:  459:		ret=strlen(buf);
+        -:  460:	err:
+  3830000:  461:	return(ret);
+        -:  462:	}
+        -:  463:
+   144346:  464:static int MS_CALLBACK file_puts(BIO *bp, const char *str)
+        -:  465:	{
+        -:  466:	int n,ret;
+        -:  467:
+   144346:  468:	n=strlen(str);
+   144346:  469:	ret=file_write(bp,str,n);
+   144346:  470:	return(ret);
+        -:  471:	}
+        -:  472:
+        -:  473:#endif /* OPENSSL_NO_STDIO */
+        -:  474:
+        -:  475:#endif /* HEADER_BSS_FILE_C */
+        -:  476:
+        -:  477:

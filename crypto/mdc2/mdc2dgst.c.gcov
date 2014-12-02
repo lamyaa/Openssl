@@ -1,0 +1,205 @@
+        -:    0:Source:mdc2dgst.c
+        -:    0:Graph:mdc2dgst.gcno
+        -:    0:Data:mdc2dgst.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* crypto/mdc2/mdc2dgst.c */
+        -:    2:/* Copyright (C) 1995-1998 Eric Young (eay@cryptsoft.com)
+        -:    3: * All rights reserved.
+        -:    4: *
+        -:    5: * This package is an SSL implementation written
+        -:    6: * by Eric Young (eay@cryptsoft.com).
+        -:    7: * The implementation was written so as to conform with Netscapes SSL.
+        -:    8: * 
+        -:    9: * This library is free for commercial and non-commercial use as long as
+        -:   10: * the following conditions are aheared to.  The following conditions
+        -:   11: * apply to all code found in this distribution, be it the RC4, RSA,
+        -:   12: * lhash, DES, etc., code; not just the SSL code.  The SSL documentation
+        -:   13: * included with this distribution is covered by the same copyright terms
+        -:   14: * except that the holder is Tim Hudson (tjh@cryptsoft.com).
+        -:   15: * 
+        -:   16: * Copyright remains Eric Young's, and as such any Copyright notices in
+        -:   17: * the code are not to be removed.
+        -:   18: * If this package is used in a product, Eric Young should be given attribution
+        -:   19: * as the author of the parts of the library used.
+        -:   20: * This can be in the form of a textual message at program startup or
+        -:   21: * in documentation (online or textual) provided with the package.
+        -:   22: * 
+        -:   23: * Redistribution and use in source and binary forms, with or without
+        -:   24: * modification, are permitted provided that the following conditions
+        -:   25: * are met:
+        -:   26: * 1. Redistributions of source code must retain the copyright
+        -:   27: *    notice, this list of conditions and the following disclaimer.
+        -:   28: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   29: *    notice, this list of conditions and the following disclaimer in the
+        -:   30: *    documentation and/or other materials provided with the distribution.
+        -:   31: * 3. All advertising materials mentioning features or use of this software
+        -:   32: *    must display the following acknowledgement:
+        -:   33: *    "This product includes cryptographic software written by
+        -:   34: *     Eric Young (eay@cryptsoft.com)"
+        -:   35: *    The word 'cryptographic' can be left out if the rouines from the library
+        -:   36: *    being used are not cryptographic related :-).
+        -:   37: * 4. If you include any Windows specific code (or a derivative thereof) from 
+        -:   38: *    the apps directory (application code) you must include an acknowledgement:
+        -:   39: *    "This product includes software written by Tim Hudson (tjh@cryptsoft.com)"
+        -:   40: * 
+        -:   41: * THIS SOFTWARE IS PROVIDED BY ERIC YOUNG ``AS IS'' AND
+        -:   42: * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   43: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+        -:   44: * ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+        -:   45: * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+        -:   46: * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+        -:   47: * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   48: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+        -:   49: * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+        -:   50: * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+        -:   51: * SUCH DAMAGE.
+        -:   52: * 
+        -:   53: * The licence and distribution terms for any publically available version or
+        -:   54: * derivative of this code cannot be changed.  i.e. this code cannot simply be
+        -:   55: * copied and put under another distribution licence
+        -:   56: * [including the GNU Public Licence.]
+        -:   57: */
+        -:   58:
+        -:   59:#include <stdio.h>
+        -:   60:#include <stdlib.h>
+        -:   61:#include <string.h>
+        -:   62:#include <openssl/crypto.h>
+        -:   63:#include <openssl/des.h>
+        -:   64:#include <openssl/mdc2.h>
+        -:   65:
+        -:   66:#undef c2l
+        -:   67:#define c2l(c,l)	(l =((DES_LONG)(*((c)++)))    , \
+        -:   68:			 l|=((DES_LONG)(*((c)++)))<< 8L, \
+        -:   69:			 l|=((DES_LONG)(*((c)++)))<<16L, \
+        -:   70:			 l|=((DES_LONG)(*((c)++)))<<24L)
+        -:   71:
+        -:   72:#undef l2c
+        -:   73:#define l2c(l,c)	(*((c)++)=(unsigned char)(((l)     )&0xff), \
+        -:   74:			*((c)++)=(unsigned char)(((l)>> 8L)&0xff), \
+        -:   75:			*((c)++)=(unsigned char)(((l)>>16L)&0xff), \
+        -:   76:			*((c)++)=(unsigned char)(((l)>>24L)&0xff))
+        -:   77:
+        -:   78:static void mdc2_body(MDC2_CTX *c, const unsigned char *in, size_t len);
+    #####:   79:fips_md_init(MDC2)
+        -:   80:	{
+    #####:   81:	c->num=0;
+    #####:   82:	c->pad_type=1;
+    #####:   83:	memset(&(c->h[0]),0x52,MDC2_BLOCK);
+        -:   84:	memset(&(c->hh[0]),0x25,MDC2_BLOCK);
+    #####:   85:	return 1;
+        -:   86:	}
+        -:   87:
+    #####:   88:int MDC2_Update(MDC2_CTX *c, const unsigned char *in, size_t len)
+        -:   89:	{
+        -:   90:	size_t i,j;
+        -:   91:
+    #####:   92:	i=c->num;
+    #####:   93:	if (i != 0)
+        -:   94:		{
+    #####:   95:		if (i+len < MDC2_BLOCK)
+        -:   96:			{
+        -:   97:			/* partial block */
+    #####:   98:			memcpy(&(c->data[i]),in,len);
+    #####:   99:			c->num+=(int)len;
+    #####:  100:			return 1;
+        -:  101:			}
+        -:  102:		else
+        -:  103:			{
+        -:  104:			/* filled one */
+    #####:  105:			j=MDC2_BLOCK-i;
+    #####:  106:			memcpy(&(c->data[i]),in,j);
+    #####:  107:			len-=j;
+    #####:  108:			in+=j;
+    #####:  109:			c->num=0;
+    #####:  110:			mdc2_body(c,&(c->data[0]),MDC2_BLOCK);
+        -:  111:			}
+        -:  112:		}
+    #####:  113:	i=len&~((size_t)MDC2_BLOCK-1);
+    #####:  114:	if (i > 0) mdc2_body(c,in,i);
+    #####:  115:	j=len-i;
+    #####:  116:	if (j > 0)
+        -:  117:		{
+    #####:  118:		memcpy(&(c->data[0]),&(in[i]),j);
+    #####:  119:		c->num=(int)j;
+        -:  120:		}
+        -:  121:	return 1;
+        -:  122:	}
+        -:  123:
+    #####:  124:static void mdc2_body(MDC2_CTX *c, const unsigned char *in, size_t len)
+        -:  125:	{
+        -:  126:	register DES_LONG tin0,tin1;
+        -:  127:	register DES_LONG ttin0,ttin1;
+        -:  128:	DES_LONG d[2],dd[2];
+        -:  129:	DES_key_schedule k;
+        -:  130:	unsigned char *p;
+        -:  131:	size_t i;
+        -:  132:
+    #####:  133:	for (i=0; i<len; i+=8)
+        -:  134:		{
+    #####:  135:		c2l(in,tin0); d[0]=dd[0]=tin0;
+    #####:  136:		c2l(in,tin1); d[1]=dd[1]=tin1;
+    #####:  137:		c->h[0]=(c->h[0]&0x9f)|0x40;
+    #####:  138:		c->hh[0]=(c->hh[0]&0x9f)|0x20;
+        -:  139:
+    #####:  140:		DES_set_odd_parity(&c->h);
+    #####:  141:		DES_set_key_unchecked(&c->h,&k);
+    #####:  142:		DES_encrypt1(d,&k,1);
+        -:  143:
+    #####:  144:		DES_set_odd_parity(&c->hh);
+    #####:  145:		DES_set_key_unchecked(&c->hh,&k);
+    #####:  146:		DES_encrypt1(dd,&k,1);
+        -:  147:
+    #####:  148:		ttin0=tin0^dd[0];
+    #####:  149:		ttin1=tin1^dd[1];
+    #####:  150:		tin0^=d[0];
+    #####:  151:		tin1^=d[1];
+        -:  152:
+        -:  153:		p=c->h;
+    #####:  154:		l2c(tin0,p);
+    #####:  155:		l2c(ttin1,p);
+        -:  156:		p=c->hh;
+    #####:  157:		l2c(ttin0,p);
+    #####:  158:		l2c(tin1,p);
+        -:  159:		}
+    #####:  160:	}
+        -:  161:
+    #####:  162:int MDC2_Final(unsigned char *md, MDC2_CTX *c)
+        -:  163:	{
+        -:  164:	unsigned int i;
+        -:  165:	int j;
+        -:  166:
+    #####:  167:	i=c->num;
+    #####:  168:	j=c->pad_type;
+    #####:  169:	if ((i > 0) || (j == 2))
+        -:  170:		{
+    #####:  171:		if (j == 2)
+    #####:  172:			c->data[i++]=0x80;
+    #####:  173:		memset(&(c->data[i]),0,MDC2_BLOCK-i);
+    #####:  174:		mdc2_body(c,c->data,MDC2_BLOCK);
+        -:  175:		}
+    #####:  176:	memcpy(md,(char *)c->h,MDC2_BLOCK);
+    #####:  177:	memcpy(&(md[MDC2_BLOCK]),(char *)c->hh,MDC2_BLOCK);
+    #####:  178:	return 1;
+        -:  179:	}
+        -:  180:
+        -:  181:#undef TEST
+        -:  182:
+        -:  183:#ifdef TEST
+        -:  184:main()
+        -:  185:	{
+        -:  186:	unsigned char md[MDC2_DIGEST_LENGTH];
+        -:  187:	int i;
+        -:  188:	MDC2_CTX c;
+        -:  189:	static char *text="Now is the time for all ";
+        -:  190:
+        -:  191:	MDC2_Init(&c);
+        -:  192:	MDC2_Update(&c,text,strlen(text));
+        -:  193:	MDC2_Final(&(md[0]),&c);
+        -:  194:
+        -:  195:	for (i=0; i<MDC2_DIGEST_LENGTH; i++)
+        -:  196:		printf("%02X",md[i]);
+        -:  197:	printf("\n");
+        -:  198:	}
+        -:  199:
+        -:  200:#endif

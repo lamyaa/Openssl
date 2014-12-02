@@ -1,0 +1,299 @@
+        -:    0:Source:cms_enc.c
+        -:    0:Graph:cms_enc.gcno
+        -:    0:Data:cms_enc.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* crypto/cms/cms_enc.c */
+        -:    2:/* Written by Dr Stephen N Henson (steve@openssl.org) for the OpenSSL
+        -:    3: * project.
+        -:    4: */
+        -:    5:/* ====================================================================
+        -:    6: * Copyright (c) 2008 The OpenSSL Project.  All rights reserved.
+        -:    7: *
+        -:    8: * Redistribution and use in source and binary forms, with or without
+        -:    9: * modification, are permitted provided that the following conditions
+        -:   10: * are met:
+        -:   11: *
+        -:   12: * 1. Redistributions of source code must retain the above copyright
+        -:   13: *    notice, this list of conditions and the following disclaimer. 
+        -:   14: *
+        -:   15: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   16: *    notice, this list of conditions and the following disclaimer in
+        -:   17: *    the documentation and/or other materials provided with the
+        -:   18: *    distribution.
+        -:   19: *
+        -:   20: * 3. All advertising materials mentioning features or use of this
+        -:   21: *    software must display the following acknowledgment:
+        -:   22: *    "This product includes software developed by the OpenSSL Project
+        -:   23: *    for use in the OpenSSL Toolkit. (http://www.OpenSSL.org/)"
+        -:   24: *
+        -:   25: * 4. The names "OpenSSL Toolkit" and "OpenSSL Project" must not be used to
+        -:   26: *    endorse or promote products derived from this software without
+        -:   27: *    prior written permission. For written permission, please contact
+        -:   28: *    licensing@OpenSSL.org.
+        -:   29: *
+        -:   30: * 5. Products derived from this software may not be called "OpenSSL"
+        -:   31: *    nor may "OpenSSL" appear in their names without prior written
+        -:   32: *    permission of the OpenSSL Project.
+        -:   33: *
+        -:   34: * 6. Redistributions of any form whatsoever must retain the following
+        -:   35: *    acknowledgment:
+        -:   36: *    "This product includes software developed by the OpenSSL Project
+        -:   37: *    for use in the OpenSSL Toolkit (http://www.OpenSSL.org/)"
+        -:   38: *
+        -:   39: * THIS SOFTWARE IS PROVIDED BY THE OpenSSL PROJECT ``AS IS'' AND ANY
+        -:   40: * EXPRESSED OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   41: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+        -:   42: * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE OpenSSL PROJECT OR
+        -:   43: * ITS CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+        -:   44: * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+        -:   45: * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+        -:   46: * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   47: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+        -:   48: * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+        -:   49: * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+        -:   50: * OF THE POSSIBILITY OF SUCH DAMAGE.
+        -:   51: * ====================================================================
+        -:   52: */
+        -:   53:
+        -:   54:#include "cryptlib.h"
+        -:   55:#include <openssl/asn1t.h>
+        -:   56:#include <openssl/pem.h>
+        -:   57:#include <openssl/x509v3.h>
+        -:   58:#include <openssl/err.h>
+        -:   59:#include <openssl/cms.h>
+        -:   60:#include <openssl/rand.h>
+        -:   61:#include "cms_lcl.h"
+        -:   62:
+        -:   63:/* CMS EncryptedData Utilities */
+        -:   64:
+        -:   65:DECLARE_ASN1_ITEM(CMS_EncryptedData)
+        -:   66:
+        -:   67:/* Return BIO based on EncryptedContentInfo and key */
+        -:   68:
+    #####:   69:BIO *cms_EncryptedContent_init_bio(CMS_EncryptedContentInfo *ec)
+        -:   70:	{
+        -:   71:	BIO *b;
+        -:   72:	EVP_CIPHER_CTX *ctx;
+        -:   73:	const EVP_CIPHER *ciph;
+    #####:   74:	X509_ALGOR *calg = ec->contentEncryptionAlgorithm;
+        -:   75:	unsigned char iv[EVP_MAX_IV_LENGTH], *piv = NULL;
+        -:   76:	unsigned char *tkey = NULL;
+        -:   77:	size_t tkeylen = 0;
+        -:   78:
+        -:   79:	int ok = 0;
+        -:   80:
+        -:   81:	int enc, keep_key = 0;
+        -:   82:
+    #####:   83:	enc = ec->cipher ? 1 : 0;
+        -:   84:
+    #####:   85:	b = BIO_new(BIO_f_cipher());
+    #####:   86:	if (!b)
+        -:   87:		{
+    #####:   88:		CMSerr(CMS_F_CMS_ENCRYPTEDCONTENT_INIT_BIO,
+        -:   89:							ERR_R_MALLOC_FAILURE);
+    #####:   90:		return NULL;
+        -:   91:		}
+        -:   92:
+    #####:   93:	BIO_get_cipher_ctx(b, &ctx);
+        -:   94:
+    #####:   95:	if (enc)
+        -:   96:		{
+    #####:   97:		ciph = ec->cipher;
+        -:   98:		/* If not keeping key set cipher to NULL so subsequent calls
+        -:   99:		 * decrypt.
+        -:  100:		 */
+    #####:  101:		if (ec->key)
+    #####:  102:			ec->cipher = NULL;
+        -:  103:		}
+        -:  104:	else
+        -:  105:		{
+    #####:  106:		ciph = EVP_get_cipherbyobj(calg->algorithm);
+        -:  107:
+    #####:  108:		if (!ciph)
+        -:  109:			{
+    #####:  110:			CMSerr(CMS_F_CMS_ENCRYPTEDCONTENT_INIT_BIO,
+        -:  111:							CMS_R_UNKNOWN_CIPHER);
+    #####:  112:			goto err;
+        -:  113:			}
+        -:  114:		}
+        -:  115:
+    #####:  116:	if (EVP_CipherInit_ex(ctx, ciph, NULL, NULL, NULL, enc) <= 0)
+        -:  117:		{
+    #####:  118:		CMSerr(CMS_F_CMS_ENCRYPTEDCONTENT_INIT_BIO,
+        -:  119:				CMS_R_CIPHER_INITIALISATION_ERROR);
+    #####:  120:		goto err;
+        -:  121:		}
+        -:  122:
+    #####:  123:	if (enc)
+        -:  124:		{
+        -:  125:		int ivlen;
+    #####:  126:		calg->algorithm = OBJ_nid2obj(EVP_CIPHER_CTX_type(ctx));
+        -:  127:		/* Generate a random IV if we need one */
+    #####:  128:		ivlen = EVP_CIPHER_CTX_iv_length(ctx);
+    #####:  129:		if (ivlen > 0)
+        -:  130:			{
+    #####:  131:			if (RAND_pseudo_bytes(iv, ivlen) <= 0)
+        -:  132:				goto err;
+        -:  133:			piv = iv;
+        -:  134:			}
+        -:  135:		}
+    #####:  136:	else if (EVP_CIPHER_asn1_to_param(ctx, calg->parameter) <= 0)
+        -:  137:		{
+    #####:  138:		CMSerr(CMS_F_CMS_ENCRYPTEDCONTENT_INIT_BIO,
+        -:  139:				CMS_R_CIPHER_PARAMETER_INITIALISATION_ERROR);
+    #####:  140:		goto err;
+        -:  141:		}
+    #####:  142:	tkeylen = EVP_CIPHER_CTX_key_length(ctx);
+        -:  143:	/* Generate random session key */
+    #####:  144:	if (!enc || !ec->key)
+        -:  145:		{
+    #####:  146:		tkey = OPENSSL_malloc(tkeylen);
+    #####:  147:		if (!tkey)
+        -:  148:			{
+    #####:  149:			CMSerr(CMS_F_CMS_ENCRYPTEDCONTENT_INIT_BIO,
+        -:  150:							ERR_R_MALLOC_FAILURE);
+    #####:  151:			goto err;
+        -:  152:			}
+    #####:  153:		if (EVP_CIPHER_CTX_rand_key(ctx, tkey) <= 0)
+        -:  154:			goto err;
+        -:  155:		}
+        -:  156:
+    #####:  157:	if (!ec->key)
+        -:  158:		{
+    #####:  159:		ec->key = tkey;
+    #####:  160:		ec->keylen = tkeylen;
+        -:  161:		tkey = NULL;
+    #####:  162:		if (enc)
+        -:  163:			keep_key = 1;
+        -:  164:		else
+    #####:  165:			ERR_clear_error();
+        -:  166:		
+        -:  167:		}
+        -:  168:
+    #####:  169:	if (ec->keylen != tkeylen)
+        -:  170:		{
+        -:  171:		/* If necessary set key length */
+    #####:  172:		if (EVP_CIPHER_CTX_set_key_length(ctx, ec->keylen) <= 0)
+        -:  173:			{
+        -:  174:			/* Only reveal failure if debugging so we don't
+        -:  175:			 * leak information which may be useful in MMA.
+        -:  176:			 */
+    #####:  177:			if (enc || ec->debug)
+        -:  178:				{
+    #####:  179:				CMSerr(CMS_F_CMS_ENCRYPTEDCONTENT_INIT_BIO,
+        -:  180:						CMS_R_INVALID_KEY_LENGTH);
+    #####:  181:				goto err;
+        -:  182:				}
+        -:  183:			else
+        -:  184:				{
+        -:  185:				/* Use random key */
+    #####:  186:				OPENSSL_cleanse(ec->key, ec->keylen);
+    #####:  187:				OPENSSL_free(ec->key);
+    #####:  188:				ec->key = tkey;
+    #####:  189:				ec->keylen = tkeylen;
+        -:  190:				tkey = NULL;
+    #####:  191:				ERR_clear_error();
+        -:  192:				}
+        -:  193:			}
+        -:  194:		}
+        -:  195:
+    #####:  196:	if (EVP_CipherInit_ex(ctx, NULL, NULL, ec->key, piv, enc) <= 0)
+        -:  197:		{
+    #####:  198:		CMSerr(CMS_F_CMS_ENCRYPTEDCONTENT_INIT_BIO,
+        -:  199:				CMS_R_CIPHER_INITIALISATION_ERROR);
+    #####:  200:		goto err;
+        -:  201:		}
+        -:  202:
+    #####:  203:	if (piv)
+        -:  204:		{
+    #####:  205:		calg->parameter = ASN1_TYPE_new();
+    #####:  206:		if (!calg->parameter)
+        -:  207:			{
+    #####:  208:			CMSerr(CMS_F_CMS_ENCRYPTEDCONTENT_INIT_BIO,
+        -:  209:							ERR_R_MALLOC_FAILURE);
+    #####:  210:			goto err;
+        -:  211:			}
+    #####:  212:		if (EVP_CIPHER_param_to_asn1(ctx, calg->parameter) <= 0)
+        -:  213:			{
+    #####:  214:			CMSerr(CMS_F_CMS_ENCRYPTEDCONTENT_INIT_BIO,
+        -:  215:				CMS_R_CIPHER_PARAMETER_INITIALISATION_ERROR);
+    #####:  216:			goto err;
+        -:  217:			}
+        -:  218:		}
+        -:  219:	ok = 1;
+        -:  220:
+        -:  221:	err:
+    #####:  222:	if (ec->key && !keep_key)
+        -:  223:		{
+    #####:  224:		OPENSSL_cleanse(ec->key, ec->keylen);
+    #####:  225:		OPENSSL_free(ec->key);
+    #####:  226:		ec->key = NULL;
+        -:  227:		}
+    #####:  228:	if (tkey)
+        -:  229:		{
+    #####:  230:		OPENSSL_cleanse(tkey, tkeylen);
+    #####:  231:		OPENSSL_free(tkey);
+        -:  232:		}
+    #####:  233:	if (ok)
+        -:  234:		return b;
+    #####:  235:	BIO_free(b);
+    #####:  236:	return NULL;
+        -:  237:	}
+        -:  238:
+    #####:  239:int cms_EncryptedContent_init(CMS_EncryptedContentInfo *ec, 
+        -:  240:				const EVP_CIPHER *cipher,
+        -:  241:				const unsigned char *key, size_t keylen)
+        -:  242:	{
+    #####:  243:	ec->cipher = cipher;
+    #####:  244:	if (key)
+        -:  245:		{
+    #####:  246:		ec->key = OPENSSL_malloc(keylen);
+    #####:  247:		if (!ec->key)
+        -:  248:			return 0;
+        -:  249:		memcpy(ec->key, key, keylen);
+        -:  250:		}
+    #####:  251:	ec->keylen = keylen;
+    #####:  252:	if (cipher)
+    #####:  253:		ec->contentType = OBJ_nid2obj(NID_pkcs7_data);
+        -:  254:	return 1;
+        -:  255:	}
+        -:  256:
+    #####:  257:int CMS_EncryptedData_set1_key(CMS_ContentInfo *cms, const EVP_CIPHER *ciph,
+        -:  258:				const unsigned char *key, size_t keylen)
+        -:  259:	{
+        -:  260:	CMS_EncryptedContentInfo *ec;
+    #####:  261:	if (!key || !keylen)
+        -:  262:		{
+    #####:  263:		CMSerr(CMS_F_CMS_ENCRYPTEDDATA_SET1_KEY, CMS_R_NO_KEY);
+    #####:  264:		return 0;
+        -:  265:		}
+    #####:  266:	if (ciph)
+        -:  267:		{
+    #####:  268:		cms->d.encryptedData = M_ASN1_new_of(CMS_EncryptedData);
+    #####:  269:		if (!cms->d.encryptedData)
+        -:  270:			{
+    #####:  271:			CMSerr(CMS_F_CMS_ENCRYPTEDDATA_SET1_KEY,
+        -:  272:				ERR_R_MALLOC_FAILURE);
+    #####:  273:			return 0;
+        -:  274:			}
+    #####:  275:		cms->contentType = OBJ_nid2obj(NID_pkcs7_encrypted);
+    #####:  276:		cms->d.encryptedData->version = 0;
+        -:  277:		}
+    #####:  278:	else if (OBJ_obj2nid(cms->contentType) != NID_pkcs7_encrypted)
+        -:  279:		{
+    #####:  280:		CMSerr(CMS_F_CMS_ENCRYPTEDDATA_SET1_KEY,
+        -:  281:						CMS_R_NOT_ENCRYPTED_DATA);
+    #####:  282:		return 0;
+        -:  283:		}
+    #####:  284:	ec = cms->d.encryptedData->encryptedContentInfo;
+    #####:  285:	return cms_EncryptedContent_init(ec, ciph, key, keylen);
+        -:  286:	}
+        -:  287:
+    #####:  288:BIO *cms_EncryptedData_init_bio(CMS_ContentInfo *cms)
+        -:  289:	{
+    #####:  290:	CMS_EncryptedData *enc = cms->d.encryptedData;
+    #####:  291:	if (enc->encryptedContentInfo->cipher && enc->unprotectedAttrs)
+    #####:  292:		enc->version = 2;
+    #####:  293:	return cms_EncryptedContent_init_bio(enc->encryptedContentInfo);
+        -:  294:	}

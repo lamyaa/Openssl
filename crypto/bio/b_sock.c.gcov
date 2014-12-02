@@ -1,0 +1,980 @@
+        -:    0:Source:b_sock.c
+        -:    0:Graph:b_sock.gcno
+        -:    0:Data:b_sock.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* crypto/bio/b_sock.c */
+        -:    2:/* Copyright (C) 1995-1998 Eric Young (eay@cryptsoft.com)
+        -:    3: * All rights reserved.
+        -:    4: *
+        -:    5: * This package is an SSL implementation written
+        -:    6: * by Eric Young (eay@cryptsoft.com).
+        -:    7: * The implementation was written so as to conform with Netscapes SSL.
+        -:    8: * 
+        -:    9: * This library is free for commercial and non-commercial use as long as
+        -:   10: * the following conditions are aheared to.  The following conditions
+        -:   11: * apply to all code found in this distribution, be it the RC4, RSA,
+        -:   12: * lhash, DES, etc., code; not just the SSL code.  The SSL documentation
+        -:   13: * included with this distribution is covered by the same copyright terms
+        -:   14: * except that the holder is Tim Hudson (tjh@cryptsoft.com).
+        -:   15: * 
+        -:   16: * Copyright remains Eric Young's, and as such any Copyright notices in
+        -:   17: * the code are not to be removed.
+        -:   18: * If this package is used in a product, Eric Young should be given attribution
+        -:   19: * as the author of the parts of the library used.
+        -:   20: * This can be in the form of a textual message at program startup or
+        -:   21: * in documentation (online or textual) provided with the package.
+        -:   22: * 
+        -:   23: * Redistribution and use in source and binary forms, with or without
+        -:   24: * modification, are permitted provided that the following conditions
+        -:   25: * are met:
+        -:   26: * 1. Redistributions of source code must retain the copyright
+        -:   27: *    notice, this list of conditions and the following disclaimer.
+        -:   28: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   29: *    notice, this list of conditions and the following disclaimer in the
+        -:   30: *    documentation and/or other materials provided with the distribution.
+        -:   31: * 3. All advertising materials mentioning features or use of this software
+        -:   32: *    must display the following acknowledgement:
+        -:   33: *    "This product includes cryptographic software written by
+        -:   34: *     Eric Young (eay@cryptsoft.com)"
+        -:   35: *    The word 'cryptographic' can be left out if the rouines from the library
+        -:   36: *    being used are not cryptographic related :-).
+        -:   37: * 4. If you include any Windows specific code (or a derivative thereof) from 
+        -:   38: *    the apps directory (application code) you must include an acknowledgement:
+        -:   39: *    "This product includes software written by Tim Hudson (tjh@cryptsoft.com)"
+        -:   40: * 
+        -:   41: * THIS SOFTWARE IS PROVIDED BY ERIC YOUNG ``AS IS'' AND
+        -:   42: * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   43: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+        -:   44: * ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+        -:   45: * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+        -:   46: * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+        -:   47: * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   48: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+        -:   49: * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+        -:   50: * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+        -:   51: * SUCH DAMAGE.
+        -:   52: * 
+        -:   53: * The licence and distribution terms for any publically available version or
+        -:   54: * derivative of this code cannot be changed.  i.e. this code cannot simply be
+        -:   55: * copied and put under another distribution licence
+        -:   56: * [including the GNU Public Licence.]
+        -:   57: */
+        -:   58:
+        -:   59:#include <stdio.h>
+        -:   60:#include <stdlib.h>
+        -:   61:#include <errno.h>
+        -:   62:#define USE_SOCKETS
+        -:   63:#include "cryptlib.h"
+        -:   64:#include <openssl/bio.h>
+        -:   65:#if defined(OPENSSL_SYS_NETWARE) && defined(NETWARE_BSDSOCK)
+        -:   66:#include <netdb.h>
+        -:   67:#if defined(NETWARE_CLIB)
+        -:   68:#include <sys/ioctl.h>
+        -:   69:NETDB_DEFINE_CONTEXT
+        -:   70:#endif
+        -:   71:#endif
+        -:   72:
+        -:   73:#ifndef OPENSSL_NO_SOCK
+        -:   74:
+        -:   75:#include <openssl/dso.h>
+        -:   76:
+        -:   77:#define SOCKET_PROTOCOL IPPROTO_TCP
+        -:   78:
+        -:   79:#ifdef SO_MAXCONN
+        -:   80:#define MAX_LISTEN  SO_MAXCONN
+        -:   81:#elif defined(SOMAXCONN)
+        -:   82:#define MAX_LISTEN  SOMAXCONN
+        -:   83:#else
+        -:   84:#define MAX_LISTEN  32
+        -:   85:#endif
+        -:   86:
+        -:   87:#if defined(OPENSSL_SYS_WINDOWS) || (defined(OPENSSL_SYS_NETWARE) && !defined(NETWARE_BSDSOCK))
+        -:   88:static int wsa_init_done=0;
+        -:   89:#endif
+        -:   90:
+        -:   91:/*
+        -:   92: * WSAAPI specifier is required to make indirect calls to run-time
+        -:   93: * linked WinSock 2 functions used in this module, to be specific
+        -:   94: * [get|free]addrinfo and getnameinfo. This is because WinSock uses
+        -:   95: * uses non-C calling convention, __stdcall vs. __cdecl, on x86
+        -:   96: * Windows. On non-WinSock platforms WSAAPI needs to be void.
+        -:   97: */
+        -:   98:#ifndef WSAAPI
+        -:   99:#define WSAAPI
+        -:  100:#endif
+        -:  101:
+        -:  102:#if 0
+        -:  103:static unsigned long BIO_ghbn_hits=0L;
+        -:  104:static unsigned long BIO_ghbn_miss=0L;
+        -:  105:
+        -:  106:#define GHBN_NUM	4
+        -:  107:static struct ghbn_cache_st
+        -:  108:	{
+        -:  109:	char name[129];
+        -:  110:	struct hostent *ent;
+        -:  111:	unsigned long order;
+        -:  112:	} ghbn_cache[GHBN_NUM];
+        -:  113:#endif
+        -:  114:
+        -:  115:static int get_ip(const char *str,unsigned char *ip);
+        -:  116:#if 0
+        -:  117:static void ghbn_free(struct hostent *a);
+        -:  118:static struct hostent *ghbn_dup(struct hostent *a);
+        -:  119:#endif
+    #####:  120:int BIO_get_host_ip(const char *str, unsigned char *ip)
+        -:  121:	{
+        -:  122:	int i;
+        -:  123:	int err = 1;
+        -:  124:	int locked = 0;
+        -:  125:	struct hostent *he;
+        -:  126:
+    #####:  127:	i=get_ip(str,ip);
+    #####:  128:	if (i < 0)
+        -:  129:		{
+    #####:  130:		BIOerr(BIO_F_BIO_GET_HOST_IP,BIO_R_INVALID_IP_ADDRESS);
+    #####:  131:		goto err;
+        -:  132:		}
+        -:  133:
+        -:  134:	/* At this point, we have something that is most probably correct
+        -:  135:	   in some way, so let's init the socket. */
+        -:  136:	if (BIO_sock_init() != 1)
+        -:  137:		return 0; /* don't generate another error code here */
+        -:  138:
+        -:  139:	/* If the string actually contained an IP address, we need not do
+        -:  140:	   anything more */
+    #####:  141:	if (i > 0) return(1);
+        -:  142:
+        -:  143:	/* do a gethostbyname */
+    #####:  144:	CRYPTO_w_lock(CRYPTO_LOCK_GETHOSTBYNAME);
+        -:  145:	locked = 1;
+        -:  146:	he=BIO_gethostbyname(str);
+    #####:  147:	if (he == NULL)
+        -:  148:		{
+    #####:  149:		BIOerr(BIO_F_BIO_GET_HOST_IP,BIO_R_BAD_HOSTNAME_LOOKUP);
+    #####:  150:		goto err;
+        -:  151:		}
+        -:  152:
+        -:  153:	/* cast to short because of win16 winsock definition */
+    #####:  154:	if ((short)he->h_addrtype != AF_INET)
+        -:  155:		{
+    #####:  156:		BIOerr(BIO_F_BIO_GET_HOST_IP,BIO_R_GETHOSTBYNAME_ADDR_IS_NOT_AF_INET);
+    #####:  157:		goto err;
+        -:  158:		}
+    #####:  159:	for (i=0; i<4; i++)
+    #####:  160:		ip[i]=he->h_addr_list[0][i];
+        -:  161:	err = 0;
+        -:  162:
+        -:  163: err:
+    #####:  164:	if (locked)
+    #####:  165:		CRYPTO_w_unlock(CRYPTO_LOCK_GETHOSTBYNAME);
+    #####:  166:	if (err)
+        -:  167:		{
+    #####:  168:		ERR_add_error_data(2,"host=",str);
+    #####:  169:		return 0;
+        -:  170:		}
+        -:  171:	else
+        -:  172:		return 1;
+        -:  173:	}
+        -:  174:
+    #####:  175:int BIO_get_port(const char *str, unsigned short *port_ptr)
+        -:  176:	{
+        -:  177:	int i;
+        -:  178:	struct servent *s;
+        -:  179:
+    #####:  180:	if (str == NULL)
+        -:  181:		{
+    #####:  182:		BIOerr(BIO_F_BIO_GET_PORT,BIO_R_NO_PORT_DEFINED);
+    #####:  183:		return(0);
+        -:  184:		}
+        -:  185:	i=atoi(str);
+    #####:  186:	if (i != 0)
+    #####:  187:		*port_ptr=(unsigned short)i;
+        -:  188:	else
+        -:  189:		{
+    #####:  190:		CRYPTO_w_lock(CRYPTO_LOCK_GETSERVBYNAME);
+        -:  191:		/* Note: under VMS with SOCKETSHR, it seems like the first
+        -:  192:		 * parameter is 'char *', instead of 'const char *'
+        -:  193:		 */
+        -:  194:#ifndef CONST_STRICT
+    #####:  195:		s=getservbyname((char *)str,"tcp");
+        -:  196:#else
+        -:  197:		s=getservbyname(str,"tcp");
+        -:  198:#endif
+    #####:  199:		if(s != NULL)
+    #####:  200:			*port_ptr=ntohs((unsigned short)s->s_port);
+    #####:  201:		CRYPTO_w_unlock(CRYPTO_LOCK_GETSERVBYNAME);
+    #####:  202:		if(s == NULL)
+        -:  203:			{
+    #####:  204:			if (strcmp(str,"http") == 0)
+    #####:  205:				*port_ptr=80;
+    #####:  206:			else if (strcmp(str,"telnet") == 0)
+    #####:  207:				*port_ptr=23;
+    #####:  208:			else if (strcmp(str,"socks") == 0)
+    #####:  209:				*port_ptr=1080;
+    #####:  210:			else if (strcmp(str,"https") == 0)
+    #####:  211:				*port_ptr=443;
+    #####:  212:			else if (strcmp(str,"ssl") == 0)
+    #####:  213:				*port_ptr=443;
+    #####:  214:			else if (strcmp(str,"ftp") == 0)
+    #####:  215:				*port_ptr=21;
+    #####:  216:			else if (strcmp(str,"gopher") == 0)
+    #####:  217:				*port_ptr=70;
+        -:  218:#if 0
+        -:  219:			else if (strcmp(str,"wais") == 0)
+        -:  220:				*port_ptr=21;
+        -:  221:#endif
+        -:  222:			else
+        -:  223:				{
+    #####:  224:				SYSerr(SYS_F_GETSERVBYNAME,get_last_socket_error());
+    #####:  225:				ERR_add_error_data(3,"service='",str,"'");
+    #####:  226:				return(0);
+        -:  227:				}
+        -:  228:			}
+        -:  229:		}
+        -:  230:	return(1);
+        -:  231:	}
+        -:  232:
+    #####:  233:int BIO_sock_error(int sock)
+        -:  234:	{
+        -:  235:	int j,i;
+        -:  236:	int size;
+        -:  237:		 
+        -:  238:#if defined(OPENSSL_SYS_BEOS_R5)
+        -:  239:	return 0;
+        -:  240:#endif
+        -:  241:		 
+    #####:  242:	size=sizeof(int);
+        -:  243:	/* Note: under Windows the third parameter is of type (char *)
+        -:  244:	 * whereas under other systems it is (void *) if you don't have
+        -:  245:	 * a cast it will choke the compiler: if you do have a cast then
+        -:  246:	 * you can either go for (char *) or (void *).
+        -:  247:	 */
+    #####:  248:	i=getsockopt(sock,SOL_SOCKET,SO_ERROR,(void *)&j,(void *)&size);
+    #####:  249:	if (i < 0)
+        -:  250:		return(1);
+        -:  251:	else
+    #####:  252:		return(j);
+        -:  253:	}
+        -:  254:
+        -:  255:#if 0
+        -:  256:long BIO_ghbn_ctrl(int cmd, int iarg, char *parg)
+        -:  257:	{
+        -:  258:	int i;
+        -:  259:	char **p;
+        -:  260:
+        -:  261:	switch (cmd)
+        -:  262:		{
+        -:  263:	case BIO_GHBN_CTRL_HITS:
+        -:  264:		return(BIO_ghbn_hits);
+        -:  265:		/* break; */
+        -:  266:	case BIO_GHBN_CTRL_MISSES:
+        -:  267:		return(BIO_ghbn_miss);
+        -:  268:		/* break; */
+        -:  269:	case BIO_GHBN_CTRL_CACHE_SIZE:
+        -:  270:		return(GHBN_NUM);
+        -:  271:		/* break; */
+        -:  272:	case BIO_GHBN_CTRL_GET_ENTRY:
+        -:  273:		if ((iarg >= 0) && (iarg <GHBN_NUM) &&
+        -:  274:			(ghbn_cache[iarg].order > 0))
+        -:  275:			{
+        -:  276:			p=(char **)parg;
+        -:  277:			if (p == NULL) return(0);
+        -:  278:			*p=ghbn_cache[iarg].name;
+        -:  279:			ghbn_cache[iarg].name[128]='\0';
+        -:  280:			return(1);
+        -:  281:			}
+        -:  282:		return(0);
+        -:  283:		/* break; */
+        -:  284:	case BIO_GHBN_CTRL_FLUSH:
+        -:  285:		for (i=0; i<GHBN_NUM; i++)
+        -:  286:			ghbn_cache[i].order=0;
+        -:  287:		break;
+        -:  288:	default:
+        -:  289:		return(0);
+        -:  290:		}
+        -:  291:	return(1);
+        -:  292:	}
+        -:  293:#endif
+        -:  294:
+        -:  295:#if 0
+        -:  296:static struct hostent *ghbn_dup(struct hostent *a)
+        -:  297:	{
+        -:  298:	struct hostent *ret;
+        -:  299:	int i,j;
+        -:  300:
+        -:  301:	MemCheck_off();
+        -:  302:	ret=(struct hostent *)OPENSSL_malloc(sizeof(struct hostent));
+        -:  303:	if (ret == NULL) return(NULL);
+        -:  304:	memset(ret,0,sizeof(struct hostent));
+        -:  305:
+        -:  306:	for (i=0; a->h_aliases[i] != NULL; i++)
+        -:  307:		;
+        -:  308:	i++;
+        -:  309:	ret->h_aliases = (char **)OPENSSL_malloc(i*sizeof(char *));
+        -:  310:	if (ret->h_aliases == NULL)
+        -:  311:		goto err;
+        -:  312:	memset(ret->h_aliases, 0, i*sizeof(char *));
+        -:  313:
+        -:  314:	for (i=0; a->h_addr_list[i] != NULL; i++)
+        -:  315:		;
+        -:  316:	i++;
+        -:  317:	ret->h_addr_list=(char **)OPENSSL_malloc(i*sizeof(char *));
+        -:  318:	if (ret->h_addr_list == NULL)
+        -:  319:		goto err;
+        -:  320:	memset(ret->h_addr_list, 0, i*sizeof(char *));
+        -:  321:
+        -:  322:	j=strlen(a->h_name)+1;
+        -:  323:	if ((ret->h_name=OPENSSL_malloc(j)) == NULL) goto err;
+        -:  324:	memcpy((char *)ret->h_name,a->h_name,j);
+        -:  325:	for (i=0; a->h_aliases[i] != NULL; i++)
+        -:  326:		{
+        -:  327:		j=strlen(a->h_aliases[i])+1;
+        -:  328:		if ((ret->h_aliases[i]=OPENSSL_malloc(j)) == NULL) goto err;
+        -:  329:		memcpy(ret->h_aliases[i],a->h_aliases[i],j);
+        -:  330:		}
+        -:  331:	ret->h_length=a->h_length;
+        -:  332:	ret->h_addrtype=a->h_addrtype;
+        -:  333:	for (i=0; a->h_addr_list[i] != NULL; i++)
+        -:  334:		{
+        -:  335:		if ((ret->h_addr_list[i]=OPENSSL_malloc(a->h_length)) == NULL)
+        -:  336:			goto err;
+        -:  337:		memcpy(ret->h_addr_list[i],a->h_addr_list[i],a->h_length);
+        -:  338:		}
+        -:  339:	if (0)
+        -:  340:		{
+        -:  341:err:	
+        -:  342:		if (ret != NULL)
+        -:  343:			ghbn_free(ret);
+        -:  344:		ret=NULL;
+        -:  345:		}
+        -:  346:	MemCheck_on();
+        -:  347:	return(ret);
+        -:  348:	}
+        -:  349:
+        -:  350:static void ghbn_free(struct hostent *a)
+        -:  351:	{
+        -:  352:	int i;
+        -:  353:
+        -:  354:	if(a == NULL)
+        -:  355:	    return;
+        -:  356:
+        -:  357:	if (a->h_aliases != NULL)
+        -:  358:		{
+        -:  359:		for (i=0; a->h_aliases[i] != NULL; i++)
+        -:  360:			OPENSSL_free(a->h_aliases[i]);
+        -:  361:		OPENSSL_free(a->h_aliases);
+        -:  362:		}
+        -:  363:	if (a->h_addr_list != NULL)
+        -:  364:		{
+        -:  365:		for (i=0; a->h_addr_list[i] != NULL; i++)
+        -:  366:			OPENSSL_free(a->h_addr_list[i]);
+        -:  367:		OPENSSL_free(a->h_addr_list);
+        -:  368:		}
+        -:  369:	if (a->h_name != NULL) OPENSSL_free(a->h_name);
+        -:  370:	OPENSSL_free(a);
+        -:  371:	}
+        -:  372:
+        -:  373:#endif
+        -:  374:
+    #####:  375:struct hostent *BIO_gethostbyname(const char *name)
+        -:  376:	{
+        -:  377:#if 1
+        -:  378:	/* Caching gethostbyname() results forever is wrong,
+        -:  379:	 * so we have to let the true gethostbyname() worry about this */
+        -:  380:#if (defined(NETWARE_BSDSOCK) && !defined(__NOVELL_LIBC__))
+        -:  381:	return gethostbyname((char*)name);
+        -:  382:#else
+    #####:  383:	return gethostbyname(name);
+        -:  384:#endif
+        -:  385:#else
+        -:  386:	struct hostent *ret;
+        -:  387:	int i,lowi=0,j;
+        -:  388:	unsigned long low= (unsigned long)-1;
+        -:  389:
+        -:  390:
+        -:  391:#  if 0
+        -:  392:	/* It doesn't make sense to use locking here: The function interface
+        -:  393:	 * is not thread-safe, because threads can never be sure when
+        -:  394:	 * some other thread destroys the data they were given a pointer to.
+        -:  395:	 */
+        -:  396:	CRYPTO_w_lock(CRYPTO_LOCK_GETHOSTBYNAME);
+        -:  397:#  endif
+        -:  398:	j=strlen(name);
+        -:  399:	if (j < 128)
+        -:  400:		{
+        -:  401:		for (i=0; i<GHBN_NUM; i++)
+        -:  402:			{
+        -:  403:			if (low > ghbn_cache[i].order)
+        -:  404:				{
+        -:  405:				low=ghbn_cache[i].order;
+        -:  406:				lowi=i;
+        -:  407:				}
+        -:  408:			if (ghbn_cache[i].order > 0)
+        -:  409:				{
+        -:  410:				if (strncmp(name,ghbn_cache[i].name,128) == 0)
+        -:  411:					break;
+        -:  412:				}
+        -:  413:			}
+        -:  414:		}
+        -:  415:	else
+        -:  416:		i=GHBN_NUM;
+        -:  417:
+        -:  418:	if (i == GHBN_NUM) /* no hit*/
+        -:  419:		{
+        -:  420:		BIO_ghbn_miss++;
+        -:  421:		/* Note: under VMS with SOCKETSHR, it seems like the first
+        -:  422:		 * parameter is 'char *', instead of 'const char *'
+        -:  423:		 */
+        -:  424:#  ifndef CONST_STRICT
+        -:  425:		ret=gethostbyname((char *)name);
+        -:  426:#  else
+        -:  427:		ret=gethostbyname(name);
+        -:  428:#  endif
+        -:  429:
+        -:  430:		if (ret == NULL)
+        -:  431:			goto end;
+        -:  432:		if (j > 128) /* too big to cache */
+        -:  433:			{
+        -:  434:#  if 0
+        -:  435:			/* If we were trying to make this function thread-safe (which
+        -:  436:			 * is bound to fail), we'd have to give up in this case
+        -:  437:			 * (or allocate more memory). */
+        -:  438:			ret = NULL;
+        -:  439:#  endif
+        -:  440:			goto end;
+        -:  441:			}
+        -:  442:
+        -:  443:		/* else add to cache */
+        -:  444:		if (ghbn_cache[lowi].ent != NULL)
+        -:  445:			ghbn_free(ghbn_cache[lowi].ent); /* XXX not thread-safe */
+        -:  446:		ghbn_cache[lowi].name[0] = '\0';
+        -:  447:
+        -:  448:		if((ret=ghbn_cache[lowi].ent=ghbn_dup(ret)) == NULL)
+        -:  449:			{
+        -:  450:			BIOerr(BIO_F_BIO_GETHOSTBYNAME,ERR_R_MALLOC_FAILURE);
+        -:  451:			goto end;
+        -:  452:			}
+        -:  453:		strncpy(ghbn_cache[lowi].name,name,128);
+        -:  454:		ghbn_cache[lowi].order=BIO_ghbn_miss+BIO_ghbn_hits;
+        -:  455:		}
+        -:  456:	else
+        -:  457:		{
+        -:  458:		BIO_ghbn_hits++;
+        -:  459:		ret= ghbn_cache[i].ent;
+        -:  460:		ghbn_cache[i].order=BIO_ghbn_miss+BIO_ghbn_hits;
+        -:  461:		}
+        -:  462:end:
+        -:  463:#  if 0
+        -:  464:	CRYPTO_w_unlock(CRYPTO_LOCK_GETHOSTBYNAME);
+        -:  465:#  endif
+        -:  466:	return(ret);
+        -:  467:#endif
+        -:  468:	}
+        -:  469:
+        -:  470:
+    #####:  471:int BIO_sock_init(void)
+        -:  472:	{
+        -:  473:#ifdef OPENSSL_SYS_WINDOWS
+        -:  474:	static struct WSAData wsa_state;
+        -:  475:
+        -:  476:	if (!wsa_init_done)
+        -:  477:		{
+        -:  478:		int err;
+        -:  479:	  
+        -:  480:		wsa_init_done=1;
+        -:  481:		memset(&wsa_state,0,sizeof(wsa_state));
+        -:  482:		/* Not making wsa_state available to the rest of the
+        -:  483:		 * code is formally wrong. But the structures we use
+        -:  484:		 * are [beleived to be] invariable among Winsock DLLs,
+        -:  485:		 * while API availability is [expected to be] probed
+        -:  486:		 * at run-time with DSO_global_lookup. */
+        -:  487:		if (WSAStartup(0x0202,&wsa_state)!=0)
+        -:  488:			{
+        -:  489:			err=WSAGetLastError();
+        -:  490:			SYSerr(SYS_F_WSASTARTUP,err);
+        -:  491:			BIOerr(BIO_F_BIO_SOCK_INIT,BIO_R_WSASTARTUP);
+        -:  492:			return(-1);
+        -:  493:			}
+        -:  494:		}
+        -:  495:#endif /* OPENSSL_SYS_WINDOWS */
+        -:  496:#ifdef WATT32
+        -:  497:	extern int _watt_do_exit;
+        -:  498:	_watt_do_exit = 0;    /* don't make sock_init() call exit() */
+        -:  499:	if (sock_init())
+        -:  500:		return (-1);
+        -:  501:#endif
+        -:  502:
+        -:  503:#if defined(OPENSSL_SYS_NETWARE) && !defined(NETWARE_BSDSOCK)
+        -:  504:    WORD wVerReq;
+        -:  505:    WSADATA wsaData;
+        -:  506:    int err;
+        -:  507:
+        -:  508:    if (!wsa_init_done)
+        -:  509:    {
+        -:  510:        wsa_init_done=1;
+        -:  511:        wVerReq = MAKEWORD( 2, 0 );
+        -:  512:        err = WSAStartup(wVerReq,&wsaData);
+        -:  513:        if (err != 0)
+        -:  514:        {
+        -:  515:            SYSerr(SYS_F_WSASTARTUP,err);
+        -:  516:            BIOerr(BIO_F_BIO_SOCK_INIT,BIO_R_WSASTARTUP);
+        -:  517:            return(-1);
+        -:  518:			}
+        -:  519:		}
+        -:  520:#endif
+        -:  521:
+    #####:  522:	return(1);
+        -:  523:	}
+        -:  524:
+    #####:  525:void BIO_sock_cleanup(void)
+        -:  526:	{
+        -:  527:#ifdef OPENSSL_SYS_WINDOWS
+        -:  528:	if (wsa_init_done)
+        -:  529:		{
+        -:  530:		wsa_init_done=0;
+        -:  531:#if 0		/* this call is claimed to be non-present in Winsock2 */
+        -:  532:		WSACancelBlockingCall();
+        -:  533:#endif
+        -:  534:		WSACleanup();
+        -:  535:		}
+        -:  536:#elif defined(OPENSSL_SYS_NETWARE) && !defined(NETWARE_BSDSOCK)
+        -:  537:   if (wsa_init_done)
+        -:  538:        {
+        -:  539:        wsa_init_done=0;
+        -:  540:        WSACleanup();
+        -:  541:		}
+        -:  542:#endif
+    #####:  543:	}
+        -:  544:
+        -:  545:#if !defined(OPENSSL_SYS_VMS) || __VMS_VER >= 70000000
+        -:  546:
+    #####:  547:int BIO_socket_ioctl(int fd, long type, void *arg)
+        -:  548:	{
+        -:  549:	int i;
+        -:  550:
+        -:  551:#ifdef __DJGPP__
+        -:  552:	i=ioctlsocket(fd,type,(char *)arg);
+        -:  553:#else
+        -:  554:# if defined(OPENSSL_SYS_VMS)
+        -:  555:	/* 2011-02-18 SMS.
+        -:  556:	 * VMS ioctl() can't tolerate a 64-bit "void *arg", but we
+        -:  557:	 * observe that all the consumers pass in an "unsigned long *",
+        -:  558:	 * so we arrange a local copy with a short pointer, and use
+        -:  559:	 * that, instead.
+        -:  560:	 */
+        -:  561:#  if __INITIAL_POINTER_SIZE == 64
+        -:  562:#   define ARG arg_32p
+        -:  563:#   pragma pointer_size save
+        -:  564:#   pragma pointer_size 32
+        -:  565:	unsigned long arg_32;
+        -:  566:	unsigned long *arg_32p;
+        -:  567:#   pragma pointer_size restore
+        -:  568:	arg_32p = &arg_32;
+        -:  569:	arg_32 = *((unsigned long *) arg);
+        -:  570:#  else /* __INITIAL_POINTER_SIZE == 64 */
+        -:  571:#   define ARG arg
+        -:  572:#  endif /* __INITIAL_POINTER_SIZE == 64 [else] */
+        -:  573:# else /* defined(OPENSSL_SYS_VMS) */
+        -:  574:#  define ARG arg
+        -:  575:# endif /* defined(OPENSSL_SYS_VMS) [else] */
+        -:  576:
+    #####:  577:	i=ioctlsocket(fd,type,ARG);
+        -:  578:#endif /* __DJGPP__ */
+    #####:  579:	if (i < 0)
+    #####:  580:		SYSerr(SYS_F_IOCTLSOCKET,get_last_socket_error());
+    #####:  581:	return(i);
+        -:  582:	}
+        -:  583:#endif /* __VMS_VER */
+        -:  584:
+        -:  585:/* The reason I have implemented this instead of using sscanf is because
+        -:  586: * Visual C 1.52c gives an unresolved external when linking a DLL :-( */
+    #####:  587:static int get_ip(const char *str, unsigned char ip[4])
+        -:  588:	{
+        -:  589:	unsigned int tmp[4];
+        -:  590:	int num=0,c,ok=0;
+        -:  591:
+    #####:  592:	tmp[0]=tmp[1]=tmp[2]=tmp[3]=0;
+        -:  593:
+        -:  594:	for (;;)
+        -:  595:		{
+    #####:  596:		c= *(str++);
+    #####:  597:		if ((c >= '0') && (c <= '9'))
+        -:  598:			{
+        -:  599:			ok=1;
+    #####:  600:			tmp[num]=tmp[num]*10+c-'0';
+    #####:  601:			if (tmp[num] > 255) return(0);
+        -:  602:			}
+    #####:  603:		else if (c == '.')
+        -:  604:			{
+    #####:  605:			if (!ok) return(-1);
+    #####:  606:			if (num == 3) return(0);
+    #####:  607:			num++;
+        -:  608:			ok=0;
+        -:  609:			}
+    #####:  610:		else if (c == '\0' && (num == 3) && ok)
+        -:  611:			break;
+        -:  612:		else
+        -:  613:			return(0);
+        -:  614:		}
+    #####:  615:	ip[0]=tmp[0];
+    #####:  616:	ip[1]=tmp[1];
+    #####:  617:	ip[2]=tmp[2];
+    #####:  618:	ip[3]=tmp[3];
+    #####:  619:	return(1);
+        -:  620:	}
+        -:  621:
+    #####:  622:int BIO_get_accept_socket(char *host, int bind_mode)
+        -:  623:	{
+        -:  624:	int ret=0;
+        -:  625:	union {
+        -:  626:		struct sockaddr sa;
+        -:  627:		struct sockaddr_in sa_in;
+        -:  628:#if OPENSSL_USE_IPV6
+        -:  629:		struct sockaddr_in6 sa_in6;
+        -:  630:#endif
+        -:  631:	} server,client;
+        -:  632:	int s=INVALID_SOCKET,cs,addrlen;
+        -:  633:	unsigned char ip[4];
+        -:  634:	unsigned short port;
+        -:  635:	char *str=NULL,*e;
+        -:  636:	char *h,*p;
+        -:  637:	unsigned long l;
+        -:  638:	int err_num;
+        -:  639:
+        -:  640:	if (BIO_sock_init() != 1) return(INVALID_SOCKET);
+        -:  641:
+    #####:  642:	if ((str=BUF_strdup(host)) == NULL) return(INVALID_SOCKET);
+        -:  643:
+        -:  644:	h=p=NULL;
+        -:  645:	h=str;
+    #####:  646:	for (e=str; *e; e++)
+        -:  647:		{
+    #####:  648:		if (*e == ':')
+        -:  649:			{
+        -:  650:			p=e;
+        -:  651:			}
+    #####:  652:		else if (*e == '/')
+        -:  653:			{
+    #####:  654:			*e='\0';
+    #####:  655:			break;
+        -:  656:			}
+        -:  657:		}
+    #####:  658:	if (p)	*p++='\0';	/* points at last ':', '::port' is special [see below] */
+        -:  659:	else	p=h,h=NULL;
+        -:  660:
+        -:  661:#ifdef EAI_FAMILY
+        -:  662:	do {
+        -:  663:	static union {	void *p;
+        -:  664:			int (WSAAPI *f)(const char *,const char *,
+        -:  665:				 const struct addrinfo *,
+        -:  666:				 struct addrinfo **);
+        -:  667:			} p_getaddrinfo = {NULL};
+        -:  668:	static union {	void *p;
+        -:  669:			void (WSAAPI *f)(struct addrinfo *);
+        -:  670:			} p_freeaddrinfo = {NULL};
+        -:  671:	struct addrinfo *res,hint;
+        -:  672:
+    #####:  673:	if (p_getaddrinfo.p==NULL)
+        -:  674:		{
+    #####:  675:		if ((p_getaddrinfo.p=DSO_global_lookup("getaddrinfo"))==NULL ||
+    #####:  676:		    (p_freeaddrinfo.p=DSO_global_lookup("freeaddrinfo"))==NULL)
+    #####:  677:			p_getaddrinfo.p=(void*)-1;
+        -:  678:		}
+    #####:  679:	if (p_getaddrinfo.p==(void *)-1) break;
+        -:  680:
+        -:  681:	/* '::port' enforces IPv6 wildcard listener. Some OSes,
+        -:  682:	 * e.g. Solaris, default to IPv6 without any hint. Also
+        -:  683:	 * note that commonly IPv6 wildchard socket can service
+        -:  684:	 * IPv4 connections just as well...  */
+        -:  685:	memset(&hint,0,sizeof(hint));
+    #####:  686:	hint.ai_flags = AI_PASSIVE;
+    #####:  687:	if (h)
+        -:  688:		{
+    #####:  689:		if (strchr(h,':'))
+        -:  690:			{
+    #####:  691:			if (h[1]=='\0') h=NULL;
+        -:  692:#if OPENSSL_USE_IPV6
+    #####:  693:			hint.ai_family = AF_INET6;
+        -:  694:#else
+        -:  695:			h=NULL;
+        -:  696:#endif
+        -:  697:			}
+    #####:  698:	    	else if (h[0]=='*' && h[1]=='\0')
+        -:  699:			{
+    #####:  700:			hint.ai_family = AF_INET;
+        -:  701:			h=NULL;
+        -:  702:			}
+        -:  703:		}
+        -:  704:
+    #####:  705:	if ((*p_getaddrinfo.f)(h,p,&hint,&res)) break;
+        -:  706:
+    #####:  707:	addrlen = res->ai_addrlen<=sizeof(server) ?
+        -:  708:			res->ai_addrlen :
+        -:  709:			sizeof(server);
+    #####:  710:	memcpy(&server, res->ai_addr, addrlen);
+        -:  711:
+    #####:  712:	(*p_freeaddrinfo.f)(res);
+    #####:  713:	goto again;
+        -:  714:	} while (0);
+        -:  715:#endif
+        -:  716:
+    #####:  717:	if (!BIO_get_port(p,&port)) goto err;
+        -:  718:
+        -:  719:	memset((char *)&server,0,sizeof(server));
+    #####:  720:	server.sa_in.sin_family=AF_INET;
+    #####:  721:	server.sa_in.sin_port=htons(port);
+        -:  722:	addrlen = sizeof(server.sa_in);
+        -:  723:
+    #####:  724:	if (h == NULL || strcmp(h,"*") == 0)
+        -:  725:		server.sa_in.sin_addr.s_addr=INADDR_ANY;
+        -:  726:	else
+        -:  727:		{
+    #####:  728:                if (!BIO_get_host_ip(h,&(ip[0]))) goto err;
+    #####:  729:		l=(unsigned long)
+    #####:  730:			((unsigned long)ip[0]<<24L)|
+    #####:  731:			((unsigned long)ip[1]<<16L)|
+    #####:  732:			((unsigned long)ip[2]<< 8L)|
+    #####:  733:			((unsigned long)ip[3]);
+    #####:  734:		server.sa_in.sin_addr.s_addr=htonl(l);
+        -:  735:		}
+        -:  736:
+        -:  737:again:
+    #####:  738:	s=socket(server.sa.sa_family,SOCK_STREAM,SOCKET_PROTOCOL);
+    #####:  739:	if (s == INVALID_SOCKET)
+        -:  740:		{
+    #####:  741:		SYSerr(SYS_F_SOCKET,get_last_socket_error());
+    #####:  742:		ERR_add_error_data(3,"port='",host,"'");
+    #####:  743:		BIOerr(BIO_F_BIO_GET_ACCEPT_SOCKET,BIO_R_UNABLE_TO_CREATE_SOCKET);
+    #####:  744:		goto err;
+        -:  745:		}
+        -:  746:
+        -:  747:#ifdef SO_REUSEADDR
+    #####:  748:	if (bind_mode == BIO_BIND_REUSEADDR)
+        -:  749:		{
+    #####:  750:		int i=1;
+        -:  751:
+    #####:  752:		ret=setsockopt(s,SOL_SOCKET,SO_REUSEADDR,(char *)&i,sizeof(i));
+        -:  753:		bind_mode=BIO_BIND_NORMAL;
+        -:  754:		}
+        -:  755:#endif
+    #####:  756:	if (bind(s,&server.sa,addrlen) == -1)
+        -:  757:		{
+        -:  758:#ifdef SO_REUSEADDR
+    #####:  759:		err_num=get_last_socket_error();
+    #####:  760:		if ((bind_mode == BIO_BIND_REUSEADDR_IF_UNUSED) &&
+        -:  761:#ifdef OPENSSL_SYS_WINDOWS
+        -:  762:			/* Some versions of Windows define EADDRINUSE to
+        -:  763:			 * a dummy value.
+        -:  764:			 */
+        -:  765:			(err_num == WSAEADDRINUSE))
+        -:  766:#else
+    #####:  767:			(err_num == EADDRINUSE))
+        -:  768:#endif
+        -:  769:			{
+    #####:  770:			client = server;
+    #####:  771:			if (h == NULL || strcmp(h,"*") == 0)
+        -:  772:				{
+        -:  773:#if OPENSSL_USE_IPV6
+    #####:  774:				if (client.sa.sa_family == AF_INET6)
+        -:  775:					{
+        -:  776:					memset(&client.sa_in6.sin6_addr,0,sizeof(client.sa_in6.sin6_addr));
+    #####:  777:					client.sa_in6.sin6_addr.s6_addr[15]=1;
+        -:  778:					}
+        -:  779:				else
+        -:  780:#endif
+    #####:  781:				if (client.sa.sa_family == AF_INET)
+        -:  782:					{
+    #####:  783:					client.sa_in.sin_addr.s_addr=htonl(0x7F000001);
+        -:  784:					}
+        -:  785:				else	goto err;
+        -:  786:				}
+    #####:  787:			cs=socket(client.sa.sa_family,SOCK_STREAM,SOCKET_PROTOCOL);
+    #####:  788:			if (cs != INVALID_SOCKET)
+        -:  789:				{
+        -:  790:				int ii;
+    #####:  791:				ii=connect(cs,&client.sa,addrlen);
+    #####:  792:				closesocket(cs);
+    #####:  793:				if (ii == INVALID_SOCKET)
+        -:  794:					{
+        -:  795:					bind_mode=BIO_BIND_REUSEADDR;
+    #####:  796:					closesocket(s);
+    #####:  797:					goto again;
+        -:  798:					}
+        -:  799:				/* else error */
+        -:  800:				}
+        -:  801:			/* else error */
+        -:  802:			}
+        -:  803:#endif
+    #####:  804:		SYSerr(SYS_F_BIND,err_num);
+    #####:  805:		ERR_add_error_data(3,"port='",host,"'");
+    #####:  806:		BIOerr(BIO_F_BIO_GET_ACCEPT_SOCKET,BIO_R_UNABLE_TO_BIND_SOCKET);
+    #####:  807:		goto err;
+        -:  808:		}
+    #####:  809:	if (listen(s,MAX_LISTEN) == -1)
+        -:  810:		{
+    #####:  811:		SYSerr(SYS_F_BIND,get_last_socket_error());
+    #####:  812:		ERR_add_error_data(3,"port='",host,"'");
+    #####:  813:		BIOerr(BIO_F_BIO_GET_ACCEPT_SOCKET,BIO_R_UNABLE_TO_LISTEN_SOCKET);
+    #####:  814:		goto err;
+        -:  815:		}
+        -:  816:	ret=1;
+        -:  817:err:
+    #####:  818:	if (str != NULL) OPENSSL_free(str);
+    #####:  819:	if ((ret == 0) && (s != INVALID_SOCKET))
+        -:  820:		{
+    #####:  821:		closesocket(s);
+        -:  822:		s= INVALID_SOCKET;
+        -:  823:		}
+    #####:  824:	return(s);
+        -:  825:	}
+        -:  826:
+    #####:  827:int BIO_accept(int sock, char **addr)
+        -:  828:	{
+        -:  829:	int ret=INVALID_SOCKET;
+        -:  830:	unsigned long l;
+        -:  831:	unsigned short port;
+        -:  832:	char *p;
+        -:  833:
+        -:  834:	struct {
+        -:  835:	/*
+        -:  836:	 * As for following union. Trouble is that there are platforms
+        -:  837:	 * that have socklen_t and there are platforms that don't, on
+        -:  838:	 * some platforms socklen_t is int and on some size_t. So what
+        -:  839:	 * one can do? One can cook #ifdef spaghetti, which is nothing
+        -:  840:	 * but masochistic. Or one can do union between int and size_t.
+        -:  841:	 * One naturally does it primarily for 64-bit platforms where
+        -:  842:	 * sizeof(int) != sizeof(size_t). But would it work? Note that
+        -:  843:	 * if size_t member is initialized to 0, then later int member
+        -:  844:	 * assignment naturally does the job on little-endian platforms
+        -:  845:	 * regardless accept's expectations! What about big-endians?
+        -:  846:	 * If accept expects int*, then it works, and if size_t*, then
+        -:  847:	 * length value would appear as unreasonably large. But this
+        -:  848:	 * won't prevent it from filling in the address structure. The
+        -:  849:	 * trouble of course would be if accept returns more data than
+        -:  850:	 * actual buffer can accomodate and overwrite stack... That's
+        -:  851:	 * where early OPENSSL_assert comes into picture. Besides, the
+        -:  852:	 * only 64-bit big-endian platform found so far that expects
+        -:  853:	 * size_t* is HP-UX, where stack grows towards higher address.
+        -:  854:	 * <appro>
+        -:  855:	 */
+        -:  856:	union { size_t s; int i; } len;
+        -:  857:	union {
+        -:  858:		struct sockaddr sa;
+        -:  859:		struct sockaddr_in sa_in;
+        -:  860:#if OPENSSL_USE_IPV6
+        -:  861:		struct sockaddr_in6 sa_in6;
+        -:  862:#endif
+        -:  863:		} from;
+        -:  864:	} sa;
+        -:  865:
+    #####:  866:	sa.len.s=0;
+    #####:  867:	sa.len.i=sizeof(sa.from);
+        -:  868:	memset(&sa.from,0,sizeof(sa.from));
+    #####:  869:	ret=accept(sock,&sa.from.sa,(void *)&sa.len);
+    #####:  870:	if (sizeof(sa.len.i)!=sizeof(sa.len.s) && sa.len.i==0)
+        -:  871:		{
+    #####:  872:		OPENSSL_assert(sa.len.s<=sizeof(sa.from));
+    #####:  873:		sa.len.i = (int)sa.len.s;
+        -:  874:		/* use sa.len.i from this point */
+        -:  875:		}
+    #####:  876:	if (ret == INVALID_SOCKET)
+        -:  877:		{
+    #####:  878:		if(BIO_sock_should_retry(ret)) return -2;
+    #####:  879:		SYSerr(SYS_F_ACCEPT,get_last_socket_error());
+    #####:  880:		BIOerr(BIO_F_BIO_ACCEPT,BIO_R_ACCEPT_ERROR);
+    #####:  881:		goto end;
+        -:  882:		}
+        -:  883:
+    #####:  884:	if (addr == NULL) goto end;
+        -:  885:
+        -:  886:#ifdef EAI_FAMILY
+        -:  887:	do {
+        -:  888:	char   h[NI_MAXHOST],s[NI_MAXSERV];
+        -:  889:	size_t nl;
+        -:  890:	static union {	void *p;
+        -:  891:			int (WSAAPI *f)(const struct sockaddr *,size_t/*socklen_t*/,
+        -:  892:				 char *,size_t,char *,size_t,int);
+        -:  893:			} p_getnameinfo = {NULL};
+        -:  894:			/* 2nd argument to getnameinfo is specified to
+        -:  895:			 * be socklen_t. Unfortunately there is a number
+        -:  896:			 * of environments where socklen_t is not defined.
+        -:  897:			 * As it's passed by value, it's safe to pass it
+        -:  898:			 * as size_t... <appro> */
+        -:  899:
+    #####:  900:	if (p_getnameinfo.p==NULL)
+        -:  901:		{
+    #####:  902:		if ((p_getnameinfo.p=DSO_global_lookup("getnameinfo"))==NULL)
+    #####:  903:			p_getnameinfo.p=(void*)-1;
+        -:  904:		}
+    #####:  905:	if (p_getnameinfo.p==(void *)-1) break;
+        -:  906:
+    #####:  907:	if ((*p_getnameinfo.f)(&sa.from.sa,sa.len.i,h,sizeof(h),s,sizeof(s),
+        -:  908:	    NI_NUMERICHOST|NI_NUMERICSERV)) break;
+    #####:  909:	nl = strlen(h)+strlen(s)+2;
+    #####:  910:	p = *addr;
+    #####:  911:	if (p)	{ *p = '\0'; p = OPENSSL_realloc(p,nl);	}
+    #####:  912:	else	{ p = OPENSSL_malloc(nl);		}
+    #####:  913:	if (p==NULL)
+        -:  914:		{
+    #####:  915:		BIOerr(BIO_F_BIO_ACCEPT,ERR_R_MALLOC_FAILURE);
+    #####:  916:		goto end;
+        -:  917:		}
+    #####:  918:	*addr = p;
+    #####:  919:	BIO_snprintf(*addr,nl,"%s:%s",h,s);
+    #####:  920:	goto end;
+        -:  921:	} while(0);
+        -:  922:#endif
+    #####:  923:	if (sa.from.sa.sa_family != AF_INET) goto end;
+    #####:  924:	l=ntohl(sa.from.sa_in.sin_addr.s_addr);
+    #####:  925:	port=ntohs(sa.from.sa_in.sin_port);
+    #####:  926:	if (*addr == NULL)
+        -:  927:		{
+    #####:  928:		if ((p=OPENSSL_malloc(24)) == NULL)
+        -:  929:			{
+    #####:  930:			BIOerr(BIO_F_BIO_ACCEPT,ERR_R_MALLOC_FAILURE);
+    #####:  931:			goto end;
+        -:  932:			}
+    #####:  933:		*addr=p;
+        -:  934:		}
+    #####:  935:	BIO_snprintf(*addr,24,"%d.%d.%d.%d:%d",
+    #####:  936:		     (unsigned char)(l>>24L)&0xff,
+    #####:  937:		     (unsigned char)(l>>16L)&0xff,
+    #####:  938:		     (unsigned char)(l>> 8L)&0xff,
+        -:  939:		     (unsigned char)(l     )&0xff,
+        -:  940:		     port);
+        -:  941:end:
+    #####:  942:	return(ret);
+        -:  943:	}
+        -:  944:
+    #####:  945:int BIO_set_tcp_ndelay(int s, int on)
+        -:  946:	{
+        -:  947:	int ret=0;
+        -:  948:#if defined(TCP_NODELAY) && (defined(IPPROTO_TCP) || defined(SOL_TCP))
+        -:  949:	int opt;
+        -:  950:
+        -:  951:#ifdef SOL_TCP
+        -:  952:	opt=SOL_TCP;
+        -:  953:#else
+        -:  954:#ifdef IPPROTO_TCP
+        -:  955:	opt=IPPROTO_TCP;
+        -:  956:#endif
+        -:  957:#endif
+        -:  958:	
+        -:  959:	ret=setsockopt(s,opt,TCP_NODELAY,(char *)&on,sizeof(on));
+        -:  960:#endif
+    #####:  961:	return(ret == 0);
+        -:  962:	}
+        -:  963:
+    #####:  964:int BIO_socket_nbio(int s, int mode)
+        -:  965:	{
+        -:  966:	int ret= -1;
+        -:  967:	int l;
+        -:  968:
+    #####:  969:	l=mode;
+        -:  970:#ifdef FIONBIO
+    #####:  971:	ret=BIO_socket_ioctl(s,FIONBIO,&l);
+        -:  972:#endif
+    #####:  973:	return(ret == 0);
+        -:  974:	}
+        -:  975:#endif

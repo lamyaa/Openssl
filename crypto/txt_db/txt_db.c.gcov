@@ -1,0 +1,393 @@
+        -:    0:Source:txt_db.c
+        -:    0:Graph:txt_db.gcno
+        -:    0:Data:txt_db.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* crypto/txt_db/txt_db.c */
+        -:    2:/* Copyright (C) 1995-1998 Eric Young (eay@cryptsoft.com)
+        -:    3: * All rights reserved.
+        -:    4: *
+        -:    5: * This package is an SSL implementation written
+        -:    6: * by Eric Young (eay@cryptsoft.com).
+        -:    7: * The implementation was written so as to conform with Netscapes SSL.
+        -:    8: * 
+        -:    9: * This library is free for commercial and non-commercial use as long as
+        -:   10: * the following conditions are aheared to.  The following conditions
+        -:   11: * apply to all code found in this distribution, be it the RC4, RSA,
+        -:   12: * lhash, DES, etc., code; not just the SSL code.  The SSL documentation
+        -:   13: * included with this distribution is covered by the same copyright terms
+        -:   14: * except that the holder is Tim Hudson (tjh@cryptsoft.com).
+        -:   15: * 
+        -:   16: * Copyright remains Eric Young's, and as such any Copyright notices in
+        -:   17: * the code are not to be removed.
+        -:   18: * If this package is used in a product, Eric Young should be given attribution
+        -:   19: * as the author of the parts of the library used.
+        -:   20: * This can be in the form of a textual message at program startup or
+        -:   21: * in documentation (online or textual) provided with the package.
+        -:   22: * 
+        -:   23: * Redistribution and use in source and binary forms, with or without
+        -:   24: * modification, are permitted provided that the following conditions
+        -:   25: * are met:
+        -:   26: * 1. Redistributions of source code must retain the copyright
+        -:   27: *    notice, this list of conditions and the following disclaimer.
+        -:   28: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   29: *    notice, this list of conditions and the following disclaimer in the
+        -:   30: *    documentation and/or other materials provided with the distribution.
+        -:   31: * 3. All advertising materials mentioning features or use of this software
+        -:   32: *    must display the following acknowledgement:
+        -:   33: *    "This product includes cryptographic software written by
+        -:   34: *     Eric Young (eay@cryptsoft.com)"
+        -:   35: *    The word 'cryptographic' can be left out if the rouines from the library
+        -:   36: *    being used are not cryptographic related :-).
+        -:   37: * 4. If you include any Windows specific code (or a derivative thereof) from 
+        -:   38: *    the apps directory (application code) you must include an acknowledgement:
+        -:   39: *    "This product includes software written by Tim Hudson (tjh@cryptsoft.com)"
+        -:   40: * 
+        -:   41: * THIS SOFTWARE IS PROVIDED BY ERIC YOUNG ``AS IS'' AND
+        -:   42: * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   43: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+        -:   44: * ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+        -:   45: * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+        -:   46: * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+        -:   47: * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   48: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+        -:   49: * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+        -:   50: * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+        -:   51: * SUCH DAMAGE.
+        -:   52: * 
+        -:   53: * The licence and distribution terms for any publically available version or
+        -:   54: * derivative of this code cannot be changed.  i.e. this code cannot simply be
+        -:   55: * copied and put under another distribution licence
+        -:   56: * [including the GNU Public Licence.]
+        -:   57: */
+        -:   58:
+        -:   59:#include <stdio.h>
+        -:   60:#include <stdlib.h>
+        -:   61:#include <string.h>
+        -:   62:#include "cryptlib.h"
+        -:   63:#include <openssl/buffer.h>
+        -:   64:#include <openssl/txt_db.h>
+        -:   65:
+        -:   66:#undef BUFSIZE
+        -:   67:#define BUFSIZE	512
+        -:   68:
+        -:   69:const char TXT_DB_version[]="TXT_DB" OPENSSL_VERSION_PTEXT;
+        -:   70:
+    #####:   71:TXT_DB *TXT_DB_read(BIO *in, int num)
+        -:   72:	{
+        -:   73:	TXT_DB *ret=NULL;
+        -:   74:	int er=1;
+        -:   75:	int esc=0;
+        -:   76:	long ln=0;
+        -:   77:	int i,add,n;
+        -:   78:	int size=BUFSIZE;
+        -:   79:	int offset=0;
+        -:   80:	char *p,*f;
+        -:   81:	OPENSSL_STRING *pp;
+        -:   82:	BUF_MEM *buf=NULL;
+        -:   83:
+    #####:   84:	if ((buf=BUF_MEM_new()) == NULL) goto err;
+    #####:   85:	if (!BUF_MEM_grow(buf,size)) goto err;
+        -:   86:
+    #####:   87:	if ((ret=OPENSSL_malloc(sizeof(TXT_DB))) == NULL)
+        -:   88:		goto err;
+    #####:   89:	ret->num_fields=num;
+    #####:   90:	ret->index=NULL;
+    #####:   91:	ret->qual=NULL;
+    #####:   92:	if ((ret->data=sk_OPENSSL_PSTRING_new_null()) == NULL)
+        -:   93:		goto err;
+    #####:   94:	if ((ret->index=OPENSSL_malloc(sizeof(*ret->index)*num)) == NULL)
+        -:   95:		goto err;
+    #####:   96:	if ((ret->qual=OPENSSL_malloc(sizeof(*(ret->qual))*num)) == NULL)
+        -:   97:		goto err;
+    #####:   98:	for (i=0; i<num; i++)
+        -:   99:		{
+    #####:  100:		ret->index[i]=NULL;
+    #####:  101:		ret->qual[i]=NULL;
+        -:  102:		}
+        -:  103:
+    #####:  104:	add=(num+1)*sizeof(char *);
+    #####:  105:	buf->data[size-1]='\0';
+        -:  106:	offset=0;
+        -:  107:	for (;;)
+        -:  108:		{
+    #####:  109:		if (offset != 0)
+        -:  110:			{
+    #####:  111:			size+=BUFSIZE;
+    #####:  112:			if (!BUF_MEM_grow_clean(buf,size)) goto err;
+        -:  113:			}
+    #####:  114:		buf->data[offset]='\0';
+    #####:  115:		BIO_gets(in,&(buf->data[offset]),size-offset);
+    #####:  116:		ln++;
+    #####:  117:		if (buf->data[offset] == '\0') break;
+    #####:  118:		if ((offset == 0) && (buf->data[0] == '#')) continue;
+    #####:  119:		i=strlen(&(buf->data[offset]));
+    #####:  120:		offset+=i;
+    #####:  121:		if (buf->data[offset-1] != '\n')
+    #####:  122:			continue;
+        -:  123:		else
+        -:  124:			{
+    #####:  125:			buf->data[offset-1]='\0'; /* blat the '\n' */
+    #####:  126:			if (!(p=OPENSSL_malloc(add+offset))) goto err;
+        -:  127:			offset=0;
+        -:  128:			}
+        -:  129:		pp=(char **)p;
+    #####:  130:		p+=add;
+        -:  131:		n=0;
+    #####:  132:		pp[n++]=p;
+        -:  133:		i=0;
+    #####:  134:		f=buf->data;
+        -:  135:
+        -:  136:		esc=0;
+        -:  137:		for (;;)
+        -:  138:			{
+    #####:  139:			if (*f == '\0') break;
+    #####:  140:			if (*f == '\t')
+        -:  141:				{
+    #####:  142:				if (esc)
+    #####:  143:					p--;
+        -:  144:				else
+        -:  145:					{	
+    #####:  146:					*(p++)='\0';
+    #####:  147:					f++;
+    #####:  148:					if (n >=  num) break;
+    #####:  149:					pp[n++]=p;
+    #####:  150:					continue;
+        -:  151:					}
+        -:  152:				}
+    #####:  153:			esc=(*f == '\\');
+    #####:  154:			*(p++)= *(f++);
+        -:  155:			}
+    #####:  156:		*(p++)='\0';
+    #####:  157:		if ((n != num) || (*f != '\0'))
+        -:  158:			{
+        -:  159:#if !defined(OPENSSL_NO_STDIO) && !defined(OPENSSL_SYS_WIN16)	/* temporary fix :-( */
+    #####:  160:			fprintf(stderr,"wrong number of fields on line %ld (looking for field %d, got %d, '%s' left)\n",ln,num,n,f);
+        -:  161:#endif
+        -:  162:			er=2;
+    #####:  163:			goto err;
+        -:  164:			}
+    #####:  165:		pp[n]=p;
+    #####:  166:		if (!sk_OPENSSL_PSTRING_push(ret->data,pp))
+        -:  167:			{
+        -:  168:#if !defined(OPENSSL_NO_STDIO) && !defined(OPENSSL_SYS_WIN16)	/* temporary fix :-( */
+    #####:  169:			fprintf(stderr,"failure in sk_push\n");
+        -:  170:#endif
+        -:  171:			er=2;
+    #####:  172:			goto err;
+        -:  173:			}
+        -:  174:		}
+        -:  175:	er=0;
+        -:  176:err:
+    #####:  177:	BUF_MEM_free(buf);
+    #####:  178:	if (er)
+        -:  179:		{
+        -:  180:#if !defined(OPENSSL_NO_STDIO) && !defined(OPENSSL_SYS_WIN16)
+    #####:  181:		if (er == 1) fprintf(stderr,"OPENSSL_malloc failure\n");
+        -:  182:#endif
+    #####:  183:		if (ret != NULL)
+        -:  184:			{
+    #####:  185:			if (ret->data != NULL) sk_OPENSSL_PSTRING_free(ret->data);
+    #####:  186:			if (ret->index != NULL) OPENSSL_free(ret->index);
+    #####:  187:			if (ret->qual != NULL) OPENSSL_free(ret->qual);
+    #####:  188:			if (ret != NULL) OPENSSL_free(ret);
+        -:  189:			}
+        -:  190:		return(NULL);
+        -:  191:		}
+        -:  192:	else
+        -:  193:		return(ret);
+        -:  194:	}
+        -:  195:
+    #####:  196:OPENSSL_STRING *TXT_DB_get_by_index(TXT_DB *db, int idx, OPENSSL_STRING *value)
+        -:  197:	{
+        -:  198:	OPENSSL_STRING *ret;
+        -:  199:	LHASH_OF(OPENSSL_STRING) *lh;
+        -:  200:
+    #####:  201:	if (idx >= db->num_fields)
+        -:  202:		{
+    #####:  203:		db->error=DB_ERROR_INDEX_OUT_OF_RANGE;
+    #####:  204:		return(NULL);
+        -:  205:		}
+    #####:  206:	lh=db->index[idx];
+    #####:  207:	if (lh == NULL)
+        -:  208:		{
+    #####:  209:		db->error=DB_ERROR_NO_INDEX;
+    #####:  210:		return(NULL);
+        -:  211:		}
+    #####:  212:	ret=lh_OPENSSL_STRING_retrieve(lh,value);
+    #####:  213:	db->error=DB_ERROR_OK;
+    #####:  214:	return(ret);
+        -:  215:	}
+        -:  216:
+    #####:  217:int TXT_DB_create_index(TXT_DB *db, int field, int (*qual)(OPENSSL_STRING *),
+        -:  218:			LHASH_HASH_FN_TYPE hash, LHASH_COMP_FN_TYPE cmp)
+        -:  219:	{
+        -:  220:	LHASH_OF(OPENSSL_STRING) *idx;
+        -:  221:	OPENSSL_STRING *r;
+        -:  222:	int i,n;
+        -:  223:
+    #####:  224:	if (field >= db->num_fields)
+        -:  225:		{
+    #####:  226:		db->error=DB_ERROR_INDEX_OUT_OF_RANGE;
+    #####:  227:		return(0);
+        -:  228:		}
+        -:  229:	/* FIXME: we lose type checking at this point */
+    #####:  230:	if ((idx=(LHASH_OF(OPENSSL_STRING) *)lh_new(hash,cmp)) == NULL)
+        -:  231:		{
+    #####:  232:		db->error=DB_ERROR_MALLOC;
+    #####:  233:		return(0);
+        -:  234:		}
+    #####:  235:	n=sk_OPENSSL_PSTRING_num(db->data);
+    #####:  236:	for (i=0; i<n; i++)
+        -:  237:		{
+    #####:  238:		r=sk_OPENSSL_PSTRING_value(db->data,i);
+    #####:  239:		if ((qual != NULL) && (qual(r) == 0)) continue;
+    #####:  240:		if ((r=lh_OPENSSL_STRING_insert(idx,r)) != NULL)
+        -:  241:			{
+    #####:  242:			db->error=DB_ERROR_INDEX_CLASH;
+    #####:  243:			db->arg1=sk_OPENSSL_PSTRING_find(db->data,r);
+    #####:  244:			db->arg2=i;
+    #####:  245:			lh_OPENSSL_STRING_free(idx);
+    #####:  246:			return(0);
+        -:  247:			}
+        -:  248:		}
+    #####:  249:	if (db->index[field] != NULL) lh_OPENSSL_STRING_free(db->index[field]);
+    #####:  250:	db->index[field]=idx;
+    #####:  251:	db->qual[field]=qual;
+    #####:  252:	return(1);
+        -:  253:	}
+        -:  254:
+    #####:  255:long TXT_DB_write(BIO *out, TXT_DB *db)
+        -:  256:	{
+        -:  257:	long i,j,n,nn,l,tot=0;
+        -:  258:	char *p,**pp,*f;
+        -:  259:	BUF_MEM *buf=NULL;
+        -:  260:	long ret= -1;
+        -:  261:
+    #####:  262:	if ((buf=BUF_MEM_new()) == NULL)
+        -:  263:		goto err;
+    #####:  264:	n=sk_OPENSSL_PSTRING_num(db->data);
+    #####:  265:	nn=db->num_fields;
+    #####:  266:	for (i=0; i<n; i++)
+        -:  267:		{
+    #####:  268:		pp=sk_OPENSSL_PSTRING_value(db->data,i);
+        -:  269:
+        -:  270:		l=0;
+    #####:  271:		for (j=0; j<nn; j++)
+        -:  272:			{
+    #####:  273:			if (pp[j] != NULL)
+    #####:  274:				l+=strlen(pp[j]);
+        -:  275:			}
+    #####:  276:		if (!BUF_MEM_grow_clean(buf,(int)(l*2+nn))) goto err;
+        -:  277:
+    #####:  278:		p=buf->data;
+    #####:  279:		for (j=0; j<nn; j++)
+        -:  280:			{
+    #####:  281:			f=pp[j];
+    #####:  282:			if (f != NULL)
+        -:  283:				for (;;) 
+        -:  284:					{
+    #####:  285:					if (*f == '\0') break;
+    #####:  286:					if (*f == '\t') *(p++)='\\';
+    #####:  287:					*(p++)= *(f++);
+    #####:  288:					}
+    #####:  289:			*(p++)='\t';
+        -:  290:			}
+    #####:  291:		p[-1]='\n';
+    #####:  292:		j=p-buf->data;
+    #####:  293:		if (BIO_write(out,buf->data,(int)j) != j)
+        -:  294:			goto err;
+    #####:  295:		tot+=j;
+        -:  296:		}
+        -:  297:	ret=tot;
+        -:  298:err:
+    #####:  299:	if (buf != NULL) BUF_MEM_free(buf);
+    #####:  300:	return(ret);
+        -:  301:	}
+        -:  302:
+    #####:  303:int TXT_DB_insert(TXT_DB *db, OPENSSL_STRING *row)
+        -:  304:	{
+        -:  305:	int i;
+        -:  306:	OPENSSL_STRING *r;
+        -:  307:
+    #####:  308:	for (i=0; i<db->num_fields; i++)
+        -:  309:		{
+    #####:  310:		if (db->index[i] != NULL)
+        -:  311:			{
+    #####:  312:			if ((db->qual[i] != NULL) &&
+    #####:  313:				(db->qual[i](row) == 0)) continue;
+    #####:  314:			r=lh_OPENSSL_STRING_retrieve(db->index[i],row);
+    #####:  315:			if (r != NULL)
+        -:  316:				{
+    #####:  317:				db->error=DB_ERROR_INDEX_CLASH;
+    #####:  318:				db->arg1=i;
+    #####:  319:				db->arg_row=r;
+    #####:  320:				goto err;
+        -:  321:				}
+        -:  322:			}
+        -:  323:		}
+        -:  324:	/* We have passed the index checks, now just append and insert */
+    #####:  325:	if (!sk_OPENSSL_PSTRING_push(db->data,row))
+        -:  326:		{
+    #####:  327:		db->error=DB_ERROR_MALLOC;
+    #####:  328:		goto err;
+        -:  329:		}
+        -:  330:
+    #####:  331:	for (i=0; i<db->num_fields; i++)
+        -:  332:		{
+    #####:  333:		if (db->index[i] != NULL)
+        -:  334:			{
+    #####:  335:			if ((db->qual[i] != NULL) &&
+    #####:  336:				(db->qual[i](row) == 0)) continue;
+    #####:  337:			(void)lh_OPENSSL_STRING_insert(db->index[i],row);
+        -:  338:			}
+        -:  339:		}
+        -:  340:	return(1);
+        -:  341:err:
+        -:  342:	return(0);
+        -:  343:	}
+        -:  344:
+    #####:  345:void TXT_DB_free(TXT_DB *db)
+        -:  346:	{
+        -:  347:	int i,n;
+        -:  348:	char **p,*max;
+        -:  349:
+    #####:  350:	if(db == NULL)
+    #####:  351:	    return;
+        -:  352:
+    #####:  353:	if (db->index != NULL)
+        -:  354:		{
+    #####:  355:		for (i=db->num_fields-1; i>=0; i--)
+    #####:  356:			if (db->index[i] != NULL) lh_OPENSSL_STRING_free(db->index[i]);
+    #####:  357:		OPENSSL_free(db->index);
+        -:  358:		}
+    #####:  359:	if (db->qual != NULL)
+    #####:  360:		OPENSSL_free(db->qual);
+    #####:  361:	if (db->data != NULL)
+        -:  362:		{
+    #####:  363:		for (i=sk_OPENSSL_PSTRING_num(db->data)-1; i>=0; i--)
+        -:  364:			{
+        -:  365:			/* check if any 'fields' have been allocated
+        -:  366:			 * from outside of the initial block */
+    #####:  367:			p=sk_OPENSSL_PSTRING_value(db->data,i);
+    #####:  368:			max=p[db->num_fields]; /* last address */
+    #####:  369:			if (max == NULL) /* new row */
+        -:  370:				{
+    #####:  371:				for (n=0; n<db->num_fields; n++)
+    #####:  372:					if (p[n] != NULL) OPENSSL_free(p[n]);
+        -:  373:				}
+        -:  374:			else
+        -:  375:				{
+    #####:  376:				for (n=0; n<db->num_fields; n++)
+        -:  377:					{
+    #####:  378:					if (((p[n] < (char *)p) || (p[n] > max))
+    #####:  379:						&& (p[n] != NULL))
+    #####:  380:						OPENSSL_free(p[n]);
+        -:  381:					}
+        -:  382:				}
+    #####:  383:			OPENSSL_free(sk_OPENSSL_PSTRING_value(db->data,i));
+        -:  384:			}
+    #####:  385:		sk_OPENSSL_PSTRING_free(db->data);
+        -:  386:		}
+    #####:  387:	OPENSSL_free(db);
+        -:  388:	}

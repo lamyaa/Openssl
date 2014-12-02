@@ -1,0 +1,333 @@
+        -:    0:Source:v3_pci.c
+        -:    0:Graph:v3_pci.gcno
+        -:    0:Data:v3_pci.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* v3_pci.c -*- mode:C; c-file-style: "eay" -*- */
+        -:    2:/* Contributed to the OpenSSL Project 2004
+        -:    3: * by Richard Levitte (richard@levitte.org)
+        -:    4: */
+        -:    5:/* Copyright (c) 2004 Kungliga Tekniska Högskolan
+        -:    6: * (Royal Institute of Technology, Stockholm, Sweden).
+        -:    7: * All rights reserved.
+        -:    8: *
+        -:    9: * Redistribution and use in source and binary forms, with or without
+        -:   10: * modification, are permitted provided that the following conditions
+        -:   11: * are met:
+        -:   12: *
+        -:   13: * 1. Redistributions of source code must retain the above copyright
+        -:   14: *    notice, this list of conditions and the following disclaimer.
+        -:   15: *
+        -:   16: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   17: *    notice, this list of conditions and the following disclaimer in the
+        -:   18: *    documentation and/or other materials provided with the distribution.
+        -:   19: *
+        -:   20: * 3. Neither the name of the Institute nor the names of its contributors
+        -:   21: *    may be used to endorse or promote products derived from this software
+        -:   22: *    without specific prior written permission.
+        -:   23: *
+        -:   24: * THIS SOFTWARE IS PROVIDED BY THE INSTITUTE AND CONTRIBUTORS ``AS IS'' AND
+        -:   25: * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   26: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+        -:   27: * ARE DISCLAIMED.  IN NO EVENT SHALL THE INSTITUTE OR CONTRIBUTORS BE LIABLE
+        -:   28: * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+        -:   29: * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+        -:   30: * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   31: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+        -:   32: * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+        -:   33: * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+        -:   34: * SUCH DAMAGE.
+        -:   35: */
+        -:   36:
+        -:   37:#include <stdio.h>
+        -:   38:#include "cryptlib.h"
+        -:   39:#include <openssl/conf.h>
+        -:   40:#include <openssl/x509v3.h>
+        -:   41:
+        -:   42:static int i2r_pci(X509V3_EXT_METHOD *method, PROXY_CERT_INFO_EXTENSION *ext,
+        -:   43:	BIO *out, int indent);
+        -:   44:static PROXY_CERT_INFO_EXTENSION *r2i_pci(X509V3_EXT_METHOD *method,
+        -:   45:	X509V3_CTX *ctx, char *str);
+        -:   46:
+        -:   47:const X509V3_EXT_METHOD v3_pci =
+        -:   48:	{ NID_proxyCertInfo, 0, ASN1_ITEM_ref(PROXY_CERT_INFO_EXTENSION),
+        -:   49:	  0,0,0,0,
+        -:   50:	  0,0,
+        -:   51:	  NULL, NULL,
+        -:   52:	  (X509V3_EXT_I2R)i2r_pci,
+        -:   53:	  (X509V3_EXT_R2I)r2i_pci,
+        -:   54:	  NULL,
+        -:   55:	};
+        -:   56:
+    #####:   57:static int i2r_pci(X509V3_EXT_METHOD *method, PROXY_CERT_INFO_EXTENSION *pci,
+        -:   58:	BIO *out, int indent)
+        -:   59:	{
+    #####:   60:	BIO_printf(out, "%*sPath Length Constraint: ", indent, "");
+    #####:   61:	if (pci->pcPathLengthConstraint)
+    #####:   62:	  i2a_ASN1_INTEGER(out, pci->pcPathLengthConstraint);
+        -:   63:	else
+    #####:   64:	  BIO_printf(out, "infinite");
+    #####:   65:	BIO_puts(out, "\n");
+    #####:   66:	BIO_printf(out, "%*sPolicy Language: ", indent, "");
+    #####:   67:	i2a_ASN1_OBJECT(out, pci->proxyPolicy->policyLanguage);
+    #####:   68:	BIO_puts(out, "\n");
+    #####:   69:	if (pci->proxyPolicy->policy && pci->proxyPolicy->policy->data)
+    #####:   70:	  BIO_printf(out, "%*sPolicy Text: %s\n", indent, "",
+        -:   71:		     pci->proxyPolicy->policy->data);
+    #####:   72:	return 1;
+        -:   73:	}
+        -:   74:
+    #####:   75:static int process_pci_value(CONF_VALUE *val,
+        -:   76:	ASN1_OBJECT **language, ASN1_INTEGER **pathlen,
+        -:   77:	ASN1_OCTET_STRING **policy)
+        -:   78:	{
+        -:   79:	int free_policy = 0;
+        -:   80:
+    #####:   81:	if (strcmp(val->name, "language") == 0)
+        -:   82:		{
+    #####:   83:		if (*language)
+        -:   84:			{
+    #####:   85:			X509V3err(X509V3_F_PROCESS_PCI_VALUE,X509V3_R_POLICY_LANGUAGE_ALREADY_DEFINED);
+    #####:   86:			X509V3_conf_err(val);
+    #####:   87:			return 0;
+        -:   88:			}
+    #####:   89:		if (!(*language = OBJ_txt2obj(val->value, 0)))
+        -:   90:			{
+    #####:   91:			X509V3err(X509V3_F_PROCESS_PCI_VALUE,X509V3_R_INVALID_OBJECT_IDENTIFIER);
+    #####:   92:			X509V3_conf_err(val);
+    #####:   93:			return 0;
+        -:   94:			}
+        -:   95:		}
+    #####:   96:	else if (strcmp(val->name, "pathlen") == 0)
+        -:   97:		{
+    #####:   98:		if (*pathlen)
+        -:   99:			{
+    #####:  100:			X509V3err(X509V3_F_PROCESS_PCI_VALUE,X509V3_R_POLICY_PATH_LENGTH_ALREADY_DEFINED);
+    #####:  101:			X509V3_conf_err(val);
+    #####:  102:			return 0;
+        -:  103:			}
+    #####:  104:		if (!X509V3_get_value_int(val, pathlen))
+        -:  105:			{
+    #####:  106:			X509V3err(X509V3_F_PROCESS_PCI_VALUE,X509V3_R_POLICY_PATH_LENGTH);
+    #####:  107:			X509V3_conf_err(val);
+    #####:  108:			return 0;
+        -:  109:			}
+        -:  110:		}
+    #####:  111:	else if (strcmp(val->name, "policy") == 0)
+        -:  112:		{
+        -:  113:		unsigned char *tmp_data = NULL;
+        -:  114:		long val_len;
+    #####:  115:		if (!*policy)
+        -:  116:			{
+    #####:  117:			*policy = ASN1_OCTET_STRING_new();
+    #####:  118:			if (!*policy)
+        -:  119:				{
+    #####:  120:				X509V3err(X509V3_F_PROCESS_PCI_VALUE,ERR_R_MALLOC_FAILURE);
+    #####:  121:				X509V3_conf_err(val);
+    #####:  122:				return 0;
+        -:  123:				}
+        -:  124:			free_policy = 1;
+        -:  125:			}
+    #####:  126:		if (strncmp(val->value, "hex:", 4) == 0)
+        -:  127:			{
+    #####:  128:			unsigned char *tmp_data2 =
+    #####:  129:				string_to_hex(val->value + 4, &val_len);
+        -:  130:
+    #####:  131:			if (!tmp_data2) 
+        -:  132:				{
+    #####:  133:				X509V3err(X509V3_F_PROCESS_PCI_VALUE,X509V3_R_ILLEGAL_HEX_DIGIT);
+    #####:  134:				X509V3_conf_err(val);
+    #####:  135:				goto err;
+        -:  136:				}
+        -:  137:
+    #####:  138:			tmp_data = OPENSSL_realloc((*policy)->data,
+        -:  139:				(*policy)->length + val_len + 1);
+    #####:  140:			if (tmp_data)
+        -:  141:				{
+    #####:  142:				(*policy)->data = tmp_data;
+    #####:  143:				memcpy(&(*policy)->data[(*policy)->length],
+        -:  144:					tmp_data2, val_len);
+    #####:  145:				(*policy)->length += val_len;
+    #####:  146:				(*policy)->data[(*policy)->length] = '\0';
+        -:  147:				}
+        -:  148:			else
+        -:  149:				{
+    #####:  150:				OPENSSL_free(tmp_data2);
+        -:  151:				/* realloc failure implies the original data space is b0rked too! */
+    #####:  152:				(*policy)->data = NULL;
+    #####:  153:				(*policy)->length = 0;
+    #####:  154:				X509V3err(X509V3_F_PROCESS_PCI_VALUE,ERR_R_MALLOC_FAILURE);
+    #####:  155:				X509V3_conf_err(val);
+    #####:  156:				goto err;
+        -:  157:				}
+    #####:  158:			OPENSSL_free(tmp_data2);
+        -:  159:			}
+    #####:  160:		else if (strncmp(val->value, "file:", 5) == 0)
+        -:  161:			{
+        -:  162:			unsigned char buf[2048];
+        -:  163:			int n;
+    #####:  164:			BIO *b = BIO_new_file(val->value + 5, "r");
+    #####:  165:			if (!b)
+        -:  166:				{
+    #####:  167:				X509V3err(X509V3_F_PROCESS_PCI_VALUE,ERR_R_BIO_LIB);
+    #####:  168:				X509V3_conf_err(val);
+    #####:  169:				goto err;
+        -:  170:				}
+    #####:  171:			while((n = BIO_read(b, buf, sizeof(buf))) > 0
+    #####:  172:				|| (n == 0 && BIO_should_retry(b)))
+        -:  173:				{
+    #####:  174:				if (!n) continue;
+        -:  175:
+    #####:  176:				tmp_data = OPENSSL_realloc((*policy)->data,
+        -:  177:					(*policy)->length + n + 1);
+        -:  178:
+    #####:  179:				if (!tmp_data)
+        -:  180:					break;
+        -:  181:
+    #####:  182:				(*policy)->data = tmp_data;
+    #####:  183:				memcpy(&(*policy)->data[(*policy)->length],
+        -:  184:					buf, n);
+    #####:  185:				(*policy)->length += n;
+    #####:  186:				(*policy)->data[(*policy)->length] = '\0';
+        -:  187:				}
+    #####:  188:			BIO_free_all(b);
+        -:  189:
+    #####:  190:			if (n < 0)
+        -:  191:				{
+    #####:  192:				X509V3err(X509V3_F_PROCESS_PCI_VALUE,ERR_R_BIO_LIB);
+    #####:  193:				X509V3_conf_err(val);
+    #####:  194:				goto err;
+        -:  195:				}
+        -:  196:			}
+    #####:  197:		else if (strncmp(val->value, "text:", 5) == 0)
+        -:  198:			{
+    #####:  199:			val_len = strlen(val->value + 5);
+    #####:  200:			tmp_data = OPENSSL_realloc((*policy)->data,
+        -:  201:				(*policy)->length + val_len + 1);
+    #####:  202:			if (tmp_data)
+        -:  203:				{
+    #####:  204:				(*policy)->data = tmp_data;
+    #####:  205:				memcpy(&(*policy)->data[(*policy)->length],
+    #####:  206:					val->value + 5, val_len);
+    #####:  207:				(*policy)->length += val_len;
+    #####:  208:				(*policy)->data[(*policy)->length] = '\0';
+        -:  209:				}
+        -:  210:			else
+        -:  211:				{
+        -:  212:				/* realloc failure implies the original data space is b0rked too! */
+    #####:  213:				(*policy)->data = NULL;
+    #####:  214:				(*policy)->length = 0;
+    #####:  215:				X509V3err(X509V3_F_PROCESS_PCI_VALUE,ERR_R_MALLOC_FAILURE);
+    #####:  216:				X509V3_conf_err(val);
+    #####:  217:				goto err;
+        -:  218:				}
+        -:  219:			}
+        -:  220:		else
+        -:  221:			{
+    #####:  222:			X509V3err(X509V3_F_PROCESS_PCI_VALUE,X509V3_R_INCORRECT_POLICY_SYNTAX_TAG);
+    #####:  223:			X509V3_conf_err(val);
+    #####:  224:			goto err;
+        -:  225:			}
+    #####:  226:		if (!tmp_data)
+        -:  227:			{
+    #####:  228:			X509V3err(X509V3_F_PROCESS_PCI_VALUE,ERR_R_MALLOC_FAILURE);
+    #####:  229:			X509V3_conf_err(val);
+    #####:  230:			goto err;
+        -:  231:			}
+        -:  232:		}
+        -:  233:	return 1;
+        -:  234:err:
+    #####:  235:	if (free_policy)
+        -:  236:		{
+    #####:  237:		ASN1_OCTET_STRING_free(*policy);
+    #####:  238:		*policy = NULL;
+        -:  239:		}
+        -:  240:	return 0;
+        -:  241:	}
+        -:  242:
+    #####:  243:static PROXY_CERT_INFO_EXTENSION *r2i_pci(X509V3_EXT_METHOD *method,
+        -:  244:	X509V3_CTX *ctx, char *value)
+        -:  245:	{
+        -:  246:	PROXY_CERT_INFO_EXTENSION *pci = NULL;
+        -:  247:	STACK_OF(CONF_VALUE) *vals;
+    #####:  248:	ASN1_OBJECT *language = NULL;
+    #####:  249:	ASN1_INTEGER *pathlen = NULL;
+    #####:  250:	ASN1_OCTET_STRING *policy = NULL;
+        -:  251:	int i, j;
+        -:  252:
+    #####:  253:	vals = X509V3_parse_list(value);
+    #####:  254:	for (i = 0; i < sk_CONF_VALUE_num(vals); i++)
+        -:  255:		{
+    #####:  256:		CONF_VALUE *cnf = sk_CONF_VALUE_value(vals, i);
+    #####:  257:		if (!cnf->name || (*cnf->name != '@' && !cnf->value))
+        -:  258:			{
+    #####:  259:			X509V3err(X509V3_F_R2I_PCI,X509V3_R_INVALID_PROXY_POLICY_SETTING);
+    #####:  260:			X509V3_conf_err(cnf);
+    #####:  261:			goto err;
+        -:  262:			}
+    #####:  263:		if (*cnf->name == '@')
+        -:  264:			{
+        -:  265:			STACK_OF(CONF_VALUE) *sect;
+        -:  266:			int success_p = 1;
+        -:  267:
+    #####:  268:			sect = X509V3_get_section(ctx, cnf->name + 1);
+    #####:  269:			if (!sect)
+        -:  270:				{
+    #####:  271:				X509V3err(X509V3_F_R2I_PCI,X509V3_R_INVALID_SECTION);
+    #####:  272:				X509V3_conf_err(cnf);
+    #####:  273:				goto err;
+        -:  274:				}
+    #####:  275:			for (j = 0; success_p && j < sk_CONF_VALUE_num(sect); j++)
+        -:  276:				{
+    #####:  277:				success_p =
+    #####:  278:					process_pci_value(sk_CONF_VALUE_value(sect, j),
+        -:  279:						&language, &pathlen, &policy);
+        -:  280:				}
+    #####:  281:			X509V3_section_free(ctx, sect);
+    #####:  282:			if (!success_p)
+        -:  283:				goto err;
+        -:  284:			}
+        -:  285:		else
+        -:  286:			{
+    #####:  287:			if (!process_pci_value(cnf,
+        -:  288:					&language, &pathlen, &policy))
+        -:  289:				{
+    #####:  290:				X509V3_conf_err(cnf);
+    #####:  291:				goto err;
+        -:  292:				}
+        -:  293:			}
+        -:  294:		}
+        -:  295:
+        -:  296:	/* Language is mandatory */
+    #####:  297:	if (!language)
+        -:  298:		{
+    #####:  299:		X509V3err(X509V3_F_R2I_PCI,X509V3_R_NO_PROXY_CERT_POLICY_LANGUAGE_DEFINED);
+    #####:  300:		goto err;
+        -:  301:		}
+    #####:  302:	i = OBJ_obj2nid(language);
+    #####:  303:	if ((i == NID_Independent || i == NID_id_ppl_inheritAll) && policy)
+        -:  304:		{
+    #####:  305:		X509V3err(X509V3_F_R2I_PCI,X509V3_R_POLICY_WHEN_PROXY_LANGUAGE_REQUIRES_NO_POLICY);
+    #####:  306:		goto err;
+        -:  307:		}
+        -:  308:
+    #####:  309:	pci = PROXY_CERT_INFO_EXTENSION_new();
+    #####:  310:	if (!pci)
+        -:  311:		{
+    #####:  312:		X509V3err(X509V3_F_R2I_PCI,ERR_R_MALLOC_FAILURE);
+    #####:  313:		goto err;
+        -:  314:		}
+        -:  315:
+    #####:  316:	pci->proxyPolicy->policyLanguage = language; language = NULL;
+    #####:  317:	pci->proxyPolicy->policy = policy; policy = NULL;
+    #####:  318:	pci->pcPathLengthConstraint = pathlen; pathlen = NULL;
+    #####:  319:	goto end;
+        -:  320:err:
+    #####:  321:	if (language) { ASN1_OBJECT_free(language); language = NULL; }
+    #####:  322:	if (pathlen) { ASN1_INTEGER_free(pathlen); pathlen = NULL; }
+    #####:  323:	if (policy) { ASN1_OCTET_STRING_free(policy); policy = NULL; }
+    #####:  324:	if (pci) { PROXY_CERT_INFO_EXTENSION_free(pci); pci = NULL; }
+        -:  325:end:
+    #####:  326:	sk_CONF_VALUE_pop_free(vals, X509V3_conf_free);
+    #####:  327:	return pci;
+        -:  328:	}

@@ -1,0 +1,795 @@
+        -:    0:Source:s3_cbc.c
+        -:    0:Graph:s3_cbc.gcno
+        -:    0:Data:s3_cbc.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* ssl/s3_cbc.c */
+        -:    2:/* ====================================================================
+        -:    3: * Copyright (c) 2012 The OpenSSL Project.  All rights reserved.
+        -:    4: *
+        -:    5: * Redistribution and use in source and binary forms, with or without
+        -:    6: * modification, are permitted provided that the following conditions
+        -:    7: * are met:
+        -:    8: *
+        -:    9: * 1. Redistributions of source code must retain the above copyright
+        -:   10: *    notice, this list of conditions and the following disclaimer.
+        -:   11: *
+        -:   12: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   13: *    notice, this list of conditions and the following disclaimer in
+        -:   14: *    the documentation and/or other materials provided with the
+        -:   15: *    distribution.
+        -:   16: *
+        -:   17: * 3. All advertising materials mentioning features or use of this
+        -:   18: *    software must display the following acknowledgment:
+        -:   19: *    "This product includes software developed by the OpenSSL Project
+        -:   20: *    for use in the OpenSSL Toolkit. (http://www.openssl.org/)"
+        -:   21: *
+        -:   22: * 4. The names "OpenSSL Toolkit" and "OpenSSL Project" must not be used to
+        -:   23: *    endorse or promote products derived from this software without
+        -:   24: *    prior written permission. For written permission, please contact
+        -:   25: *    openssl-core@openssl.org.
+        -:   26: *
+        -:   27: * 5. Products derived from this software may not be called "OpenSSL"
+        -:   28: *    nor may "OpenSSL" appear in their names without prior written
+        -:   29: *    permission of the OpenSSL Project.
+        -:   30: *
+        -:   31: * 6. Redistributions of any form whatsoever must retain the following
+        -:   32: *    acknowledgment:
+        -:   33: *    "This product includes software developed by the OpenSSL Project
+        -:   34: *    for use in the OpenSSL Toolkit (http://www.openssl.org/)"
+        -:   35: *
+        -:   36: * THIS SOFTWARE IS PROVIDED BY THE OpenSSL PROJECT ``AS IS'' AND ANY
+        -:   37: * EXPRESSED OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   38: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+        -:   39: * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE OpenSSL PROJECT OR
+        -:   40: * ITS CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+        -:   41: * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+        -:   42: * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+        -:   43: * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   44: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+        -:   45: * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+        -:   46: * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+        -:   47: * OF THE POSSIBILITY OF SUCH DAMAGE.
+        -:   48: * ====================================================================
+        -:   49: *
+        -:   50: * This product includes cryptographic software written by Eric Young
+        -:   51: * (eay@cryptsoft.com).  This product includes software written by Tim
+        -:   52: * Hudson (tjh@cryptsoft.com).
+        -:   53: *
+        -:   54: */
+        -:   55:
+        -:   56:#include "ssl_locl.h"
+        -:   57:
+        -:   58:#include <openssl/md5.h>
+        -:   59:#include <openssl/sha.h>
+        -:   60:
+        -:   61:/* MAX_HASH_BIT_COUNT_BYTES is the maximum number of bytes in the hash's length
+        -:   62: * field. (SHA-384/512 have 128-bit length.) */
+        -:   63:#define MAX_HASH_BIT_COUNT_BYTES 16
+        -:   64:
+        -:   65:/* MAX_HASH_BLOCK_SIZE is the maximum hash block size that we'll support.
+        -:   66: * Currently SHA-384/512 has a 128-byte block size and that's the largest
+        -:   67: * supported by TLS.) */
+        -:   68:#define MAX_HASH_BLOCK_SIZE 128
+        -:   69:
+        -:   70:/* Some utility functions are needed:
+        -:   71: *
+        -:   72: * These macros return the given value with the MSB copied to all the other
+        -:   73: * bits. They use the fact that arithmetic shift shifts-in the sign bit.
+        -:   74: * However, this is not ensured by the C standard so you may need to replace
+        -:   75: * them with something else on odd CPUs. */
+        -:   76:#define DUPLICATE_MSB_TO_ALL(x) ( (unsigned)( (int)(x) >> (sizeof(int)*8-1) ) )
+        -:   77:#define DUPLICATE_MSB_TO_ALL_8(x) ((unsigned char)(DUPLICATE_MSB_TO_ALL(x)))
+        -:   78:
+        -:   79:/* constant_time_lt returns 0xff if a<b and 0x00 otherwise. */
+        -:   80:static unsigned constant_time_lt(unsigned a, unsigned b)
+        -:   81:	{
+    #####:   82:	a -= b;
+    #####:   83:	return DUPLICATE_MSB_TO_ALL(a);
+        -:   84:	}
+        -:   85:
+        -:   86:/* constant_time_ge returns 0xff if a>=b and 0x00 otherwise. */
+        -:   87:static unsigned constant_time_ge(unsigned a, unsigned b)
+        -:   88:	{
+    #####:   89:	a -= b;
+    #####:   90:	return DUPLICATE_MSB_TO_ALL(~a);
+        -:   91:	}
+        -:   92:
+        -:   93:/* constant_time_eq_8 returns 0xff if a==b and 0x00 otherwise. */
+        -:   94:static unsigned char constant_time_eq_8(unsigned a, unsigned b)
+        -:   95:	{
+    #####:   96:	unsigned c = a ^ b;
+    #####:   97:	c--;
+    #####:   98:	return DUPLICATE_MSB_TO_ALL_8(c);
+        -:   99:	}
+        -:  100:
+        -:  101:/* ssl3_cbc_remove_padding removes padding from the decrypted, SSLv3, CBC
+        -:  102: * record in |rec| by updating |rec->length| in constant time.
+        -:  103: *
+        -:  104: * block_size: the block size of the cipher used to encrypt the record.
+        -:  105: * returns:
+        -:  106: *   0: (in non-constant time) if the record is publicly invalid.
+        -:  107: *   1: if the padding was valid
+        -:  108: *  -1: otherwise. */
+    #####:  109:int ssl3_cbc_remove_padding(const SSL* s,
+        -:  110:			    SSL3_RECORD *rec,
+        -:  111:			    unsigned block_size,
+        -:  112:			    unsigned mac_size)
+        -:  113:	{
+        -:  114:	unsigned padding_length, good;
+    #####:  115:	const unsigned overhead = 1 /* padding length byte */ + mac_size;
+        -:  116:
+        -:  117:	/* These lengths are all public so we can test them in non-constant
+        -:  118:	 * time. */
+    #####:  119:	if (overhead > rec->length)
+        -:  120:		return 0;
+        -:  121:
+    #####:  122:	padding_length = rec->data[rec->length-1];
+    #####:  123:	good = constant_time_ge(rec->length, padding_length+overhead);
+        -:  124:	/* SSLv3 requires that the padding is minimal. */
+    #####:  125:	good &= constant_time_ge(block_size, padding_length+1);
+    #####:  126:	padding_length = good & (padding_length+1);
+    #####:  127:	rec->length -= padding_length;
+    #####:  128:	rec->type |= padding_length<<8;	/* kludge: pass padding length */
+    #####:  129:	return (int)((good & 1) | (~good & -1));
+        -:  130:}
+        -:  131:
+        -:  132:/* tls1_cbc_remove_padding removes the CBC padding from the decrypted, TLS, CBC
+        -:  133: * record in |rec| in constant time and returns 1 if the padding is valid and
+        -:  134: * -1 otherwise. It also removes any explicit IV from the start of the record
+        -:  135: * without leaking any timing about whether there was enough space after the
+        -:  136: * padding was removed.
+        -:  137: *
+        -:  138: * block_size: the block size of the cipher used to encrypt the record.
+        -:  139: * returns:
+        -:  140: *   0: (in non-constant time) if the record is publicly invalid.
+        -:  141: *   1: if the padding was valid
+        -:  142: *  -1: otherwise. */
+    #####:  143:int tls1_cbc_remove_padding(const SSL* s,
+        -:  144:			    SSL3_RECORD *rec,
+        -:  145:			    unsigned block_size,
+        -:  146:			    unsigned mac_size)
+        -:  147:	{
+        -:  148:	unsigned padding_length, good, to_check, i;
+    #####:  149:	const unsigned overhead = 1 /* padding length byte */ + mac_size;
+        -:  150:	/* Check if version requires explicit IV */
+    #####:  151:	if (s->version >= TLS1_1_VERSION || s->version == DTLS1_VERSION)
+        -:  152:		{
+        -:  153:		/* These lengths are all public so we can test them in
+        -:  154:		 * non-constant time.
+        -:  155:		 */
+    #####:  156:		if (overhead + block_size > rec->length)
+        -:  157:			return 0;
+        -:  158:		/* We can now safely skip explicit IV */
+    #####:  159:		rec->data += block_size;
+    #####:  160:		rec->input += block_size;
+    #####:  161:		rec->length -= block_size;
+        -:  162:		}
+    #####:  163:	else if (overhead > rec->length)
+        -:  164:		return 0;
+        -:  165:
+    #####:  166:	padding_length = rec->data[rec->length-1];
+        -:  167:
+        -:  168:	/* NB: if compression is in operation the first packet may not be of
+        -:  169:	 * even length so the padding bug check cannot be performed. This bug
+        -:  170:	 * workaround has been around since SSLeay so hopefully it is either
+        -:  171:	 * fixed now or no buggy implementation supports compression [steve]
+        -:  172:	 */
+    #####:  173:	if ( (s->options&SSL_OP_TLS_BLOCK_PADDING_BUG) && !s->expand)
+        -:  174:		{
+        -:  175:		/* First packet is even in size, so check */
+    #####:  176:		if ((memcmp(s->s3->read_sequence, "\0\0\0\0\0\0\0\0",8) == 0) &&
+    #####:  177:		    !(padding_length & 1))
+        -:  178:			{
+    #####:  179:			s->s3->flags|=TLS1_FLAGS_TLS_PADDING_BUG;
+        -:  180:			}
+    #####:  181:		if ((s->s3->flags & TLS1_FLAGS_TLS_PADDING_BUG) &&
+        -:  182:		    padding_length > 0)
+        -:  183:			{
+    #####:  184:			padding_length--;
+        -:  185:			}
+        -:  186:		}
+        -:  187:
+    #####:  188:	if (EVP_CIPHER_flags(s->enc_read_ctx->cipher)&EVP_CIPH_FLAG_AEAD_CIPHER)
+        -:  189:		{
+        -:  190:		/* padding is already verified */
+    #####:  191:		rec->length -= padding_length + 1;
+    #####:  192:		return 1;
+        -:  193:		}
+        -:  194:
+    #####:  195:	good = constant_time_ge(rec->length, overhead+padding_length);
+        -:  196:	/* The padding consists of a length byte at the end of the record and
+        -:  197:	 * then that many bytes of padding, all with the same value as the
+        -:  198:	 * length byte. Thus, with the length byte included, there are i+1
+        -:  199:	 * bytes of padding.
+        -:  200:	 *
+        -:  201:	 * We can't check just |padding_length+1| bytes because that leaks
+        -:  202:	 * decrypted information. Therefore we always have to check the maximum
+        -:  203:	 * amount of padding possible. (Again, the length of the record is
+        -:  204:	 * public information so we can use it.) */
+        -:  205:	to_check = 255; /* maximum amount of padding. */
+    #####:  206:	if (to_check > rec->length-1)
+        -:  207:		to_check = rec->length-1;
+        -:  208:
+    #####:  209:	for (i = 0; i < to_check; i++)
+        -:  210:		{
+        -:  211:		unsigned char mask = constant_time_ge(padding_length, i);
+    #####:  212:		unsigned char b = rec->data[rec->length-1-i];
+        -:  213:		/* The final |padding_length+1| bytes should all have the value
+        -:  214:		 * |padding_length|. Therefore the XOR should be zero. */
+    #####:  215:		good &= ~(mask&(padding_length ^ b));
+        -:  216:		}
+        -:  217:
+        -:  218:	/* If any of the final |padding_length+1| bytes had the wrong value,
+        -:  219:	 * one or more of the lower eight bits of |good| will be cleared. We
+        -:  220:	 * AND the bottom 8 bits together and duplicate the result to all the
+        -:  221:	 * bits. */
+    #####:  222:	good &= good >> 4;
+    #####:  223:	good &= good >> 2;
+    #####:  224:	good &= good >> 1;
+    #####:  225:	good <<= sizeof(good)*8-1;
+    #####:  226:	good = DUPLICATE_MSB_TO_ALL(good);
+        -:  227:
+    #####:  228:	padding_length = good & (padding_length+1);
+    #####:  229:	rec->length -= padding_length;
+    #####:  230:	rec->type |= padding_length<<8;	/* kludge: pass padding length */
+        -:  231:
+    #####:  232:	return (int)((good & 1) | (~good & -1));
+        -:  233:	}
+        -:  234:
+        -:  235:/* ssl3_cbc_copy_mac copies |md_size| bytes from the end of |rec| to |out| in
+        -:  236: * constant time (independent of the concrete value of rec->length, which may
+        -:  237: * vary within a 256-byte window).
+        -:  238: *
+        -:  239: * ssl3_cbc_remove_padding or tls1_cbc_remove_padding must be called prior to
+        -:  240: * this function.
+        -:  241: *
+        -:  242: * On entry:
+        -:  243: *   rec->orig_len >= md_size
+        -:  244: *   md_size <= EVP_MAX_MD_SIZE
+        -:  245: *
+        -:  246: * If CBC_MAC_ROTATE_IN_PLACE is defined then the rotation is performed with
+        -:  247: * variable accesses in a 64-byte-aligned buffer. Assuming that this fits into
+        -:  248: * a single or pair of cache-lines, then the variable memory accesses don't
+        -:  249: * actually affect the timing. CPUs with smaller cache-lines [if any] are
+        -:  250: * not multi-core and are not considered vulnerable to cache-timing attacks.
+        -:  251: */
+        -:  252:#define CBC_MAC_ROTATE_IN_PLACE
+        -:  253:
+    #####:  254:void ssl3_cbc_copy_mac(unsigned char* out,
+        -:  255:		       const SSL3_RECORD *rec,
+        -:  256:		       unsigned md_size,unsigned orig_len)
+        -:  257:	{
+        -:  258:#if defined(CBC_MAC_ROTATE_IN_PLACE)
+        -:  259:	unsigned char rotated_mac_buf[64+EVP_MAX_MD_SIZE];
+        -:  260:	unsigned char *rotated_mac;
+        -:  261:#else
+        -:  262:	unsigned char rotated_mac[EVP_MAX_MD_SIZE];
+        -:  263:#endif
+        -:  264:
+        -:  265:	/* mac_end is the index of |rec->data| just after the end of the MAC. */
+    #####:  266:	unsigned mac_end = rec->length;
+    #####:  267:	unsigned mac_start = mac_end - md_size;
+        -:  268:	/* scan_start contains the number of bytes that we can ignore because
+        -:  269:	 * the MAC's position can only vary by 255 bytes. */
+        -:  270:	unsigned scan_start = 0;
+        -:  271:	unsigned i, j;
+        -:  272:	unsigned div_spoiler;
+        -:  273:	unsigned rotate_offset;
+        -:  274:
+    #####:  275:	OPENSSL_assert(orig_len >= md_size);
+    #####:  276:	OPENSSL_assert(md_size <= EVP_MAX_MD_SIZE);
+        -:  277:
+        -:  278:#if defined(CBC_MAC_ROTATE_IN_PLACE)
+    #####:  279:	rotated_mac = rotated_mac_buf + ((0-(size_t)rotated_mac_buf)&63);
+        -:  280:#endif
+        -:  281:
+        -:  282:	/* This information is public so it's safe to branch based on it. */
+    #####:  283:	if (orig_len > md_size + 255 + 1)
+    #####:  284:		scan_start = orig_len - (md_size + 255 + 1);
+        -:  285:	/* div_spoiler contains a multiple of md_size that is used to cause the
+        -:  286:	 * modulo operation to be constant time. Without this, the time varies
+        -:  287:	 * based on the amount of padding when running on Intel chips at least.
+        -:  288:	 *
+        -:  289:	 * The aim of right-shifting md_size is so that the compiler doesn't
+        -:  290:	 * figure out that it can remove div_spoiler as that would require it
+        -:  291:	 * to prove that md_size is always even, which I hope is beyond it. */
+    #####:  292:	div_spoiler = md_size >> 1;
+    #####:  293:	div_spoiler <<= (sizeof(div_spoiler)-1)*8;
+    #####:  294:	rotate_offset = (div_spoiler + mac_start - scan_start) % md_size;
+        -:  295:
+    #####:  296:	memset(rotated_mac, 0, md_size);
+    #####:  297:	for (i = scan_start, j = 0; i < orig_len; i++)
+        -:  298:		{
+    #####:  299:		unsigned char mac_started = constant_time_ge(i, mac_start);
+        -:  300:		unsigned char mac_ended = constant_time_ge(i, mac_end);
+    #####:  301:		unsigned char b = rec->data[i];
+    #####:  302:		rotated_mac[j++] |= b & mac_started & ~mac_ended;
+    #####:  303:		j &= constant_time_lt(j,md_size);
+        -:  304:		}
+        -:  305:
+        -:  306:	/* Now rotate the MAC */
+        -:  307:#if defined(CBC_MAC_ROTATE_IN_PLACE)
+        -:  308:	j = 0;
+    #####:  309:	for (i = 0; i < md_size; i++)
+        -:  310:		{
+        -:  311:		/* in case cache-line is 32 bytes, touch second line */
+    #####:  312:		((volatile unsigned char *)rotated_mac)[rotate_offset^32];
+    #####:  313:		out[j++] = rotated_mac[rotate_offset++];
+    #####:  314:		rotate_offset &= constant_time_lt(rotate_offset,md_size);
+        -:  315:		}
+        -:  316:#else
+        -:  317:	memset(out, 0, md_size);
+        -:  318:	rotate_offset = md_size - rotate_offset;
+        -:  319:	rotate_offset &= constant_time_lt(rotate_offset,md_size);
+        -:  320:	for (i = 0; i < md_size; i++)
+        -:  321:		{
+        -:  322:		for (j = 0; j < md_size; j++)
+        -:  323:			out[j] |= rotated_mac[i] & constant_time_eq_8(j, rotate_offset);
+        -:  324:		rotate_offset++;
+        -:  325:		rotate_offset &= constant_time_lt(rotate_offset,md_size);
+        -:  326:		}
+        -:  327:#endif
+    #####:  328:	}
+        -:  329:
+        -:  330:/* u32toLE serialises an unsigned, 32-bit number (n) as four bytes at (p) in
+        -:  331: * little-endian order. The value of p is advanced by four. */
+        -:  332:#define u32toLE(n, p) \
+        -:  333:	(*((p)++)=(unsigned char)(n), \
+        -:  334:	 *((p)++)=(unsigned char)(n>>8), \
+        -:  335:	 *((p)++)=(unsigned char)(n>>16), \
+        -:  336:	 *((p)++)=(unsigned char)(n>>24))
+        -:  337:
+        -:  338:/* These functions serialize the state of a hash and thus perform the standard
+        -:  339: * "final" operation without adding the padding and length that such a function
+        -:  340: * typically does. */
+    #####:  341:static void tls1_md5_final_raw(void* ctx, unsigned char *md_out)
+        -:  342:	{
+        -:  343:	MD5_CTX *md5 = ctx;
+    #####:  344:	u32toLE(md5->A, md_out);
+    #####:  345:	u32toLE(md5->B, md_out);
+    #####:  346:	u32toLE(md5->C, md_out);
+    #####:  347:	u32toLE(md5->D, md_out);
+    #####:  348:	}
+        -:  349:
+    #####:  350:static void tls1_sha1_final_raw(void* ctx, unsigned char *md_out)
+        -:  351:	{
+        -:  352:	SHA_CTX *sha1 = ctx;
+    #####:  353:	l2n(sha1->h0, md_out);
+    #####:  354:	l2n(sha1->h1, md_out);
+    #####:  355:	l2n(sha1->h2, md_out);
+    #####:  356:	l2n(sha1->h3, md_out);
+    #####:  357:	l2n(sha1->h4, md_out);
+    #####:  358:	}
+        -:  359:#define LARGEST_DIGEST_CTX SHA_CTX
+        -:  360:
+        -:  361:#ifndef OPENSSL_NO_SHA256
+    #####:  362:static void tls1_sha256_final_raw(void* ctx, unsigned char *md_out)
+        -:  363:	{
+        -:  364:	SHA256_CTX *sha256 = ctx;
+        -:  365:	unsigned i;
+        -:  366:
+    #####:  367:	for (i = 0; i < 8; i++)
+        -:  368:		{
+    #####:  369:		l2n(sha256->h[i], md_out);
+        -:  370:		}
+    #####:  371:	}
+        -:  372:#undef  LARGEST_DIGEST_CTX
+        -:  373:#define LARGEST_DIGEST_CTX SHA256_CTX
+        -:  374:#endif
+        -:  375:
+        -:  376:#ifndef OPENSSL_NO_SHA512
+    #####:  377:static void tls1_sha512_final_raw(void* ctx, unsigned char *md_out)
+        -:  378:	{
+        -:  379:	SHA512_CTX *sha512 = ctx;
+        -:  380:	unsigned i;
+        -:  381:
+    #####:  382:	for (i = 0; i < 8; i++)
+        -:  383:		{
+    #####:  384:		l2n8(sha512->h[i], md_out);
+        -:  385:		}
+    #####:  386:	}
+        -:  387:#undef  LARGEST_DIGEST_CTX
+        -:  388:#define LARGEST_DIGEST_CTX SHA512_CTX
+        -:  389:#endif
+        -:  390:
+        -:  391:/* ssl3_cbc_record_digest_supported returns 1 iff |ctx| uses a hash function
+        -:  392: * which ssl3_cbc_digest_record supports. */
+    #####:  393:char ssl3_cbc_record_digest_supported(const EVP_MD_CTX *ctx)
+        -:  394:	{
+        -:  395:#ifdef OPENSSL_FIPS
+        -:  396:	if (FIPS_mode())
+        -:  397:		return 0;
+        -:  398:#endif
+    #####:  399:	switch (EVP_MD_CTX_type(ctx))
+        -:  400:		{
+        -:  401:		case NID_md5:
+        -:  402:		case NID_sha1:
+        -:  403:#ifndef OPENSSL_NO_SHA256
+        -:  404:		case NID_sha224:
+        -:  405:		case NID_sha256:
+        -:  406:#endif
+        -:  407:#ifndef OPENSSL_NO_SHA512
+        -:  408:		case NID_sha384:
+        -:  409:		case NID_sha512:
+        -:  410:#endif
+        -:  411:			return 1;
+        -:  412:		default:
+    #####:  413:			return 0;
+        -:  414:		}
+        -:  415:	}
+        -:  416:
+        -:  417:/* ssl3_cbc_digest_record computes the MAC of a decrypted, padded SSLv3/TLS
+        -:  418: * record.
+        -:  419: *
+        -:  420: *   ctx: the EVP_MD_CTX from which we take the hash function.
+        -:  421: *     ssl3_cbc_record_digest_supported must return true for this EVP_MD_CTX.
+        -:  422: *   md_out: the digest output. At most EVP_MAX_MD_SIZE bytes will be written.
+        -:  423: *   md_out_size: if non-NULL, the number of output bytes is written here.
+        -:  424: *   header: the 13-byte, TLS record header.
+        -:  425: *   data: the record data itself, less any preceeding explicit IV.
+        -:  426: *   data_plus_mac_size: the secret, reported length of the data and MAC
+        -:  427: *     once the padding has been removed.
+        -:  428: *   data_plus_mac_plus_padding_size: the public length of the whole
+        -:  429: *     record, including padding.
+        -:  430: *   is_sslv3: non-zero if we are to use SSLv3. Otherwise, TLS.
+        -:  431: *
+        -:  432: * On entry: by virtue of having been through one of the remove_padding
+        -:  433: * functions, above, we know that data_plus_mac_size is large enough to contain
+        -:  434: * a padding byte and MAC. (If the padding was invalid, it might contain the
+        -:  435: * padding too. ) */
+    #####:  436:void ssl3_cbc_digest_record(
+        -:  437:	const EVP_MD_CTX *ctx,
+        -:  438:	unsigned char* md_out,
+        -:  439:	size_t* md_out_size,
+        -:  440:	const unsigned char header[13],
+        -:  441:	const unsigned char *data,
+        -:  442:	size_t data_plus_mac_size,
+        -:  443:	size_t data_plus_mac_plus_padding_size,
+        -:  444:	const unsigned char *mac_secret,
+        -:  445:	unsigned mac_secret_length,
+        -:  446:	char is_sslv3)
+        -:  447:	{
+        -:  448:	union {	double align;
+        -:  449:		unsigned char c[sizeof(LARGEST_DIGEST_CTX)]; } md_state;
+        -:  450:	void (*md_final_raw)(void *ctx, unsigned char *md_out);
+        -:  451:	void (*md_transform)(void *ctx, const unsigned char *block);
+        -:  452:	unsigned md_size, md_block_size = 64;
+        -:  453:	unsigned sslv3_pad_length = 40, header_length, variance_blocks,
+        -:  454:		 len, max_mac_bytes, num_blocks,
+        -:  455:		 num_starting_blocks, k, mac_end_offset, c, index_a, index_b;
+        -:  456:	unsigned int bits;	/* at most 18 bits */
+        -:  457:	unsigned char length_bytes[MAX_HASH_BIT_COUNT_BYTES];
+        -:  458:	/* hmac_pad is the masked HMAC key. */
+        -:  459:	unsigned char hmac_pad[MAX_HASH_BLOCK_SIZE];
+        -:  460:	unsigned char first_block[MAX_HASH_BLOCK_SIZE];
+        -:  461:	unsigned char mac_out[EVP_MAX_MD_SIZE];
+        -:  462:	unsigned i, j, md_out_size_u;
+        -:  463:	EVP_MD_CTX md_ctx;
+        -:  464:	/* mdLengthSize is the number of bytes in the length field that terminates
+        -:  465:	* the hash. */
+        -:  466:	unsigned md_length_size = 8;
+        -:  467:	char length_is_big_endian = 1;
+        -:  468:
+        -:  469:	/* This is a, hopefully redundant, check that allows us to forget about
+        -:  470:	 * many possible overflows later in this function. */
+    #####:  471:	OPENSSL_assert(data_plus_mac_plus_padding_size < 1024*1024);
+        -:  472:
+    #####:  473:	switch (EVP_MD_CTX_type(ctx))
+        -:  474:		{
+        -:  475:		case NID_md5:
+    #####:  476:			MD5_Init((MD5_CTX*)md_state.c);
+        -:  477:			md_final_raw = tls1_md5_final_raw;
+        -:  478:			md_transform = (void(*)(void *ctx, const unsigned char *block)) MD5_Transform;
+        -:  479:			md_size = 16;
+        -:  480:			sslv3_pad_length = 48;
+        -:  481:			length_is_big_endian = 0;
+    #####:  482:			break;
+        -:  483:		case NID_sha1:
+    #####:  484:			SHA1_Init((SHA_CTX*)md_state.c);
+        -:  485:			md_final_raw = tls1_sha1_final_raw;
+        -:  486:			md_transform = (void(*)(void *ctx, const unsigned char *block)) SHA1_Transform;
+        -:  487:			md_size = 20;
+    #####:  488:			break;
+        -:  489:#ifndef OPENSSL_NO_SHA256
+        -:  490:		case NID_sha224:
+    #####:  491:			SHA224_Init((SHA256_CTX*)md_state.c);
+        -:  492:			md_final_raw = tls1_sha256_final_raw;
+        -:  493:			md_transform = (void(*)(void *ctx, const unsigned char *block)) SHA256_Transform;
+        -:  494:			md_size = 224/8;
+    #####:  495:			break;
+        -:  496:		case NID_sha256:
+    #####:  497:			SHA256_Init((SHA256_CTX*)md_state.c);
+        -:  498:			md_final_raw = tls1_sha256_final_raw;
+        -:  499:			md_transform = (void(*)(void *ctx, const unsigned char *block)) SHA256_Transform;
+        -:  500:			md_size = 32;
+    #####:  501:			break;
+        -:  502:#endif
+        -:  503:#ifndef OPENSSL_NO_SHA512
+        -:  504:		case NID_sha384:
+    #####:  505:			SHA384_Init((SHA512_CTX*)md_state.c);
+        -:  506:			md_final_raw = tls1_sha512_final_raw;
+        -:  507:			md_transform = (void(*)(void *ctx, const unsigned char *block)) SHA512_Transform;
+        -:  508:			md_size = 384/8;
+        -:  509:			md_block_size = 128;
+        -:  510:			md_length_size = 16;
+    #####:  511:			break;
+        -:  512:		case NID_sha512:
+    #####:  513:			SHA512_Init((SHA512_CTX*)md_state.c);
+        -:  514:			md_final_raw = tls1_sha512_final_raw;
+        -:  515:			md_transform = (void(*)(void *ctx, const unsigned char *block)) SHA512_Transform;
+        -:  516:			md_size = 64;
+        -:  517:			md_block_size = 128;
+        -:  518:			md_length_size = 16;
+    #####:  519:			break;
+        -:  520:#endif
+        -:  521:		default:
+        -:  522:			/* ssl3_cbc_record_digest_supported should have been
+        -:  523:			 * called first to check that the hash function is
+        -:  524:			 * supported. */
+    #####:  525:			OPENSSL_assert(0);
+    #####:  526:			if (md_out_size)
+    #####:  527:				*md_out_size = -1;
+    #####:  528:			return;
+        -:  529:		}
+        -:  530:
+    #####:  531:	OPENSSL_assert(md_length_size <= MAX_HASH_BIT_COUNT_BYTES);
+    #####:  532:	OPENSSL_assert(md_block_size <= MAX_HASH_BLOCK_SIZE);
+    #####:  533:	OPENSSL_assert(md_size <= EVP_MAX_MD_SIZE);
+        -:  534:
+        -:  535:	header_length = 13;
+    #####:  536:	if (is_sslv3)
+        -:  537:		{
+    #####:  538:		header_length =
+    #####:  539:			mac_secret_length +
+        -:  540:			sslv3_pad_length +
+        -:  541:			8 /* sequence number */ +
+        -:  542:			1 /* record type */ +
+        -:  543:			2 /* record length */;
+        -:  544:		}
+        -:  545:
+        -:  546:	/* variance_blocks is the number of blocks of the hash that we have to
+        -:  547:	 * calculate in constant time because they could be altered by the
+        -:  548:	 * padding value.
+        -:  549:	 *
+        -:  550:	 * In SSLv3, the padding must be minimal so the end of the plaintext
+        -:  551:	 * varies by, at most, 15+20 = 35 bytes. (We conservatively assume that
+        -:  552:	 * the MAC size varies from 0..20 bytes.) In case the 9 bytes of hash
+        -:  553:	 * termination (0x80 + 64-bit length) don't fit in the final block, we
+        -:  554:	 * say that the final two blocks can vary based on the padding.
+        -:  555:	 *
+        -:  556:	 * TLSv1 has MACs up to 48 bytes long (SHA-384) and the padding is not
+        -:  557:	 * required to be minimal. Therefore we say that the final six blocks
+        -:  558:	 * can vary based on the padding.
+        -:  559:	 *
+        -:  560:	 * Later in the function, if the message is short and there obviously
+        -:  561:	 * cannot be this many blocks then variance_blocks can be reduced. */
+    #####:  562:	variance_blocks = is_sslv3 ? 2 : 6;
+        -:  563:	/* From now on we're dealing with the MAC, which conceptually has 13
+        -:  564:	 * bytes of `header' before the start of the data (TLS) or 71/75 bytes
+        -:  565:	 * (SSLv3) */
+    #####:  566:	len = data_plus_mac_plus_padding_size + header_length;
+        -:  567:	/* max_mac_bytes contains the maximum bytes of bytes in the MAC, including
+        -:  568:	* |header|, assuming that there's no padding. */
+    #####:  569:	max_mac_bytes = len - md_size - 1;
+        -:  570:	/* num_blocks is the maximum number of hash blocks. */
+    #####:  571:	num_blocks = (max_mac_bytes + 1 + md_length_size + md_block_size - 1) / md_block_size;
+        -:  572:	/* In order to calculate the MAC in constant time we have to handle
+        -:  573:	 * the final blocks specially because the padding value could cause the
+        -:  574:	 * end to appear somewhere in the final |variance_blocks| blocks and we
+        -:  575:	 * can't leak where. However, |num_starting_blocks| worth of data can
+        -:  576:	 * be hashed right away because no padding value can affect whether
+        -:  577:	 * they are plaintext. */
+        -:  578:	num_starting_blocks = 0;
+        -:  579:	/* k is the starting byte offset into the conceptual header||data where
+        -:  580:	 * we start processing. */
+        -:  581:	k = 0;
+        -:  582:	/* mac_end_offset is the index just past the end of the data to be
+        -:  583:	 * MACed. */
+    #####:  584:	mac_end_offset = data_plus_mac_size + header_length - md_size;
+        -:  585:	/* c is the index of the 0x80 byte in the final hash block that
+        -:  586:	 * contains application data. */
+    #####:  587:	c = mac_end_offset % md_block_size;
+        -:  588:	/* index_a is the hash block number that contains the 0x80 terminating
+        -:  589:	 * value. */
+    #####:  590:	index_a = mac_end_offset / md_block_size;
+        -:  591:	/* index_b is the hash block number that contains the 64-bit hash
+        -:  592:	 * length, in bits. */
+    #####:  593:	index_b = (mac_end_offset + md_length_size) / md_block_size;
+        -:  594:	/* bits is the hash-length in bits. It includes the additional hash
+        -:  595:	 * block for the masked HMAC key, or whole of |header| in the case of
+        -:  596:	 * SSLv3. */
+        -:  597:
+        -:  598:	/* For SSLv3, if we're going to have any starting blocks then we need
+        -:  599:	 * at least two because the header is larger than a single block. */
+    #####:  600:	if (num_blocks > variance_blocks + (is_sslv3 ? 1 : 0))
+        -:  601:		{
+    #####:  602:		num_starting_blocks = num_blocks - variance_blocks;
+    #####:  603:		k = md_block_size*num_starting_blocks;
+        -:  604:		}
+        -:  605:
+    #####:  606:	bits = 8*mac_end_offset;
+    #####:  607:	if (!is_sslv3)
+        -:  608:		{
+        -:  609:		/* Compute the initial HMAC block. For SSLv3, the padding and
+        -:  610:		 * secret bytes are included in |header| because they take more
+        -:  611:		 * than a single block. */
+    #####:  612:		bits += 8*md_block_size;
+    #####:  613:		memset(hmac_pad, 0, md_block_size);
+    #####:  614:		OPENSSL_assert(mac_secret_length <= sizeof(hmac_pad));
+    #####:  615:		memcpy(hmac_pad, mac_secret, mac_secret_length);
+    #####:  616:		for (i = 0; i < md_block_size; i++)
+    #####:  617:			hmac_pad[i] ^= 0x36;
+        -:  618:
+    #####:  619:		md_transform(md_state.c, hmac_pad);
+        -:  620:		}
+        -:  621:
+    #####:  622:	if (length_is_big_endian)
+        -:  623:		{
+    #####:  624:		memset(length_bytes,0,md_length_size-4);
+    #####:  625:		length_bytes[md_length_size-4] = (unsigned char)(bits>>24);
+    #####:  626:		length_bytes[md_length_size-3] = (unsigned char)(bits>>16);
+    #####:  627:		length_bytes[md_length_size-2] = (unsigned char)(bits>>8);
+    #####:  628:		length_bytes[md_length_size-1] = (unsigned char)bits;
+        -:  629:		}
+        -:  630:	else
+        -:  631:		{
+    #####:  632:		memset(length_bytes,0,md_length_size);
+    #####:  633:		length_bytes[md_length_size-5] = (unsigned char)(bits>>24);
+    #####:  634:		length_bytes[md_length_size-6] = (unsigned char)(bits>>16);
+    #####:  635:		length_bytes[md_length_size-7] = (unsigned char)(bits>>8);
+    #####:  636:		length_bytes[md_length_size-8] = (unsigned char)bits;
+        -:  637:		}
+        -:  638:
+    #####:  639:	if (k > 0)
+        -:  640:		{
+    #####:  641:		if (is_sslv3)
+        -:  642:			{
+        -:  643:			/* The SSLv3 header is larger than a single block.
+        -:  644:			 * overhang is the number of bytes beyond a single
+        -:  645:			 * block that the header consumes: either 7 bytes
+        -:  646:			 * (SHA1) or 11 bytes (MD5). */
+    #####:  647:			unsigned overhang = header_length-md_block_size;
+    #####:  648:			md_transform(md_state.c, header);
+    #####:  649:			memcpy(first_block, header + md_block_size, overhang);
+    #####:  650:			memcpy(first_block + overhang, data, md_block_size-overhang);
+    #####:  651:			md_transform(md_state.c, first_block);
+    #####:  652:			for (i = 1; i < k/md_block_size - 1; i++)
+    #####:  653:				md_transform(md_state.c, data + md_block_size*i - overhang);
+        -:  654:			}
+        -:  655:		else
+        -:  656:			{
+        -:  657:			/* k is a multiple of md_block_size. */
+        -:  658:			memcpy(first_block, header, 13);
+    #####:  659:			memcpy(first_block+13, data, md_block_size-13);
+    #####:  660:			md_transform(md_state.c, first_block);
+    #####:  661:			for (i = 1; i < k/md_block_size; i++)
+    #####:  662:				md_transform(md_state.c, data + md_block_size*i - 13);
+        -:  663:			}
+        -:  664:		}
+        -:  665:
+        -:  666:	memset(mac_out, 0, sizeof(mac_out));
+        -:  667:
+        -:  668:	/* We now process the final hash blocks. For each block, we construct
+        -:  669:	 * it in constant time. If the |i==index_a| then we'll include the 0x80
+        -:  670:	 * bytes and zero pad etc. For each block we selectively copy it, in
+        -:  671:	 * constant time, to |mac_out|. */
+    #####:  672:	for (i = num_starting_blocks; i <= num_starting_blocks+variance_blocks; i++)
+        -:  673:		{
+        -:  674:		unsigned char block[MAX_HASH_BLOCK_SIZE];
+        -:  675:		unsigned char is_block_a = constant_time_eq_8(i, index_a);
+        -:  676:		unsigned char is_block_b = constant_time_eq_8(i, index_b);
+    #####:  677:		for (j = 0; j < md_block_size; j++)
+        -:  678:			{
+        -:  679:			unsigned char b = 0, is_past_c, is_past_cp1;
+    #####:  680:			if (k < header_length)
+    #####:  681:				b = header[k];
+    #####:  682:			else if (k < data_plus_mac_plus_padding_size + header_length)
+    #####:  683:				b = data[k-header_length];
+    #####:  684:			k++;
+        -:  685:
+    #####:  686:			is_past_c = is_block_a & constant_time_ge(j, c);
+    #####:  687:			is_past_cp1 = is_block_a & constant_time_ge(j, c+1);
+        -:  688:			/* If this is the block containing the end of the
+        -:  689:			 * application data, and we are at the offset for the
+        -:  690:			 * 0x80 value, then overwrite b with 0x80. */
+    #####:  691:			b = (b&~is_past_c) | (0x80&is_past_c);
+        -:  692:			/* If this the the block containing the end of the
+        -:  693:			 * application data and we're past the 0x80 value then
+        -:  694:			 * just write zero. */
+    #####:  695:			b = b&~is_past_cp1;
+        -:  696:			/* If this is index_b (the final block), but not
+        -:  697:			 * index_a (the end of the data), then the 64-bit
+        -:  698:			 * length didn't fit into index_a and we're having to
+        -:  699:			 * add an extra block of zeros. */
+    #####:  700:			b &= ~is_block_b | is_block_a;
+        -:  701:
+        -:  702:			/* The final bytes of one of the blocks contains the
+        -:  703:			 * length. */
+    #####:  704:			if (j >= md_block_size - md_length_size)
+        -:  705:				{
+        -:  706:				/* If this is index_b, write a length byte. */
+    #####:  707:				b = (b&~is_block_b) | (is_block_b&length_bytes[j-(md_block_size-md_length_size)]);
+        -:  708:				}
+    #####:  709:			block[j] = b;
+        -:  710:			}
+        -:  711:
+    #####:  712:		md_transform(md_state.c, block);
+    #####:  713:		md_final_raw(md_state.c, block);
+        -:  714:		/* If this is index_b, copy the hash value to |mac_out|. */
+    #####:  715:		for (j = 0; j < md_size; j++)
+    #####:  716:			mac_out[j] |= block[j]&is_block_b;
+        -:  717:		}
+        -:  718:
+    #####:  719:	EVP_MD_CTX_init(&md_ctx);
+    #####:  720:	EVP_DigestInit_ex(&md_ctx, ctx->digest, NULL /* engine */);
+    #####:  721:	if (is_sslv3)
+        -:  722:		{
+        -:  723:		/* We repurpose |hmac_pad| to contain the SSLv3 pad2 block. */
+    #####:  724:		memset(hmac_pad, 0x5c, sslv3_pad_length);
+        -:  725:
+    #####:  726:		EVP_DigestUpdate(&md_ctx, mac_secret, mac_secret_length);
+    #####:  727:		EVP_DigestUpdate(&md_ctx, hmac_pad, sslv3_pad_length);
+    #####:  728:		EVP_DigestUpdate(&md_ctx, mac_out, md_size);
+        -:  729:		}
+        -:  730:	else
+        -:  731:		{
+        -:  732:		/* Complete the HMAC in the standard manner. */
+    #####:  733:		for (i = 0; i < md_block_size; i++)
+    #####:  734:			hmac_pad[i] ^= 0x6a;
+        -:  735:
+    #####:  736:		EVP_DigestUpdate(&md_ctx, hmac_pad, md_block_size);
+    #####:  737:		EVP_DigestUpdate(&md_ctx, mac_out, md_size);
+        -:  738:		}
+    #####:  739:	EVP_DigestFinal(&md_ctx, md_out, &md_out_size_u);
+    #####:  740:	if (md_out_size)
+    #####:  741:		*md_out_size = md_out_size_u;
+    #####:  742:	EVP_MD_CTX_cleanup(&md_ctx);
+        -:  743:	}
+        -:  744:
+        -:  745:#ifdef OPENSSL_FIPS
+        -:  746:
+        -:  747:/* Due to the need to use EVP in FIPS mode we can't reimplement digests but
+        -:  748: * we can ensure the number of blocks processed is equal for all cases
+        -:  749: * by digesting additional data.
+        -:  750: */
+        -:  751:
+        -:  752:void tls_fips_digest_extra(
+        -:  753:	const EVP_CIPHER_CTX *cipher_ctx, EVP_MD_CTX *mac_ctx,
+        -:  754:	const unsigned char *data, size_t data_len, size_t orig_len)
+        -:  755:	{
+        -:  756:	size_t block_size, digest_pad, blocks_data, blocks_orig;
+        -:  757:	if (EVP_CIPHER_CTX_mode(cipher_ctx) != EVP_CIPH_CBC_MODE)
+        -:  758:		return;
+        -:  759:	block_size = EVP_MD_CTX_block_size(mac_ctx);
+        -:  760:	/* We are in FIPS mode if we get this far so we know we have only SHA*
+        -:  761:	 * digests and TLS to deal with.
+        -:  762:	 * Minimum digest padding length is 17 for SHA384/SHA512 and 9
+        -:  763:	 * otherwise.
+        -:  764:	 * Additional header is 13 bytes. To get the number of digest blocks
+        -:  765:	 * processed round up the amount of data plus padding to the nearest
+        -:  766:	 * block length. Block length is 128 for SHA384/SHA512 and 64 otherwise.
+        -:  767:	 * So we have:
+        -:  768:	 * blocks = (payload_len + digest_pad + 13 + block_size - 1)/block_size
+        -:  769:	 * equivalently:
+        -:  770:	 * blocks = (payload_len + digest_pad + 12)/block_size + 1
+        -:  771:	 * HMAC adds a constant overhead.
+        -:  772:	 * We're ultimately only interested in differences so this becomes
+        -:  773:	 * blocks = (payload_len + 29)/128
+        -:  774:	 * for SHA384/SHA512 and
+        -:  775:	 * blocks = (payload_len + 21)/64
+        -:  776:	 * otherwise.
+        -:  777:	 */
+        -:  778:	digest_pad = block_size == 64 ? 21 : 29;
+        -:  779:	blocks_orig = (orig_len + digest_pad)/block_size;
+        -:  780:	blocks_data = (data_len + digest_pad)/block_size;
+        -:  781:	/* MAC enough blocks to make up the difference between the original
+        -:  782:	 * and actual lengths plus one extra block to ensure this is never a
+        -:  783:	 * no op. The "data" pointer should always have enough space to
+        -:  784:	 * perform this operation as it is large enough for a maximum
+        -:  785:	 * length TLS buffer. 
+        -:  786:	 */
+        -:  787:	EVP_DigestSignUpdate(mac_ctx, data,
+        -:  788:				(blocks_orig - blocks_data + 1) * block_size);
+        -:  789:	}
+        -:  790:#endif

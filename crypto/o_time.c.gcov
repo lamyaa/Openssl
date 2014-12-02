@@ -1,0 +1,377 @@
+        -:    0:Source:o_time.c
+        -:    0:Graph:o_time.gcno
+        -:    0:Data:o_time.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* crypto/o_time.c -*- mode:C; c-file-style: "eay" -*- */
+        -:    2:/* Written by Richard Levitte (richard@levitte.org) for the OpenSSL
+        -:    3: * project 2001.
+        -:    4: */
+        -:    5:/* Written by Dr Stephen N Henson (steve@openssl.org) for the OpenSSL
+        -:    6: * project 2008.
+        -:    7: */
+        -:    8:/* ====================================================================
+        -:    9: * Copyright (c) 2001 The OpenSSL Project.  All rights reserved.
+        -:   10: *
+        -:   11: * Redistribution and use in source and binary forms, with or without
+        -:   12: * modification, are permitted provided that the following conditions
+        -:   13: * are met:
+        -:   14: *
+        -:   15: * 1. Redistributions of source code must retain the above copyright
+        -:   16: *    notice, this list of conditions and the following disclaimer. 
+        -:   17: *
+        -:   18: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   19: *    notice, this list of conditions and the following disclaimer in
+        -:   20: *    the documentation and/or other materials provided with the
+        -:   21: *    distribution.
+        -:   22: *
+        -:   23: * 3. All advertising materials mentioning features or use of this
+        -:   24: *    software must display the following acknowledgment:
+        -:   25: *    "This product includes software developed by the OpenSSL Project
+        -:   26: *    for use in the OpenSSL Toolkit. (http://www.OpenSSL.org/)"
+        -:   27: *
+        -:   28: * 4. The names "OpenSSL Toolkit" and "OpenSSL Project" must not be used to
+        -:   29: *    endorse or promote products derived from this software without
+        -:   30: *    prior written permission. For written permission, please contact
+        -:   31: *    licensing@OpenSSL.org.
+        -:   32: *
+        -:   33: * 5. Products derived from this software may not be called "OpenSSL"
+        -:   34: *    nor may "OpenSSL" appear in their names without prior written
+        -:   35: *    permission of the OpenSSL Project.
+        -:   36: *
+        -:   37: * 6. Redistributions of any form whatsoever must retain the following
+        -:   38: *    acknowledgment:
+        -:   39: *    "This product includes software developed by the OpenSSL Project
+        -:   40: *    for use in the OpenSSL Toolkit (http://www.OpenSSL.org/)"
+        -:   41: *
+        -:   42: * THIS SOFTWARE IS PROVIDED BY THE OpenSSL PROJECT ``AS IS'' AND ANY
+        -:   43: * EXPRESSED OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   44: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+        -:   45: * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE OpenSSL PROJECT OR
+        -:   46: * ITS CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+        -:   47: * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+        -:   48: * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+        -:   49: * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   50: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+        -:   51: * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+        -:   52: * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+        -:   53: * OF THE POSSIBILITY OF SUCH DAMAGE.
+        -:   54: * ====================================================================
+        -:   55: *
+        -:   56: * This product includes cryptographic software written by Eric Young
+        -:   57: * (eay@cryptsoft.com).  This product includes software written by Tim
+        -:   58: * Hudson (tjh@cryptsoft.com).
+        -:   59: *
+        -:   60: */
+        -:   61:
+        -:   62:#include <openssl/e_os2.h>
+        -:   63:#include <string.h>
+        -:   64:#include "o_time.h"
+        -:   65:
+        -:   66:#ifdef OPENSSL_SYS_VMS
+        -:   67:# if __CRTL_VER >= 70000000 && \
+        -:   68:     (defined _POSIX_C_SOURCE || !defined _ANSI_C_SOURCE)
+        -:   69:#  define VMS_GMTIME_OK
+        -:   70:# endif
+        -:   71:# ifndef VMS_GMTIME_OK
+        -:   72:#  include <libdtdef.h>
+        -:   73:#  include <lib$routines.h>
+        -:   74:#  include <lnmdef.h>
+        -:   75:#  include <starlet.h>
+        -:   76:#  include <descrip.h>
+        -:   77:#  include <stdlib.h>
+        -:   78:# endif /* ndef VMS_GMTIME_OK */
+        -:   79:#endif
+        -:   80:
+     9020:   81:struct tm *OPENSSL_gmtime(const time_t *timer, struct tm *result)
+        -:   82:	{
+        -:   83:	struct tm *ts = NULL;
+        -:   84:
+        -:   85:#if defined(OPENSSL_THREADS) && !defined(OPENSSL_SYS_WIN32) && !defined(OPENSSL_SYS_OS2) && (!defined(OPENSSL_SYS_VMS) || defined(gmtime_r)) && !defined(OPENSSL_SYS_MACOSX) && !defined(OPENSSL_SYS_SUNOS)
+        -:   86:	/* should return &data, but doesn't on some systems,
+        -:   87:	   so we don't even look at the return value */
+     9020:   88:	gmtime_r(timer,result);
+        -:   89:	ts = result;
+        -:   90:#elif !defined(OPENSSL_SYS_VMS) || defined(VMS_GMTIME_OK)
+        -:   91:	ts = gmtime(timer);
+        -:   92:	if (ts == NULL)
+        -:   93:		return NULL;
+        -:   94:
+        -:   95:	memcpy(result, ts, sizeof(struct tm));
+        -:   96:	ts = result;
+        -:   97:#endif
+        -:   98:#if defined( OPENSSL_SYS_VMS) && !defined( VMS_GMTIME_OK)
+        -:   99:	if (ts == NULL)
+        -:  100:		{
+        -:  101:		static $DESCRIPTOR(tabnam,"LNM$DCL_LOGICAL");
+        -:  102:		static $DESCRIPTOR(lognam,"SYS$TIMEZONE_DIFFERENTIAL");
+        -:  103:		char logvalue[256];
+        -:  104:		unsigned int reslen = 0;
+        -:  105:		struct {
+        -:  106:			short buflen;
+        -:  107:			short code;
+        -:  108:			void *bufaddr;
+        -:  109:			unsigned int *reslen;
+        -:  110:		} itemlist[] = {
+        -:  111:			{ 0, LNM$_STRING, 0, 0 },
+        -:  112:			{ 0, 0, 0, 0 },
+        -:  113:		};
+        -:  114:		int status;
+        -:  115:		time_t t;
+        -:  116:
+        -:  117:		/* Get the value for SYS$TIMEZONE_DIFFERENTIAL */
+        -:  118:		itemlist[0].buflen = sizeof(logvalue);
+        -:  119:		itemlist[0].bufaddr = logvalue;
+        -:  120:		itemlist[0].reslen = &reslen;
+        -:  121:		status = sys$trnlnm(0, &tabnam, &lognam, 0, itemlist);
+        -:  122:		if (!(status & 1))
+        -:  123:			return NULL;
+        -:  124:		logvalue[reslen] = '\0';
+        -:  125:
+        -:  126:		t = *timer;
+        -:  127:
+        -:  128:/* The following is extracted from the DEC C header time.h */
+        -:  129:/*
+        -:  130:**  Beginning in OpenVMS Version 7.0 mktime, time, ctime, strftime
+        -:  131:**  have two implementations.  One implementation is provided
+        -:  132:**  for compatibility and deals with time in terms of local time,
+        -:  133:**  the other __utc_* deals with time in terms of UTC.
+        -:  134:*/
+        -:  135:/* We use the same conditions as in said time.h to check if we should
+        -:  136:   assume that t contains local time (and should therefore be adjusted)
+        -:  137:   or UTC (and should therefore be left untouched). */
+        -:  138:#if __CRTL_VER < 70000000 || defined _VMS_V6_SOURCE
+        -:  139:		/* Get the numerical value of the equivalence string */
+        -:  140:		status = atoi(logvalue);
+        -:  141:
+        -:  142:		/* and use it to move time to GMT */
+        -:  143:		t -= status;
+        -:  144:#endif
+        -:  145:
+        -:  146:		/* then convert the result to the time structure */
+        -:  147:
+        -:  148:		/* Since there was no gmtime_r() to do this stuff for us,
+        -:  149:		   we have to do it the hard way. */
+        -:  150:		{
+        -:  151:		/* The VMS epoch is the astronomical Smithsonian date,
+        -:  152:		   if I remember correctly, which is November 17, 1858.
+        -:  153:		   Furthermore, time is measure in thenths of microseconds
+        -:  154:		   and stored in quadwords (64 bit integers).  unix_epoch
+        -:  155:		   below is January 1st 1970 expressed as a VMS time.  The
+        -:  156:		   following code was used to get this number:
+        -:  157:
+        -:  158:		   #include <stdio.h>
+        -:  159:		   #include <stdlib.h>
+        -:  160:		   #include <lib$routines.h>
+        -:  161:		   #include <starlet.h>
+        -:  162:
+        -:  163:		   main()
+        -:  164:		   {
+        -:  165:		     unsigned long systime[2];
+        -:  166:		     unsigned short epoch_values[7] =
+        -:  167:		       { 1970, 1, 1, 0, 0, 0, 0 };
+        -:  168:
+        -:  169:		     lib$cvt_vectim(epoch_values, systime);
+        -:  170:
+        -:  171:		     printf("%u %u", systime[0], systime[1]);
+        -:  172:		   }
+        -:  173:		*/
+        -:  174:		unsigned long unix_epoch[2] = { 1273708544, 8164711 };
+        -:  175:		unsigned long deltatime[2];
+        -:  176:		unsigned long systime[2];
+        -:  177:		struct vms_vectime
+        -:  178:			{
+        -:  179:			short year, month, day, hour, minute, second,
+        -:  180:				centi_second;
+        -:  181:			} time_values;
+        -:  182:		long operation;
+        -:  183:
+        -:  184:		/* Turn the number of seconds since January 1st 1970 to
+        -:  185:		   an internal delta time.
+        -:  186:		   Note that lib$cvt_to_internal_time() will assume
+        -:  187:		   that t is signed, and will therefore break on 32-bit
+        -:  188:		   systems some time in 2038.
+        -:  189:		*/
+        -:  190:		operation = LIB$K_DELTA_SECONDS;
+        -:  191:		status = lib$cvt_to_internal_time(&operation,
+        -:  192:			&t, deltatime);
+        -:  193:
+        -:  194:		/* Add the delta time with the Unix epoch and we have
+        -:  195:		   the current UTC time in internal format */
+        -:  196:		status = lib$add_times(unix_epoch, deltatime, systime);
+        -:  197:
+        -:  198:		/* Turn the internal time into a time vector */
+        -:  199:		status = sys$numtim(&time_values, systime);
+        -:  200:
+        -:  201:		/* Fill in the struct tm with the result */
+        -:  202:		result->tm_sec = time_values.second;
+        -:  203:		result->tm_min = time_values.minute;
+        -:  204:		result->tm_hour = time_values.hour;
+        -:  205:		result->tm_mday = time_values.day;
+        -:  206:		result->tm_mon = time_values.month - 1;
+        -:  207:		result->tm_year = time_values.year - 1900;
+        -:  208:
+        -:  209:		operation = LIB$K_DAY_OF_WEEK;
+        -:  210:		status = lib$cvt_from_internal_time(&operation,
+        -:  211:			&result->tm_wday, systime);
+        -:  212:		result->tm_wday %= 7;
+        -:  213:
+        -:  214:		operation = LIB$K_DAY_OF_YEAR;
+        -:  215:		status = lib$cvt_from_internal_time(&operation,
+        -:  216:			&result->tm_yday, systime);
+        -:  217:		result->tm_yday--;
+        -:  218:
+        -:  219:		result->tm_isdst = 0; /* There's no way to know... */
+        -:  220:
+        -:  221:		ts = result;
+        -:  222:		}
+        -:  223:		}
+        -:  224:#endif
+     9020:  225:	return ts;
+        -:  226:	}
+        -:  227:
+        -:  228:/* Take a tm structure and add an offset to it. This avoids any OS issues
+        -:  229: * with restricted date types and overflows which cause the year 2038
+        -:  230: * problem.
+        -:  231: */
+        -:  232:
+        -:  233:#define SECS_PER_DAY (24 * 60 * 60)
+        -:  234:
+        -:  235:static long date_to_julian(int y, int m, int d);
+        -:  236:static void julian_to_date(long jd, int *y, int *m, int *d);
+        -:  237:
+    #####:  238:int OPENSSL_gmtime_adj(struct tm *tm, int off_day, long offset_sec)
+        -:  239:	{
+        -:  240:	int offset_hms, offset_day;
+        -:  241:	long time_jd;
+        -:  242:	int time_year, time_month, time_day;
+        -:  243:	/* split offset into days and day seconds */
+    #####:  244:	offset_day = offset_sec / SECS_PER_DAY;
+        -:  245:	/* Avoid sign issues with % operator */
+    #####:  246:	offset_hms  = offset_sec - (offset_day * SECS_PER_DAY);
+    #####:  247:	offset_day += off_day;
+        -:  248:	/* Add current time seconds to offset */
+    #####:  249:	offset_hms += tm->tm_hour * 3600 + tm->tm_min * 60 + tm->tm_sec;
+        -:  250:	/* Adjust day seconds if overflow */
+    #####:  251:	if (offset_hms >= SECS_PER_DAY)
+        -:  252:		{
+    #####:  253:		offset_day++;
+    #####:  254:		offset_hms -= SECS_PER_DAY;
+        -:  255:		}
+    #####:  256:	else if (offset_hms < 0)
+        -:  257:		{
+    #####:  258:		offset_day--;
+    #####:  259:		offset_hms += SECS_PER_DAY;
+        -:  260:		}
+        -:  261:
+        -:  262:	/* Convert date of time structure into a Julian day number.
+        -:  263:	 */
+        -:  264:
+    #####:  265:	time_year = tm->tm_year + 1900;
+    #####:  266:	time_month = tm->tm_mon + 1;
+    #####:  267:	time_day = tm->tm_mday;
+        -:  268:
+    #####:  269:	time_jd = date_to_julian(time_year, time_month, time_day);
+        -:  270:
+        -:  271:	/* Work out Julian day of new date */
+    #####:  272:	time_jd += offset_day;
+        -:  273:
+    #####:  274:	if (time_jd < 0)
+        -:  275:		return 0;
+        -:  276:
+        -:  277:	/* Convert Julian day back to date */
+        -:  278:
+    #####:  279:	julian_to_date(time_jd, &time_year, &time_month, &time_day);
+        -:  280:
+    #####:  281:	if (time_year < 1900 || time_year > 9999)
+        -:  282:		return 0;
+        -:  283:
+        -:  284:	/* Update tm structure */
+        -:  285:
+    #####:  286:	tm->tm_year = time_year - 1900;
+    #####:  287:	tm->tm_mon = time_month - 1;
+    #####:  288:	tm->tm_mday = time_day;
+        -:  289:
+    #####:  290:	tm->tm_hour = offset_hms / 3600;
+    #####:  291:	tm->tm_min = (offset_hms / 60) % 60;
+    #####:  292:	tm->tm_sec = offset_hms % 60;
+        -:  293:
+    #####:  294:	return 1;
+        -:  295:		
+        -:  296:}
+        -:  297:
+        -:  298:/* Convert date to and from julian day
+        -:  299: * Uses Fliegel & Van Flandern algorithm
+        -:  300: */
+    #####:  301:static long date_to_julian(int y, int m, int d)
+        -:  302:{
+    #####:  303:	return (1461 * (y + 4800 + (m - 14) / 12)) / 4 +
+    #####:  304:		(367 * (m - 2 - 12 * ((m - 14) / 12))) / 12 -
+    #####:  305:		(3 * ((y + 4900 + (m - 14) / 12) / 100)) / 4 +
+    #####:  306:		d - 32075;
+        -:  307:}
+        -:  308:
+    #####:  309:static void julian_to_date(long jd, int *y, int *m, int *d)
+        -:  310:	{
+    #####:  311:	long  L = jd + 68569;
+    #####:  312:	long  n = (4 * L) / 146097;
+        -:  313:	long  i, j;
+        -:  314:
+    #####:  315:	L = L - (146097 * n + 3) / 4;
+    #####:  316:	i = (4000 * (L + 1)) / 1461001;
+    #####:  317:	L = L - (1461 * i) / 4 + 31;
+    #####:  318:	j = (80 * L) / 2447;
+    #####:  319:	*d = L - (2447 * j) / 80;
+    #####:  320:	L = j / 11;
+    #####:  321:	*m = j + 2 - (12 * L);
+    #####:  322:	*y = 100 * (n - 49) + i + L;
+    #####:  323:	}
+        -:  324:
+        -:  325:#ifdef OPENSSL_TIME_TEST
+        -:  326:
+        -:  327:#include <stdio.h>
+        -:  328:
+        -:  329:/* Time checking test code. Check times are identical for a wide range of
+        -:  330: * offsets. This should be run on a machine with 64 bit time_t or it will
+        -:  331: * trigger the very errors the routines fix.
+        -:  332: */
+        -:  333:
+        -:  334:int main(int argc, char **argv)
+        -:  335:	{
+        -:  336:	long offset;
+        -:  337:	for (offset = 0; offset < 1000000; offset++)
+        -:  338:		{
+        -:  339:		check_time(offset);
+        -:  340:		check_time(-offset);
+        -:  341:		check_time(offset * 1000);
+        -:  342:		check_time(-offset * 1000);
+        -:  343:		}
+        -:  344:	}
+        -:  345:
+        -:  346:int check_time(long offset)
+        -:  347:	{
+        -:  348:	struct tm tm1, tm2;
+        -:  349:	time_t t1, t2;
+        -:  350:	time(&t1);
+        -:  351:	t2 = t1 + offset;
+        -:  352:	OPENSSL_gmtime(&t2, &tm2);
+        -:  353:	OPENSSL_gmtime(&t1, &tm1);
+        -:  354:	OPENSSL_gmtime_adj(&tm1, 0, offset);
+        -:  355:	if ((tm1.tm_year == tm2.tm_year) &&
+        -:  356:	    (tm1.tm_mon == tm2.tm_mon) &&
+        -:  357:	    (tm1.tm_mday == tm2.tm_mday) &&
+        -:  358:	    (tm1.tm_hour == tm2.tm_hour) &&
+        -:  359:	    (tm1.tm_min == tm2.tm_min) &&
+        -:  360:	    (tm1.tm_sec == tm2.tm_sec))
+        -:  361:		return 1;
+        -:  362:	fprintf(stderr, "TIME ERROR!!\n");
+        -:  363:	fprintf(stderr, "Time1: %d/%d/%d, %d:%02d:%02d\n",
+        -:  364:			tm2.tm_mday, tm2.tm_mon + 1, tm2.tm_year + 1900,
+        -:  365:			tm2.tm_hour, tm2.tm_min, tm2.tm_sec);
+        -:  366:	fprintf(stderr, "Time2: %d/%d/%d, %d:%02d:%02d\n",
+        -:  367:			tm1.tm_mday, tm1.tm_mon + 1, tm1.tm_year + 1900,
+        -:  368:			tm1.tm_hour, tm1.tm_min, tm1.tm_sec);
+        -:  369:	return 0;
+        -:  370:	}
+        -:  371:
+        -:  372:#endif

@@ -1,0 +1,198 @@
+        -:    0:Source:s2_enc.c
+        -:    0:Graph:s2_enc.gcno
+        -:    0:Data:s2_enc.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* ssl/s2_enc.c */
+        -:    2:/* Copyright (C) 1995-1998 Eric Young (eay@cryptsoft.com)
+        -:    3: * All rights reserved.
+        -:    4: *
+        -:    5: * This package is an SSL implementation written
+        -:    6: * by Eric Young (eay@cryptsoft.com).
+        -:    7: * The implementation was written so as to conform with Netscapes SSL.
+        -:    8: * 
+        -:    9: * This library is free for commercial and non-commercial use as long as
+        -:   10: * the following conditions are aheared to.  The following conditions
+        -:   11: * apply to all code found in this distribution, be it the RC4, RSA,
+        -:   12: * lhash, DES, etc., code; not just the SSL code.  The SSL documentation
+        -:   13: * included with this distribution is covered by the same copyright terms
+        -:   14: * except that the holder is Tim Hudson (tjh@cryptsoft.com).
+        -:   15: * 
+        -:   16: * Copyright remains Eric Young's, and as such any Copyright notices in
+        -:   17: * the code are not to be removed.
+        -:   18: * If this package is used in a product, Eric Young should be given attribution
+        -:   19: * as the author of the parts of the library used.
+        -:   20: * This can be in the form of a textual message at program startup or
+        -:   21: * in documentation (online or textual) provided with the package.
+        -:   22: * 
+        -:   23: * Redistribution and use in source and binary forms, with or without
+        -:   24: * modification, are permitted provided that the following conditions
+        -:   25: * are met:
+        -:   26: * 1. Redistributions of source code must retain the copyright
+        -:   27: *    notice, this list of conditions and the following disclaimer.
+        -:   28: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   29: *    notice, this list of conditions and the following disclaimer in the
+        -:   30: *    documentation and/or other materials provided with the distribution.
+        -:   31: * 3. All advertising materials mentioning features or use of this software
+        -:   32: *    must display the following acknowledgement:
+        -:   33: *    "This product includes cryptographic software written by
+        -:   34: *     Eric Young (eay@cryptsoft.com)"
+        -:   35: *    The word 'cryptographic' can be left out if the rouines from the library
+        -:   36: *    being used are not cryptographic related :-).
+        -:   37: * 4. If you include any Windows specific code (or a derivative thereof) from 
+        -:   38: *    the apps directory (application code) you must include an acknowledgement:
+        -:   39: *    "This product includes software written by Tim Hudson (tjh@cryptsoft.com)"
+        -:   40: * 
+        -:   41: * THIS SOFTWARE IS PROVIDED BY ERIC YOUNG ``AS IS'' AND
+        -:   42: * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   43: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+        -:   44: * ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+        -:   45: * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+        -:   46: * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+        -:   47: * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   48: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+        -:   49: * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+        -:   50: * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+        -:   51: * SUCH DAMAGE.
+        -:   52: * 
+        -:   53: * The licence and distribution terms for any publically available version or
+        -:   54: * derivative of this code cannot be changed.  i.e. this code cannot simply be
+        -:   55: * copied and put under another distribution licence
+        -:   56: * [including the GNU Public Licence.]
+        -:   57: */
+        -:   58:
+        -:   59:#include "ssl_locl.h"
+        -:   60:#ifndef OPENSSL_NO_SSL2
+        -:   61:#include <stdio.h>
+        -:   62:
+    #####:   63:int ssl2_enc_init(SSL *s, int client)
+        -:   64:	{
+        -:   65:	/* Max number of bytes needed */
+        -:   66:	EVP_CIPHER_CTX *rs,*ws;
+        -:   67:	const EVP_CIPHER *c;
+        -:   68:	const EVP_MD *md;
+        -:   69:	int num;
+        -:   70:
+    #####:   71:	if (!ssl_cipher_get_evp(s->session,&c,&md,NULL,NULL,NULL))
+        -:   72:		{
+    #####:   73:		ssl2_return_error(s,SSL2_PE_NO_CIPHER);
+    #####:   74:		SSLerr(SSL_F_SSL2_ENC_INIT,SSL_R_PROBLEMS_MAPPING_CIPHER_FUNCTIONS);
+    #####:   75:		return(0);
+        -:   76:		}
+    #####:   77:	ssl_replace_hash(&s->read_hash,md);
+    #####:   78:	ssl_replace_hash(&s->write_hash,md);
+        -:   79:
+    #####:   80:	if ((s->enc_read_ctx == NULL) &&
+    #####:   81:		((s->enc_read_ctx=(EVP_CIPHER_CTX *)
+    #####:   82:		OPENSSL_malloc(sizeof(EVP_CIPHER_CTX))) == NULL))
+        -:   83:		goto err;
+        -:   84:
+        -:   85:	/* make sure it's intialized in case the malloc for enc_write_ctx fails
+        -:   86:	 * and we exit with an error */
+    #####:   87:	rs= s->enc_read_ctx;
+    #####:   88:	EVP_CIPHER_CTX_init(rs);
+        -:   89:
+    #####:   90:	if ((s->enc_write_ctx == NULL) &&
+    #####:   91:		((s->enc_write_ctx=(EVP_CIPHER_CTX *)
+    #####:   92:		OPENSSL_malloc(sizeof(EVP_CIPHER_CTX))) == NULL))
+        -:   93:		goto err;
+        -:   94:
+    #####:   95:	ws= s->enc_write_ctx;
+    #####:   96:	EVP_CIPHER_CTX_init(ws);
+        -:   97:
+    #####:   98:	num=c->key_len;
+    #####:   99:	s->s2->key_material_length=num*2;
+    #####:  100:	OPENSSL_assert(s->s2->key_material_length <= sizeof s->s2->key_material);
+        -:  101:
+    #####:  102:	if (ssl2_generate_key_material(s) <= 0)
+        -:  103:		return 0;
+        -:  104:
+    #####:  105:	OPENSSL_assert(c->iv_len <= (int)sizeof(s->session->key_arg));
+    #####:  106:	EVP_EncryptInit_ex(ws,c,NULL,&(s->s2->key_material[(client)?num:0]),
+    #####:  107:		s->session->key_arg);
+    #####:  108:	EVP_DecryptInit_ex(rs,c,NULL,&(s->s2->key_material[(client)?0:num]),
+    #####:  109:		s->session->key_arg);
+    #####:  110:	s->s2->read_key=  &(s->s2->key_material[(client)?0:num]);
+    #####:  111:	s->s2->write_key= &(s->s2->key_material[(client)?num:0]);
+    #####:  112:	return(1);
+        -:  113:err:
+    #####:  114:	SSLerr(SSL_F_SSL2_ENC_INIT,ERR_R_MALLOC_FAILURE);
+    #####:  115:	return(0);
+        -:  116:	}
+        -:  117:
+        -:  118:/* read/writes from s->s2->mac_data using length for encrypt and 
+        -:  119: * decrypt.  It sets s->s2->padding and s->[rw]length
+        -:  120: * if we are encrypting */
+    #####:  121:void ssl2_enc(SSL *s, int send)
+        -:  122:	{
+        -:  123:	EVP_CIPHER_CTX *ds;
+        -:  124:	unsigned long l;
+        -:  125:	int bs;
+        -:  126:
+    #####:  127:	if (send)
+        -:  128:		{
+    #####:  129:		ds=s->enc_write_ctx;
+    #####:  130:		l=s->s2->wlength;
+        -:  131:		}
+        -:  132:	else
+        -:  133:		{
+    #####:  134:		ds=s->enc_read_ctx;
+    #####:  135:		l=s->s2->rlength;
+        -:  136:		}
+        -:  137:
+        -:  138:	/* check for NULL cipher */
+    #####:  139:	if (ds == NULL) return;
+        -:  140:
+        -:  141:
+    #####:  142:	bs=ds->cipher->block_size;
+        -:  143:	/* This should be using (bs-1) and bs instead of 7 and 8, but
+        -:  144:	 * what the hell. */
+    #####:  145:	if (bs == 8)
+    #####:  146:		l=(l+7)/8*8;
+        -:  147:
+    #####:  148:	EVP_Cipher(ds,s->s2->mac_data,s->s2->mac_data,l);
+        -:  149:	}
+        -:  150:
+    #####:  151:void ssl2_mac(SSL *s, unsigned char *md, int send)
+        -:  152:	{
+        -:  153:	EVP_MD_CTX c;
+        -:  154:	unsigned char sequence[4],*p,*sec,*act;
+        -:  155:	unsigned long seq;
+        -:  156:	unsigned int len;
+        -:  157:
+    #####:  158:	if (send)
+        -:  159:		{
+    #####:  160:		seq=s->s2->write_sequence;
+    #####:  161:		sec=s->s2->write_key;
+    #####:  162:		len=s->s2->wact_data_length;
+    #####:  163:		act=s->s2->wact_data;
+        -:  164:		}
+        -:  165:	else
+        -:  166:		{
+    #####:  167:		seq=s->s2->read_sequence;
+    #####:  168:		sec=s->s2->read_key;
+    #####:  169:		len=s->s2->ract_data_length;
+    #####:  170:		act=s->s2->ract_data;
+        -:  171:		}
+        -:  172:
+        -:  173:	p= &(sequence[0]);
+    #####:  174:	l2n(seq,p);
+        -:  175:
+        -:  176:	/* There has to be a MAC algorithm. */
+    #####:  177:	EVP_MD_CTX_init(&c);
+    #####:  178:	EVP_MD_CTX_copy(&c, s->read_hash);
+    #####:  179:	EVP_DigestUpdate(&c,sec,
+    #####:  180:		EVP_CIPHER_CTX_key_length(s->enc_read_ctx));
+    #####:  181:	EVP_DigestUpdate(&c,act,len); 
+        -:  182:	/* the above line also does the pad data */
+    #####:  183:	EVP_DigestUpdate(&c,sequence,4); 
+    #####:  184:	EVP_DigestFinal_ex(&c,md,NULL);
+    #####:  185:	EVP_MD_CTX_cleanup(&c);
+    #####:  186:	}
+        -:  187:#else /* !OPENSSL_NO_SSL2 */
+        -:  188:
+        -:  189:# if PEDANTIC
+        -:  190:static void *dummy=&dummy;
+        -:  191:# endif
+        -:  192:
+        -:  193:#endif

@@ -1,0 +1,327 @@
+        -:    0:Source:sess_id.c
+        -:    0:Graph:sess_id.gcno
+        -:    0:Data:sess_id.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* apps/sess_id.c */
+        -:    2:/* Copyright (C) 1995-1998 Eric Young (eay@cryptsoft.com)
+        -:    3: * All rights reserved.
+        -:    4: *
+        -:    5: * This package is an SSL implementation written
+        -:    6: * by Eric Young (eay@cryptsoft.com).
+        -:    7: * The implementation was written so as to conform with Netscapes SSL.
+        -:    8: * 
+        -:    9: * This library is free for commercial and non-commercial use as long as
+        -:   10: * the following conditions are aheared to.  The following conditions
+        -:   11: * apply to all code found in this distribution, be it the RC4, RSA,
+        -:   12: * lhash, DES, etc., code; not just the SSL code.  The SSL documentation
+        -:   13: * included with this distribution is covered by the same copyright terms
+        -:   14: * except that the holder is Tim Hudson (tjh@cryptsoft.com).
+        -:   15: * 
+        -:   16: * Copyright remains Eric Young's, and as such any Copyright notices in
+        -:   17: * the code are not to be removed.
+        -:   18: * If this package is used in a product, Eric Young should be given attribution
+        -:   19: * as the author of the parts of the library used.
+        -:   20: * This can be in the form of a textual message at program startup or
+        -:   21: * in documentation (online or textual) provided with the package.
+        -:   22: * 
+        -:   23: * Redistribution and use in source and binary forms, with or without
+        -:   24: * modification, are permitted provided that the following conditions
+        -:   25: * are met:
+        -:   26: * 1. Redistributions of source code must retain the copyright
+        -:   27: *    notice, this list of conditions and the following disclaimer.
+        -:   28: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   29: *    notice, this list of conditions and the following disclaimer in the
+        -:   30: *    documentation and/or other materials provided with the distribution.
+        -:   31: * 3. All advertising materials mentioning features or use of this software
+        -:   32: *    must display the following acknowledgement:
+        -:   33: *    "This product includes cryptographic software written by
+        -:   34: *     Eric Young (eay@cryptsoft.com)"
+        -:   35: *    The word 'cryptographic' can be left out if the rouines from the library
+        -:   36: *    being used are not cryptographic related :-).
+        -:   37: * 4. If you include any Windows specific code (or a derivative thereof) from 
+        -:   38: *    the apps directory (application code) you must include an acknowledgement:
+        -:   39: *    "This product includes software written by Tim Hudson (tjh@cryptsoft.com)"
+        -:   40: * 
+        -:   41: * THIS SOFTWARE IS PROVIDED BY ERIC YOUNG ``AS IS'' AND
+        -:   42: * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   43: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+        -:   44: * ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+        -:   45: * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+        -:   46: * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+        -:   47: * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   48: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+        -:   49: * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+        -:   50: * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+        -:   51: * SUCH DAMAGE.
+        -:   52: * 
+        -:   53: * The licence and distribution terms for any publically available version or
+        -:   54: * derivative of this code cannot be changed.  i.e. this code cannot simply be
+        -:   55: * copied and put under another distribution licence
+        -:   56: * [including the GNU Public Licence.]
+        -:   57: */
+        -:   58:
+        -:   59:#include <stdio.h>
+        -:   60:#include <stdlib.h>
+        -:   61:#include <string.h>
+        -:   62:#include "apps.h"
+        -:   63:#include <openssl/bio.h>
+        -:   64:#include <openssl/err.h>
+        -:   65:#include <openssl/x509.h>
+        -:   66:#include <openssl/pem.h>
+        -:   67:#include <openssl/ssl.h>
+        -:   68:
+        -:   69:#undef PROG
+        -:   70:#define PROG	sess_id_main
+        -:   71:
+        -:   72:static const char *sess_id_usage[]={
+        -:   73:"usage: sess_id args\n",
+        -:   74:"\n",
+        -:   75:" -inform arg     - input format - default PEM (DER or PEM)\n",
+        -:   76:" -outform arg    - output format - default PEM\n",
+        -:   77:" -in arg         - input file - default stdin\n",
+        -:   78:" -out arg        - output file - default stdout\n",
+        -:   79:" -text           - print ssl session id details\n",
+        -:   80:" -cert           - output certificate \n",
+        -:   81:" -noout          - no CRL output\n",
+        -:   82:" -context arg    - set the session ID context\n",
+        -:   83:NULL
+        -:   84:};
+        -:   85:
+        -:   86:static SSL_SESSION *load_sess_id(char *file, int format);
+        -:   87:
+        -:   88:int MAIN(int, char **);
+        -:   89:
+    #####:   90:int MAIN(int argc, char **argv)
+        -:   91:	{
+        -:   92:	SSL_SESSION *x=NULL;
+        -:   93:	X509 *peer = NULL;
+        -:   94:	int ret=1,i,num,badops=0;
+        -:   95:	BIO *out=NULL;
+        -:   96:	int informat,outformat;
+        -:   97:	char *infile=NULL,*outfile=NULL,*context=NULL;
+        -:   98:	int cert=0,noout=0,text=0;
+        -:   99:	const char **pp;
+        -:  100:
+    #####:  101:	apps_startup();
+        -:  102:
+    #####:  103:	if (bio_err == NULL)
+    #####:  104:		if ((bio_err=BIO_new(BIO_s_file())) != NULL)
+    #####:  105:			BIO_set_fp(bio_err,stderr,BIO_NOCLOSE|BIO_FP_TEXT);
+        -:  106:
+        -:  107:	informat=FORMAT_PEM;
+        -:  108:	outformat=FORMAT_PEM;
+        -:  109:
+    #####:  110:	argc--;
+    #####:  111:	argv++;
+        -:  112:	num=0;
+    #####:  113:	while (argc >= 1)
+        -:  114:		{
+    #####:  115:		if 	(strcmp(*argv,"-inform") == 0)
+        -:  116:			{
+    #####:  117:			if (--argc < 1) goto bad;
+    #####:  118:			informat=str2fmt(*(++argv));
+        -:  119:			}
+    #####:  120:		else if (strcmp(*argv,"-outform") == 0)
+        -:  121:			{
+    #####:  122:			if (--argc < 1) goto bad;
+    #####:  123:			outformat=str2fmt(*(++argv));
+        -:  124:			}
+    #####:  125:		else if (strcmp(*argv,"-in") == 0)
+        -:  126:			{
+    #####:  127:			if (--argc < 1) goto bad;
+    #####:  128:			infile= *(++argv);
+        -:  129:			}
+    #####:  130:		else if (strcmp(*argv,"-out") == 0)
+        -:  131:			{
+    #####:  132:			if (--argc < 1) goto bad;
+    #####:  133:			outfile= *(++argv);
+        -:  134:			}
+    #####:  135:		else if (strcmp(*argv,"-text") == 0)
+    #####:  136:			text= ++num;
+    #####:  137:		else if (strcmp(*argv,"-cert") == 0)
+    #####:  138:			cert= ++num;
+    #####:  139:		else if (strcmp(*argv,"-noout") == 0)
+    #####:  140:			noout= ++num;
+    #####:  141:		else if (strcmp(*argv,"-context") == 0)
+        -:  142:		    {
+    #####:  143:		    if(--argc < 1) goto bad;
+    #####:  144:		    context=*++argv;
+        -:  145:		    }
+        -:  146:		else
+        -:  147:			{
+    #####:  148:			BIO_printf(bio_err,"unknown option %s\n",*argv);
+        -:  149:			badops=1;
+    #####:  150:			break;
+        -:  151:			}
+    #####:  152:		argc--;
+    #####:  153:		argv++;
+        -:  154:		}
+        -:  155:
+    #####:  156:	if (badops)
+        -:  157:		{
+        -:  158:bad:
+    #####:  159:		for (pp=sess_id_usage; (*pp != NULL); pp++)
+    #####:  160:			BIO_printf(bio_err,"%s",*pp);
+        -:  161:		goto end;
+        -:  162:		}
+        -:  163:
+    #####:  164:	ERR_load_crypto_strings();
+    #####:  165:	x=load_sess_id(infile,informat);
+    #####:  166:	if (x == NULL) { goto end; }
+    #####:  167:	peer = SSL_SESSION_get0_peer(x);
+        -:  168:
+    #####:  169:	if(context)
+        -:  170:	    {
+    #####:  171:	    size_t ctx_len = strlen(context);
+    #####:  172:	    if(ctx_len > SSL_MAX_SID_CTX_LENGTH)
+        -:  173:		{
+    #####:  174:		BIO_printf(bio_err,"Context too long\n");
+    #####:  175:		goto end;
+        -:  176:		}
+    #####:  177:	    SSL_SESSION_set1_id_context(x, (unsigned char *)context, ctx_len);
+        -:  178:	    }
+        -:  179:
+        -:  180:#ifdef undef
+        -:  181:	/* just testing for memory leaks :-) */
+        -:  182:	{
+        -:  183:	SSL_SESSION *s;
+        -:  184:	char buf[1024*10],*p;
+        -:  185:	int i;
+        -:  186:
+        -:  187:	s=SSL_SESSION_new();
+        -:  188:
+        -:  189:	p= &buf;
+        -:  190:	i=i2d_SSL_SESSION(x,&p);
+        -:  191:	p= &buf;
+        -:  192:	d2i_SSL_SESSION(&s,&p,(long)i);
+        -:  193:	p= &buf;
+        -:  194:	d2i_SSL_SESSION(&s,&p,(long)i);
+        -:  195:	p= &buf;
+        -:  196:	d2i_SSL_SESSION(&s,&p,(long)i);
+        -:  197:	SSL_SESSION_free(s);
+        -:  198:	}
+        -:  199:#endif
+        -:  200:
+    #####:  201:	if (!noout || text)
+        -:  202:		{
+    #####:  203:		out=BIO_new(BIO_s_file());
+    #####:  204:		if (out == NULL)
+        -:  205:			{
+    #####:  206:			ERR_print_errors(bio_err);
+    #####:  207:			goto end;
+        -:  208:			}
+        -:  209:
+    #####:  210:		if (outfile == NULL)
+        -:  211:			{
+    #####:  212:			BIO_set_fp(out,stdout,BIO_NOCLOSE);
+        -:  213:#ifdef OPENSSL_SYS_VMS
+        -:  214:			{
+        -:  215:			BIO *tmpbio = BIO_new(BIO_f_linebuffer());
+        -:  216:			out = BIO_push(tmpbio, out);
+        -:  217:			}
+        -:  218:#endif
+        -:  219:			}
+        -:  220:		else
+        -:  221:			{
+    #####:  222:			if (BIO_write_filename(out,outfile) <= 0)
+        -:  223:				{
+    #####:  224:				perror(outfile);
+    #####:  225:				goto end;
+        -:  226:				}
+        -:  227:			}
+        -:  228:		}
+        -:  229:
+    #####:  230:	if (text)
+        -:  231:		{
+    #####:  232:		SSL_SESSION_print(out,x);
+        -:  233:
+    #####:  234:		if (cert)
+        -:  235:			{
+    #####:  236:			if (peer == NULL)
+    #####:  237:				BIO_puts(out,"No certificate present\n");
+        -:  238:			else
+    #####:  239:				X509_print(out,peer);
+        -:  240:			}
+        -:  241:		}
+        -:  242:
+    #####:  243:	if (!noout && !cert)
+        -:  244:		{
+    #####:  245:		if 	(outformat == FORMAT_ASN1)
+    #####:  246:			i=i2d_SSL_SESSION_bio(out,x);
+    #####:  247:		else if (outformat == FORMAT_PEM)
+    #####:  248:			i=PEM_write_bio_SSL_SESSION(out,x);
+        -:  249:		else	{
+    #####:  250:			BIO_printf(bio_err,"bad output format specified for outfile\n");
+    #####:  251:			goto end;
+        -:  252:			}
+    #####:  253:		if (!i) {
+    #####:  254:			BIO_printf(bio_err,"unable to write SSL_SESSION\n");
+    #####:  255:			goto end;
+        -:  256:			}
+        -:  257:		}
+    #####:  258:	else if (!noout && (peer != NULL)) /* just print the certificate */
+        -:  259:		{
+    #####:  260:		if 	(outformat == FORMAT_ASN1)
+    #####:  261:			i=(int)i2d_X509_bio(out,peer);
+    #####:  262:		else if (outformat == FORMAT_PEM)
+    #####:  263:			i=PEM_write_bio_X509(out,peer);
+        -:  264:		else	{
+    #####:  265:			BIO_printf(bio_err,"bad output format specified for outfile\n");
+    #####:  266:			goto end;
+        -:  267:			}
+    #####:  268:		if (!i) {
+    #####:  269:			BIO_printf(bio_err,"unable to write X509\n");
+    #####:  270:			goto end;
+        -:  271:			}
+        -:  272:		}
+        -:  273:	ret=0;
+        -:  274:end:
+    #####:  275:	if (out != NULL) BIO_free_all(out);
+    #####:  276:	if (x != NULL) SSL_SESSION_free(x);
+        -:  277:	apps_shutdown();
+    #####:  278:	OPENSSL_EXIT(ret);
+        -:  279:	}
+        -:  280:
+    #####:  281:static SSL_SESSION *load_sess_id(char *infile, int format)
+        -:  282:	{
+        -:  283:	SSL_SESSION *x=NULL;
+        -:  284:	BIO *in=NULL;
+        -:  285:
+    #####:  286:	in=BIO_new(BIO_s_file());
+    #####:  287:	if (in == NULL)
+        -:  288:		{
+    #####:  289:		ERR_print_errors(bio_err);
+    #####:  290:		goto end;
+        -:  291:		}
+        -:  292:
+    #####:  293:	if (infile == NULL)
+    #####:  294:		BIO_set_fp(in,stdin,BIO_NOCLOSE);
+        -:  295:	else
+        -:  296:		{
+    #####:  297:		if (BIO_read_filename(in,infile) <= 0)
+        -:  298:			{
+    #####:  299:			perror(infile);
+    #####:  300:			goto end;
+        -:  301:			}
+        -:  302:		}
+    #####:  303:	if 	(format == FORMAT_ASN1)
+    #####:  304:		x=d2i_SSL_SESSION_bio(in,NULL);
+    #####:  305:	else if (format == FORMAT_PEM)
+    #####:  306:		x=PEM_read_bio_SSL_SESSION(in,NULL,NULL,NULL);
+        -:  307:	else	{
+    #####:  308:		BIO_printf(bio_err,"bad input format specified for input crl\n");
+    #####:  309:		goto end;
+        -:  310:		}
+    #####:  311:	if (x == NULL)
+        -:  312:		{
+    #####:  313:		BIO_printf(bio_err,"unable to load SSL_SESSION\n");
+    #####:  314:		ERR_print_errors(bio_err);
+    #####:  315:		goto end;
+        -:  316:		}
+        -:  317:	
+        -:  318:end:
+    #####:  319:	if (in != NULL) BIO_free(in);
+    #####:  320:	return(x);
+        -:  321:	}
+        -:  322:

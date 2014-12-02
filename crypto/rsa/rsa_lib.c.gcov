@@ -1,0 +1,338 @@
+        -:    0:Source:rsa_lib.c
+        -:    0:Graph:rsa_lib.gcno
+        -:    0:Data:rsa_lib.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* crypto/rsa/rsa_lib.c */
+        -:    2:/* Copyright (C) 1995-1998 Eric Young (eay@cryptsoft.com)
+        -:    3: * All rights reserved.
+        -:    4: *
+        -:    5: * This package is an SSL implementation written
+        -:    6: * by Eric Young (eay@cryptsoft.com).
+        -:    7: * The implementation was written so as to conform with Netscapes SSL.
+        -:    8: * 
+        -:    9: * This library is free for commercial and non-commercial use as long as
+        -:   10: * the following conditions are aheared to.  The following conditions
+        -:   11: * apply to all code found in this distribution, be it the RC4, RSA,
+        -:   12: * lhash, DES, etc., code; not just the SSL code.  The SSL documentation
+        -:   13: * included with this distribution is covered by the same copyright terms
+        -:   14: * except that the holder is Tim Hudson (tjh@cryptsoft.com).
+        -:   15: * 
+        -:   16: * Copyright remains Eric Young's, and as such any Copyright notices in
+        -:   17: * the code are not to be removed.
+        -:   18: * If this package is used in a product, Eric Young should be given attribution
+        -:   19: * as the author of the parts of the library used.
+        -:   20: * This can be in the form of a textual message at program startup or
+        -:   21: * in documentation (online or textual) provided with the package.
+        -:   22: * 
+        -:   23: * Redistribution and use in source and binary forms, with or without
+        -:   24: * modification, are permitted provided that the following conditions
+        -:   25: * are met:
+        -:   26: * 1. Redistributions of source code must retain the copyright
+        -:   27: *    notice, this list of conditions and the following disclaimer.
+        -:   28: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   29: *    notice, this list of conditions and the following disclaimer in the
+        -:   30: *    documentation and/or other materials provided with the distribution.
+        -:   31: * 3. All advertising materials mentioning features or use of this software
+        -:   32: *    must display the following acknowledgement:
+        -:   33: *    "This product includes cryptographic software written by
+        -:   34: *     Eric Young (eay@cryptsoft.com)"
+        -:   35: *    The word 'cryptographic' can be left out if the rouines from the library
+        -:   36: *    being used are not cryptographic related :-).
+        -:   37: * 4. If you include any Windows specific code (or a derivative thereof) from 
+        -:   38: *    the apps directory (application code) you must include an acknowledgement:
+        -:   39: *    "This product includes software written by Tim Hudson (tjh@cryptsoft.com)"
+        -:   40: * 
+        -:   41: * THIS SOFTWARE IS PROVIDED BY ERIC YOUNG ``AS IS'' AND
+        -:   42: * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   43: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+        -:   44: * ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+        -:   45: * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+        -:   46: * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+        -:   47: * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   48: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+        -:   49: * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+        -:   50: * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+        -:   51: * SUCH DAMAGE.
+        -:   52: * 
+        -:   53: * The licence and distribution terms for any publically available version or
+        -:   54: * derivative of this code cannot be changed.  i.e. this code cannot simply be
+        -:   55: * copied and put under another distribution licence
+        -:   56: * [including the GNU Public Licence.]
+        -:   57: */
+        -:   58:
+        -:   59:#include <stdio.h>
+        -:   60:#include <openssl/crypto.h>
+        -:   61:#include "cryptlib.h"
+        -:   62:#include <openssl/lhash.h>
+        -:   63:#include <openssl/bn.h>
+        -:   64:#include <openssl/rsa.h>
+        -:   65:#include <openssl/rand.h>
+        -:   66:#ifndef OPENSSL_NO_ENGINE
+        -:   67:#include <openssl/engine.h>
+        -:   68:#endif
+        -:   69:
+        -:   70:#ifdef OPENSSL_FIPS
+        -:   71:#include <openssl/fips.h>
+        -:   72:#endif
+        -:   73:
+        -:   74:const char RSA_version[]="RSA" OPENSSL_VERSION_PTEXT;
+        -:   75:
+        -:   76:static const RSA_METHOD *default_RSA_meth=NULL;
+        -:   77:
+    11942:   78:RSA *RSA_new(void)
+        -:   79:	{
+    11942:   80:	RSA *r=RSA_new_method(NULL);
+        -:   81:
+    11942:   82:	return r;
+        -:   83:	}
+        -:   84:
+    #####:   85:void RSA_set_default_method(const RSA_METHOD *meth)
+        -:   86:	{
+    #####:   87:	default_RSA_meth = meth;
+    #####:   88:	}
+        -:   89:
+    #####:   90:const RSA_METHOD *RSA_get_default_method(void)
+        -:   91:	{
+    11942:   92:	if (default_RSA_meth == NULL)
+        -:   93:		{
+        -:   94:#ifdef OPENSSL_FIPS
+        -:   95:		if (FIPS_mode())
+        -:   96:			return FIPS_rsa_pkcs1_ssleay();
+        -:   97:		else
+        -:   98:			return RSA_PKCS1_SSLeay();
+        -:   99:#else
+        -:  100:#ifdef RSA_NULL
+        -:  101:		default_RSA_meth=RSA_null_method();
+        -:  102:#else
+    10000:  103:		default_RSA_meth=RSA_PKCS1_SSLeay();
+        -:  104:#endif
+        -:  105:#endif
+        -:  106:		}
+        -:  107:
+    11942:  108:	return default_RSA_meth;
+        -:  109:	}
+        -:  110:
+    #####:  111:const RSA_METHOD *RSA_get_method(const RSA *rsa)
+        -:  112:	{
+    #####:  113:	return rsa->meth;
+        -:  114:	}
+        -:  115:
+    #####:  116:int RSA_set_method(RSA *rsa, const RSA_METHOD *meth)
+        -:  117:	{
+        -:  118:	/* NB: The caller is specifically setting a method, so it's not up to us
+        -:  119:	 * to deal with which ENGINE it comes from. */
+        -:  120:	const RSA_METHOD *mtmp;
+    #####:  121:	mtmp = rsa->meth;
+    #####:  122:	if (mtmp->finish) mtmp->finish(rsa);
+        -:  123:#ifndef OPENSSL_NO_ENGINE
+    #####:  124:	if (rsa->engine)
+        -:  125:		{
+    #####:  126:		ENGINE_finish(rsa->engine);
+    #####:  127:		rsa->engine = NULL;
+        -:  128:		}
+        -:  129:#endif
+    #####:  130:	rsa->meth = meth;
+    #####:  131:	if (meth->init) meth->init(rsa);
+    #####:  132:	return 1;
+        -:  133:	}
+        -:  134:
+    11942:  135:RSA *RSA_new_method(ENGINE *engine)
+        -:  136:	{
+        -:  137:	RSA *ret;
+        -:  138:
+    11942:  139:	ret=(RSA *)OPENSSL_malloc(sizeof(RSA));
+    11942:  140:	if (ret == NULL)
+        -:  141:		{
+    #####:  142:		RSAerr(RSA_F_RSA_NEW_METHOD,ERR_R_MALLOC_FAILURE);
+    #####:  143:		return NULL;
+        -:  144:		}
+        -:  145:
+    11942:  146:	ret->meth = RSA_get_default_method();
+        -:  147:#ifndef OPENSSL_NO_ENGINE
+    11942:  148:	if (engine)
+        -:  149:		{
+    #####:  150:		if (!ENGINE_init(engine))
+        -:  151:			{
+    #####:  152:			RSAerr(RSA_F_RSA_NEW_METHOD, ERR_R_ENGINE_LIB);
+    #####:  153:			OPENSSL_free(ret);
+    #####:  154:			return NULL;
+        -:  155:			}
+    #####:  156:		ret->engine = engine;
+        -:  157:		}
+        -:  158:	else
+    11942:  159:		ret->engine = ENGINE_get_default_RSA();
+    11942:  160:	if(ret->engine)
+        -:  161:		{
+    11942:  162:		ret->meth = ENGINE_get_RSA(ret->engine);
+    11942:  163:		if(!ret->meth)
+        -:  164:			{
+    #####:  165:			RSAerr(RSA_F_RSA_NEW_METHOD,
+        -:  166:				ERR_R_ENGINE_LIB);
+    #####:  167:			ENGINE_finish(ret->engine);
+    #####:  168:			OPENSSL_free(ret);
+    #####:  169:			return NULL;
+        -:  170:			}
+        -:  171:		}
+        -:  172:#endif
+        -:  173:
+    11942:  174:	ret->pad=0;
+    11942:  175:	ret->version=0;
+    11942:  176:	ret->n=NULL;
+    11942:  177:	ret->e=NULL;
+    11942:  178:	ret->d=NULL;
+    11942:  179:	ret->p=NULL;
+    11942:  180:	ret->q=NULL;
+    11942:  181:	ret->dmp1=NULL;
+    11942:  182:	ret->dmq1=NULL;
+    11942:  183:	ret->iqmp=NULL;
+    11942:  184:	ret->references=1;
+    11942:  185:	ret->_method_mod_n=NULL;
+    11942:  186:	ret->_method_mod_p=NULL;
+    11942:  187:	ret->_method_mod_q=NULL;
+    11942:  188:	ret->blinding=NULL;
+    11942:  189:	ret->mt_blinding=NULL;
+    11942:  190:	ret->bignum_data=NULL;
+    11942:  191:	ret->flags=ret->meth->flags & ~RSA_FLAG_NON_FIPS_ALLOW;
+    11942:  192:	if (!CRYPTO_new_ex_data(CRYPTO_EX_INDEX_RSA, ret, &ret->ex_data))
+        -:  193:		{
+        -:  194:#ifndef OPENSSL_NO_ENGINE
+    #####:  195:	if (ret->engine)
+    #####:  196:		ENGINE_finish(ret->engine);
+        -:  197:#endif
+    #####:  198:		OPENSSL_free(ret);
+    #####:  199:		return(NULL);
+        -:  200:		}
+        -:  201:
+    11942:  202:	if ((ret->meth->init != NULL) && !ret->meth->init(ret))
+        -:  203:		{
+        -:  204:#ifndef OPENSSL_NO_ENGINE
+    #####:  205:		if (ret->engine)
+    #####:  206:			ENGINE_finish(ret->engine);
+        -:  207:#endif
+    #####:  208:		CRYPTO_free_ex_data(CRYPTO_EX_INDEX_RSA, ret, &ret->ex_data);
+    #####:  209:		OPENSSL_free(ret);
+        -:  210:		ret=NULL;
+        -:  211:		}
+    11942:  212:	return(ret);
+        -:  213:	}
+        -:  214:
+    11942:  215:void RSA_free(RSA *r)
+        -:  216:	{
+        -:  217:	int i;
+        -:  218:
+    11942:  219:	if (r == NULL) return;
+        -:  220:
+    11942:  221:	i=CRYPTO_add(&r->references,-1,CRYPTO_LOCK_RSA);
+        -:  222:#ifdef REF_PRINT
+        -:  223:	REF_PRINT("RSA",r);
+        -:  224:#endif
+    11942:  225:	if (i > 0) return;
+        -:  226:#ifdef REF_CHECK
+        -:  227:	if (i < 0)
+        -:  228:		{
+        -:  229:		fprintf(stderr,"RSA_free, bad reference count\n");
+        -:  230:		abort();
+        -:  231:		}
+        -:  232:#endif
+        -:  233:
+    11942:  234:	if (r->meth->finish)
+    11942:  235:		r->meth->finish(r);
+        -:  236:#ifndef OPENSSL_NO_ENGINE
+    11942:  237:	if (r->engine)
+    11942:  238:		ENGINE_finish(r->engine);
+        -:  239:#endif
+        -:  240:
+    11942:  241:	CRYPTO_free_ex_data(CRYPTO_EX_INDEX_RSA, r, &r->ex_data);
+        -:  242:
+    11942:  243:	if (r->n != NULL) BN_clear_free(r->n);
+    11942:  244:	if (r->e != NULL) BN_clear_free(r->e);
+    11942:  245:	if (r->d != NULL) BN_clear_free(r->d);
+    11942:  246:	if (r->p != NULL) BN_clear_free(r->p);
+    11942:  247:	if (r->q != NULL) BN_clear_free(r->q);
+    11942:  248:	if (r->dmp1 != NULL) BN_clear_free(r->dmp1);
+    11942:  249:	if (r->dmq1 != NULL) BN_clear_free(r->dmq1);
+    11942:  250:	if (r->iqmp != NULL) BN_clear_free(r->iqmp);
+    11942:  251:	if (r->blinding != NULL) BN_BLINDING_free(r->blinding);
+    11942:  252:	if (r->mt_blinding != NULL) BN_BLINDING_free(r->mt_blinding);
+    11942:  253:	if (r->bignum_data != NULL) OPENSSL_free_locked(r->bignum_data);
+    11942:  254:	OPENSSL_free(r);
+        -:  255:	}
+        -:  256:
+    #####:  257:int RSA_up_ref(RSA *r)
+        -:  258:	{
+    #####:  259:	int i = CRYPTO_add(&r->references, 1, CRYPTO_LOCK_RSA);
+        -:  260:#ifdef REF_PRINT
+        -:  261:	REF_PRINT("RSA",r);
+        -:  262:#endif
+        -:  263:#ifdef REF_CHECK
+        -:  264:	if (i < 2)
+        -:  265:		{
+        -:  266:		fprintf(stderr, "RSA_up_ref, bad reference count\n");
+        -:  267:		abort();
+        -:  268:		}
+        -:  269:#endif
+    #####:  270:	return ((i > 1) ? 1 : 0);
+        -:  271:	}
+        -:  272:
+    10000:  273:int RSA_get_ex_new_index(long argl, void *argp, CRYPTO_EX_new *new_func,
+        -:  274:	     CRYPTO_EX_dup *dup_func, CRYPTO_EX_free *free_func)
+        -:  275:        {
+    10000:  276:	return CRYPTO_get_ex_new_index(CRYPTO_EX_INDEX_RSA, argl, argp,
+        -:  277:				new_func, dup_func, free_func);
+        -:  278:        }
+        -:  279:
+    #####:  280:int RSA_set_ex_data(RSA *r, int idx, void *arg)
+        -:  281:	{
+    #####:  282:	return(CRYPTO_set_ex_data(&r->ex_data,idx,arg));
+        -:  283:	}
+        -:  284:
+    11942:  285:void *RSA_get_ex_data(const RSA *r, int idx)
+        -:  286:	{
+    11942:  287:	return(CRYPTO_get_ex_data(&r->ex_data,idx));
+        -:  288:	}
+        -:  289:
+    #####:  290:int RSA_memory_lock(RSA *r)
+        -:  291:	{
+        -:  292:	int i,j,k,off;
+        -:  293:	char *p;
+        -:  294:	BIGNUM *bn,**t[6],*b;
+        -:  295:	BN_ULONG *ul;
+        -:  296:
+    #####:  297:	if (r->d == NULL) return(1);
+    #####:  298:	t[0]= &r->d;
+    #####:  299:	t[1]= &r->p;
+    #####:  300:	t[2]= &r->q;
+    #####:  301:	t[3]= &r->dmp1;
+    #####:  302:	t[4]= &r->dmq1;
+    #####:  303:	t[5]= &r->iqmp;
+        -:  304:	k=sizeof(BIGNUM)*6;
+        -:  305:	off=k/sizeof(BN_ULONG)+1;
+        -:  306:	j=1;
+    #####:  307:	for (i=0; i<6; i++)
+    #####:  308:		j+= (*t[i])->top;
+    #####:  309:	if ((p=OPENSSL_malloc_locked((off+j)*sizeof(BN_ULONG))) == NULL)
+        -:  310:		{
+    #####:  311:		RSAerr(RSA_F_RSA_MEMORY_LOCK,ERR_R_MALLOC_FAILURE);
+    #####:  312:		return(0);
+        -:  313:		}
+        -:  314:	bn=(BIGNUM *)p;
+    #####:  315:	ul=(BN_ULONG *)&(p[off]);
+    #####:  316:	for (i=0; i<6; i++)
+        -:  317:		{
+    #####:  318:		b= *(t[i]);
+    #####:  319:		*(t[i])= &(bn[i]);
+        -:  320:		memcpy((char *)&(bn[i]),(char *)b,sizeof(BIGNUM));
+    #####:  321:		bn[i].flags=BN_FLG_STATIC_DATA;
+    #####:  322:		bn[i].d=ul;
+    #####:  323:		memcpy((char *)ul,b->d,sizeof(BN_ULONG)*b->top);
+    #####:  324:		ul+=b->top;
+    #####:  325:		BN_clear_free(b);
+        -:  326:		}
+        -:  327:	
+        -:  328:	/* I should fix this so it can still be done */
+    #####:  329:	r->flags&= ~(RSA_FLAG_CACHE_PRIVATE|RSA_FLAG_CACHE_PUBLIC);
+        -:  330:
+    #####:  331:	r->bignum_data=p;
+    #####:  332:	return(1);
+        -:  333:	}

@@ -1,0 +1,444 @@
+        -:    0:Source:pkcs8.c
+        -:    0:Graph:pkcs8.gcno
+        -:    0:Data:pkcs8.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* pkcs8.c */
+        -:    2:/* Written by Dr Stephen N Henson (steve@openssl.org) for the OpenSSL
+        -:    3: * project 1999-2004.
+        -:    4: */
+        -:    5:/* ====================================================================
+        -:    6: * Copyright (c) 1999 The OpenSSL Project.  All rights reserved.
+        -:    7: *
+        -:    8: * Redistribution and use in source and binary forms, with or without
+        -:    9: * modification, are permitted provided that the following conditions
+        -:   10: * are met:
+        -:   11: *
+        -:   12: * 1. Redistributions of source code must retain the above copyright
+        -:   13: *    notice, this list of conditions and the following disclaimer. 
+        -:   14: *
+        -:   15: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   16: *    notice, this list of conditions and the following disclaimer in
+        -:   17: *    the documentation and/or other materials provided with the
+        -:   18: *    distribution.
+        -:   19: *
+        -:   20: * 3. All advertising materials mentioning features or use of this
+        -:   21: *    software must display the following acknowledgment:
+        -:   22: *    "This product includes software developed by the OpenSSL Project
+        -:   23: *    for use in the OpenSSL Toolkit. (http://www.OpenSSL.org/)"
+        -:   24: *
+        -:   25: * 4. The names "OpenSSL Toolkit" and "OpenSSL Project" must not be used to
+        -:   26: *    endorse or promote products derived from this software without
+        -:   27: *    prior written permission. For written permission, please contact
+        -:   28: *    licensing@OpenSSL.org.
+        -:   29: *
+        -:   30: * 5. Products derived from this software may not be called "OpenSSL"
+        -:   31: *    nor may "OpenSSL" appear in their names without prior written
+        -:   32: *    permission of the OpenSSL Project.
+        -:   33: *
+        -:   34: * 6. Redistributions of any form whatsoever must retain the following
+        -:   35: *    acknowledgment:
+        -:   36: *    "This product includes software developed by the OpenSSL Project
+        -:   37: *    for use in the OpenSSL Toolkit (http://www.OpenSSL.org/)"
+        -:   38: *
+        -:   39: * THIS SOFTWARE IS PROVIDED BY THE OpenSSL PROJECT ``AS IS'' AND ANY
+        -:   40: * EXPRESSED OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   41: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+        -:   42: * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE OpenSSL PROJECT OR
+        -:   43: * ITS CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+        -:   44: * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+        -:   45: * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+        -:   46: * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   47: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+        -:   48: * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+        -:   49: * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+        -:   50: * OF THE POSSIBILITY OF SUCH DAMAGE.
+        -:   51: * ====================================================================
+        -:   52: *
+        -:   53: * This product includes cryptographic software written by Eric Young
+        -:   54: * (eay@cryptsoft.com).  This product includes software written by Tim
+        -:   55: * Hudson (tjh@cryptsoft.com).
+        -:   56: *
+        -:   57: */
+        -:   58:#include <stdio.h>
+        -:   59:#include <string.h>
+        -:   60:#include "apps.h"
+        -:   61:#include <openssl/pem.h>
+        -:   62:#include <openssl/err.h>
+        -:   63:#include <openssl/evp.h>
+        -:   64:#include <openssl/pkcs12.h>
+        -:   65:
+        -:   66:#define PROG pkcs8_main
+        -:   67:
+        -:   68:int MAIN(int, char **);
+        -:   69:
+    #####:   70:int MAIN(int argc, char **argv)
+        -:   71:	{
+        -:   72:	ENGINE *e = NULL;
+        -:   73:	char **args, *infile = NULL, *outfile = NULL;
+        -:   74:	char *passargin = NULL, *passargout = NULL;
+        -:   75:	BIO *in = NULL, *out = NULL;
+        -:   76:	int topk8 = 0;
+        -:   77:	int pbe_nid = -1;
+        -:   78:	const EVP_CIPHER *cipher = NULL;
+        -:   79:	int iter = PKCS12_DEFAULT_ITER;
+        -:   80:	int informat, outformat;
+        -:   81:	int p8_broken = PKCS8_OK;
+        -:   82:	int nocrypt = 0;
+        -:   83:	X509_SIG *p8 = NULL;
+        -:   84:	PKCS8_PRIV_KEY_INFO *p8inf = NULL;
+        -:   85:	EVP_PKEY *pkey=NULL;
+    #####:   86:	char pass[50], *passin = NULL, *passout = NULL, *p8pass = NULL;
+        -:   87:	int badarg = 0;
+        -:   88:	int ret = 1;
+        -:   89:#ifndef OPENSSL_NO_ENGINE
+        -:   90:	char *engine=NULL;
+        -:   91:#endif
+        -:   92:
+    #####:   93:	if (bio_err == NULL) bio_err = BIO_new_fp (stderr, BIO_NOCLOSE);
+        -:   94:
+    #####:   95:	if (!load_config(bio_err, NULL))
+        -:   96:		goto end;
+        -:   97:
+        -:   98:	informat=FORMAT_PEM;
+        -:   99:	outformat=FORMAT_PEM;
+        -:  100:
+    #####:  101:	ERR_load_crypto_strings();
+    #####:  102:	OpenSSL_add_all_algorithms();
+    #####:  103:	args = argv + 1;
+    #####:  104:	while (!badarg && *args && *args[0] == '-')
+        -:  105:		{
+    #####:  106:		if (!strcmp(*args,"-v2"))
+        -:  107:			{
+    #####:  108:			if (args[1])
+        -:  109:				{
+    #####:  110:				args++;
+    #####:  111:				cipher=EVP_get_cipherbyname(*args);
+    #####:  112:				if (!cipher)
+        -:  113:					{
+    #####:  114:					BIO_printf(bio_err,
+        -:  115:						 "Unknown cipher %s\n", *args);
+        -:  116:					badarg = 1;
+        -:  117:					}
+        -:  118:				}
+        -:  119:			else
+        -:  120:				badarg = 1;
+        -:  121:			}
+    #####:  122:		else if (!strcmp(*args,"-v1"))
+        -:  123:			{
+    #####:  124:			if (args[1])
+        -:  125:				{
+    #####:  126:				args++;
+    #####:  127:				pbe_nid=OBJ_txt2nid(*args);
+    #####:  128:				if (pbe_nid == NID_undef)
+        -:  129:					{
+    #####:  130:					BIO_printf(bio_err,
+        -:  131:						 "Unknown PBE algorithm %s\n", *args);
+        -:  132:					badarg = 1;
+        -:  133:					}
+        -:  134:				}
+        -:  135:			else
+        -:  136:				badarg = 1;
+        -:  137:			}
+    #####:  138:		else if (!strcmp(*args,"-inform"))
+        -:  139:			{
+    #####:  140:			if (args[1])
+        -:  141:				{
+    #####:  142:				args++;
+    #####:  143:				informat=str2fmt(*args);
+        -:  144:				}
+        -:  145:			else badarg = 1;
+        -:  146:			}
+    #####:  147:		else if (!strcmp(*args,"-outform"))
+        -:  148:			{
+    #####:  149:			if (args[1])
+        -:  150:				{
+    #####:  151:				args++;
+    #####:  152:				outformat=str2fmt(*args);
+        -:  153:				}
+        -:  154:			else badarg = 1;
+        -:  155:			}
+    #####:  156:		else if (!strcmp (*args, "-topk8"))
+        -:  157:			topk8 = 1;
+    #####:  158:		else if (!strcmp (*args, "-noiter"))
+        -:  159:			iter = 1;
+    #####:  160:		else if (!strcmp (*args, "-nocrypt"))
+        -:  161:			nocrypt = 1;
+    #####:  162:		else if (!strcmp (*args, "-nooct"))
+        -:  163:			p8_broken = PKCS8_NO_OCTET;
+    #####:  164:		else if (!strcmp (*args, "-nsdb"))
+        -:  165:			p8_broken = PKCS8_NS_DB;
+    #####:  166:		else if (!strcmp (*args, "-embed"))
+        -:  167:			p8_broken = PKCS8_EMBEDDED_PARAM;
+    #####:  168:		else if (!strcmp(*args,"-passin"))
+        -:  169:			{
+    #####:  170:			if (!args[1]) goto bad;
+    #####:  171:			passargin= *(++args);
+        -:  172:			}
+    #####:  173:		else if (!strcmp(*args,"-passout"))
+        -:  174:			{
+    #####:  175:			if (!args[1]) goto bad;
+    #####:  176:			passargout= *(++args);
+        -:  177:			}
+        -:  178:#ifndef OPENSSL_NO_ENGINE
+    #####:  179:		else if (strcmp(*args,"-engine") == 0)
+        -:  180:			{
+    #####:  181:			if (!args[1]) goto bad;
+    #####:  182:			engine= *(++args);
+        -:  183:			}
+        -:  184:#endif
+    #####:  185:		else if (!strcmp (*args, "-in"))
+        -:  186:			{
+    #####:  187:			if (args[1])
+        -:  188:				{
+    #####:  189:				args++;
+        -:  190:				infile = *args;
+        -:  191:				}
+        -:  192:			else badarg = 1;
+        -:  193:			}
+    #####:  194:		else if (!strcmp (*args, "-out"))
+        -:  195:			{
+    #####:  196:			if (args[1])
+        -:  197:				{
+    #####:  198:				args++;
+        -:  199:				outfile = *args;
+        -:  200:				}
+        -:  201:			else badarg = 1;
+        -:  202:			}
+        -:  203:		else badarg = 1;
+    #####:  204:		args++;
+        -:  205:		}
+        -:  206:
+    #####:  207:	if (badarg)
+        -:  208:		{
+        -:  209:		bad:
+    #####:  210:		BIO_printf(bio_err, "Usage pkcs8 [options]\n");
+    #####:  211:		BIO_printf(bio_err, "where options are\n");
+    #####:  212:		BIO_printf(bio_err, "-in file        input file\n");
+    #####:  213:		BIO_printf(bio_err, "-inform X       input format (DER or PEM)\n");
+    #####:  214:		BIO_printf(bio_err, "-passin arg     input file pass phrase source\n");
+    #####:  215:		BIO_printf(bio_err, "-outform X      output format (DER or PEM)\n");
+    #####:  216:		BIO_printf(bio_err, "-out file       output file\n");
+    #####:  217:		BIO_printf(bio_err, "-passout arg    output file pass phrase source\n");
+    #####:  218:		BIO_printf(bio_err, "-topk8          output PKCS8 file\n");
+    #####:  219:		BIO_printf(bio_err, "-nooct          use (nonstandard) no octet format\n");
+    #####:  220:		BIO_printf(bio_err, "-embed          use (nonstandard) embedded DSA parameters format\n");
+    #####:  221:		BIO_printf(bio_err, "-nsdb           use (nonstandard) DSA Netscape DB format\n");
+    #####:  222:		BIO_printf(bio_err, "-noiter         use 1 as iteration count\n");
+    #####:  223:		BIO_printf(bio_err, "-nocrypt        use or expect unencrypted private key\n");
+    #####:  224:		BIO_printf(bio_err, "-v2 alg         use PKCS#5 v2.0 and cipher \"alg\"\n");
+    #####:  225:		BIO_printf(bio_err, "-v1 obj         use PKCS#5 v1.5 and cipher \"alg\"\n");
+        -:  226:#ifndef OPENSSL_NO_ENGINE
+    #####:  227:		BIO_printf(bio_err," -engine e       use engine e, possibly a hardware device.\n");
+        -:  228:#endif
+    #####:  229:		goto end;
+        -:  230:		}
+        -:  231:
+        -:  232:#ifndef OPENSSL_NO_ENGINE
+    #####:  233:        e = setup_engine(bio_err, engine, 0);
+        -:  234:#endif
+        -:  235:
+    #####:  236:	if (!app_passwd(bio_err, passargin, passargout, &passin, &passout))
+        -:  237:		{
+    #####:  238:		BIO_printf(bio_err, "Error getting passwords\n");
+    #####:  239:		goto end;
+        -:  240:		}
+        -:  241:
+    #####:  242:	if ((pbe_nid == -1) && !cipher)
+        -:  243:		pbe_nid = NID_pbeWithMD5AndDES_CBC;
+        -:  244:
+    #####:  245:	if (infile)
+        -:  246:		{
+    #####:  247:		if (!(in = BIO_new_file(infile, "rb")))
+        -:  248:			{
+    #####:  249:			BIO_printf(bio_err,
+        -:  250:				 "Can't open input file %s\n", infile);
+    #####:  251:			goto end;
+        -:  252:			}
+        -:  253:		}
+        -:  254:	else
+    #####:  255:		in = BIO_new_fp (stdin, BIO_NOCLOSE);
+        -:  256:
+    #####:  257:	if (outfile)
+        -:  258:		{
+    #####:  259:		if (!(out = BIO_new_file (outfile, "wb")))
+        -:  260:			{
+    #####:  261:			BIO_printf(bio_err,
+        -:  262:				 "Can't open output file %s\n", outfile);
+    #####:  263:			goto end;
+        -:  264:			}
+        -:  265:		}
+        -:  266:	else
+        -:  267:		{
+    #####:  268:		out = BIO_new_fp (stdout, BIO_NOCLOSE);
+        -:  269:#ifdef OPENSSL_SYS_VMS
+        -:  270:			{
+        -:  271:			BIO *tmpbio = BIO_new(BIO_f_linebuffer());
+        -:  272:			out = BIO_push(tmpbio, out);
+        -:  273:			}
+        -:  274:#endif
+        -:  275:		}
+    #####:  276:	if (topk8)
+        -:  277:		{
+    #####:  278:		pkey = load_key(bio_err, infile, informat, 1,
+        -:  279:			passin, e, "key");
+    #####:  280:		if (!pkey)
+        -:  281:			goto end;
+    #####:  282:		if (!(p8inf = EVP_PKEY2PKCS8_broken(pkey, p8_broken)))
+        -:  283:			{
+    #####:  284:			BIO_printf(bio_err, "Error converting key\n");
+    #####:  285:			ERR_print_errors(bio_err);
+    #####:  286:			goto end;
+        -:  287:			}
+    #####:  288:		if (nocrypt)
+        -:  289:			{
+    #####:  290:			if (outformat == FORMAT_PEM) 
+    #####:  291:				PEM_write_bio_PKCS8_PRIV_KEY_INFO(out, p8inf);
+    #####:  292:			else if (outformat == FORMAT_ASN1)
+    #####:  293:				i2d_PKCS8_PRIV_KEY_INFO_bio(out, p8inf);
+        -:  294:			else
+        -:  295:				{
+    #####:  296:				BIO_printf(bio_err, "Bad format specified for key\n");
+    #####:  297:				goto end;
+        -:  298:				}
+        -:  299:			}
+        -:  300:		else
+        -:  301:			{
+    #####:  302:			if (passout)
+        -:  303:				p8pass = passout;
+        -:  304:			else
+        -:  305:				{
+        -:  306:				p8pass = pass;
+    #####:  307:				if (EVP_read_pw_string(pass, sizeof pass, "Enter Encryption Password:", 1))
+        -:  308:					goto end;
+        -:  309:				}
+    #####:  310:			app_RAND_load_file(NULL, bio_err, 0);
+    #####:  311:			if (!(p8 = PKCS8_encrypt(pbe_nid, cipher,
+    #####:  312:					p8pass, strlen(p8pass),
+        -:  313:					NULL, 0, iter, p8inf)))
+        -:  314:				{
+    #####:  315:				BIO_printf(bio_err, "Error encrypting key\n");
+    #####:  316:				ERR_print_errors(bio_err);
+    #####:  317:				goto end;
+        -:  318:				}
+    #####:  319:			app_RAND_write_file(NULL, bio_err);
+    #####:  320:			if (outformat == FORMAT_PEM) 
+    #####:  321:				PEM_write_bio_PKCS8(out, p8);
+    #####:  322:			else if (outformat == FORMAT_ASN1)
+    #####:  323:				i2d_PKCS8_bio(out, p8);
+        -:  324:			else
+        -:  325:				{
+    #####:  326:				BIO_printf(bio_err, "Bad format specified for key\n");
+    #####:  327:				goto end;
+        -:  328:				}
+        -:  329:			}
+        -:  330:
+        -:  331:		ret = 0;
+        -:  332:		goto end;
+        -:  333:		}
+        -:  334:
+    #####:  335:	if (nocrypt)
+        -:  336:		{
+    #####:  337:		if (informat == FORMAT_PEM) 
+    #####:  338:			p8inf = PEM_read_bio_PKCS8_PRIV_KEY_INFO(in,NULL,NULL, NULL);
+    #####:  339:		else if (informat == FORMAT_ASN1)
+    #####:  340:			p8inf = d2i_PKCS8_PRIV_KEY_INFO_bio(in, NULL);
+        -:  341:		else
+        -:  342:			{
+    #####:  343:			BIO_printf(bio_err, "Bad format specified for key\n");
+    #####:  344:			goto end;
+        -:  345:			}
+        -:  346:		}
+        -:  347:	else
+        -:  348:		{
+    #####:  349:		if (informat == FORMAT_PEM) 
+    #####:  350:			p8 = PEM_read_bio_PKCS8(in, NULL, NULL, NULL);
+    #####:  351:		else if (informat == FORMAT_ASN1)
+    #####:  352:			p8 = d2i_PKCS8_bio(in, NULL);
+        -:  353:		else
+        -:  354:			{
+    #####:  355:			BIO_printf(bio_err, "Bad format specified for key\n");
+    #####:  356:			goto end;
+        -:  357:			}
+        -:  358:
+    #####:  359:		if (!p8)
+        -:  360:			{
+    #####:  361:			BIO_printf (bio_err, "Error reading key\n");
+    #####:  362:			ERR_print_errors(bio_err);
+    #####:  363:			goto end;
+        -:  364:			}
+    #####:  365:		if (passin)
+        -:  366:			p8pass = passin;
+        -:  367:		else
+        -:  368:			{
+        -:  369:			p8pass = pass;
+    #####:  370:			EVP_read_pw_string(pass, sizeof pass, "Enter Password:", 0);
+        -:  371:			}
+    #####:  372:		p8inf = PKCS8_decrypt(p8, p8pass, strlen(p8pass));
+        -:  373:		}
+        -:  374:
+    #####:  375:	if (!p8inf)
+        -:  376:		{
+    #####:  377:		BIO_printf(bio_err, "Error decrypting key\n");
+    #####:  378:		ERR_print_errors(bio_err);
+    #####:  379:		goto end;
+        -:  380:		}
+        -:  381:
+    #####:  382:	if (!(pkey = EVP_PKCS82PKEY(p8inf)))
+        -:  383:		{
+    #####:  384:		BIO_printf(bio_err, "Error converting key\n");
+    #####:  385:		ERR_print_errors(bio_err);
+    #####:  386:		goto end;
+        -:  387:		}
+        -:  388:	
+    #####:  389:	if (p8inf->broken)
+        -:  390:		{
+    #####:  391:		BIO_printf(bio_err, "Warning: broken key encoding: ");
+    #####:  392:		switch (p8inf->broken)
+        -:  393:			{
+        -:  394:			case PKCS8_NO_OCTET:
+    #####:  395:			BIO_printf(bio_err, "No Octet String in PrivateKey\n");
+    #####:  396:			break;
+        -:  397:
+        -:  398:			case PKCS8_EMBEDDED_PARAM:
+    #####:  399:			BIO_printf(bio_err, "DSA parameters included in PrivateKey\n");
+    #####:  400:			break;
+        -:  401:
+        -:  402:			case PKCS8_NS_DB:
+    #####:  403:			BIO_printf(bio_err, "DSA public key include in PrivateKey\n");
+    #####:  404:			break;
+        -:  405:
+        -:  406:			case PKCS8_NEG_PRIVKEY:
+    #####:  407:			BIO_printf(bio_err, "DSA private key value is negative\n");
+    #####:  408:			break;
+        -:  409:
+        -:  410:			default:
+    #####:  411:			BIO_printf(bio_err, "Unknown broken type\n");
+    #####:  412:			break;
+        -:  413:		}
+        -:  414:	}
+        -:  415:	
+    #####:  416:	if (outformat == FORMAT_PEM) 
+    #####:  417:		PEM_write_bio_PrivateKey(out, pkey, NULL, NULL, 0, NULL, passout);
+    #####:  418:	else if (outformat == FORMAT_ASN1)
+    #####:  419:		i2d_PrivateKey_bio(out, pkey);
+        -:  420:	else
+        -:  421:		{
+    #####:  422:		BIO_printf(bio_err, "Bad format specified for key\n");
+    #####:  423:			goto end;
+        -:  424:		}
+        -:  425:	ret = 0;
+        -:  426:
+        -:  427:	end:
+    #####:  428:	X509_SIG_free(p8);
+    #####:  429:	PKCS8_PRIV_KEY_INFO_free(p8inf);
+    #####:  430:	EVP_PKEY_free(pkey);
+    #####:  431:	BIO_free_all(out);
+    #####:  432:	BIO_free(in);
+    #####:  433:	if (passin)
+    #####:  434:		OPENSSL_free(passin);
+    #####:  435:	if (passout)
+    #####:  436:		OPENSSL_free(passout);
+        -:  437:
+    #####:  438:	return ret;
+        -:  439:	}

@@ -1,0 +1,339 @@
+        -:    0:Source:stack.c
+        -:    0:Graph:stack.gcno
+        -:    0:Data:stack.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* crypto/stack/stack.c */
+        -:    2:/* Copyright (C) 1995-1998 Eric Young (eay@cryptsoft.com)
+        -:    3: * All rights reserved.
+        -:    4: *
+        -:    5: * This package is an SSL implementation written
+        -:    6: * by Eric Young (eay@cryptsoft.com).
+        -:    7: * The implementation was written so as to conform with Netscapes SSL.
+        -:    8: * 
+        -:    9: * This library is free for commercial and non-commercial use as long as
+        -:   10: * the following conditions are aheared to.  The following conditions
+        -:   11: * apply to all code found in this distribution, be it the RC4, RSA,
+        -:   12: * lhash, DES, etc., code; not just the SSL code.  The SSL documentation
+        -:   13: * included with this distribution is covered by the same copyright terms
+        -:   14: * except that the holder is Tim Hudson (tjh@cryptsoft.com).
+        -:   15: * 
+        -:   16: * Copyright remains Eric Young's, and as such any Copyright notices in
+        -:   17: * the code are not to be removed.
+        -:   18: * If this package is used in a product, Eric Young should be given attribution
+        -:   19: * as the author of the parts of the library used.
+        -:   20: * This can be in the form of a textual message at program startup or
+        -:   21: * in documentation (online or textual) provided with the package.
+        -:   22: * 
+        -:   23: * Redistribution and use in source and binary forms, with or without
+        -:   24: * modification, are permitted provided that the following conditions
+        -:   25: * are met:
+        -:   26: * 1. Redistributions of source code must retain the copyright
+        -:   27: *    notice, this list of conditions and the following disclaimer.
+        -:   28: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   29: *    notice, this list of conditions and the following disclaimer in the
+        -:   30: *    documentation and/or other materials provided with the distribution.
+        -:   31: * 3. All advertising materials mentioning features or use of this software
+        -:   32: *    must display the following acknowledgement:
+        -:   33: *    "This product includes cryptographic software written by
+        -:   34: *     Eric Young (eay@cryptsoft.com)"
+        -:   35: *    The word 'cryptographic' can be left out if the rouines from the library
+        -:   36: *    being used are not cryptographic related :-).
+        -:   37: * 4. If you include any Windows specific code (or a derivative thereof) from 
+        -:   38: *    the apps directory (application code) you must include an acknowledgement:
+        -:   39: *    "This product includes software written by Tim Hudson (tjh@cryptsoft.com)"
+        -:   40: * 
+        -:   41: * THIS SOFTWARE IS PROVIDED BY ERIC YOUNG ``AS IS'' AND
+        -:   42: * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   43: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+        -:   44: * ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+        -:   45: * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+        -:   46: * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+        -:   47: * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   48: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+        -:   49: * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+        -:   50: * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+        -:   51: * SUCH DAMAGE.
+        -:   52: * 
+        -:   53: * The licence and distribution terms for any publically available version or
+        -:   54: * derivative of this code cannot be changed.  i.e. this code cannot simply be
+        -:   55: * copied and put under another distribution licence
+        -:   56: * [including the GNU Public Licence.]
+        -:   57: */
+        -:   58:
+        -:   59:/* Code for stacks
+        -:   60: * Author - Eric Young v 1.0
+        -:   61: * 1.2 eay 12-Mar-97 -	Modified sk_find so that it _DOES_ return the
+        -:   62: *			lowest index for the searched item.
+        -:   63: *
+        -:   64: * 1.1 eay - Take from netdb and added to SSLeay
+        -:   65: *
+        -:   66: * 1.0 eay - First version 29/07/92
+        -:   67: */
+        -:   68:#include <stdio.h>
+        -:   69:#include "cryptlib.h"
+        -:   70:#include <openssl/stack.h>
+        -:   71:#include <openssl/objects.h>
+        -:   72:
+        -:   73:#undef MIN_NODES
+        -:   74:#define MIN_NODES	4
+        -:   75:
+        -:   76:const char STACK_version[]="Stack" OPENSSL_VERSION_PTEXT;
+        -:   77:
+        -:   78:#include <errno.h>
+        -:   79:
+    10000:   80:int (*sk_set_cmp_func(_STACK *sk, int (*c)(const void *, const void *)))
+        -:   81:		(const void *, const void *)
+        -:   82:	{
+    10000:   83:	int (*old)(const void *,const void *)=sk->comp;
+        -:   84:
+    10000:   85:	if (sk->comp != c)
+    10000:   86:		sk->sorted=0;
+    10000:   87:	sk->comp=c;
+        -:   88:
+    10000:   89:	return old;
+        -:   90:	}
+        -:   91:
+    20000:   92:_STACK *sk_dup(_STACK *sk)
+        -:   93:	{
+        -:   94:	_STACK *ret;
+        -:   95:	char **s;
+        -:   96:
+    20000:   97:	if ((ret=sk_new(sk->comp)) == NULL) goto err;
+    20000:   98:	s=(char **)OPENSSL_realloc((char *)ret->data,
+        -:   99:		(unsigned int)sizeof(char *)*sk->num_alloc);
+    20000:  100:	if (s == NULL) goto err;
+    20000:  101:	ret->data=s;
+        -:  102:
+    20000:  103:	ret->num=sk->num;
+    20000:  104:	memcpy(ret->data,sk->data,sizeof(char *)*sk->num);
+    20000:  105:	ret->sorted=sk->sorted;
+    20000:  106:	ret->num_alloc=sk->num_alloc;
+    20000:  107:	ret->comp=sk->comp;
+    20000:  108:	return(ret);
+        -:  109:err:
+    #####:  110:	if(ret)
+    #####:  111:		sk_free(ret);
+        -:  112:	return(NULL);
+        -:  113:	}
+        -:  114:
+  1343455:  115:_STACK *sk_new_null(void)
+        -:  116:	{
+  1343455:  117:	return sk_new((int (*)(const void *, const void *))0);
+        -:  118:	}
+        -:  119:
+  1393455:  120:_STACK *sk_new(int (*c)(const void *, const void *))
+        -:  121:	{
+        -:  122:	_STACK *ret;
+        -:  123:	int i;
+        -:  124:
+  1393455:  125:	if ((ret=OPENSSL_malloc(sizeof(_STACK))) == NULL)
+        -:  126:		goto err;
+  1393455:  127:	if ((ret->data=OPENSSL_malloc(sizeof(char *)*MIN_NODES)) == NULL)
+        -:  128:		goto err;
+  5573820:  129:	for (i=0; i<MIN_NODES; i++)
+  5573820:  130:		ret->data[i]=NULL;
+  1393455:  131:	ret->comp=c;
+  1393455:  132:	ret->num_alloc=MIN_NODES;
+  1393455:  133:	ret->num=0;
+  1393455:  134:	ret->sorted=0;
+  1393455:  135:	return(ret);
+        -:  136:err:
+    #####:  137:	if(ret)
+    #####:  138:		OPENSSL_free(ret);
+        -:  139:	return(NULL);
+        -:  140:	}
+        -:  141:
+  4133640:  142:int sk_insert(_STACK *st, void *data, int loc)
+        -:  143:	{
+        -:  144:	char **s;
+        -:  145:
+  4133640:  146:	if(st == NULL) return 0;
+  4133640:  147:	if (st->num_alloc <= st->num+1)
+        -:  148:		{
+   462381:  149:		s=OPENSSL_realloc((char *)st->data,
+        -:  150:			(unsigned int)sizeof(char *)*st->num_alloc*2);
+   462381:  151:		if (s == NULL)
+        -:  152:			return(0);
+   462381:  153:		st->data=s;
+   462381:  154:		st->num_alloc*=2;
+        -:  155:		}
+  4133640:  156:	if ((loc >= (int)st->num) || (loc < 0))
+  4063640:  157:		st->data[st->num]=data;
+        -:  158:	else
+        -:  159:		{
+        -:  160:		int i;
+        -:  161:		char **f,**t;
+        -:  162:
+    70000:  163:		f=st->data;
+    70000:  164:		t=&(st->data[1]);
+   420000:  165:		for (i=st->num; i>=loc; i--)
+   350000:  166:			t[i]=f[i];
+        -:  167:			
+        -:  168:#ifdef undef /* no memmove on sunos :-( */
+        -:  169:		memmove(&(st->data[loc+1]),
+        -:  170:			&(st->data[loc]),
+        -:  171:			sizeof(char *)*(st->num-loc));
+        -:  172:#endif
+    70000:  173:		st->data[loc]=data;
+        -:  174:		}
+  4133640:  175:	st->num++;
+  4133640:  176:	st->sorted=0;
+  4133640:  177:	return(st->num);
+        -:  178:	}
+        -:  179:
+   417956:  180:void *sk_delete_ptr(_STACK *st, void *p)
+        -:  181:	{
+        -:  182:	int i;
+        -:  183:
+  1245908:  184:	for (i=0; i<st->num; i++)
+   905908:  185:		if (st->data[i] == p)
+    77956:  186:			return(sk_delete(st,i));
+        -:  187:	return(NULL);
+        -:  188:	}
+        -:  189:
+   107960:  190:void *sk_delete(_STACK *st, int loc)
+        -:  191:	{
+        -:  192:	char *ret;
+        -:  193:	int i,j;
+        -:  194:
+   107960:  195:	if(!st || (loc < 0) || (loc >= st->num)) return NULL;
+        -:  196:
+   107960:  197:	ret=st->data[loc];
+   107960:  198:	if (loc != st->num-1)
+        -:  199:		{
+        -:  200:		j=st->num-1;
+     2805:  201:		for (i=loc; i<j; i++)
+     2805:  202:			st->data[i]=st->data[i+1];
+        -:  203:		/* In theory memcpy is not safe for this
+        -:  204:		 * memcpy( &(st->data[loc]),
+        -:  205:		 *	&(st->data[loc+1]),
+        -:  206:		 *	sizeof(char *)*(st->num-loc-1));
+        -:  207:		 */
+        -:  208:		}
+   107960:  209:	st->num--;
+   107960:  210:	return(ret);
+        -:  211:	}
+        -:  212:
+    44221:  213:static int internal_find(_STACK *st, void *data, int ret_val_options)
+        -:  214:	{
+        -:  215:	const void * const *r;
+        -:  216:	int i;
+        -:  217:
+    44221:  218:	if(st == NULL) return -1;
+        -:  219:
+    44221:  220:	if (st->comp == NULL)
+        -:  221:		{
+    #####:  222:		for (i=0; i<st->num; i++)
+    #####:  223:			if (st->data[i] == data)
+        -:  224:				return(i);
+        -:  225:		return(-1);
+        -:  226:		}
+    44221:  227:	sk_sort(st);
+    44221:  228:	if (data == NULL) return(-1);
+    44221:  229:	r=OBJ_bsearch_ex_(&data,st->data,st->num,sizeof(void *),st->comp,
+        -:  230:			  ret_val_options);
+    44221:  231:	if (r == NULL) return(-1);
+    19639:  232:	return (int)((char **)r-st->data);
+        -:  233:	}
+        -:  234:
+    44221:  235:int sk_find(_STACK *st, void *data)
+        -:  236:	{
+    44221:  237:	return internal_find(st, data, OBJ_BSEARCH_FIRST_VALUE_ON_MATCH);
+        -:  238:	}
+    #####:  239:int sk_find_ex(_STACK *st, void *data)
+        -:  240:	{
+    #####:  241:	return internal_find(st, data, OBJ_BSEARCH_VALUE_ON_NOMATCH);
+        -:  242:	}
+        -:  243:
+  4063640:  244:int sk_push(_STACK *st, void *data)
+        -:  245:	{
+  4063640:  246:	return(sk_insert(st,data,st->num));
+        -:  247:	}
+        -:  248:
+    #####:  249:int sk_unshift(_STACK *st, void *data)
+        -:  250:	{
+    #####:  251:	return(sk_insert(st,data,0));
+        -:  252:	}
+        -:  253:
+    #####:  254:void *sk_shift(_STACK *st)
+        -:  255:	{
+    #####:  256:	if (st == NULL) return(NULL);
+    #####:  257:	if (st->num <= 0) return(NULL);
+    #####:  258:	return(sk_delete(st,0));
+        -:  259:	}
+        -:  260:
+        4:  261:void *sk_pop(_STACK *st)
+        -:  262:	{
+        4:  263:	if (st == NULL) return(NULL);
+        4:  264:	if (st->num <= 0) return(NULL);
+        4:  265:	return(sk_delete(st,st->num-1));
+        -:  266:	}
+        -:  267:
+    #####:  268:void sk_zero(_STACK *st)
+        -:  269:	{
+    #####:  270:	if (st == NULL) return;
+    #####:  271:	if (st->num <= 0) return;
+    #####:  272:	memset((char *)st->data,0,sizeof(st->data)*st->num);
+    #####:  273:	st->num=0;
+        -:  274:	}
+        -:  275:
+   674340:  276:void sk_pop_free(_STACK *st, void (*func)(void *))
+        -:  277:	{
+        -:  278:	int i;
+        -:  279:
+  1348680:  280:	if (st == NULL) return;
+  1048783:  281:	for (i=0; i<st->num; i++)
+  1048783:  282:		if (st->data[i] != NULL)
+  1048783:  283:			func(st->data[i]);
+   644340:  284:	sk_free(st);
+        -:  285:	}
+        -:  286:
+  1470732:  287:void sk_free(_STACK *st)
+        -:  288:	{
+  2941464:  289:	if (st == NULL) return;
+  1373455:  290:	if (st->data != NULL) OPENSSL_free(st->data);
+  1373455:  291:	OPENSSL_free(st);
+        -:  292:	}
+        -:  293:
+ 10579768:  294:int sk_num(const _STACK *st)
+        -:  295:{
+ 10579768:  296:	if(st == NULL) return -1;
+ 10440653:  297:	return st->num;
+        -:  298:}
+        -:  299:
+  8343796:  300:void *sk_value(const _STACK *st, int i)
+        -:  301:{
+  8343796:  302:	if(!st || (i < 0) || (i >= st->num)) return NULL;
+  8343796:  303:	return st->data[i];
+        -:  304:}
+        -:  305:
+    30000:  306:void *sk_set(_STACK *st, int i, void *value)
+        -:  307:{
+    30000:  308:	if(!st || (i < 0) || (i >= st->num)) return NULL;
+    30000:  309:	return (st->data[i] = value);
+        -:  310:}
+        -:  311:
+    64221:  312:void sk_sort(_STACK *st)
+        -:  313:	{
+    64221:  314:	if (st && !st->sorted)
+        -:  315:		{
+        -:  316:		int (*comp_func)(const void *,const void *);
+        -:  317:
+        -:  318:		/* same comment as in sk_find ... previously st->comp was declared
+        -:  319:		 * as a (void*,void*) callback type, but this made the population
+        -:  320:		 * of the callback pointer illogical - our callbacks compare
+        -:  321:		 * type** with type**, so we leave the casting until absolutely
+        -:  322:		 * necessary (ie. "now"). */
+    40000:  323:		comp_func=(int (*)(const void *,const void *))(st->comp);
+    40000:  324:		qsort(st->data,st->num,sizeof(char *), comp_func);
+    40000:  325:		st->sorted=1;
+        -:  326:		}
+    64221:  327:	}
+        -:  328:
+    #####:  329:int sk_is_sorted(const _STACK *st)
+        -:  330:	{
+    #####:  331:	if (!st)
+        -:  332:		return 1;
+    #####:  333:	return st->sorted;
+        -:  334:	}

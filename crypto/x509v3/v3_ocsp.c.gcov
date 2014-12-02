@@ -1,0 +1,294 @@
+        -:    0:Source:v3_ocsp.c
+        -:    0:Graph:v3_ocsp.gcno
+        -:    0:Data:v3_ocsp.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* v3_ocsp.c */
+        -:    2:/* Written by Dr Stephen N Henson (steve@openssl.org) for the OpenSSL
+        -:    3: * project 1999.
+        -:    4: */
+        -:    5:/* ====================================================================
+        -:    6: * Copyright (c) 1999 The OpenSSL Project.  All rights reserved.
+        -:    7: *
+        -:    8: * Redistribution and use in source and binary forms, with or without
+        -:    9: * modification, are permitted provided that the following conditions
+        -:   10: * are met:
+        -:   11: *
+        -:   12: * 1. Redistributions of source code must retain the above copyright
+        -:   13: *    notice, this list of conditions and the following disclaimer. 
+        -:   14: *
+        -:   15: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   16: *    notice, this list of conditions and the following disclaimer in
+        -:   17: *    the documentation and/or other materials provided with the
+        -:   18: *    distribution.
+        -:   19: *
+        -:   20: * 3. All advertising materials mentioning features or use of this
+        -:   21: *    software must display the following acknowledgment:
+        -:   22: *    "This product includes software developed by the OpenSSL Project
+        -:   23: *    for use in the OpenSSL Toolkit. (http://www.OpenSSL.org/)"
+        -:   24: *
+        -:   25: * 4. The names "OpenSSL Toolkit" and "OpenSSL Project" must not be used to
+        -:   26: *    endorse or promote products derived from this software without
+        -:   27: *    prior written permission. For written permission, please contact
+        -:   28: *    licensing@OpenSSL.org.
+        -:   29: *
+        -:   30: * 5. Products derived from this software may not be called "OpenSSL"
+        -:   31: *    nor may "OpenSSL" appear in their names without prior written
+        -:   32: *    permission of the OpenSSL Project.
+        -:   33: *
+        -:   34: * 6. Redistributions of any form whatsoever must retain the following
+        -:   35: *    acknowledgment:
+        -:   36: *    "This product includes software developed by the OpenSSL Project
+        -:   37: *    for use in the OpenSSL Toolkit (http://www.OpenSSL.org/)"
+        -:   38: *
+        -:   39: * THIS SOFTWARE IS PROVIDED BY THE OpenSSL PROJECT ``AS IS'' AND ANY
+        -:   40: * EXPRESSED OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   41: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+        -:   42: * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE OpenSSL PROJECT OR
+        -:   43: * ITS CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+        -:   44: * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+        -:   45: * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+        -:   46: * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   47: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+        -:   48: * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+        -:   49: * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+        -:   50: * OF THE POSSIBILITY OF SUCH DAMAGE.
+        -:   51: * ====================================================================
+        -:   52: *
+        -:   53: * This product includes cryptographic software written by Eric Young
+        -:   54: * (eay@cryptsoft.com).  This product includes software written by Tim
+        -:   55: * Hudson (tjh@cryptsoft.com).
+        -:   56: *
+        -:   57: */
+        -:   58:
+        -:   59:#ifndef OPENSSL_NO_OCSP
+        -:   60:
+        -:   61:#include <stdio.h>
+        -:   62:#include "cryptlib.h"
+        -:   63:#include <openssl/conf.h>
+        -:   64:#include <openssl/asn1.h>
+        -:   65:#include <openssl/ocsp.h>
+        -:   66:#include <openssl/x509v3.h>
+        -:   67:
+        -:   68:/* OCSP extensions and a couple of CRL entry extensions
+        -:   69: */
+        -:   70:
+        -:   71:static int i2r_ocsp_crlid(const X509V3_EXT_METHOD *method, void *nonce,
+        -:   72:			  BIO *out, int indent);
+        -:   73:static int i2r_ocsp_acutoff(const X509V3_EXT_METHOD *method, void *nonce,
+        -:   74:			    BIO *out, int indent);
+        -:   75:static int i2r_object(const X509V3_EXT_METHOD *method, void *obj, BIO *out,
+        -:   76:		      int indent);
+        -:   77:
+        -:   78:static void *ocsp_nonce_new(void);
+        -:   79:static int i2d_ocsp_nonce(void *a, unsigned char **pp);
+        -:   80:static void *d2i_ocsp_nonce(void *a, const unsigned char **pp, long length);
+        -:   81:static void ocsp_nonce_free(void *a);
+        -:   82:static int i2r_ocsp_nonce(const X509V3_EXT_METHOD *method, void *nonce,
+        -:   83:			  BIO *out, int indent);
+        -:   84:
+        -:   85:static int i2r_ocsp_nocheck(const X509V3_EXT_METHOD *method,
+        -:   86:			    void *nocheck, BIO *out, int indent);
+        -:   87:static void *s2i_ocsp_nocheck(const X509V3_EXT_METHOD *method, X509V3_CTX *ctx,
+        -:   88:			      const char *str);
+        -:   89:static int i2r_ocsp_serviceloc(const X509V3_EXT_METHOD *method, void *in,
+        -:   90:			       BIO *bp, int ind);
+        -:   91:
+        -:   92:const X509V3_EXT_METHOD v3_ocsp_crlid = {
+        -:   93:	NID_id_pkix_OCSP_CrlID, 0, ASN1_ITEM_ref(OCSP_CRLID),
+        -:   94:	0,0,0,0,
+        -:   95:	0,0,
+        -:   96:	0,0,
+        -:   97:	i2r_ocsp_crlid,0,
+        -:   98:	NULL
+        -:   99:};
+        -:  100:
+        -:  101:const X509V3_EXT_METHOD v3_ocsp_acutoff = {
+        -:  102:	NID_id_pkix_OCSP_archiveCutoff, 0, ASN1_ITEM_ref(ASN1_GENERALIZEDTIME),
+        -:  103:	0,0,0,0,
+        -:  104:	0,0,
+        -:  105:	0,0,
+        -:  106:	i2r_ocsp_acutoff,0,
+        -:  107:	NULL
+        -:  108:};
+        -:  109:
+        -:  110:const X509V3_EXT_METHOD v3_crl_invdate = {
+        -:  111:	NID_invalidity_date, 0, ASN1_ITEM_ref(ASN1_GENERALIZEDTIME),
+        -:  112:	0,0,0,0,
+        -:  113:	0,0,
+        -:  114:	0,0,
+        -:  115:	i2r_ocsp_acutoff,0,
+        -:  116:	NULL
+        -:  117:};
+        -:  118:
+        -:  119:const X509V3_EXT_METHOD v3_crl_hold = {
+        -:  120:	NID_hold_instruction_code, 0, ASN1_ITEM_ref(ASN1_OBJECT),
+        -:  121:	0,0,0,0,
+        -:  122:	0,0,
+        -:  123:	0,0,
+        -:  124:	i2r_object,0,
+        -:  125:	NULL
+        -:  126:};
+        -:  127:
+        -:  128:const X509V3_EXT_METHOD v3_ocsp_nonce = {
+        -:  129:	NID_id_pkix_OCSP_Nonce, 0, NULL,
+        -:  130:	ocsp_nonce_new,
+        -:  131:	ocsp_nonce_free,
+        -:  132:	d2i_ocsp_nonce,
+        -:  133:	i2d_ocsp_nonce,
+        -:  134:	0,0,
+        -:  135:	0,0,
+        -:  136:	i2r_ocsp_nonce,0,
+        -:  137:	NULL
+        -:  138:};
+        -:  139:
+        -:  140:const X509V3_EXT_METHOD v3_ocsp_nocheck = {
+        -:  141:	NID_id_pkix_OCSP_noCheck, 0, ASN1_ITEM_ref(ASN1_NULL),
+        -:  142:	0,0,0,0,
+        -:  143:	0,s2i_ocsp_nocheck,
+        -:  144:	0,0,
+        -:  145:	i2r_ocsp_nocheck,0,
+        -:  146:	NULL
+        -:  147:};
+        -:  148:
+        -:  149:const X509V3_EXT_METHOD v3_ocsp_serviceloc = {
+        -:  150:	NID_id_pkix_OCSP_serviceLocator, 0, ASN1_ITEM_ref(OCSP_SERVICELOC),
+        -:  151:	0,0,0,0,
+        -:  152:	0,0,
+        -:  153:	0,0,
+        -:  154:	i2r_ocsp_serviceloc,0,
+        -:  155:	NULL
+        -:  156:};
+        -:  157:
+    #####:  158:static int i2r_ocsp_crlid(const X509V3_EXT_METHOD *method, void *in, BIO *bp,
+        -:  159:			  int ind)
+        -:  160:{
+        -:  161:	OCSP_CRLID *a = in;
+    #####:  162:	if (a->crlUrl)
+        -:  163:	        {
+    #####:  164:		if (BIO_printf(bp, "%*scrlUrl: ", ind, "") <= 0) goto err;
+    #####:  165:		if (!ASN1_STRING_print(bp, (ASN1_STRING*)a->crlUrl)) goto err;
+    #####:  166:		if (BIO_write(bp, "\n", 1) <= 0) goto err;
+        -:  167:		}
+    #####:  168:	if (a->crlNum)
+        -:  169:	        {
+    #####:  170:		if (BIO_printf(bp, "%*scrlNum: ", ind, "") <= 0) goto err;
+    #####:  171:		if (i2a_ASN1_INTEGER(bp, a->crlNum) <= 0) goto err;
+    #####:  172:		if (BIO_write(bp, "\n", 1) <= 0) goto err;
+        -:  173:		}
+    #####:  174:	if (a->crlTime)
+        -:  175:	        {
+    #####:  176:		if (BIO_printf(bp, "%*scrlTime: ", ind, "") <= 0) goto err;
+    #####:  177:		if (!ASN1_GENERALIZEDTIME_print(bp, a->crlTime)) goto err;
+    #####:  178:		if (BIO_write(bp, "\n", 1) <= 0) goto err;
+        -:  179:		}
+        -:  180:	return 1;
+        -:  181:	err:
+        -:  182:	return 0;
+        -:  183:}
+        -:  184:
+    #####:  185:static int i2r_ocsp_acutoff(const X509V3_EXT_METHOD *method, void *cutoff,
+        -:  186:			    BIO *bp, int ind)
+        -:  187:{
+    #####:  188:	if (BIO_printf(bp, "%*s", ind, "") <= 0) return 0;
+    #####:  189:	if(!ASN1_GENERALIZEDTIME_print(bp, cutoff)) return 0;
+    #####:  190:	return 1;
+        -:  191:}
+        -:  192:
+        -:  193:
+    #####:  194:static int i2r_object(const X509V3_EXT_METHOD *method, void *oid, BIO *bp,
+        -:  195:		      int ind)
+        -:  196:{
+    #####:  197:	if (BIO_printf(bp, "%*s", ind, "") <= 0) return 0;
+    #####:  198:	if(i2a_ASN1_OBJECT(bp, oid) <= 0) return 0;
+    #####:  199:	return 1;
+        -:  200:}
+        -:  201:
+        -:  202:/* OCSP nonce. This is needs special treatment because it doesn't have
+        -:  203: * an ASN1 encoding at all: it just contains arbitrary data.
+        -:  204: */
+        -:  205:
+    #####:  206:static void *ocsp_nonce_new(void)
+        -:  207:{
+    #####:  208:	return ASN1_OCTET_STRING_new();
+        -:  209:}
+        -:  210:
+    #####:  211:static int i2d_ocsp_nonce(void *a, unsigned char **pp)
+        -:  212:{
+        -:  213:	ASN1_OCTET_STRING *os = a;
+    #####:  214:	if(pp) {
+    #####:  215:		memcpy(*pp, os->data, os->length);
+    #####:  216:		*pp += os->length;
+        -:  217:	}
+    #####:  218:	return os->length;
+        -:  219:}
+        -:  220:
+    #####:  221:static void *d2i_ocsp_nonce(void *a, const unsigned char **pp, long length)
+        -:  222:{
+        -:  223:	ASN1_OCTET_STRING *os, **pos;
+        -:  224:	pos = a;
+    #####:  225:	if(!pos || !*pos) os = ASN1_OCTET_STRING_new();
+        -:  226:	else os = *pos;
+    #####:  227:	if(!ASN1_OCTET_STRING_set(os, *pp, length)) goto err;
+        -:  228:
+    #####:  229:	*pp += length;
+        -:  230:
+    #####:  231:	if(pos) *pos = os;
+    #####:  232:	return os;
+        -:  233:
+        -:  234:	err:
+    #####:  235:	if(os && (!pos || (*pos != os))) M_ASN1_OCTET_STRING_free(os);
+    #####:  236:	OCSPerr(OCSP_F_D2I_OCSP_NONCE, ERR_R_MALLOC_FAILURE);
+    #####:  237:	return NULL;
+        -:  238:}
+        -:  239:
+    #####:  240:static void ocsp_nonce_free(void *a)
+        -:  241:{
+    #####:  242:	M_ASN1_OCTET_STRING_free(a);
+    #####:  243:}
+        -:  244:
+    #####:  245:static int i2r_ocsp_nonce(const X509V3_EXT_METHOD *method, void *nonce,
+        -:  246:			  BIO *out, int indent)
+        -:  247:{
+    #####:  248:	if(BIO_printf(out, "%*s", indent, "") <= 0) return 0;
+    #####:  249:	if(i2a_ASN1_STRING(out, nonce, V_ASN1_OCTET_STRING) <= 0) return 0;
+    #####:  250:	return 1;
+        -:  251:}
+        -:  252:
+        -:  253:/* Nocheck is just a single NULL. Don't print anything and always set it */
+        -:  254:
+    #####:  255:static int i2r_ocsp_nocheck(const X509V3_EXT_METHOD *method, void *nocheck,
+        -:  256:			    BIO *out, int indent)
+        -:  257:{
+    #####:  258:	return 1;
+        -:  259:}
+        -:  260:
+    #####:  261:static void *s2i_ocsp_nocheck(const X509V3_EXT_METHOD *method, X509V3_CTX *ctx,
+        -:  262:			      const char *str)
+        -:  263:{
+    #####:  264:	return ASN1_NULL_new();
+        -:  265:}
+        -:  266:
+    #####:  267:static int i2r_ocsp_serviceloc(const X509V3_EXT_METHOD *method, void *in,
+        -:  268:			       BIO *bp, int ind)
+        -:  269:        {
+        -:  270:	int i;
+        -:  271:	OCSP_SERVICELOC *a = in;
+        -:  272:	ACCESS_DESCRIPTION *ad;
+        -:  273:
+    #####:  274:        if (BIO_printf(bp, "%*sIssuer: ", ind, "") <= 0) goto err;
+    #####:  275:        if (X509_NAME_print_ex(bp, a->issuer, 0, XN_FLAG_ONELINE) <= 0) goto err;
+    #####:  276:	for (i = 0; i < sk_ACCESS_DESCRIPTION_num(a->locator); i++)
+        -:  277:	        {
+    #####:  278:				ad = sk_ACCESS_DESCRIPTION_value(a->locator,i);
+    #####:  279:				if (BIO_printf(bp, "\n%*s", (2*ind), "") <= 0) 
+        -:  280:					goto err;
+    #####:  281:				if(i2a_ASN1_OBJECT(bp, ad->method) <= 0) goto err;
+    #####:  282:				if(BIO_puts(bp, " - ") <= 0) goto err;
+    #####:  283:				if(GENERAL_NAME_print(bp, ad->location) <= 0) goto err;
+        -:  284:		}
+        -:  285:	return 1;
+        -:  286:err:
+        -:  287:	return 0;
+        -:  288:	}
+        -:  289:#endif

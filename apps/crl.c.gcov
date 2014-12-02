@@ -1,0 +1,451 @@
+        -:    0:Source:crl.c
+        -:    0:Graph:crl.gcno
+        -:    0:Data:crl.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* apps/crl.c */
+        -:    2:/* Copyright (C) 1995-1998 Eric Young (eay@cryptsoft.com)
+        -:    3: * All rights reserved.
+        -:    4: *
+        -:    5: * This package is an SSL implementation written
+        -:    6: * by Eric Young (eay@cryptsoft.com).
+        -:    7: * The implementation was written so as to conform with Netscapes SSL.
+        -:    8: * 
+        -:    9: * This library is free for commercial and non-commercial use as long as
+        -:   10: * the following conditions are aheared to.  The following conditions
+        -:   11: * apply to all code found in this distribution, be it the RC4, RSA,
+        -:   12: * lhash, DES, etc., code; not just the SSL code.  The SSL documentation
+        -:   13: * included with this distribution is covered by the same copyright terms
+        -:   14: * except that the holder is Tim Hudson (tjh@cryptsoft.com).
+        -:   15: * 
+        -:   16: * Copyright remains Eric Young's, and as such any Copyright notices in
+        -:   17: * the code are not to be removed.
+        -:   18: * If this package is used in a product, Eric Young should be given attribution
+        -:   19: * as the author of the parts of the library used.
+        -:   20: * This can be in the form of a textual message at program startup or
+        -:   21: * in documentation (online or textual) provided with the package.
+        -:   22: * 
+        -:   23: * Redistribution and use in source and binary forms, with or without
+        -:   24: * modification, are permitted provided that the following conditions
+        -:   25: * are met:
+        -:   26: * 1. Redistributions of source code must retain the copyright
+        -:   27: *    notice, this list of conditions and the following disclaimer.
+        -:   28: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   29: *    notice, this list of conditions and the following disclaimer in the
+        -:   30: *    documentation and/or other materials provided with the distribution.
+        -:   31: * 3. All advertising materials mentioning features or use of this software
+        -:   32: *    must display the following acknowledgement:
+        -:   33: *    "This product includes cryptographic software written by
+        -:   34: *     Eric Young (eay@cryptsoft.com)"
+        -:   35: *    The word 'cryptographic' can be left out if the rouines from the library
+        -:   36: *    being used are not cryptographic related :-).
+        -:   37: * 4. If you include any Windows specific code (or a derivative thereof) from 
+        -:   38: *    the apps directory (application code) you must include an acknowledgement:
+        -:   39: *    "This product includes software written by Tim Hudson (tjh@cryptsoft.com)"
+        -:   40: * 
+        -:   41: * THIS SOFTWARE IS PROVIDED BY ERIC YOUNG ``AS IS'' AND
+        -:   42: * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   43: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+        -:   44: * ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+        -:   45: * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+        -:   46: * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+        -:   47: * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   48: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+        -:   49: * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+        -:   50: * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+        -:   51: * SUCH DAMAGE.
+        -:   52: * 
+        -:   53: * The licence and distribution terms for any publically available version or
+        -:   54: * derivative of this code cannot be changed.  i.e. this code cannot simply be
+        -:   55: * copied and put under another distribution licence
+        -:   56: * [including the GNU Public Licence.]
+        -:   57: */
+        -:   58:
+        -:   59:#include <stdio.h>
+        -:   60:#include <stdlib.h>
+        -:   61:#include <string.h>
+        -:   62:#include "apps.h"
+        -:   63:#include <openssl/bio.h>
+        -:   64:#include <openssl/err.h>
+        -:   65:#include <openssl/x509.h>
+        -:   66:#include <openssl/x509v3.h>
+        -:   67:#include <openssl/pem.h>
+        -:   68:
+        -:   69:#undef PROG
+        -:   70:#define PROG	crl_main
+        -:   71:
+        -:   72:#undef POSTFIX
+        -:   73:#define	POSTFIX	".rvk"
+        -:   74:
+        -:   75:static const char *crl_usage[]={
+        -:   76:"usage: crl args\n",
+        -:   77:"\n",
+        -:   78:" -inform arg     - input format - default PEM (DER or PEM)\n",
+        -:   79:" -outform arg    - output format - default PEM\n",
+        -:   80:" -text           - print out a text format version\n",
+        -:   81:" -in arg         - input file - default stdin\n",
+        -:   82:" -out arg        - output file - default stdout\n",
+        -:   83:" -hash           - print hash value\n",
+        -:   84:" -fingerprint    - print the crl fingerprint\n",
+        -:   85:" -issuer         - print issuer DN\n",
+        -:   86:" -lastupdate     - lastUpdate field\n",
+        -:   87:" -nextupdate     - nextUpdate field\n",
+        -:   88:" -crlnumber      - print CRL number\n",
+        -:   89:" -noout          - no CRL output\n",
+        -:   90:" -CAfile  name   - verify CRL using certificates in file \"name\"\n",
+        -:   91:" -CApath  dir    - verify CRL using certificates in \"dir\"\n",
+        -:   92:" -nameopt arg    - various certificate name options\n",
+        -:   93:NULL
+        -:   94:};
+        -:   95:
+        -:   96:static X509_CRL *load_crl(char *file, int format);
+        -:   97:static BIO *bio_out=NULL;
+        -:   98:
+        -:   99:int MAIN(int, char **);
+        -:  100:
+    #####:  101:int MAIN(int argc, char **argv)
+        -:  102:	{
+    #####:  103:	unsigned long nmflag = 0;
+        -:  104:	X509_CRL *x=NULL;
+        -:  105:	char *CAfile = NULL, *CApath = NULL;
+        -:  106:	int ret=1,i,num,badops=0;
+        -:  107:	BIO *out=NULL;
+        -:  108:	int informat,outformat;
+        -:  109:	char *infile=NULL,*outfile=NULL;
+        -:  110:	int hash=0,issuer=0,lastupdate=0,nextupdate=0,noout=0,text=0;
+        -:  111:	int fingerprint = 0, crlnumber = 0;
+        -:  112:	const char **pp;
+        -:  113:	X509_STORE *store = NULL;
+        -:  114:	X509_STORE_CTX ctx;
+        -:  115:	X509_LOOKUP *lookup = NULL;
+        -:  116:	X509_OBJECT xobj;
+        -:  117:	EVP_PKEY *pkey;
+        -:  118:	int do_ver = 0;
+    #####:  119:	const EVP_MD *md_alg,*digest=EVP_sha1();
+        -:  120:
+    #####:  121:	apps_startup();
+        -:  122:
+    #####:  123:	if (bio_err == NULL)
+    #####:  124:		if ((bio_err=BIO_new(BIO_s_file())) != NULL)
+    #####:  125:			BIO_set_fp(bio_err,stderr,BIO_NOCLOSE|BIO_FP_TEXT);
+        -:  126:
+    #####:  127:	if (!load_config(bio_err, NULL))
+        -:  128:		goto end;
+        -:  129:
+    #####:  130:	if (bio_out == NULL)
+    #####:  131:		if ((bio_out=BIO_new(BIO_s_file())) != NULL)
+        -:  132:			{
+    #####:  133:			BIO_set_fp(bio_out,stdout,BIO_NOCLOSE);
+        -:  134:#ifdef OPENSSL_SYS_VMS
+        -:  135:			{
+        -:  136:			BIO *tmpbio = BIO_new(BIO_f_linebuffer());
+        -:  137:			bio_out = BIO_push(tmpbio, bio_out);
+        -:  138:			}
+        -:  139:#endif
+        -:  140:			}
+        -:  141:
+        -:  142:	informat=FORMAT_PEM;
+        -:  143:	outformat=FORMAT_PEM;
+        -:  144:
+    #####:  145:	argc--;
+    #####:  146:	argv++;
+        -:  147:	num=0;
+    #####:  148:	while (argc >= 1)
+        -:  149:		{
+        -:  150:#ifdef undef
+        -:  151:		if	(strcmp(*argv,"-p") == 0)
+        -:  152:			{
+        -:  153:			if (--argc < 1) goto bad;
+        -:  154:			if (!args_from_file(++argv,Nargc,Nargv)) { goto end; }*/
+        -:  155:			}
+        -:  156:#endif
+    #####:  157:		if 	(strcmp(*argv,"-inform") == 0)
+        -:  158:			{
+    #####:  159:			if (--argc < 1) goto bad;
+    #####:  160:			informat=str2fmt(*(++argv));
+        -:  161:			}
+    #####:  162:		else if (strcmp(*argv,"-outform") == 0)
+        -:  163:			{
+    #####:  164:			if (--argc < 1) goto bad;
+    #####:  165:			outformat=str2fmt(*(++argv));
+        -:  166:			}
+    #####:  167:		else if (strcmp(*argv,"-in") == 0)
+        -:  168:			{
+    #####:  169:			if (--argc < 1) goto bad;
+    #####:  170:			infile= *(++argv);
+        -:  171:			}
+    #####:  172:		else if (strcmp(*argv,"-out") == 0)
+        -:  173:			{
+    #####:  174:			if (--argc < 1) goto bad;
+    #####:  175:			outfile= *(++argv);
+        -:  176:			}
+    #####:  177:		else if (strcmp(*argv,"-CApath") == 0)
+        -:  178:			{
+    #####:  179:			if (--argc < 1) goto bad;
+    #####:  180:			CApath = *(++argv);
+        -:  181:			do_ver = 1;
+        -:  182:			}
+    #####:  183:		else if (strcmp(*argv,"-CAfile") == 0)
+        -:  184:			{
+    #####:  185:			if (--argc < 1) goto bad;
+    #####:  186:			CAfile = *(++argv);
+        -:  187:			do_ver = 1;
+        -:  188:			}
+    #####:  189:		else if (strcmp(*argv,"-verify") == 0)
+        -:  190:			do_ver = 1;
+    #####:  191:		else if (strcmp(*argv,"-text") == 0)
+        -:  192:			text = 1;
+    #####:  193:		else if (strcmp(*argv,"-hash") == 0)
+    #####:  194:			hash= ++num;
+    #####:  195:		else if (strcmp(*argv,"-nameopt") == 0)
+        -:  196:			{
+    #####:  197:			if (--argc < 1) goto bad;
+    #####:  198:			if (!set_name_ex(&nmflag, *(++argv))) goto bad;
+        -:  199:			}
+    #####:  200:		else if (strcmp(*argv,"-issuer") == 0)
+    #####:  201:			issuer= ++num;
+    #####:  202:		else if (strcmp(*argv,"-lastupdate") == 0)
+    #####:  203:			lastupdate= ++num;
+    #####:  204:		else if (strcmp(*argv,"-nextupdate") == 0)
+    #####:  205:			nextupdate= ++num;
+    #####:  206:		else if (strcmp(*argv,"-noout") == 0)
+    #####:  207:			noout= ++num;
+    #####:  208:		else if (strcmp(*argv,"-fingerprint") == 0)
+    #####:  209:			fingerprint= ++num;
+    #####:  210:		else if (strcmp(*argv,"-crlnumber") == 0)
+    #####:  211:			crlnumber= ++num;
+    #####:  212:		else if ((md_alg=EVP_get_digestbyname(*argv + 1)))
+        -:  213:			{
+        -:  214:			/* ok */
+        -:  215:			digest=md_alg;
+        -:  216:			}
+        -:  217:		else
+        -:  218:			{
+    #####:  219:			BIO_printf(bio_err,"unknown option %s\n",*argv);
+        -:  220:			badops=1;
+    #####:  221:			break;
+        -:  222:			}
+    #####:  223:		argc--;
+    #####:  224:		argv++;
+        -:  225:		}
+        -:  226:
+    #####:  227:	if (badops)
+        -:  228:		{
+        -:  229:bad:
+    #####:  230:		for (pp=crl_usage; (*pp != NULL); pp++)
+    #####:  231:			BIO_printf(bio_err,"%s",*pp);
+        -:  232:		goto end;
+        -:  233:		}
+        -:  234:
+    #####:  235:	ERR_load_crypto_strings();
+    #####:  236:	x=load_crl(infile,informat);
+    #####:  237:	if (x == NULL) { goto end; }
+        -:  238:
+    #####:  239:	if(do_ver) {
+    #####:  240:		store = X509_STORE_new();
+    #####:  241:		lookup=X509_STORE_add_lookup(store,X509_LOOKUP_file());
+    #####:  242:		if (lookup == NULL) goto end;
+    #####:  243:		if (!X509_LOOKUP_load_file(lookup,CAfile,X509_FILETYPE_PEM))
+    #####:  244:			X509_LOOKUP_load_file(lookup,NULL,X509_FILETYPE_DEFAULT);
+        -:  245:			
+    #####:  246:		lookup=X509_STORE_add_lookup(store,X509_LOOKUP_hash_dir());
+    #####:  247:		if (lookup == NULL) goto end;
+    #####:  248:		if (!X509_LOOKUP_add_dir(lookup,CApath,X509_FILETYPE_PEM))
+    #####:  249:			X509_LOOKUP_add_dir(lookup,NULL,X509_FILETYPE_DEFAULT);
+    #####:  250:		ERR_clear_error();
+        -:  251:
+    #####:  252:		if(!X509_STORE_CTX_init(&ctx, store, NULL, NULL)) {
+    #####:  253:			BIO_printf(bio_err,
+        -:  254:				"Error initialising X509 store\n");
+    #####:  255:			goto end;
+        -:  256:		}
+        -:  257:
+    #####:  258:		i = X509_STORE_get_by_subject(&ctx, X509_LU_X509, 
+    #####:  259:					X509_CRL_get_issuer(x), &xobj);
+    #####:  260:		if(i <= 0) {
+    #####:  261:			BIO_printf(bio_err,
+        -:  262:				"Error getting CRL issuer certificate\n");
+    #####:  263:			goto end;
+        -:  264:		}
+    #####:  265:		pkey = X509_get_pubkey(xobj.data.x509);
+    #####:  266:		X509_OBJECT_free_contents(&xobj);
+    #####:  267:		if(!pkey) {
+    #####:  268:			BIO_printf(bio_err,
+        -:  269:				"Error getting CRL issuer public key\n");
+    #####:  270:			goto end;
+        -:  271:		}
+    #####:  272:		i = X509_CRL_verify(x, pkey);
+    #####:  273:		EVP_PKEY_free(pkey);
+    #####:  274:		if(i < 0) goto end;
+    #####:  275:		if(i == 0) BIO_printf(bio_err, "verify failure\n");
+    #####:  276:		else BIO_printf(bio_err, "verify OK\n");
+        -:  277:	}
+        -:  278:
+    #####:  279:	if (num)
+        -:  280:		{
+    #####:  281:		for (i=1; i<=num; i++)
+        -:  282:			{
+    #####:  283:			if (issuer == i)
+        -:  284:				{
+    #####:  285:				print_name(bio_out, "issuer=", X509_CRL_get_issuer(x), nmflag);
+        -:  286:				}
+    #####:  287:			if (crlnumber == i)
+        -:  288:				{
+        -:  289:				ASN1_INTEGER *crlnum;
+    #####:  290:				crlnum = X509_CRL_get_ext_d2i(x, NID_crl_number,
+        -:  291:							      NULL, NULL);
+    #####:  292:				BIO_printf(bio_out,"crlNumber=");
+    #####:  293:				if (crlnum)
+        -:  294:					{
+    #####:  295:					i2a_ASN1_INTEGER(bio_out, crlnum);
+    #####:  296:					ASN1_INTEGER_free(crlnum);
+        -:  297:					}
+        -:  298:				else
+    #####:  299:					BIO_puts(bio_out, "<NONE>");
+    #####:  300:				BIO_printf(bio_out,"\n");
+        -:  301:				}
+    #####:  302:			if (hash == i)
+        -:  303:				{
+    #####:  304:				BIO_printf(bio_out,"%08lx\n",
+    #####:  305:					X509_NAME_hash(X509_CRL_get_issuer(x)));
+        -:  306:				}
+    #####:  307:			if (lastupdate == i)
+        -:  308:				{
+    #####:  309:				BIO_printf(bio_out,"lastUpdate=");
+    #####:  310:				ASN1_TIME_print(bio_out,
+    #####:  311:						X509_CRL_get_lastUpdate(x));
+    #####:  312:				BIO_printf(bio_out,"\n");
+        -:  313:				}
+    #####:  314:			if (nextupdate == i)
+        -:  315:				{
+    #####:  316:				BIO_printf(bio_out,"nextUpdate=");
+    #####:  317:				if (X509_CRL_get_nextUpdate(x)) 
+    #####:  318:					ASN1_TIME_print(bio_out,
+        -:  319:						X509_CRL_get_nextUpdate(x));
+        -:  320:				else
+    #####:  321:					BIO_printf(bio_out,"NONE");
+    #####:  322:				BIO_printf(bio_out,"\n");
+        -:  323:				}
+    #####:  324:			if (fingerprint == i)
+        -:  325:				{
+        -:  326:				int j;
+        -:  327:				unsigned int n;
+        -:  328:				unsigned char md[EVP_MAX_MD_SIZE];
+        -:  329:
+    #####:  330:				if (!X509_CRL_digest(x,digest,md,&n))
+        -:  331:					{
+    #####:  332:					BIO_printf(bio_err,"out of memory\n");
+    #####:  333:					goto end;
+        -:  334:					}
+    #####:  335:				BIO_printf(bio_out,"%s Fingerprint=",
+        -:  336:						OBJ_nid2sn(EVP_MD_type(digest)));
+    #####:  337:				for (j=0; j<(int)n; j++)
+        -:  338:					{
+    #####:  339:					BIO_printf(bio_out,"%02X%c",md[j],
+    #####:  340:						(j+1 == (int)n)
+        -:  341:						?'\n':':');
+        -:  342:					}
+        -:  343:				}
+        -:  344:			}
+        -:  345:		}
+        -:  346:
+    #####:  347:	out=BIO_new(BIO_s_file());
+    #####:  348:	if (out == NULL)
+        -:  349:		{
+    #####:  350:		ERR_print_errors(bio_err);
+    #####:  351:		goto end;
+        -:  352:		}
+        -:  353:
+    #####:  354:	if (outfile == NULL)
+        -:  355:		{
+    #####:  356:		BIO_set_fp(out,stdout,BIO_NOCLOSE);
+        -:  357:#ifdef OPENSSL_SYS_VMS
+        -:  358:		{
+        -:  359:		BIO *tmpbio = BIO_new(BIO_f_linebuffer());
+        -:  360:		out = BIO_push(tmpbio, out);
+        -:  361:		}
+        -:  362:#endif
+        -:  363:		}
+        -:  364:	else
+        -:  365:		{
+    #####:  366:		if (BIO_write_filename(out,outfile) <= 0)
+        -:  367:			{
+    #####:  368:			perror(outfile);
+    #####:  369:			goto end;
+        -:  370:			}
+        -:  371:		}
+        -:  372:
+    #####:  373:	if (text) X509_CRL_print(out, x);
+        -:  374:
+    #####:  375:	if (noout) 
+        -:  376:		{
+        -:  377:		ret = 0;
+        -:  378:		goto end;
+        -:  379:		}
+        -:  380:
+    #####:  381:	if 	(outformat == FORMAT_ASN1)
+    #####:  382:		i=(int)i2d_X509_CRL_bio(out,x);
+    #####:  383:	else if (outformat == FORMAT_PEM)
+    #####:  384:		i=PEM_write_bio_X509_CRL(out,x);
+        -:  385:	else	
+        -:  386:		{
+    #####:  387:		BIO_printf(bio_err,"bad output format specified for outfile\n");
+    #####:  388:		goto end;
+        -:  389:		}
+    #####:  390:	if (!i) { BIO_printf(bio_err,"unable to write CRL\n"); goto end; }
+        -:  391:	ret=0;
+        -:  392:end:
+    #####:  393:	BIO_free_all(out);
+    #####:  394:	BIO_free_all(bio_out);
+    #####:  395:	bio_out=NULL;
+    #####:  396:	X509_CRL_free(x);
+    #####:  397:	if(store) {
+    #####:  398:		X509_STORE_CTX_cleanup(&ctx);
+    #####:  399:		X509_STORE_free(store);
+        -:  400:	}
+        -:  401:	apps_shutdown();
+    #####:  402:	OPENSSL_EXIT(ret);
+        -:  403:	}
+        -:  404:
+    #####:  405:static X509_CRL *load_crl(char *infile, int format)
+        -:  406:	{
+        -:  407:	X509_CRL *x=NULL;
+        -:  408:	BIO *in=NULL;
+        -:  409:
+    #####:  410:	in=BIO_new(BIO_s_file());
+    #####:  411:	if (in == NULL)
+        -:  412:		{
+    #####:  413:		ERR_print_errors(bio_err);
+    #####:  414:		goto end;
+        -:  415:		}
+        -:  416:
+    #####:  417:	if (infile == NULL)
+    #####:  418:		BIO_set_fp(in,stdin,BIO_NOCLOSE);
+        -:  419:	else
+        -:  420:		{
+    #####:  421:		if (BIO_read_filename(in,infile) <= 0)
+        -:  422:			{
+    #####:  423:			perror(infile);
+    #####:  424:			goto end;
+        -:  425:			}
+        -:  426:		}
+    #####:  427:	if 	(format == FORMAT_ASN1)
+    #####:  428:		x=d2i_X509_CRL_bio(in,NULL);
+    #####:  429:	else if (format == FORMAT_PEM)
+    #####:  430:		x=PEM_read_bio_X509_CRL(in,NULL,NULL,NULL);
+        -:  431:	else	{
+    #####:  432:		BIO_printf(bio_err,"bad input format specified for input crl\n");
+    #####:  433:		goto end;
+        -:  434:		}
+    #####:  435:	if (x == NULL)
+        -:  436:		{
+    #####:  437:		BIO_printf(bio_err,"unable to load CRL\n");
+    #####:  438:		ERR_print_errors(bio_err);
+    #####:  439:		goto end;
+        -:  440:		}
+        -:  441:	
+        -:  442:end:
+    #####:  443:	BIO_free(in);
+    #####:  444:	return(x);
+        -:  445:	}
+        -:  446:

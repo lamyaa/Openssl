@@ -1,0 +1,376 @@
+        -:    0:Source:dsa_gen.c
+        -:    0:Graph:dsa_gen.gcno
+        -:    0:Data:dsa_gen.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* crypto/dsa/dsa_gen.c */
+        -:    2:/* Copyright (C) 1995-1998 Eric Young (eay@cryptsoft.com)
+        -:    3: * All rights reserved.
+        -:    4: *
+        -:    5: * This package is an SSL implementation written
+        -:    6: * by Eric Young (eay@cryptsoft.com).
+        -:    7: * The implementation was written so as to conform with Netscapes SSL.
+        -:    8: * 
+        -:    9: * This library is free for commercial and non-commercial use as long as
+        -:   10: * the following conditions are aheared to.  The following conditions
+        -:   11: * apply to all code found in this distribution, be it the RC4, RSA,
+        -:   12: * lhash, DES, etc., code; not just the SSL code.  The SSL documentation
+        -:   13: * included with this distribution is covered by the same copyright terms
+        -:   14: * except that the holder is Tim Hudson (tjh@cryptsoft.com).
+        -:   15: * 
+        -:   16: * Copyright remains Eric Young's, and as such any Copyright notices in
+        -:   17: * the code are not to be removed.
+        -:   18: * If this package is used in a product, Eric Young should be given attribution
+        -:   19: * as the author of the parts of the library used.
+        -:   20: * This can be in the form of a textual message at program startup or
+        -:   21: * in documentation (online or textual) provided with the package.
+        -:   22: * 
+        -:   23: * Redistribution and use in source and binary forms, with or without
+        -:   24: * modification, are permitted provided that the following conditions
+        -:   25: * are met:
+        -:   26: * 1. Redistributions of source code must retain the copyright
+        -:   27: *    notice, this list of conditions and the following disclaimer.
+        -:   28: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   29: *    notice, this list of conditions and the following disclaimer in the
+        -:   30: *    documentation and/or other materials provided with the distribution.
+        -:   31: * 3. All advertising materials mentioning features or use of this software
+        -:   32: *    must display the following acknowledgement:
+        -:   33: *    "This product includes cryptographic software written by
+        -:   34: *     Eric Young (eay@cryptsoft.com)"
+        -:   35: *    The word 'cryptographic' can be left out if the rouines from the library
+        -:   36: *    being used are not cryptographic related :-).
+        -:   37: * 4. If you include any Windows specific code (or a derivative thereof) from 
+        -:   38: *    the apps directory (application code) you must include an acknowledgement:
+        -:   39: *    "This product includes software written by Tim Hudson (tjh@cryptsoft.com)"
+        -:   40: * 
+        -:   41: * THIS SOFTWARE IS PROVIDED BY ERIC YOUNG ``AS IS'' AND
+        -:   42: * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   43: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+        -:   44: * ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+        -:   45: * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+        -:   46: * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+        -:   47: * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   48: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+        -:   49: * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+        -:   50: * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+        -:   51: * SUCH DAMAGE.
+        -:   52: * 
+        -:   53: * The licence and distribution terms for any publically available version or
+        -:   54: * derivative of this code cannot be changed.  i.e. this code cannot simply be
+        -:   55: * copied and put under another distribution licence
+        -:   56: * [including the GNU Public Licence.]
+        -:   57: */
+        -:   58:
+        -:   59:#undef GENUINE_DSA
+        -:   60:
+        -:   61:#ifdef GENUINE_DSA
+        -:   62:/* Parameter generation follows the original release of FIPS PUB 186,
+        -:   63: * Appendix 2.2 (i.e. use SHA as defined in FIPS PUB 180) */
+        -:   64:#define HASH    EVP_sha()
+        -:   65:#else
+        -:   66:/* Parameter generation follows the updated Appendix 2.2 for FIPS PUB 186,
+        -:   67: * also Appendix 2.2 of FIPS PUB 186-1 (i.e. use SHA as defined in
+        -:   68: * FIPS PUB 180-1) */
+        -:   69:#define HASH    EVP_sha1()
+        -:   70:#endif 
+        -:   71:
+        -:   72:#include <openssl/opensslconf.h> /* To see if OPENSSL_NO_SHA is defined */
+        -:   73:
+        -:   74:#ifndef OPENSSL_NO_SHA
+        -:   75:
+        -:   76:#include <stdio.h>
+        -:   77:#include "cryptlib.h"
+        -:   78:#include <openssl/evp.h>
+        -:   79:#include <openssl/bn.h>
+        -:   80:#include <openssl/rand.h>
+        -:   81:#include <openssl/sha.h>
+        -:   82:#include "dsa_locl.h"
+        -:   83:
+        -:   84:#ifdef OPENSSL_FIPS
+        -:   85:#include <openssl/fips.h>
+        -:   86:#endif
+        -:   87:
+    #####:   88:int DSA_generate_parameters_ex(DSA *ret, int bits,
+        -:   89:		const unsigned char *seed_in, int seed_len,
+        -:   90:		int *counter_ret, unsigned long *h_ret, BN_GENCB *cb)
+        -:   91:	{
+        -:   92:#ifdef OPENSSL_FIPS
+        -:   93:	if (FIPS_mode() && !(ret->meth->flags & DSA_FLAG_FIPS_METHOD)
+        -:   94:			&& !(ret->flags & DSA_FLAG_NON_FIPS_ALLOW))
+        -:   95:		{
+        -:   96:		DSAerr(DSA_F_DSA_GENERATE_PARAMETERS_EX, DSA_R_NON_FIPS_DSA_METHOD);
+        -:   97:		return 0;
+        -:   98:		}
+        -:   99:#endif
+    #####:  100:	if(ret->meth->dsa_paramgen)
+    #####:  101:		return ret->meth->dsa_paramgen(ret, bits, seed_in, seed_len,
+        -:  102:				counter_ret, h_ret, cb);
+        -:  103:#ifdef OPENSSL_FIPS
+        -:  104:	else if (FIPS_mode())
+        -:  105:		{
+        -:  106:		return FIPS_dsa_generate_parameters_ex(ret, bits, 
+        -:  107:							seed_in, seed_len,
+        -:  108:							counter_ret, h_ret, cb);
+        -:  109:		}
+        -:  110:#endif
+        -:  111:	else
+        -:  112:		{
+        -:  113:		const EVP_MD *evpmd;
+        -:  114:		size_t qbits = bits >= 2048 ? 256 : 160;
+        -:  115:
+    #####:  116:		if (bits >= 2048)
+        -:  117:			{
+        -:  118:			qbits = 256;
+    #####:  119:			evpmd = EVP_sha256();
+        -:  120:			}
+        -:  121:		else
+        -:  122:			{
+        -:  123:			qbits = 160;
+    #####:  124:			evpmd = EVP_sha1();
+        -:  125:			}
+        -:  126:
+    #####:  127:		return dsa_builtin_paramgen(ret, bits, qbits, evpmd,
+        -:  128:			seed_in, seed_len, NULL, counter_ret, h_ret, cb);
+        -:  129:		}
+        -:  130:	}
+        -:  131:
+    #####:  132:int dsa_builtin_paramgen(DSA *ret, size_t bits, size_t qbits,
+        -:  133:	const EVP_MD *evpmd, const unsigned char *seed_in, size_t seed_len,
+        -:  134:	unsigned char *seed_out,
+        -:  135:	int *counter_ret, unsigned long *h_ret, BN_GENCB *cb)
+        -:  136:	{
+        -:  137:	int ok=0;
+        -:  138:	unsigned char seed[SHA256_DIGEST_LENGTH];
+        -:  139:	unsigned char md[SHA256_DIGEST_LENGTH];
+        -:  140:	unsigned char buf[SHA256_DIGEST_LENGTH],buf2[SHA256_DIGEST_LENGTH];
+        -:  141:	BIGNUM *r0,*W,*X,*c,*test;
+        -:  142:	BIGNUM *g=NULL,*q=NULL,*p=NULL;
+        -:  143:	BN_MONT_CTX *mont=NULL;
+    #####:  144:	int i, k, n=0, m=0, qsize = qbits >> 3;
+        -:  145:	int counter=0;
+        -:  146:	int r=0;
+        -:  147:	BN_CTX *ctx=NULL;
+        -:  148:	unsigned int h=2;
+        -:  149:
+    #####:  150:	if (qsize != SHA_DIGEST_LENGTH && qsize != SHA224_DIGEST_LENGTH &&
+        -:  151:	    qsize != SHA256_DIGEST_LENGTH)
+        -:  152:		/* invalid q size */
+        -:  153:		return 0;
+        -:  154:
+    #####:  155:	if (evpmd == NULL)
+        -:  156:		/* use SHA1 as default */
+    #####:  157:		evpmd = EVP_sha1();
+        -:  158:
+    #####:  159:	if (bits < 512)
+        -:  160:		bits = 512;
+        -:  161:
+    #####:  162:	bits = (bits+63)/64*64;
+        -:  163:
+        -:  164:	/* NB: seed_len == 0 is special case: copy generated seed to
+        -:  165: 	 * seed_in if it is not NULL.
+        -:  166: 	 */
+    #####:  167:	if (seed_len && (seed_len < (size_t)qsize))
+        -:  168:		seed_in = NULL;		/* seed buffer too small -- ignore */
+    #####:  169:	if (seed_len > (size_t)qsize) 
+        -:  170:		seed_len = qsize;	/* App. 2.2 of FIPS PUB 186 allows larger SEED,
+        -:  171:					 * but our internal buffers are restricted to 160 bits*/
+    #####:  172:	if (seed_in != NULL)
+        -:  173:		memcpy(seed, seed_in, seed_len);
+        -:  174:
+    #####:  175:	if ((ctx=BN_CTX_new()) == NULL)
+        -:  176:		goto err;
+        -:  177:
+    #####:  178:	if ((mont=BN_MONT_CTX_new()) == NULL)
+        -:  179:		goto err;
+        -:  180:
+    #####:  181:	BN_CTX_start(ctx);
+    #####:  182:	r0 = BN_CTX_get(ctx);
+    #####:  183:	g = BN_CTX_get(ctx);
+    #####:  184:	W = BN_CTX_get(ctx);
+    #####:  185:	q = BN_CTX_get(ctx);
+    #####:  186:	X = BN_CTX_get(ctx);
+    #####:  187:	c = BN_CTX_get(ctx);
+    #####:  188:	p = BN_CTX_get(ctx);
+    #####:  189:	test = BN_CTX_get(ctx);
+        -:  190:
+    #####:  191:	if (!BN_lshift(test,BN_value_one(),bits-1))
+        -:  192:		goto err;
+        -:  193:
+        -:  194:	for (;;)
+        -:  195:		{
+        -:  196:		for (;;) /* find q */
+        -:  197:			{
+        -:  198:			int seed_is_random;
+        -:  199:
+        -:  200:			/* step 1 */
+    #####:  201:			if(!BN_GENCB_call(cb, 0, m++))
+        -:  202:				goto err;
+        -:  203:
+    #####:  204:			if (!seed_len)
+        -:  205:				{
+    #####:  206:				RAND_pseudo_bytes(seed, qsize);
+        -:  207:				seed_is_random = 1;
+        -:  208:				}
+        -:  209:			else
+        -:  210:				{
+        -:  211:				seed_is_random = 0;
+        -:  212:				seed_len=0; /* use random seed if 'seed_in' turns out to be bad*/
+        -:  213:				}
+        -:  214:			memcpy(buf , seed, qsize);
+        -:  215:			memcpy(buf2, seed, qsize);
+        -:  216:			/* precompute "SEED + 1" for step 7: */
+    #####:  217:			for (i = qsize-1; i >= 0; i--)
+        -:  218:				{
+    #####:  219:				buf[i]++;
+    #####:  220:				if (buf[i] != 0)
+        -:  221:					break;
+        -:  222:				}
+        -:  223:
+        -:  224:			/* step 2 */
+    #####:  225:			if (!EVP_Digest(seed, qsize, md,   NULL, evpmd, NULL))
+        -:  226:				goto err;
+    #####:  227:			if (!EVP_Digest(buf,  qsize, buf2, NULL, evpmd, NULL))
+        -:  228:				goto err;
+    #####:  229:			for (i = 0; i < qsize; i++)
+    #####:  230:				md[i]^=buf2[i];
+        -:  231:
+        -:  232:			/* step 3 */
+    #####:  233:			md[0] |= 0x80;
+    #####:  234:			md[qsize-1] |= 0x01;
+    #####:  235:			if (!BN_bin2bn(md, qsize, q))
+        -:  236:				goto err;
+        -:  237:
+        -:  238:			/* step 4 */
+    #####:  239:			r = BN_is_prime_fasttest_ex(q, DSS_prime_checks, ctx,
+        -:  240:					seed_is_random, cb);
+    #####:  241:			if (r > 0)
+        -:  242:				break;
+    #####:  243:			if (r != 0)
+        -:  244:				goto err;
+        -:  245:
+        -:  246:			/* do a callback call */
+        -:  247:			/* step 5 */
+        -:  248:			}
+        -:  249:
+    #####:  250:		if(!BN_GENCB_call(cb, 2, 0)) goto err;
+    #####:  251:		if(!BN_GENCB_call(cb, 3, 0)) goto err;
+        -:  252:
+        -:  253:		/* step 6 */
+        -:  254:		counter=0;
+        -:  255:		/* "offset = 2" */
+        -:  256:
+    #####:  257:		n=(bits-1)/160;
+        -:  258:
+        -:  259:		for (;;)
+        -:  260:			{
+    #####:  261:			if ((counter != 0) && !BN_GENCB_call(cb, 0, counter))
+        -:  262:				goto err;
+        -:  263:
+        -:  264:			/* step 7 */
+    #####:  265:			BN_zero(W);
+        -:  266:			/* now 'buf' contains "SEED + offset - 1" */
+    #####:  267:			for (k=0; k<=n; k++)
+        -:  268:				{
+        -:  269:				/* obtain "SEED + offset + k" by incrementing: */
+    #####:  270:				for (i = qsize-1; i >= 0; i--)
+        -:  271:					{
+    #####:  272:					buf[i]++;
+    #####:  273:					if (buf[i] != 0)
+        -:  274:						break;
+        -:  275:					}
+        -:  276:
+    #####:  277:				if (!EVP_Digest(buf, qsize, md ,NULL, evpmd,
+        -:  278:									NULL))
+        -:  279:					goto err;
+        -:  280:
+        -:  281:				/* step 8 */
+    #####:  282:				if (!BN_bin2bn(md, qsize, r0))
+        -:  283:					goto err;
+    #####:  284:				if (!BN_lshift(r0,r0,(qsize << 3)*k)) goto err;
+    #####:  285:				if (!BN_add(W,W,r0)) goto err;
+        -:  286:				}
+        -:  287:
+        -:  288:			/* more of step 8 */
+    #####:  289:			if (!BN_mask_bits(W,bits-1)) goto err;
+    #####:  290:			if (!BN_copy(X,W)) goto err;
+    #####:  291:			if (!BN_add(X,X,test)) goto err;
+        -:  292:
+        -:  293:			/* step 9 */
+    #####:  294:			if (!BN_lshift1(r0,q)) goto err;
+    #####:  295:			if (!BN_mod(c,X,r0,ctx)) goto err;
+    #####:  296:			if (!BN_sub(r0,c,BN_value_one())) goto err;
+    #####:  297:			if (!BN_sub(p,X,r0)) goto err;
+        -:  298:
+        -:  299:			/* step 10 */
+    #####:  300:			if (BN_cmp(p,test) >= 0)
+        -:  301:				{
+        -:  302:				/* step 11 */
+    #####:  303:				r = BN_is_prime_fasttest_ex(p, DSS_prime_checks,
+        -:  304:						ctx, 1, cb);
+    #####:  305:				if (r > 0)
+        -:  306:						goto end; /* found it */
+    #####:  307:				if (r != 0)
+        -:  308:					goto err;
+        -:  309:				}
+        -:  310:
+        -:  311:			/* step 13 */
+    #####:  312:			counter++;
+        -:  313:			/* "offset = offset + n + 1" */
+        -:  314:
+        -:  315:			/* step 14 */
+    #####:  316:			if (counter >= 4096) break;
+        -:  317:			}
+        -:  318:		}
+        -:  319:end:
+    #####:  320:	if(!BN_GENCB_call(cb, 2, 1))
+        -:  321:		goto err;
+        -:  322:
+        -:  323:	/* We now need to generate g */
+        -:  324:	/* Set r0=(p-1)/q */
+    #####:  325:	if (!BN_sub(test,p,BN_value_one())) goto err;
+    #####:  326:	if (!BN_div(r0,NULL,test,q,ctx)) goto err;
+        -:  327:
+    #####:  328:	if (!BN_set_word(test,h)) goto err;
+    #####:  329:	if (!BN_MONT_CTX_set(mont,p,ctx)) goto err;
+        -:  330:
+        -:  331:	for (;;)
+        -:  332:		{
+        -:  333:		/* g=test^r0%p */
+    #####:  334:		if (!BN_mod_exp_mont(g,test,r0,p,ctx,mont)) goto err;
+    #####:  335:		if (!BN_is_one(g)) break;
+    #####:  336:		if (!BN_add(test,test,BN_value_one())) goto err;
+    #####:  337:		h++;
+    #####:  338:		}
+        -:  339:
+    #####:  340:	if(!BN_GENCB_call(cb, 3, 1))
+        -:  341:		goto err;
+        -:  342:
+        -:  343:	ok=1;
+        -:  344:err:
+    #####:  345:	if (ok)
+        -:  346:		{
+    #####:  347:		if(ret->p) BN_free(ret->p);
+    #####:  348:		if(ret->q) BN_free(ret->q);
+    #####:  349:		if(ret->g) BN_free(ret->g);
+    #####:  350:		ret->p=BN_dup(p);
+    #####:  351:		ret->q=BN_dup(q);
+    #####:  352:		ret->g=BN_dup(g);
+    #####:  353:		if (ret->p == NULL || ret->q == NULL || ret->g == NULL)
+        -:  354:			{
+        -:  355:			ok=0;
+        -:  356:			goto err;
+        -:  357:			}
+    #####:  358:		if (counter_ret != NULL) *counter_ret=counter;
+    #####:  359:		if (h_ret != NULL) *h_ret=h;
+    #####:  360:		if (seed_out)
+        -:  361:			memcpy(seed_out, seed, qsize);
+        -:  362:		}
+    #####:  363:	if(ctx)
+        -:  364:		{
+    #####:  365:		BN_CTX_end(ctx);
+    #####:  366:		BN_CTX_free(ctx);
+        -:  367:		}
+    #####:  368:	if (mont != NULL) BN_MONT_CTX_free(mont);
+    #####:  369:	return ok;
+        -:  370:	}
+        -:  371:#endif

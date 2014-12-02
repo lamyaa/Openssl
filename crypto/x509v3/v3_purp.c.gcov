@@ -1,0 +1,772 @@
+        -:    0:Source:v3_purp.c
+        -:    0:Graph:v3_purp.gcno
+        -:    0:Data:v3_purp.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* v3_purp.c */
+        -:    2:/* Written by Dr Stephen N Henson (steve@openssl.org) for the OpenSSL
+        -:    3: * project 2001.
+        -:    4: */
+        -:    5:/* ====================================================================
+        -:    6: * Copyright (c) 1999-2004 The OpenSSL Project.  All rights reserved.
+        -:    7: *
+        -:    8: * Redistribution and use in source and binary forms, with or without
+        -:    9: * modification, are permitted provided that the following conditions
+        -:   10: * are met:
+        -:   11: *
+        -:   12: * 1. Redistributions of source code must retain the above copyright
+        -:   13: *    notice, this list of conditions and the following disclaimer. 
+        -:   14: *
+        -:   15: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   16: *    notice, this list of conditions and the following disclaimer in
+        -:   17: *    the documentation and/or other materials provided with the
+        -:   18: *    distribution.
+        -:   19: *
+        -:   20: * 3. All advertising materials mentioning features or use of this
+        -:   21: *    software must display the following acknowledgment:
+        -:   22: *    "This product includes software developed by the OpenSSL Project
+        -:   23: *    for use in the OpenSSL Toolkit. (http://www.OpenSSL.org/)"
+        -:   24: *
+        -:   25: * 4. The names "OpenSSL Toolkit" and "OpenSSL Project" must not be used to
+        -:   26: *    endorse or promote products derived from this software without
+        -:   27: *    prior written permission. For written permission, please contact
+        -:   28: *    licensing@OpenSSL.org.
+        -:   29: *
+        -:   30: * 5. Products derived from this software may not be called "OpenSSL"
+        -:   31: *    nor may "OpenSSL" appear in their names without prior written
+        -:   32: *    permission of the OpenSSL Project.
+        -:   33: *
+        -:   34: * 6. Redistributions of any form whatsoever must retain the following
+        -:   35: *    acknowledgment:
+        -:   36: *    "This product includes software developed by the OpenSSL Project
+        -:   37: *    for use in the OpenSSL Toolkit (http://www.OpenSSL.org/)"
+        -:   38: *
+        -:   39: * THIS SOFTWARE IS PROVIDED BY THE OpenSSL PROJECT ``AS IS'' AND ANY
+        -:   40: * EXPRESSED OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   41: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+        -:   42: * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE OpenSSL PROJECT OR
+        -:   43: * ITS CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+        -:   44: * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+        -:   45: * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+        -:   46: * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   47: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+        -:   48: * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+        -:   49: * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+        -:   50: * OF THE POSSIBILITY OF SUCH DAMAGE.
+        -:   51: * ====================================================================
+        -:   52: *
+        -:   53: * This product includes cryptographic software written by Eric Young
+        -:   54: * (eay@cryptsoft.com).  This product includes software written by Tim
+        -:   55: * Hudson (tjh@cryptsoft.com).
+        -:   56: *
+        -:   57: */
+        -:   58:
+        -:   59:#include <stdio.h>
+        -:   60:#include "cryptlib.h"
+        -:   61:#include <openssl/x509v3.h>
+        -:   62:#include <openssl/x509_vfy.h>
+        -:   63:
+        -:   64:static void x509v3_cache_extensions(X509 *x);
+        -:   65:
+        -:   66:static int check_ssl_ca(const X509 *x);
+        -:   67:static int check_purpose_ssl_client(const X509_PURPOSE *xp, const X509 *x, int ca);
+        -:   68:static int check_purpose_ssl_server(const X509_PURPOSE *xp, const X509 *x, int ca);
+        -:   69:static int check_purpose_ns_ssl_server(const X509_PURPOSE *xp, const X509 *x, int ca);
+        -:   70:static int purpose_smime(const X509 *x, int ca);
+        -:   71:static int check_purpose_smime_sign(const X509_PURPOSE *xp, const X509 *x, int ca);
+        -:   72:static int check_purpose_smime_encrypt(const X509_PURPOSE *xp, const X509 *x, int ca);
+        -:   73:static int check_purpose_crl_sign(const X509_PURPOSE *xp, const X509 *x, int ca);
+        -:   74:static int check_purpose_timestamp_sign(const X509_PURPOSE *xp, const X509 *x, int ca);
+        -:   75:static int no_check(const X509_PURPOSE *xp, const X509 *x, int ca);
+        -:   76:static int ocsp_helper(const X509_PURPOSE *xp, const X509 *x, int ca);
+        -:   77:
+        -:   78:static int xp_cmp(const X509_PURPOSE * const *a,
+        -:   79:		const X509_PURPOSE * const *b);
+        -:   80:static void xptable_free(X509_PURPOSE *p);
+        -:   81:
+        -:   82:static X509_PURPOSE xstandard[] = {
+        -:   83:	{X509_PURPOSE_SSL_CLIENT, X509_TRUST_SSL_CLIENT, 0, check_purpose_ssl_client, "SSL client", "sslclient", NULL},
+        -:   84:	{X509_PURPOSE_SSL_SERVER, X509_TRUST_SSL_SERVER, 0, check_purpose_ssl_server, "SSL server", "sslserver", NULL},
+        -:   85:	{X509_PURPOSE_NS_SSL_SERVER, X509_TRUST_SSL_SERVER, 0, check_purpose_ns_ssl_server, "Netscape SSL server", "nssslserver", NULL},
+        -:   86:	{X509_PURPOSE_SMIME_SIGN, X509_TRUST_EMAIL, 0, check_purpose_smime_sign, "S/MIME signing", "smimesign", NULL},
+        -:   87:	{X509_PURPOSE_SMIME_ENCRYPT, X509_TRUST_EMAIL, 0, check_purpose_smime_encrypt, "S/MIME encryption", "smimeencrypt", NULL},
+        -:   88:	{X509_PURPOSE_CRL_SIGN, X509_TRUST_COMPAT, 0, check_purpose_crl_sign, "CRL signing", "crlsign", NULL},
+        -:   89:	{X509_PURPOSE_ANY, X509_TRUST_DEFAULT, 0, no_check, "Any Purpose", "any", NULL},
+        -:   90:	{X509_PURPOSE_OCSP_HELPER, X509_TRUST_COMPAT, 0, ocsp_helper, "OCSP helper", "ocsphelper", NULL},
+        -:   91:	{X509_PURPOSE_TIMESTAMP_SIGN, X509_TRUST_TSA, 0, check_purpose_timestamp_sign, "Time Stamp signing", "timestampsign", NULL},
+        -:   92:};
+        -:   93:
+        -:   94:#define X509_PURPOSE_COUNT (sizeof(xstandard)/sizeof(X509_PURPOSE))
+        -:   95:
+        -:   96:IMPLEMENT_STACK_OF(X509_PURPOSE)
+        -:   97:
+        -:   98:static STACK_OF(X509_PURPOSE) *xptable = NULL;
+        -:   99:
+    #####:  100:static int xp_cmp(const X509_PURPOSE * const *a,
+        -:  101:		const X509_PURPOSE * const *b)
+        -:  102:{
+    #####:  103:	return (*a)->purpose - (*b)->purpose;
+        -:  104:}
+        -:  105:
+        -:  106:/* As much as I'd like to make X509_check_purpose use a "const" X509*
+        -:  107: * I really can't because it does recalculate hashes and do other non-const
+        -:  108: * things. */
+    12699:  109:int X509_check_purpose(X509 *x, int id, int ca)
+        -:  110:{
+        -:  111:	int idx;
+        -:  112:	const X509_PURPOSE *pt;
+    12699:  113:	if(!(x->ex_flags & EXFLAG_SET)) {
+    #####:  114:		CRYPTO_w_lock(CRYPTO_LOCK_X509);
+    #####:  115:		x509v3_cache_extensions(x);
+    #####:  116:		CRYPTO_w_unlock(CRYPTO_LOCK_X509);
+        -:  117:	}
+    12699:  118:	if(id == -1) return 1;
+     8295:  119:	idx = X509_PURPOSE_get_by_id(id);
+     8295:  120:	if(idx == -1) return -1;
+     8295:  121:	pt = X509_PURPOSE_get0(idx);
+     8295:  122:	return pt->check_purpose(pt, x, ca);
+        -:  123:}
+        -:  124:
+    #####:  125:int X509_PURPOSE_set(int *p, int purpose)
+        -:  126:{
+    #####:  127:	if(X509_PURPOSE_get_by_id(purpose) == -1) {
+    #####:  128:		X509V3err(X509V3_F_X509_PURPOSE_SET, X509V3_R_INVALID_PURPOSE);
+    #####:  129:		return 0;
+        -:  130:	}
+    #####:  131:	*p = purpose;
+    #####:  132:	return 1;
+        -:  133:}
+        -:  134:
+    #####:  135:int X509_PURPOSE_get_count(void)
+        -:  136:{
+    #####:  137:	if(!xptable) return X509_PURPOSE_COUNT;
+    #####:  138:	return sk_X509_PURPOSE_num(xptable) + X509_PURPOSE_COUNT;
+        -:  139:}
+        -:  140:
+     8295:  141:X509_PURPOSE * X509_PURPOSE_get0(int idx)
+        -:  142:{
+     8295:  143:	if(idx < 0) return NULL;
+     8295:  144:	if(idx < (int)X509_PURPOSE_COUNT) return xstandard + idx;
+    #####:  145:	return sk_X509_PURPOSE_value(xptable, idx - X509_PURPOSE_COUNT);
+        -:  146:}
+        -:  147:
+    #####:  148:int X509_PURPOSE_get_by_sname(char *sname)
+        -:  149:{
+        -:  150:	int i;
+        -:  151:	X509_PURPOSE *xptmp;
+    #####:  152:	for(i = 0; i < X509_PURPOSE_get_count(); i++) {
+    #####:  153:		xptmp = X509_PURPOSE_get0(i);
+    #####:  154:		if(!strcmp(xptmp->sname, sname)) return i;
+        -:  155:	}
+        -:  156:	return -1;
+        -:  157:}
+        -:  158:
+     8295:  159:int X509_PURPOSE_get_by_id(int purpose)
+        -:  160:{
+        -:  161:	X509_PURPOSE tmp;
+        -:  162:	int idx;
+     8295:  163:	if((purpose >= X509_PURPOSE_MIN) && (purpose <= X509_PURPOSE_MAX))
+     8295:  164:		return purpose - X509_PURPOSE_MIN;
+    #####:  165:	tmp.purpose = purpose;
+    #####:  166:	if(!xptable) return -1;
+    #####:  167:	idx = sk_X509_PURPOSE_find(xptable, &tmp);
+    #####:  168:	if(idx == -1) return -1;
+    #####:  169:	return idx + X509_PURPOSE_COUNT;
+        -:  170:}
+        -:  171:
+    #####:  172:int X509_PURPOSE_add(int id, int trust, int flags,
+        -:  173:			int (*ck)(const X509_PURPOSE *, const X509 *, int),
+        -:  174:					char *name, char *sname, void *arg)
+        -:  175:{
+        -:  176:	int idx;
+        -:  177:	X509_PURPOSE *ptmp;
+        -:  178:	/* This is set according to what we change: application can't set it */
+    #####:  179:	flags &= ~X509_PURPOSE_DYNAMIC;
+        -:  180:	/* This will always be set for application modified trust entries */
+    #####:  181:	flags |= X509_PURPOSE_DYNAMIC_NAME;
+        -:  182:	/* Get existing entry if any */
+    #####:  183:	idx = X509_PURPOSE_get_by_id(id);
+        -:  184:	/* Need a new entry */
+    #####:  185:	if(idx == -1) {
+    #####:  186:		if(!(ptmp = OPENSSL_malloc(sizeof(X509_PURPOSE)))) {
+    #####:  187:			X509V3err(X509V3_F_X509_PURPOSE_ADD,ERR_R_MALLOC_FAILURE);
+    #####:  188:			return 0;
+        -:  189:		}
+    #####:  190:		ptmp->flags = X509_PURPOSE_DYNAMIC;
+    #####:  191:	} else ptmp = X509_PURPOSE_get0(idx);
+        -:  192:
+        -:  193:	/* OPENSSL_free existing name if dynamic */
+    #####:  194:	if(ptmp->flags & X509_PURPOSE_DYNAMIC_NAME) {
+    #####:  195:		OPENSSL_free(ptmp->name);
+    #####:  196:		OPENSSL_free(ptmp->sname);
+        -:  197:	}
+        -:  198:	/* dup supplied name */
+    #####:  199:	ptmp->name = BUF_strdup(name);
+    #####:  200:	ptmp->sname = BUF_strdup(sname);
+    #####:  201:	if(!ptmp->name || !ptmp->sname) {
+    #####:  202:		X509V3err(X509V3_F_X509_PURPOSE_ADD,ERR_R_MALLOC_FAILURE);
+    #####:  203:		return 0;
+        -:  204:	}
+        -:  205:	/* Keep the dynamic flag of existing entry */
+    #####:  206:	ptmp->flags &= X509_PURPOSE_DYNAMIC;
+        -:  207:	/* Set all other flags */
+    #####:  208:	ptmp->flags |= flags;
+        -:  209:
+    #####:  210:	ptmp->purpose = id;
+    #####:  211:	ptmp->trust = trust;
+    #####:  212:	ptmp->check_purpose = ck;
+    #####:  213:	ptmp->usr_data = arg;
+        -:  214:
+        -:  215:	/* If its a new entry manage the dynamic table */
+    #####:  216:	if(idx == -1) {
+    #####:  217:		if(!xptable && !(xptable = sk_X509_PURPOSE_new(xp_cmp))) {
+    #####:  218:			X509V3err(X509V3_F_X509_PURPOSE_ADD,ERR_R_MALLOC_FAILURE);
+    #####:  219:			return 0;
+        -:  220:		}
+    #####:  221:		if (!sk_X509_PURPOSE_push(xptable, ptmp)) {
+    #####:  222:			X509V3err(X509V3_F_X509_PURPOSE_ADD,ERR_R_MALLOC_FAILURE);
+    #####:  223:			return 0;
+        -:  224:		}
+        -:  225:	}
+        -:  226:	return 1;
+        -:  227:}
+        -:  228:
+    #####:  229:static void xptable_free(X509_PURPOSE *p)
+        -:  230:	{
+    #####:  231:	if(!p) return;
+    #####:  232:	if (p->flags & X509_PURPOSE_DYNAMIC) 
+        -:  233:		{
+    #####:  234:		if (p->flags & X509_PURPOSE_DYNAMIC_NAME) {
+    #####:  235:			OPENSSL_free(p->name);
+    #####:  236:			OPENSSL_free(p->sname);
+        -:  237:		}
+    #####:  238:		OPENSSL_free(p);
+        -:  239:		}
+        -:  240:	}
+        -:  241:
+    #####:  242:void X509_PURPOSE_cleanup(void)
+        -:  243:{
+        -:  244:	unsigned int i;
+    #####:  245:	sk_X509_PURPOSE_pop_free(xptable, xptable_free);
+    #####:  246:	for(i = 0; i < X509_PURPOSE_COUNT; i++) xptable_free(xstandard + i);
+    #####:  247:	xptable = NULL;
+    #####:  248:}
+        -:  249:
+    #####:  250:int X509_PURPOSE_get_id(X509_PURPOSE *xp)
+        -:  251:{
+    #####:  252:	return xp->purpose;
+        -:  253:}
+        -:  254:
+    #####:  255:char *X509_PURPOSE_get0_name(X509_PURPOSE *xp)
+        -:  256:{
+    #####:  257:	return xp->name;
+        -:  258:}
+        -:  259:
+    #####:  260:char *X509_PURPOSE_get0_sname(X509_PURPOSE *xp)
+        -:  261:{
+    #####:  262:	return xp->sname;
+        -:  263:}
+        -:  264:
+    #####:  265:int X509_PURPOSE_get_trust(X509_PURPOSE *xp)
+        -:  266:{
+    #####:  267:	return xp->trust;
+        -:  268:}
+        -:  269:
+        -:  270:static int nid_cmp(const int *a, const int *b)
+        -:  271:	{
+    89293:  272:	return *a - *b;
+        -:  273:	}
+        -:  274:
+        -:  275:DECLARE_OBJ_BSEARCH_CMP_FN(int, int, nid);
+   202839:  276:IMPLEMENT_OBJ_BSEARCH_CMP_FN(int, int, nid);
+        -:  277:
+    30199:  278:int X509_supported_extension(X509_EXTENSION *ex)
+        -:  279:	{
+        -:  280:	/* This table is a list of the NIDs of supported extensions:
+        -:  281:	 * that is those which are used by the verify process. If
+        -:  282:	 * an extension is critical and doesn't appear in this list
+        -:  283:	 * then the verify process will normally reject the certificate.
+        -:  284:	 * The list must be kept in numerical order because it will be
+        -:  285:	 * searched using bsearch.
+        -:  286:	 */
+        -:  287:
+        -:  288:	static const int supported_nids[] = {
+        -:  289:		NID_netscape_cert_type, /* 71 */
+        -:  290:        	NID_key_usage,		/* 83 */
+        -:  291:		NID_subject_alt_name,	/* 85 */
+        -:  292:		NID_basic_constraints,	/* 87 */
+        -:  293:		NID_certificate_policies, /* 89 */
+        -:  294:        	NID_ext_key_usage,	/* 126 */
+        -:  295:#ifndef OPENSSL_NO_RFC3779
+        -:  296:		NID_sbgp_ipAddrBlock,	/* 290 */
+        -:  297:		NID_sbgp_autonomousSysNum, /* 291 */
+        -:  298:#endif
+        -:  299:		NID_policy_constraints,	/* 401 */
+        -:  300:		NID_proxyCertInfo,	/* 663 */
+        -:  301:		NID_name_constraints,	/* 666 */
+        -:  302:		NID_policy_mappings,	/* 747 */
+        -:  303:		NID_inhibit_any_policy	/* 748 */
+        -:  304:	};
+        -:  305:
+    30199:  306:	int ex_nid = OBJ_obj2nid(X509_EXTENSION_get_object(ex));
+        -:  307:
+    30199:  308:	if (ex_nid == NID_undef) 
+        -:  309:		return 0;
+        -:  310:
+    24253:  311:	if (OBJ_bsearch_nid(&ex_nid, supported_nids,
+        -:  312:			sizeof(supported_nids)/sizeof(int)))
+        -:  313:		return 1;
+    10552:  314:	return 0;
+        -:  315:	}
+        -:  316:
+     6602:  317:static void setup_dp(X509 *x, DIST_POINT *dp)
+        -:  318:	{
+        -:  319:	X509_NAME *iname = NULL;
+        -:  320:	int i;
+     6602:  321:	if (dp->reasons)
+        -:  322:		{
+    #####:  323:		if (dp->reasons->length > 0)
+    #####:  324:			dp->dp_reasons = dp->reasons->data[0];
+    #####:  325:		if (dp->reasons->length > 1)
+    #####:  326:			dp->dp_reasons |= (dp->reasons->data[1] << 8);
+    #####:  327:		dp->dp_reasons &= CRLDP_ALL_REASONS;
+        -:  328:		}
+        -:  329:	else
+     6602:  330:		dp->dp_reasons = CRLDP_ALL_REASONS;
+     6602:  331:	if (!dp->distpoint || (dp->distpoint->type != 1))
+     6602:  332:		return;
+    #####:  333:	for (i = 0; i < sk_GENERAL_NAME_num(dp->CRLissuer); i++)
+        -:  334:		{
+    #####:  335:		GENERAL_NAME *gen = sk_GENERAL_NAME_value(dp->CRLissuer, i);
+    #####:  336:		if (gen->type == GEN_DIRNAME)
+        -:  337:			{
+    #####:  338:			iname = gen->d.directoryName;
+    #####:  339:			break;
+        -:  340:			}
+        -:  341:		}
+    #####:  342:	if (!iname)
+    #####:  343:		iname = X509_get_issuer_name(x);
+        -:  344:
+    #####:  345:	DIST_POINT_set_dpname(dp->distpoint, iname);
+        -:  346:
+        -:  347:	}
+        -:  348:
+    27144:  349:static void setup_crldp(X509 *x)
+        -:  350:	{
+        -:  351:	int i;
+    27144:  352:	x->crldp = X509_get_ext_d2i(x, NID_crl_distribution_points, NULL, NULL);
+    33746:  353:	for (i = 0; i < sk_DIST_POINT_num(x->crldp); i++)
+     6602:  354:		setup_dp(x, sk_DIST_POINT_value(x->crldp, i));
+    27144:  355:	}
+        -:  356:
+    73456:  357:static void x509v3_cache_extensions(X509 *x)
+        -:  358:{
+        -:  359:	BASIC_CONSTRAINTS *bs;
+        -:  360:	PROXY_CERT_INFO_EXTENSION *pci;
+        -:  361:	ASN1_BIT_STRING *usage;
+        -:  362:	ASN1_BIT_STRING *ns;
+        -:  363:	EXTENDED_KEY_USAGE *extusage;
+        -:  364:	X509_EXTENSION *ex;
+        -:  365:	
+        -:  366:	int i;
+   119768:  367:	if(x->ex_flags & EXFLAG_SET) return;
+        -:  368:#ifndef OPENSSL_NO_SHA
+    27144:  369:	X509_digest(x, EVP_sha1(), x->sha1_hash, NULL);
+        -:  370:#endif
+        -:  371:	/* Does subject name match issuer ? */
+    27144:  372:	if(!X509_NAME_cmp(X509_get_subject_name(x), X509_get_issuer_name(x)))
+     8515:  373:			 x->ex_flags |= EXFLAG_SI;
+        -:  374:	/* V1 should mean no extensions ... */
+    27144:  375:	if(!X509_get_version(x)) x->ex_flags |= EXFLAG_V1;
+        -:  376:	/* Handle basic constraints */
+    27144:  377:	if((bs=X509_get_ext_d2i(x, NID_basic_constraints, NULL, NULL))) {
+     9699:  378:		if(bs->ca) x->ex_flags |= EXFLAG_CA;
+     9699:  379:		if(bs->pathlen) {
+     9244:  380:			if((bs->pathlen->type == V_ASN1_NEG_INTEGER)
+     9244:  381:						|| !bs->ca) {
+      156:  382:				x->ex_flags |= EXFLAG_INVALID;
+      156:  383:				x->ex_pathlen = 0;
+     9088:  384:			} else x->ex_pathlen = ASN1_INTEGER_get(bs->pathlen);
+      455:  385:		} else x->ex_pathlen = -1;
+     9699:  386:		BASIC_CONSTRAINTS_free(bs);
+     9699:  387:		x->ex_flags |= EXFLAG_BCONS;
+        -:  388:	}
+        -:  389:	/* Handle proxy certificates */
+    27144:  390:	if((pci=X509_get_ext_d2i(x, NID_proxyCertInfo, NULL, NULL))) {
+    #####:  391:		if (x->ex_flags & EXFLAG_CA
+    #####:  392:		    || X509_get_ext_by_NID(x, NID_subject_alt_name, 0) >= 0
+    #####:  393:		    || X509_get_ext_by_NID(x, NID_issuer_alt_name, 0) >= 0) {
+    #####:  394:			x->ex_flags |= EXFLAG_INVALID;
+        -:  395:		}
+    #####:  396:		if (pci->pcPathLengthConstraint) {
+    #####:  397:			x->ex_pcpathlen =
+    #####:  398:				ASN1_INTEGER_get(pci->pcPathLengthConstraint);
+    #####:  399:		} else x->ex_pcpathlen = -1;
+    #####:  400:		PROXY_CERT_INFO_EXTENSION_free(pci);
+    #####:  401:		x->ex_flags |= EXFLAG_PROXY;
+        -:  402:	}
+        -:  403:	/* Handle key usage */
+    27144:  404:	if((usage=X509_get_ext_d2i(x, NID_key_usage, NULL, NULL))) {
+     2016:  405:		if(usage->length > 0) {
+     2016:  406:			x->ex_kusage = usage->data[0];
+     2016:  407:			if(usage->length > 1) 
+      111:  408:				x->ex_kusage |= usage->data[1] << 8;
+    #####:  409:		} else x->ex_kusage = 0;
+     2016:  410:		x->ex_flags |= EXFLAG_KUSAGE;
+     2016:  411:		ASN1_BIT_STRING_free(usage);
+        -:  412:	}
+    27144:  413:	x->ex_xkusage = 0;
+    27144:  414:	if((extusage=X509_get_ext_d2i(x, NID_ext_key_usage, NULL, NULL))) {
+     1789:  415:		x->ex_flags |= EXFLAG_XKUSAGE;
+     6921:  416:		for(i = 0; i < sk_ASN1_OBJECT_num(extusage); i++) {
+     5132:  417:			switch(OBJ_obj2nid(sk_ASN1_OBJECT_value(extusage,i))) {
+        -:  418:				case NID_server_auth:
+     1636:  419:				x->ex_xkusage |= XKU_SSL_SERVER;
+     1636:  420:				break;
+        -:  421:
+        -:  422:				case NID_client_auth:
+     1313:  423:				x->ex_xkusage |= XKU_SSL_CLIENT;
+     1313:  424:				break;
+        -:  425:
+        -:  426:				case NID_email_protect:
+      153:  427:				x->ex_xkusage |= XKU_SMIME;
+      153:  428:				break;
+        -:  429:
+        -:  430:				case NID_code_sign:
+      107:  431:				x->ex_xkusage |= XKU_CODE_SIGN;
+      107:  432:				break;
+        -:  433:
+        -:  434:				case NID_ms_sgc:
+        -:  435:				case NID_ns_sgc:
+     1267:  436:				x->ex_xkusage |= XKU_SGC;
+     1267:  437:				break;
+        -:  438:
+        -:  439:				case NID_OCSP_sign:
+    #####:  440:				x->ex_xkusage |= XKU_OCSP_SIGN;
+    #####:  441:				break;
+        -:  442:
+        -:  443:				case NID_time_stamp:
+    #####:  444:				x->ex_xkusage |= XKU_TIMESTAMP;
+    #####:  445:				break;
+        -:  446:
+        -:  447:				case NID_dvcs:
+    #####:  448:				x->ex_xkusage |= XKU_DVCS;
+    #####:  449:				break;
+        -:  450:			}
+        -:  451:		}
+     1789:  452:		sk_ASN1_OBJECT_pop_free(extusage, ASN1_OBJECT_free);
+        -:  453:	}
+        -:  454:
+    27144:  455:	if((ns=X509_get_ext_d2i(x, NID_netscape_cert_type, NULL, NULL))) {
+      523:  456:		if(ns->length > 0) x->ex_nscert = ns->data[0];
+    #####:  457:		else x->ex_nscert = 0;
+      523:  458:		x->ex_flags |= EXFLAG_NSCERT;
+      523:  459:		ASN1_BIT_STRING_free(ns);
+        -:  460:	}
+    27144:  461:	x->skid =X509_get_ext_d2i(x, NID_subject_key_identifier, NULL, NULL);
+    27144:  462:	x->akid =X509_get_ext_d2i(x, NID_authority_key_identifier, NULL, NULL);
+    27144:  463:	x->altname = X509_get_ext_d2i(x, NID_subject_alt_name, NULL, NULL);
+    27144:  464:	x->nc = X509_get_ext_d2i(x, NID_name_constraints, &i, NULL);
+    27144:  465:	if (!x->nc && (i != -1))
+    #####:  466:		x->ex_flags |= EXFLAG_INVALID;
+    27144:  467:	setup_crldp(x);
+        -:  468:
+        -:  469:#ifndef OPENSSL_NO_RFC3779
+        -:  470: 	x->rfc3779_addr =X509_get_ext_d2i(x, NID_sbgp_ipAddrBlock, NULL, NULL);
+        -:  471: 	x->rfc3779_asid =X509_get_ext_d2i(x, NID_sbgp_autonomousSysNum,
+        -:  472: 					  NULL, NULL);
+        -:  473:#endif
+    84977:  474:	for (i = 0; i < X509_get_ext_count(x); i++)
+        -:  475:		{
+    74331:  476:		ex = X509_get_ext(x, i);
+    74331:  477:		if (OBJ_obj2nid(X509_EXTENSION_get_object(ex))
+        -:  478:					== NID_freshest_crl)
+    #####:  479:			x->ex_flags |= EXFLAG_FRESHEST;
+    74331:  480:		if (!X509_EXTENSION_get_critical(ex))
+    44132:  481:			continue;
+    30199:  482:		if (!X509_supported_extension(ex))
+        -:  483:			{
+    16498:  484:			x->ex_flags |= EXFLAG_CRITICAL;
+    16498:  485:			break;
+        -:  486:			}
+        -:  487:		}
+    27144:  488:	x->ex_flags |= EXFLAG_SET;
+        -:  489:}
+        -:  490:
+        -:  491:/* CA checks common to all purposes
+        -:  492: * return codes:
+        -:  493: * 0 not a CA
+        -:  494: * 1 is a CA
+        -:  495: * 2 basicConstraints absent so "maybe" a CA
+        -:  496: * 3 basicConstraints absent but self signed V1.
+        -:  497: * 4 basicConstraints absent but keyUsage present and keyCertSign asserted.
+        -:  498: */
+        -:  499:
+        -:  500:#define V1_ROOT (EXFLAG_V1|EXFLAG_SS)
+        -:  501:#define ku_reject(x, usage) \
+        -:  502:	(((x)->ex_flags & EXFLAG_KUSAGE) && !((x)->ex_kusage & (usage)))
+        -:  503:#define xku_reject(x, usage) \
+        -:  504:	(((x)->ex_flags & EXFLAG_XKUSAGE) && !((x)->ex_xkusage & (usage)))
+        -:  505:#define ns_reject(x, usage) \
+        -:  506:	(((x)->ex_flags & EXFLAG_NSCERT) && !((x)->ex_nscert & (usage)))
+        -:  507:
+     9038:  508:static int check_ca(const X509 *x)
+        -:  509:{
+        -:  510:	/* keyUsage if present should allow cert signing */
+     9038:  511:	if(ku_reject(x, KU_KEY_CERT_SIGN)) return 0;
+     8633:  512:	if(x->ex_flags & EXFLAG_BCONS) {
+      811:  513:		if(x->ex_flags & EXFLAG_CA) return 1;
+        -:  514:		/* If basicConstraints says not a CA then say so */
+      200:  515:		else return 0;
+        -:  516:	} else {
+        -:  517:		/* we support V1 roots for...  uh, I don't really know why. */
+     7822:  518:		if((x->ex_flags & V1_ROOT) == V1_ROOT) return 3;
+        -:  519:		/* If key usage present it must have certSign so tolerate it */
+     7136:  520:		else if (x->ex_flags & EXFLAG_KUSAGE) return 4;
+        -:  521:		/* Older certificates could have Netscape-specific CA types */
+     6775:  522:		else if (x->ex_flags & EXFLAG_NSCERT
+      117:  523:			 && x->ex_nscert & NS_ANY_CA) return 5;
+        -:  524:		/* can this still be regarded a CA certificate?  I doubt it */
+     6708:  525:		return 0;
+        -:  526:	}
+        -:  527:}
+        -:  528:
+     9001:  529:int X509_check_ca(X509 *x)
+        -:  530:{
+     9001:  531:	if(!(x->ex_flags & EXFLAG_SET)) {
+    #####:  532:		CRYPTO_w_lock(CRYPTO_LOCK_X509);
+    #####:  533:		x509v3_cache_extensions(x);
+    #####:  534:		CRYPTO_w_unlock(CRYPTO_LOCK_X509);
+        -:  535:	}
+        -:  536:
+     9001:  537:	return check_ca(x);
+        -:  538:}
+        -:  539:
+        -:  540:/* Check SSL CA: common checks for SSL client and server */
+       37:  541:static int check_ssl_ca(const X509 *x)
+        -:  542:{
+        -:  543:	int ca_ret;
+       37:  544:	ca_ret = check_ca(x);
+       37:  545:	if(!ca_ret) return 0;
+        -:  546:	/* check nsCertType if present */
+       37:  547:	if(ca_ret != 5 || x->ex_nscert & NS_SSL_CA) return ca_ret;
+        -:  548:	else return 0;
+        -:  549:}
+        -:  550:
+        -:  551:
+    #####:  552:static int check_purpose_ssl_client(const X509_PURPOSE *xp, const X509 *x, int ca)
+        -:  553:{
+    #####:  554:	if(xku_reject(x,XKU_SSL_CLIENT)) return 0;
+    #####:  555:	if(ca) return check_ssl_ca(x);
+        -:  556:	/* We need to do digital signatures with it */
+    #####:  557:	if(ku_reject(x,KU_DIGITAL_SIGNATURE)) return 0;
+        -:  558:	/* nsCertType if present should allow SSL client use */	
+    #####:  559:	if(ns_reject(x, NS_SSL_CLIENT)) return 0;
+    #####:  560:	return 1;
+        -:  561:}
+        -:  562:
+     8295:  563:static int check_purpose_ssl_server(const X509_PURPOSE *xp, const X509 *x, int ca)
+        -:  564:{
+     8295:  565:	if(xku_reject(x,XKU_SSL_SERVER|XKU_SGC)) return 0;
+     8226:  566:	if(ca) return check_ssl_ca(x);
+        -:  567:
+     8189:  568:	if(ns_reject(x, NS_SSL_SERVER)) return 0;
+        -:  569:	/* Now as for keyUsage: we'll at least need to sign OR encipher */
+     8069:  570:	if(ku_reject(x, KU_DIGITAL_SIGNATURE|KU_KEY_ENCIPHERMENT)) return 0;
+        -:  571:	
+     7872:  572:	return 1;
+        -:  573:
+        -:  574:}
+        -:  575:
+    #####:  576:static int check_purpose_ns_ssl_server(const X509_PURPOSE *xp, const X509 *x, int ca)
+        -:  577:{
+        -:  578:	int ret;
+    #####:  579:	ret = check_purpose_ssl_server(xp, x, ca);
+    #####:  580:	if(!ret || ca) return ret;
+        -:  581:	/* We need to encipher or Netscape complains */
+    #####:  582:	if(ku_reject(x, KU_KEY_ENCIPHERMENT)) return 0;
+    #####:  583:	return ret;
+        -:  584:}
+        -:  585:
+        -:  586:/* common S/MIME checks */
+    #####:  587:static int purpose_smime(const X509 *x, int ca)
+        -:  588:{
+    #####:  589:	if(xku_reject(x,XKU_SMIME)) return 0;
+    #####:  590:	if(ca) {
+        -:  591:		int ca_ret;
+    #####:  592:		ca_ret = check_ca(x);
+    #####:  593:		if(!ca_ret) return 0;
+        -:  594:		/* check nsCertType if present */
+    #####:  595:		if(ca_ret != 5 || x->ex_nscert & NS_SMIME_CA) return ca_ret;
+        -:  596:		else return 0;
+        -:  597:	}
+    #####:  598:	if(x->ex_flags & EXFLAG_NSCERT) {
+    #####:  599:		if(x->ex_nscert & NS_SMIME) return 1;
+        -:  600:		/* Workaround for some buggy certificates */
+    #####:  601:		if(x->ex_nscert & NS_SSL_CLIENT) return 2;
+    #####:  602:		return 0;
+        -:  603:	}
+        -:  604:	return 1;
+        -:  605:}
+        -:  606:
+    #####:  607:static int check_purpose_smime_sign(const X509_PURPOSE *xp, const X509 *x, int ca)
+        -:  608:{
+        -:  609:	int ret;
+    #####:  610:	ret = purpose_smime(x, ca);
+    #####:  611:	if(!ret || ca) return ret;
+    #####:  612:	if(ku_reject(x, KU_DIGITAL_SIGNATURE|KU_NON_REPUDIATION)) return 0;
+    #####:  613:	return ret;
+        -:  614:}
+        -:  615:
+    #####:  616:static int check_purpose_smime_encrypt(const X509_PURPOSE *xp, const X509 *x, int ca)
+        -:  617:{
+        -:  618:	int ret;
+    #####:  619:	ret = purpose_smime(x, ca);
+    #####:  620:	if(!ret || ca) return ret;
+    #####:  621:	if(ku_reject(x, KU_KEY_ENCIPHERMENT)) return 0;
+    #####:  622:	return ret;
+        -:  623:}
+        -:  624:
+    #####:  625:static int check_purpose_crl_sign(const X509_PURPOSE *xp, const X509 *x, int ca)
+        -:  626:{
+    #####:  627:	if(ca) {
+        -:  628:		int ca_ret;
+    #####:  629:		if((ca_ret = check_ca(x)) != 2) return ca_ret;
+        -:  630:		else return 0;
+        -:  631:	}
+    #####:  632:	if(ku_reject(x, KU_CRL_SIGN)) return 0;
+    #####:  633:	return 1;
+        -:  634:}
+        -:  635:
+        -:  636:/* OCSP helper: this is *not* a full OCSP check. It just checks that
+        -:  637: * each CA is valid. Additional checks must be made on the chain.
+        -:  638: */
+        -:  639:
+    #####:  640:static int ocsp_helper(const X509_PURPOSE *xp, const X509 *x, int ca)
+        -:  641:{
+        -:  642:	/* Must be a valid CA.  Should we really support the "I don't know"
+        -:  643:	   value (2)? */
+    #####:  644:	if(ca) return check_ca(x);
+        -:  645:	/* leaf certificate is checked in OCSP_verify() */
+        -:  646:	return 1;
+        -:  647:}
+        -:  648:
+    #####:  649:static int check_purpose_timestamp_sign(const X509_PURPOSE *xp, const X509 *x,
+        -:  650:					int ca)
+        -:  651:{
+        -:  652:	int i_ext;
+        -:  653:
+        -:  654:	/* If ca is true we must return if this is a valid CA certificate. */
+    #####:  655:	if (ca) return check_ca(x);
+        -:  656:
+        -:  657:	/* 
+        -:  658:	 * Check the optional key usage field:
+        -:  659:	 * if Key Usage is present, it must be one of digitalSignature 
+        -:  660:	 * and/or nonRepudiation (other values are not consistent and shall
+        -:  661:	 * be rejected).
+        -:  662:	 */
+    #####:  663:	if ((x->ex_flags & EXFLAG_KUSAGE)
+    #####:  664:	    && ((x->ex_kusage & ~(KU_NON_REPUDIATION | KU_DIGITAL_SIGNATURE)) ||
+    #####:  665:		!(x->ex_kusage & (KU_NON_REPUDIATION | KU_DIGITAL_SIGNATURE))))
+        -:  666:		return 0;
+        -:  667:
+        -:  668:	/* Only time stamp key usage is permitted and it's required. */
+    #####:  669:	if (!(x->ex_flags & EXFLAG_XKUSAGE) || x->ex_xkusage != XKU_TIMESTAMP)
+        -:  670:		return 0;
+        -:  671:
+        -:  672:	/* Extended Key Usage MUST be critical */
+    #####:  673:	i_ext = X509_get_ext_by_NID((X509 *) x, NID_ext_key_usage, 0);
+    #####:  674:	if (i_ext >= 0)
+        -:  675:		{
+    #####:  676:		X509_EXTENSION *ext = X509_get_ext((X509 *) x, i_ext);
+    #####:  677:		if (!X509_EXTENSION_get_critical(ext))
+        -:  678:			return 0;
+        -:  679:		}
+        -:  680:
+        -:  681:	return 1;
+        -:  682:}
+        -:  683:
+    #####:  684:static int no_check(const X509_PURPOSE *xp, const X509 *x, int ca)
+        -:  685:{
+    #####:  686:	return 1;
+        -:  687:}
+        -:  688:
+        -:  689:/* Various checks to see if one certificate issued the second.
+        -:  690: * This can be used to prune a set of possible issuer certificates
+        -:  691: * which have been looked up using some simple method such as by
+        -:  692: * subject name.
+        -:  693: * These are:
+        -:  694: * 1. Check issuer_name(subject) == subject_name(issuer)
+        -:  695: * 2. If akid(subject) exists check it matches issuer
+        -:  696: * 3. If key_usage(issuer) exists check it supports certificate signing
+        -:  697: * returns 0 for OK, positive for reason for mismatch, reasons match
+        -:  698: * codes for X509_verify_cert()
+        -:  699: */
+        -:  700:
+    95044:  701:int X509_check_issued(X509 *issuer, X509 *subject)
+        -:  702:{
+    95044:  703:	if(X509_NAME_cmp(X509_get_subject_name(issuer),
+    95044:  704:			X509_get_issuer_name(subject)))
+        -:  705:				return X509_V_ERR_SUBJECT_ISSUER_MISMATCH;
+    36728:  706:	x509v3_cache_extensions(issuer);
+    36728:  707:	x509v3_cache_extensions(subject);
+        -:  708:
+    36728:  709:	if(subject->akid)
+        -:  710:		{
+    20976:  711:		int ret = X509_check_akid(issuer, subject->akid);
+    20976:  712:		if (ret != X509_V_OK)
+        -:  713:			return ret;
+        -:  714:		}
+        -:  715:
+    31094:  716:	if(subject->ex_flags & EXFLAG_PROXY)
+        -:  717:		{
+    #####:  718:		if(ku_reject(issuer, KU_DIGITAL_SIGNATURE))
+        -:  719:			return X509_V_ERR_KEYUSAGE_NO_DIGITAL_SIGNATURE;
+        -:  720:		}
+    31094:  721:	else if(ku_reject(issuer, KU_KEY_CERT_SIGN))
+        -:  722:		return X509_V_ERR_KEYUSAGE_NO_CERTSIGN;
+    30445:  723:	return X509_V_OK;
+        -:  724:}
+        -:  725:
+    20976:  726:int X509_check_akid(X509 *issuer, AUTHORITY_KEYID *akid)
+        -:  727:	{
+        -:  728:
+    20976:  729:	if(!akid)
+        -:  730:		return X509_V_OK;
+        -:  731:
+        -:  732:	/* Check key ids (if present) */
+    39487:  733:	if(akid->keyid && issuer->skid &&
+    18511:  734:		 ASN1_OCTET_STRING_cmp(akid->keyid, issuer->skid) )
+        -:  735:				return X509_V_ERR_AKID_SKID_MISMATCH;
+        -:  736:	/* Check serial number */
+    16554:  737:	if(akid->serial &&
+      606:  738:		ASN1_INTEGER_cmp(X509_get_serialNumber(issuer), akid->serial))
+        -:  739:				return X509_V_ERR_AKID_ISSUER_SERIAL_MISMATCH;
+        -:  740:	/* Check issuer name */
+    15342:  741:	if(akid->issuer)
+        -:  742:		{
+        -:  743:		/* Ugh, for some peculiar reason AKID includes
+        -:  744:		 * SEQUENCE OF GeneralName. So look for a DirName.
+        -:  745:		 * There may be more than one but we only take any
+        -:  746:		 * notice of the first.
+        -:  747:		 */
+        -:  748:		GENERAL_NAMES *gens;
+        -:  749:		GENERAL_NAME *gen;
+        -:  750:		X509_NAME *nm = NULL;
+        -:  751:		int i;
+        -:  752:		gens = akid->issuer;
+    #####:  753:		for(i = 0; i < sk_GENERAL_NAME_num(gens); i++)
+        -:  754:			{
+    #####:  755:			gen = sk_GENERAL_NAME_value(gens, i);
+    #####:  756:			if(gen->type == GEN_DIRNAME)
+        -:  757:				{
+    #####:  758:				nm = gen->d.dirn;
+    #####:  759:				break;
+        -:  760:				}
+        -:  761:			}
+    #####:  762:		if(nm && X509_NAME_cmp(nm, X509_get_issuer_name(issuer)))
+        -:  763:			return X509_V_ERR_AKID_ISSUER_SERIAL_MISMATCH;
+        -:  764:		}
+        -:  765:	return X509_V_OK;
+        -:  766:	}
+        -:  767:

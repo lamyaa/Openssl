@@ -1,0 +1,257 @@
+        -:    0:Source:pqueue.c
+        -:    0:Graph:pqueue.gcno
+        -:    0:Data:pqueue.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* crypto/pqueue/pqueue.c */
+        -:    2:/* 
+        -:    3: * DTLS implementation written by Nagendra Modadugu
+        -:    4: * (nagendra@cs.stanford.edu) for the OpenSSL project 2005.  
+        -:    5: */
+        -:    6:/* ====================================================================
+        -:    7: * Copyright (c) 1999-2005 The OpenSSL Project.  All rights reserved.
+        -:    8: *
+        -:    9: * Redistribution and use in source and binary forms, with or without
+        -:   10: * modification, are permitted provided that the following conditions
+        -:   11: * are met:
+        -:   12: *
+        -:   13: * 1. Redistributions of source code must retain the above copyright
+        -:   14: *    notice, this list of conditions and the following disclaimer. 
+        -:   15: *
+        -:   16: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   17: *    notice, this list of conditions and the following disclaimer in
+        -:   18: *    the documentation and/or other materials provided with the
+        -:   19: *    distribution.
+        -:   20: *
+        -:   21: * 3. All advertising materials mentioning features or use of this
+        -:   22: *    software must display the following acknowledgment:
+        -:   23: *    "This product includes software developed by the OpenSSL Project
+        -:   24: *    for use in the OpenSSL Toolkit. (http://www.OpenSSL.org/)"
+        -:   25: *
+        -:   26: * 4. The names "OpenSSL Toolkit" and "OpenSSL Project" must not be used to
+        -:   27: *    endorse or promote products derived from this software without
+        -:   28: *    prior written permission. For written permission, please contact
+        -:   29: *    openssl-core@OpenSSL.org.
+        -:   30: *
+        -:   31: * 5. Products derived from this software may not be called "OpenSSL"
+        -:   32: *    nor may "OpenSSL" appear in their names without prior written
+        -:   33: *    permission of the OpenSSL Project.
+        -:   34: *
+        -:   35: * 6. Redistributions of any form whatsoever must retain the following
+        -:   36: *    acknowledgment:
+        -:   37: *    "This product includes software developed by the OpenSSL Project
+        -:   38: *    for use in the OpenSSL Toolkit (http://www.OpenSSL.org/)"
+        -:   39: *
+        -:   40: * THIS SOFTWARE IS PROVIDED BY THE OpenSSL PROJECT ``AS IS'' AND ANY
+        -:   41: * EXPRESSED OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   42: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+        -:   43: * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE OpenSSL PROJECT OR
+        -:   44: * ITS CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+        -:   45: * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+        -:   46: * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+        -:   47: * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   48: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+        -:   49: * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+        -:   50: * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+        -:   51: * OF THE POSSIBILITY OF SUCH DAMAGE.
+        -:   52: * ====================================================================
+        -:   53: *
+        -:   54: * This product includes cryptographic software written by Eric Young
+        -:   55: * (eay@cryptsoft.com).  This product includes software written by Tim
+        -:   56: * Hudson (tjh@cryptsoft.com).
+        -:   57: *
+        -:   58: */
+        -:   59:
+        -:   60:#include "cryptlib.h"
+        -:   61:#include <openssl/bn.h>
+        -:   62:#include "pqueue.h"
+        -:   63:
+        -:   64:typedef struct _pqueue
+        -:   65:	{
+        -:   66:	pitem *items;
+        -:   67:	int count;
+        -:   68:	} pqueue_s;
+        -:   69:
+        -:   70:pitem *
+    #####:   71:pitem_new(unsigned char *prio64be, void *data)
+        -:   72:	{
+    #####:   73:	pitem *item = (pitem *) OPENSSL_malloc(sizeof(pitem));
+    #####:   74:	if (item == NULL) return NULL;
+        -:   75:
+    #####:   76:	memcpy(item->priority,prio64be,sizeof(item->priority));
+        -:   77:
+    #####:   78:	item->data = data;
+    #####:   79:	item->next = NULL;
+        -:   80:
+    #####:   81:	return item;
+        -:   82:	}
+        -:   83:
+        -:   84:void
+    #####:   85:pitem_free(pitem *item)
+        -:   86:	{
+    #####:   87:	if (item == NULL) return;
+        -:   88:
+    #####:   89:	OPENSSL_free(item);
+        -:   90:	}
+        -:   91:
+        -:   92:pqueue_s *
+    #####:   93:pqueue_new()
+        -:   94:	{
+    #####:   95:	pqueue_s *pq = (pqueue_s *) OPENSSL_malloc(sizeof(pqueue_s));
+    #####:   96:	if (pq == NULL) return NULL;
+        -:   97:
+        -:   98:	memset(pq, 0x00, sizeof(pqueue_s));
+    #####:   99:	return pq;
+        -:  100:	}
+        -:  101:
+        -:  102:void
+    #####:  103:pqueue_free(pqueue_s *pq)
+        -:  104:	{
+    #####:  105:	if (pq == NULL) return;
+        -:  106:
+    #####:  107:	OPENSSL_free(pq);
+        -:  108:	}
+        -:  109:
+        -:  110:pitem *
+    #####:  111:pqueue_insert(pqueue_s *pq, pitem *item)
+        -:  112:	{
+        -:  113:	pitem *curr, *next;
+        -:  114:
+    #####:  115:	if (pq->items == NULL)
+        -:  116:		{
+    #####:  117:		pq->items = item;
+    #####:  118:		return item;
+        -:  119:		}
+        -:  120:
+    #####:  121:	for(curr = NULL, next = pq->items; 
+        -:  122:		next != NULL;
+    #####:  123:		curr = next, next = next->next)
+        -:  124:		{
+        -:  125:		/* we can compare 64-bit value in big-endian encoding
+        -:  126:		 * with memcmp:-) */
+    #####:  127:		int cmp = memcmp(next->priority, item->priority,8);
+    #####:  128:		if (cmp > 0)		/* next > item */
+        -:  129:			{
+    #####:  130:			item->next = next;
+        -:  131:
+    #####:  132:			if (curr == NULL) 
+    #####:  133:				pq->items = item;
+        -:  134:			else  
+    #####:  135:				curr->next = item;
+        -:  136:
+    #####:  137:			return item;
+        -:  138:			}
+        -:  139:		
+    #####:  140:		else if (cmp == 0)	/* duplicates not allowed */
+        -:  141:			return NULL;
+        -:  142:		}
+        -:  143:
+    #####:  144:	item->next = NULL;
+    #####:  145:	curr->next = item;
+        -:  146:
+    #####:  147:	return item;
+        -:  148:	}
+        -:  149:
+        -:  150:pitem *
+    #####:  151:pqueue_peek(pqueue_s *pq)
+        -:  152:	{
+    #####:  153:	return pq->items;
+        -:  154:	}
+        -:  155:
+        -:  156:pitem *
+    #####:  157:pqueue_pop(pqueue_s *pq)
+        -:  158:	{
+    #####:  159:	pitem *item = pq->items;
+        -:  160:
+    #####:  161:	if (pq->items != NULL)
+    #####:  162:		pq->items = pq->items->next;
+        -:  163:
+    #####:  164:	return item;
+        -:  165:	}
+        -:  166:
+        -:  167:pitem *
+    #####:  168:pqueue_find(pqueue_s *pq, unsigned char *prio64be)
+        -:  169:	{
+        -:  170:	pitem *next;
+        -:  171:	pitem *found = NULL;
+        -:  172:
+    #####:  173:	if ( pq->items == NULL)
+        -:  174:		return NULL;
+        -:  175:
+    #####:  176:	for ( next = pq->items; next->next != NULL; next = next->next)
+        -:  177:		{
+    #####:  178:		if ( memcmp(next->priority, prio64be,8) == 0)
+        -:  179:			{
+        -:  180:			found = next;
+        -:  181:			break;
+        -:  182:			}
+        -:  183:		}
+        -:  184:	
+        -:  185:	/* check the one last node */
+    #####:  186:	if ( memcmp(next->priority, prio64be,8) ==0)
+        -:  187:		found = next;
+        -:  188:
+    #####:  189:	if ( ! found)
+        -:  190:		return NULL;
+        -:  191:
+        -:  192:#if 0 /* find works in peek mode */
+        -:  193:	if ( prev == NULL)
+        -:  194:		pq->items = next->next;
+        -:  195:	else
+        -:  196:		prev->next = next->next;
+        -:  197:#endif
+        -:  198:
+    #####:  199:	return found;
+        -:  200:	}
+        -:  201:
+        -:  202:void
+    #####:  203:pqueue_print(pqueue_s *pq)
+        -:  204:	{
+    #####:  205:	pitem *item = pq->items;
+        -:  206:
+    #####:  207:	while(item != NULL)
+        -:  208:		{
+    #####:  209:		printf("item\t%02x%02x%02x%02x%02x%02x%02x%02x\n",
+    #####:  210:			item->priority[0],item->priority[1],
+    #####:  211:			item->priority[2],item->priority[3],
+    #####:  212:			item->priority[4],item->priority[5],
+    #####:  213:			item->priority[6],item->priority[7]);
+    #####:  214:		item = item->next;
+        -:  215:		}
+    #####:  216:	}
+        -:  217:
+        -:  218:pitem *
+    #####:  219:pqueue_iterator(pqueue_s *pq)
+        -:  220:	{
+    #####:  221:	return pqueue_peek(pq);
+        -:  222:	}
+        -:  223:
+        -:  224:pitem *
+    #####:  225:pqueue_next(pitem **item)
+        -:  226:	{
+        -:  227:	pitem *ret;
+        -:  228:
+    #####:  229:	if ( item == NULL || *item == NULL)
+        -:  230:		return NULL;
+        -:  231:
+        -:  232:
+        -:  233:	/* *item != NULL */
+        -:  234:	ret = *item;
+    #####:  235:	*item = (*item)->next;
+        -:  236:
+    #####:  237:	return ret;
+        -:  238:	}
+        -:  239:
+        -:  240:int
+    #####:  241:pqueue_size(pqueue_s *pq)
+        -:  242:{
+    #####:  243:	pitem *item = pq->items;
+        -:  244:	int count = 0;
+        -:  245:	
+    #####:  246:	while(item != NULL)
+        -:  247:	{
+    #####:  248:		count++;
+    #####:  249:		item = item->next;
+        -:  250:	}
+    #####:  251:	return count;
+        -:  252:}

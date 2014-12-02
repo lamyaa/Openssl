@@ -1,0 +1,231 @@
+        -:    0:Source:x509_obj.c
+        -:    0:Graph:x509_obj.gcno
+        -:    0:Data:x509_obj.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* crypto/x509/x509_obj.c */
+        -:    2:/* Copyright (C) 1995-1998 Eric Young (eay@cryptsoft.com)
+        -:    3: * All rights reserved.
+        -:    4: *
+        -:    5: * This package is an SSL implementation written
+        -:    6: * by Eric Young (eay@cryptsoft.com).
+        -:    7: * The implementation was written so as to conform with Netscapes SSL.
+        -:    8: * 
+        -:    9: * This library is free for commercial and non-commercial use as long as
+        -:   10: * the following conditions are aheared to.  The following conditions
+        -:   11: * apply to all code found in this distribution, be it the RC4, RSA,
+        -:   12: * lhash, DES, etc., code; not just the SSL code.  The SSL documentation
+        -:   13: * included with this distribution is covered by the same copyright terms
+        -:   14: * except that the holder is Tim Hudson (tjh@cryptsoft.com).
+        -:   15: * 
+        -:   16: * Copyright remains Eric Young's, and as such any Copyright notices in
+        -:   17: * the code are not to be removed.
+        -:   18: * If this package is used in a product, Eric Young should be given attribution
+        -:   19: * as the author of the parts of the library used.
+        -:   20: * This can be in the form of a textual message at program startup or
+        -:   21: * in documentation (online or textual) provided with the package.
+        -:   22: * 
+        -:   23: * Redistribution and use in source and binary forms, with or without
+        -:   24: * modification, are permitted provided that the following conditions
+        -:   25: * are met:
+        -:   26: * 1. Redistributions of source code must retain the copyright
+        -:   27: *    notice, this list of conditions and the following disclaimer.
+        -:   28: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   29: *    notice, this list of conditions and the following disclaimer in the
+        -:   30: *    documentation and/or other materials provided with the distribution.
+        -:   31: * 3. All advertising materials mentioning features or use of this software
+        -:   32: *    must display the following acknowledgement:
+        -:   33: *    "This product includes cryptographic software written by
+        -:   34: *     Eric Young (eay@cryptsoft.com)"
+        -:   35: *    The word 'cryptographic' can be left out if the rouines from the library
+        -:   36: *    being used are not cryptographic related :-).
+        -:   37: * 4. If you include any Windows specific code (or a derivative thereof) from 
+        -:   38: *    the apps directory (application code) you must include an acknowledgement:
+        -:   39: *    "This product includes software written by Tim Hudson (tjh@cryptsoft.com)"
+        -:   40: * 
+        -:   41: * THIS SOFTWARE IS PROVIDED BY ERIC YOUNG ``AS IS'' AND
+        -:   42: * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   43: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+        -:   44: * ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+        -:   45: * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+        -:   46: * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+        -:   47: * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   48: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+        -:   49: * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+        -:   50: * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+        -:   51: * SUCH DAMAGE.
+        -:   52: * 
+        -:   53: * The licence and distribution terms for any publically available version or
+        -:   54: * derivative of this code cannot be changed.  i.e. this code cannot simply be
+        -:   55: * copied and put under another distribution licence
+        -:   56: * [including the GNU Public Licence.]
+        -:   57: */
+        -:   58:
+        -:   59:#include <stdio.h>
+        -:   60:#include "cryptlib.h"
+        -:   61:#include <openssl/lhash.h>
+        -:   62:#include <openssl/objects.h>
+        -:   63:#include <openssl/x509.h>
+        -:   64:#include <openssl/buffer.h>
+        -:   65:
+    89925:   66:char *X509_NAME_oneline(X509_NAME *a, char *buf, int len)
+        -:   67:	{
+        -:   68:	X509_NAME_ENTRY *ne;
+        -:   69:int i;
+        -:   70:	int n,lold,l,l1,l2,num,j,type;
+        -:   71:	const char *s;
+        -:   72:	char *p;
+        -:   73:	unsigned char *q;
+        -:   74:	BUF_MEM *b=NULL;
+        -:   75:	static const char hex[17]="0123456789ABCDEF";
+        -:   76:	int gs_doit[4];
+        -:   77:	char tmp_buf[80];
+        -:   78:#ifdef CHARSET_EBCDIC
+        -:   79:	char ebcdic_buf[1024];
+        -:   80:#endif
+        -:   81:
+    89925:   82:	if (buf == NULL)
+        -:   83:		{
+    29975:   84:		if ((b=BUF_MEM_new()) == NULL) goto err;
+    29975:   85:		if (!BUF_MEM_grow(b,200)) goto err;
+    29975:   86:		b->data[0]='\0';
+        -:   87:		len=200;
+        -:   88:		}
+    89925:   89:	if (a == NULL)
+        -:   90:	    {
+    #####:   91:	    if(b)
+        -:   92:		{
+    #####:   93:		buf=b->data;
+    #####:   94:		OPENSSL_free(b);
+        -:   95:		}
+    #####:   96:	    strncpy(buf,"NO X509_NAME",len);
+    #####:   97:	    buf[len-1]='\0';
+    #####:   98:	    return buf;
+        -:   99:	    }
+        -:  100:
+        -:  101:	len--; /* space for '\0' */
+        -:  102:	l=0;
+   455799:  103:	for (i=0; i<sk_X509_NAME_ENTRY_num(a->entries); i++)
+        -:  104:		{
+   455799:  105:		ne=sk_X509_NAME_ENTRY_value(a->entries,i);
+   455799:  106:		n=OBJ_obj2nid(ne->object);
+   455799:  107:		if ((n == NID_undef) || ((s=OBJ_nid2sn(n)) == NULL))
+        -:  108:			{
+    11596:  109:			i2t_ASN1_OBJECT(tmp_buf,sizeof(tmp_buf),ne->object);
+        -:  110:			s=tmp_buf;
+        -:  111:			}
+   455799:  112:		l1=strlen(s);
+        -:  113:
+   455799:  114:		type=ne->value->type;
+   455799:  115:		num=ne->value->length;
+   455799:  116:		q=ne->value->data;
+        -:  117:#ifdef CHARSET_EBCDIC
+        -:  118:                if (type == V_ASN1_GENERALSTRING ||
+        -:  119:		    type == V_ASN1_VISIBLESTRING ||
+        -:  120:		    type == V_ASN1_PRINTABLESTRING ||
+        -:  121:		    type == V_ASN1_TELETEXSTRING ||
+        -:  122:		    type == V_ASN1_VISIBLESTRING ||
+        -:  123:		    type == V_ASN1_IA5STRING) {
+        -:  124:                        ascii2ebcdic(ebcdic_buf, q,
+        -:  125:				     (num > sizeof ebcdic_buf)
+        -:  126:				     ? sizeof ebcdic_buf : num);
+        -:  127:                        q=ebcdic_buf;
+        -:  128:		}
+        -:  129:#endif
+        -:  130:
+   455799:  131:		if ((type == V_ASN1_GENERALSTRING) && ((num%4) == 0))
+        -:  132:			{
+    #####:  133:			gs_doit[0]=gs_doit[1]=gs_doit[2]=gs_doit[3]=0;
+    #####:  134:			for (j=0; j<num; j++)
+    #####:  135:				if (q[j] != 0) gs_doit[j&3]=1;
+        -:  136:
+    #####:  137:			if (gs_doit[0]|gs_doit[1]|gs_doit[2])
+    #####:  138:				gs_doit[0]=gs_doit[1]=gs_doit[2]=gs_doit[3]=1;
+        -:  139:			else
+        -:  140:				{
+    #####:  141:				gs_doit[0]=gs_doit[1]=gs_doit[2]=0;
+    #####:  142:				gs_doit[3]=1;
+        -:  143:				}
+        -:  144:			}
+        -:  145:		else
+   455799:  146:			gs_doit[0]=gs_doit[1]=gs_doit[2]=gs_doit[3]=1;
+        -:  147:
+  6659032:  148:		for (l2=j=0; j<num; j++)
+        -:  149:			{
+  6203233:  150:			if (!gs_doit[j&3]) continue;
+  6203233:  151:			l2++;
+        -:  152:#ifndef CHARSET_EBCDIC
+  6203233:  153:			if ((q[j] < ' ') || (q[j] > '~')) l2+=3;
+        -:  154:#else
+        -:  155:			if ((os_toascii[q[j]] < os_toascii[' ']) ||
+        -:  156:			    (os_toascii[q[j]] > os_toascii['~'])) l2+=3;
+        -:  157:#endif
+        -:  158:			}
+        -:  159:
+        -:  160:		lold=l;
+   455799:  161:		l+=1+l1+1+l2;
+   455799:  162:		if (b != NULL)
+        -:  163:			{
+   148034:  164:			if (!BUF_MEM_grow(b,l+1)) goto err;
+   148034:  165:			p= &(b->data[lold]);
+        -:  166:			}
+   307765:  167:		else if (l > len)
+        -:  168:			{
+        -:  169:			break;
+        -:  170:			}
+        -:  171:		else
+   307765:  172:			p= &(buf[lold]);
+   455799:  173:		*(p++)='/';
+   911598:  174:		memcpy(p,s,(unsigned int)l1); p+=l1;
+   455799:  175:		*(p++)='=';
+        -:  176:
+        -:  177:#ifndef CHARSET_EBCDIC /* q was assigned above already. */
+   455799:  178:		q=ne->value->data;
+        -:  179:#endif
+        -:  180:
+  6659032:  181:		for (j=0; j<num; j++)
+        -:  182:			{
+  6203233:  183:			if (!gs_doit[j&3]) continue;
+        -:  184:#ifndef CHARSET_EBCDIC
+  6203233:  185:			n=q[j];
+  6203233:  186:			if ((n < ' ') || (n > '~'))
+        -:  187:				{
+    20534:  188:				*(p++)='\\';
+    20534:  189:				*(p++)='x';
+    20534:  190:				*(p++)=hex[(n>>4)&0x0f];
+    20534:  191:				*(p++)=hex[n&0x0f];
+        -:  192:				}
+        -:  193:			else
+  6182699:  194:				*(p++)=n;
+        -:  195:#else
+        -:  196:			n=os_toascii[q[j]];
+        -:  197:			if ((n < os_toascii[' ']) ||
+        -:  198:			    (n > os_toascii['~']))
+        -:  199:				{
+        -:  200:				*(p++)='\\';
+        -:  201:				*(p++)='x';
+        -:  202:				*(p++)=hex[(n>>4)&0x0f];
+        -:  203:				*(p++)=hex[n&0x0f];
+        -:  204:				}
+        -:  205:			else
+        -:  206:				*(p++)=q[j];
+        -:  207:#endif
+        -:  208:			}
+   455799:  209:		*p='\0';
+        -:  210:		}
+    89925:  211:	if (b != NULL)
+        -:  212:		{
+    29975:  213:		p=b->data;
+    29975:  214:		OPENSSL_free(b);
+        -:  215:		}
+        -:  216:	else
+        -:  217:		p=buf;
+    89925:  218:	if (i == 0)
+    #####:  219:		*p = '\0';
+    89925:  220:	return(p);
+        -:  221:err:
+    #####:  222:	X509err(X509_F_X509_NAME_ONELINE,ERR_R_MALLOC_FAILURE);
+    #####:  223:	if (b != NULL) BUF_MEM_free(b);
+        -:  224:	return(NULL);
+        -:  225:	}
+        -:  226:

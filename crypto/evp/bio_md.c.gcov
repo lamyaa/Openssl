@@ -1,0 +1,280 @@
+        -:    0:Source:bio_md.c
+        -:    0:Graph:bio_md.gcno
+        -:    0:Data:bio_md.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* crypto/evp/bio_md.c */
+        -:    2:/* Copyright (C) 1995-1998 Eric Young (eay@cryptsoft.com)
+        -:    3: * All rights reserved.
+        -:    4: *
+        -:    5: * This package is an SSL implementation written
+        -:    6: * by Eric Young (eay@cryptsoft.com).
+        -:    7: * The implementation was written so as to conform with Netscapes SSL.
+        -:    8: * 
+        -:    9: * This library is free for commercial and non-commercial use as long as
+        -:   10: * the following conditions are aheared to.  The following conditions
+        -:   11: * apply to all code found in this distribution, be it the RC4, RSA,
+        -:   12: * lhash, DES, etc., code; not just the SSL code.  The SSL documentation
+        -:   13: * included with this distribution is covered by the same copyright terms
+        -:   14: * except that the holder is Tim Hudson (tjh@cryptsoft.com).
+        -:   15: * 
+        -:   16: * Copyright remains Eric Young's, and as such any Copyright notices in
+        -:   17: * the code are not to be removed.
+        -:   18: * If this package is used in a product, Eric Young should be given attribution
+        -:   19: * as the author of the parts of the library used.
+        -:   20: * This can be in the form of a textual message at program startup or
+        -:   21: * in documentation (online or textual) provided with the package.
+        -:   22: * 
+        -:   23: * Redistribution and use in source and binary forms, with or without
+        -:   24: * modification, are permitted provided that the following conditions
+        -:   25: * are met:
+        -:   26: * 1. Redistributions of source code must retain the copyright
+        -:   27: *    notice, this list of conditions and the following disclaimer.
+        -:   28: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   29: *    notice, this list of conditions and the following disclaimer in the
+        -:   30: *    documentation and/or other materials provided with the distribution.
+        -:   31: * 3. All advertising materials mentioning features or use of this software
+        -:   32: *    must display the following acknowledgement:
+        -:   33: *    "This product includes cryptographic software written by
+        -:   34: *     Eric Young (eay@cryptsoft.com)"
+        -:   35: *    The word 'cryptographic' can be left out if the rouines from the library
+        -:   36: *    being used are not cryptographic related :-).
+        -:   37: * 4. If you include any Windows specific code (or a derivative thereof) from 
+        -:   38: *    the apps directory (application code) you must include an acknowledgement:
+        -:   39: *    "This product includes software written by Tim Hudson (tjh@cryptsoft.com)"
+        -:   40: * 
+        -:   41: * THIS SOFTWARE IS PROVIDED BY ERIC YOUNG ``AS IS'' AND
+        -:   42: * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   43: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+        -:   44: * ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+        -:   45: * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+        -:   46: * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+        -:   47: * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   48: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+        -:   49: * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+        -:   50: * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+        -:   51: * SUCH DAMAGE.
+        -:   52: * 
+        -:   53: * The licence and distribution terms for any publically available version or
+        -:   54: * derivative of this code cannot be changed.  i.e. this code cannot simply be
+        -:   55: * copied and put under another distribution licence
+        -:   56: * [including the GNU Public Licence.]
+        -:   57: */
+        -:   58:
+        -:   59:#include <stdio.h>
+        -:   60:#include <errno.h>
+        -:   61:#include "cryptlib.h"
+        -:   62:#include <openssl/buffer.h>
+        -:   63:#include <openssl/evp.h>
+        -:   64:
+        -:   65:/* BIO_put and BIO_get both add to the digest,
+        -:   66: * BIO_gets returns the digest */
+        -:   67:
+        -:   68:static int md_write(BIO *h, char const *buf, int num);
+        -:   69:static int md_read(BIO *h, char *buf, int size);
+        -:   70:/*static int md_puts(BIO *h, const char *str); */
+        -:   71:static int md_gets(BIO *h, char *str, int size);
+        -:   72:static long md_ctrl(BIO *h, int cmd, long arg1, void *arg2);
+        -:   73:static int md_new(BIO *h);
+        -:   74:static int md_free(BIO *data);
+        -:   75:static long md_callback_ctrl(BIO *h,int cmd,bio_info_cb *fp);
+        -:   76:
+        -:   77:static BIO_METHOD methods_md=
+        -:   78:	{
+        -:   79:	BIO_TYPE_MD,"message digest",
+        -:   80:	md_write,
+        -:   81:	md_read,
+        -:   82:	NULL, /* md_puts, */
+        -:   83:	md_gets,
+        -:   84:	md_ctrl,
+        -:   85:	md_new,
+        -:   86:	md_free,
+        -:   87:	md_callback_ctrl,
+        -:   88:	};
+        -:   89:
+    #####:   90:BIO_METHOD *BIO_f_md(void)
+        -:   91:	{
+    #####:   92:	return(&methods_md);
+        -:   93:	}
+        -:   94:
+    #####:   95:static int md_new(BIO *bi)
+        -:   96:	{
+        -:   97:	EVP_MD_CTX *ctx;
+        -:   98:
+    #####:   99:	ctx=EVP_MD_CTX_create();
+    #####:  100:	if (ctx == NULL) return(0);
+        -:  101:
+    #####:  102:	bi->init=0;
+    #####:  103:	bi->ptr=(char *)ctx;
+    #####:  104:	bi->flags=0;
+    #####:  105:	return(1);
+        -:  106:	}
+        -:  107:
+    #####:  108:static int md_free(BIO *a)
+        -:  109:	{
+    #####:  110:	if (a == NULL) return(0);
+    #####:  111:	EVP_MD_CTX_destroy(a->ptr);
+    #####:  112:	a->ptr=NULL;
+    #####:  113:	a->init=0;
+    #####:  114:	a->flags=0;
+    #####:  115:	return(1);
+        -:  116:	}
+        -:  117:	
+    #####:  118:static int md_read(BIO *b, char *out, int outl)
+        -:  119:	{
+        -:  120:	int ret=0;
+        -:  121:	EVP_MD_CTX *ctx;
+        -:  122:
+    #####:  123:	if (out == NULL) return(0);
+    #####:  124:	ctx=b->ptr;
+        -:  125:
+    #####:  126:	if ((ctx == NULL) || (b->next_bio == NULL)) return(0);
+        -:  127:
+    #####:  128:	ret=BIO_read(b->next_bio,out,outl);
+    #####:  129:	if (b->init)
+        -:  130:		{
+    #####:  131:		if (ret > 0)
+        -:  132:			{
+    #####:  133:			if (EVP_DigestUpdate(ctx,(unsigned char *)out,
+    #####:  134:				(unsigned int)ret)<=0) return (-1);
+        -:  135:			}
+        -:  136:		}
+    #####:  137:	BIO_clear_retry_flags(b);
+    #####:  138:	BIO_copy_next_retry(b);
+    #####:  139:	return(ret);
+        -:  140:	}
+        -:  141:
+    #####:  142:static int md_write(BIO *b, const char *in, int inl)
+        -:  143:	{
+        -:  144:	int ret=0;
+        -:  145:	EVP_MD_CTX *ctx;
+        -:  146:
+    #####:  147:	if ((in == NULL) || (inl <= 0)) return(0);
+    #####:  148:	ctx=b->ptr;
+        -:  149:
+    #####:  150:	if ((ctx != NULL) && (b->next_bio != NULL))
+    #####:  151:		ret=BIO_write(b->next_bio,in,inl);
+    #####:  152:	if (b->init)
+        -:  153:		{
+    #####:  154:		if (ret > 0)
+        -:  155:			{
+    #####:  156:			if (!EVP_DigestUpdate(ctx,(const unsigned char *)in,
+    #####:  157:				(unsigned int)ret))
+        -:  158:				{
+    #####:  159:				BIO_clear_retry_flags(b);
+    #####:  160:				return 0;
+        -:  161:				}
+        -:  162:			}
+        -:  163:		}
+    #####:  164:	if(b->next_bio != NULL)
+        -:  165:		{
+    #####:  166:		BIO_clear_retry_flags(b);
+    #####:  167:		BIO_copy_next_retry(b);
+        -:  168:		}
+    #####:  169:	return(ret);
+        -:  170:	}
+        -:  171:
+    #####:  172:static long md_ctrl(BIO *b, int cmd, long num, void *ptr)
+        -:  173:	{
+        -:  174:	EVP_MD_CTX *ctx,*dctx,**pctx;
+        -:  175:	const EVP_MD **ppmd;
+        -:  176:	EVP_MD *md;
+        -:  177:	long ret=1;
+        -:  178:	BIO *dbio;
+        -:  179:
+    #####:  180:	ctx=b->ptr;
+        -:  181:
+    #####:  182:	switch (cmd)
+        -:  183:		{
+        -:  184:	case BIO_CTRL_RESET:
+    #####:  185:		if (b->init)
+    #####:  186:			ret = EVP_DigestInit_ex(ctx,ctx->digest, NULL);
+        -:  187:		else
+        -:  188:			ret=0;
+    #####:  189:		if (ret > 0)
+    #####:  190:			ret=BIO_ctrl(b->next_bio,cmd,num,ptr);
+        -:  191:		break;
+        -:  192:	case BIO_C_GET_MD:
+    #####:  193:		if (b->init)
+        -:  194:			{
+        -:  195:			ppmd=ptr;
+    #####:  196:			*ppmd=ctx->digest;
+        -:  197:			}
+        -:  198:		else
+        -:  199:			ret=0;
+        -:  200:		break;
+        -:  201:	case BIO_C_GET_MD_CTX:
+        -:  202:		pctx=ptr;
+    #####:  203:		*pctx=ctx;
+    #####:  204:		b->init = 1;
+    #####:  205:		break;
+        -:  206:	case BIO_C_SET_MD_CTX:
+    #####:  207:		if (b->init)
+    #####:  208:			b->ptr=ptr;
+        -:  209:		else
+        -:  210:			ret=0;
+        -:  211:		break;
+        -:  212:	case BIO_C_DO_STATE_MACHINE:
+    #####:  213:		BIO_clear_retry_flags(b);
+    #####:  214:		ret=BIO_ctrl(b->next_bio,cmd,num,ptr);
+    #####:  215:		BIO_copy_next_retry(b);
+    #####:  216:		break;
+        -:  217:
+        -:  218:	case BIO_C_SET_MD:
+        -:  219:		md=ptr;
+    #####:  220:		ret = EVP_DigestInit_ex(ctx,md, NULL);
+    #####:  221:		if (ret > 0)
+    #####:  222:			b->init=1;
+        -:  223:		break;
+        -:  224:	case BIO_CTRL_DUP:
+        -:  225:		dbio=ptr;
+    #####:  226:		dctx=dbio->ptr;
+    #####:  227:		if (!EVP_MD_CTX_copy_ex(dctx,ctx))
+        -:  228:			return 0;
+    #####:  229:		b->init=1;
+    #####:  230:		break;
+        -:  231:	default:
+    #####:  232:		ret=BIO_ctrl(b->next_bio,cmd,num,ptr);
+    #####:  233:		break;
+        -:  234:		}
+    #####:  235:	return(ret);
+        -:  236:	}
+        -:  237:
+    #####:  238:static long md_callback_ctrl(BIO *b, int cmd, bio_info_cb *fp)
+        -:  239:	{
+        -:  240:	long ret=1;
+        -:  241:
+    #####:  242:	if (b->next_bio == NULL) return(0);
+        -:  243:	switch (cmd)
+        -:  244:		{
+        -:  245:	default:
+    #####:  246:		ret=BIO_callback_ctrl(b->next_bio,cmd,fp);
+        -:  247:		break;
+        -:  248:		}
+    #####:  249:	return(ret);
+        -:  250:	}
+        -:  251:
+    #####:  252:static int md_gets(BIO *bp, char *buf, int size)
+        -:  253:	{
+        -:  254:	EVP_MD_CTX *ctx;
+        -:  255:	unsigned int ret;
+        -:  256:
+        -:  257:
+    #####:  258:	ctx=bp->ptr;
+    #####:  259:	if (size < ctx->digest->md_size)
+        -:  260:		return(0);
+    #####:  261:	if (EVP_DigestFinal_ex(ctx,(unsigned char *)buf,&ret)<=0) 
+        -:  262:		return -1;
+        -:  263:		
+    #####:  264:	return((int)ret);
+        -:  265:	}
+        -:  266:
+        -:  267:/*
+        -:  268:static int md_puts(bp,str)
+        -:  269:BIO *bp;
+        -:  270:char *str;
+        -:  271:	{
+        -:  272:	return(-1);
+        -:  273:	}
+        -:  274:*/
+        -:  275:

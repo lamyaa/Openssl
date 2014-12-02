@@ -1,0 +1,284 @@
+        -:    0:Source:tasn_utl.c
+        -:    0:Graph:tasn_utl.gcno
+        -:    0:Data:tasn_utl.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* tasn_utl.c */
+        -:    2:/* Written by Dr Stephen N Henson (steve@openssl.org) for the OpenSSL
+        -:    3: * project 2000.
+        -:    4: */
+        -:    5:/* ====================================================================
+        -:    6: * Copyright (c) 2000-2004 The OpenSSL Project.  All rights reserved.
+        -:    7: *
+        -:    8: * Redistribution and use in source and binary forms, with or without
+        -:    9: * modification, are permitted provided that the following conditions
+        -:   10: * are met:
+        -:   11: *
+        -:   12: * 1. Redistributions of source code must retain the above copyright
+        -:   13: *    notice, this list of conditions and the following disclaimer. 
+        -:   14: *
+        -:   15: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   16: *    notice, this list of conditions and the following disclaimer in
+        -:   17: *    the documentation and/or other materials provided with the
+        -:   18: *    distribution.
+        -:   19: *
+        -:   20: * 3. All advertising materials mentioning features or use of this
+        -:   21: *    software must display the following acknowledgment:
+        -:   22: *    "This product includes software developed by the OpenSSL Project
+        -:   23: *    for use in the OpenSSL Toolkit. (http://www.OpenSSL.org/)"
+        -:   24: *
+        -:   25: * 4. The names "OpenSSL Toolkit" and "OpenSSL Project" must not be used to
+        -:   26: *    endorse or promote products derived from this software without
+        -:   27: *    prior written permission. For written permission, please contact
+        -:   28: *    licensing@OpenSSL.org.
+        -:   29: *
+        -:   30: * 5. Products derived from this software may not be called "OpenSSL"
+        -:   31: *    nor may "OpenSSL" appear in their names without prior written
+        -:   32: *    permission of the OpenSSL Project.
+        -:   33: *
+        -:   34: * 6. Redistributions of any form whatsoever must retain the following
+        -:   35: *    acknowledgment:
+        -:   36: *    "This product includes software developed by the OpenSSL Project
+        -:   37: *    for use in the OpenSSL Toolkit (http://www.OpenSSL.org/)"
+        -:   38: *
+        -:   39: * THIS SOFTWARE IS PROVIDED BY THE OpenSSL PROJECT ``AS IS'' AND ANY
+        -:   40: * EXPRESSED OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   41: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+        -:   42: * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE OpenSSL PROJECT OR
+        -:   43: * ITS CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+        -:   44: * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+        -:   45: * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+        -:   46: * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   47: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+        -:   48: * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+        -:   49: * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+        -:   50: * OF THE POSSIBILITY OF SUCH DAMAGE.
+        -:   51: * ====================================================================
+        -:   52: *
+        -:   53: * This product includes cryptographic software written by Eric Young
+        -:   54: * (eay@cryptsoft.com).  This product includes software written by Tim
+        -:   55: * Hudson (tjh@cryptsoft.com).
+        -:   56: *
+        -:   57: */
+        -:   58:
+        -:   59:
+        -:   60:#include <stddef.h>
+        -:   61:#include <string.h>
+        -:   62:#include <openssl/asn1.h>
+        -:   63:#include <openssl/asn1t.h>
+        -:   64:#include <openssl/objects.h>
+        -:   65:#include <openssl/err.h>
+        -:   66:
+        -:   67:/* Utility functions for manipulating fields and offsets */
+        -:   68:
+        -:   69:/* Add 'offset' to 'addr' */
+        -:   70:#define offset2ptr(addr, offset) (void *)(((char *) addr) + offset)
+        -:   71:
+        -:   72:/* Given an ASN1_ITEM CHOICE type return
+        -:   73: * the selector value
+        -:   74: */
+        -:   75:
+    45815:   76:int asn1_get_choice_selector(ASN1_VALUE **pval, const ASN1_ITEM *it)
+        -:   77:	{
+    45815:   78:	int *sel = offset2ptr(*pval, it->utype);
+    45815:   79:	return *sel;
+        -:   80:	}
+        -:   81:
+        -:   82:/* Given an ASN1_ITEM CHOICE type set
+        -:   83: * the selector value, return old value.
+        -:   84: */
+        -:   85:
+    91627:   86:int asn1_set_choice_selector(ASN1_VALUE **pval, int value, const ASN1_ITEM *it)
+        -:   87:	{	
+        -:   88:	int *sel, ret;
+    91627:   89:	sel = offset2ptr(*pval, it->utype);
+    91627:   90:	ret = *sel;
+    91627:   91:	*sel = value;
+    91627:   92:	return ret;
+        -:   93:	}
+        -:   94:
+        -:   95:/* Do reference counting. The value 'op' decides what to do. 
+        -:   96: * if it is +1 then the count is incremented. If op is 0 count is
+        -:   97: * set to 1. If op is -1 count is decremented and the return value
+        -:   98: * is the current refrence count or 0 if no reference count exists.
+        -:   99: */
+        -:  100:
+  2189585:  101:int asn1_do_lock(ASN1_VALUE **pval, int op, const ASN1_ITEM *it)
+        -:  102:	{
+        -:  103:	const ASN1_AUX *aux;
+        -:  104:	int *lck, ret;
+  4379170:  105:	if ((it->itype != ASN1_ITYPE_SEQUENCE)
+  2189585:  106:	   && (it->itype != ASN1_ITYPE_NDEF_SEQUENCE))
+        -:  107:		return 0;
+  2189585:  108:	aux = it->funcs;
+  2189585:  109:	if (!aux || !(aux->flags & ASN1_AFLG_REFCOUNT))
+        -:  110:		return 0;
+   125615:  111:	lck = offset2ptr(*pval, aux->ref_offset);
+   125615:  112:	if (op == 0)
+        -:  113:		{
+    29975:  114:		*lck = 1;
+    29975:  115:		return 1;
+        -:  116:		}
+    95640:  117:	ret = CRYPTO_add(lck, op, aux->ref_lock);
+        -:  118:#ifdef REF_PRINT
+        -:  119:	fprintf(stderr, "%s: Reference Count: %d\n", it->sname, *lck);
+        -:  120:#endif
+        -:  121:#ifdef REF_CHECK
+        -:  122:	if (ret < 0) 
+        -:  123:		fprintf(stderr, "%s, bad reference count\n", it->sname);
+        -:  124:#endif
+    95640:  125:	return ret;
+        -:  126:	}
+        -:  127:
+        -:  128:static ASN1_ENCODING *asn1_get_enc_ptr(ASN1_VALUE **pval, const ASN1_ITEM *it)
+        -:  129:	{
+        -:  130:	const ASN1_AUX *aux;
+  4068869:  131:	if (!pval || !*pval)
+        -:  132:		return NULL;
+  4068869:  133:	aux = it->funcs;
+  4068869:  134:	if (!aux || !(aux->flags & ASN1_AFLG_ENCODING))
+        -:  135:		return NULL;
+   205241:  136:	return offset2ptr(*pval, aux->enc_offset);
+        -:  137:	}
+        -:  138:
+  1061960:  139:void asn1_enc_init(ASN1_VALUE **pval, const ASN1_ITEM *it)
+        -:  140:	{
+        -:  141:	ASN1_ENCODING *enc;
+        -:  142:	enc = asn1_get_enc_ptr(pval, it);
+  1061960:  143:	if (enc)
+        -:  144:		{
+    29975:  145:		enc->enc = NULL;
+    29975:  146:		enc->len = 0;
+    29975:  147:		enc->modified = 1;
+        -:  148:		}
+  1061960:  149:	}
+        -:  150:
+  1061960:  151:void asn1_enc_free(ASN1_VALUE **pval, const ASN1_ITEM *it)
+        -:  152:	{
+        -:  153:	ASN1_ENCODING *enc;
+        -:  154:	enc = asn1_get_enc_ptr(pval, it);
+  1061960:  155:	if (enc)
+        -:  156:		{
+    29975:  157:		if (enc->enc)
+    29975:  158:			OPENSSL_free(enc->enc);
+    29975:  159:		enc->enc = NULL;
+    29975:  160:		enc->len = 0;
+    29975:  161:		enc->modified = 1;
+        -:  162:		}
+  1061960:  163:	}
+        -:  164:
+   773889:  165:int asn1_enc_save(ASN1_VALUE **pval, const unsigned char *in, int inlen,
+        -:  166:							 const ASN1_ITEM *it)
+        -:  167:	{
+        -:  168:	ASN1_ENCODING *enc;
+        -:  169:	enc = asn1_get_enc_ptr(pval, it);
+   773889:  170:	if (!enc)
+        -:  171:		return 1;
+        -:  172:
+    29975:  173:	if (enc->enc)
+    #####:  174:		OPENSSL_free(enc->enc);
+    29975:  175:	enc->enc = OPENSSL_malloc(inlen);
+    29975:  176:	if (!enc->enc)
+        -:  177:		return 0;
+    29975:  178:	memcpy(enc->enc, in, inlen);
+    29975:  179:	enc->len = inlen;
+    29975:  180:	enc->modified = 0;
+        -:  181:
+    29975:  182:	return 1;
+        -:  183:	}
+        -:  184:		
+  1171060:  185:int asn1_enc_restore(int *len, unsigned char **out, ASN1_VALUE **pval,
+        -:  186:							const ASN1_ITEM *it)
+        -:  187:	{
+        -:  188:	ASN1_ENCODING *enc;
+        -:  189:	enc = asn1_get_enc_ptr(pval, it);
+  1171060:  190:	if (!enc || enc->modified)
+        -:  191:		return 0;
+   115316:  192:	if (out)
+        -:  193:		{
+    39086:  194:		memcpy(*out, enc->enc, enc->len);
+    39086:  195:		*out += enc->len;
+        -:  196:		}
+   115316:  197:	if (len)
+   115316:  198:		*len = enc->len;
+        -:  199:	return 1;
+        -:  200:	}
+        -:  201:
+        -:  202:/* Given an ASN1_TEMPLATE get a pointer to a field */
+ 10520724:  203:ASN1_VALUE ** asn1_get_field_ptr(ASN1_VALUE **pval, const ASN1_TEMPLATE *tt)
+        -:  204:	{
+        -:  205:	ASN1_VALUE **pvaltmp;
+ 10520724:  206:	if (tt->flags & ASN1_TFLG_COMBINE)
+        -:  207:		return pval;
+ 10520724:  208:	pvaltmp = offset2ptr(*pval, tt->offset);
+        -:  209:	/* NOTE for BOOLEAN types the field is just a plain
+        -:  210: 	 * int so we can't return int **, so settle for
+        -:  211:	 * (int *).
+        -:  212:	 */
+ 10520724:  213:	return pvaltmp;
+        -:  214:	}
+        -:  215:
+        -:  216:/* Handle ANY DEFINED BY template, find the selector, look up
+        -:  217: * the relevant ASN1_TEMPLATE in the table and return it.
+        -:  218: */
+        -:  219:
+  7679407:  220:const ASN1_TEMPLATE *asn1_do_adb(ASN1_VALUE **pval, const ASN1_TEMPLATE *tt,
+        -:  221:								int nullerr)
+        -:  222:	{
+        -:  223:	const ASN1_ADB *adb;
+        -:  224:	const ASN1_ADB_TABLE *atbl;
+        -:  225:	long selector;
+        -:  226:	ASN1_VALUE **sfld;
+        -:  227:	int i;
+  7679407:  228:	if (!(tt->flags & ASN1_TFLG_ADB_MASK))
+        -:  229:		return tt;
+        -:  230:
+        -:  231:	/* Else ANY DEFINED BY ... get the table */
+    #####:  232:	adb = ASN1_ADB_ptr(tt->item);
+        -:  233:
+        -:  234:	/* Get the selector field */
+    #####:  235:	sfld = offset2ptr(*pval, adb->offset);
+        -:  236:
+        -:  237:	/* Check if NULL */
+    #####:  238:	if (!sfld)
+        -:  239:		{
+    #####:  240:		if (!adb->null_tt)
+        -:  241:			goto err;
+        -:  242:		return adb->null_tt;
+        -:  243:		}
+        -:  244:
+        -:  245:	/* Convert type to a long:
+        -:  246:	 * NB: don't check for NID_undef here because it
+        -:  247:	 * might be a legitimate value in the table
+        -:  248:	 */
+    #####:  249:	if (tt->flags & ASN1_TFLG_ADB_OID) 
+    #####:  250:		selector = OBJ_obj2nid((ASN1_OBJECT *)*sfld);
+        -:  251:	else 
+    #####:  252:		selector = ASN1_INTEGER_get((ASN1_INTEGER *)*sfld);
+        -:  253:
+        -:  254:	/* Try to find matching entry in table
+        -:  255:	 * Maybe should check application types first to
+        -:  256:	 * allow application override? Might also be useful
+        -:  257:	 * to have a flag which indicates table is sorted and
+        -:  258:	 * we can do a binary search. For now stick to a
+        -:  259:	 * linear search.
+        -:  260:	 */
+        -:  261:
+    #####:  262:	for (atbl = adb->tbl, i = 0; i < adb->tblcount; i++, atbl++)
+    #####:  263:		if (atbl->value == selector)
+    #####:  264:			return &atbl->tt;
+        -:  265:
+        -:  266:	/* FIXME: need to search application table too */
+        -:  267:
+        -:  268:	/* No match, return default type */
+    #####:  269:	if (!adb->default_tt)
+        -:  270:		goto err;		
+        -:  271:	return adb->default_tt;
+        -:  272:	
+        -:  273:	err:
+        -:  274:	/* FIXME: should log the value or OID of unsupported type */
+    #####:  275:	if (nullerr)
+    #####:  276:		ASN1err(ASN1_F_ASN1_DO_ADB,
+        -:  277:			ASN1_R_UNSUPPORTED_ANY_DEFINED_BY_TYPE);
+        -:  278:	return NULL;
+        -:  279:	}

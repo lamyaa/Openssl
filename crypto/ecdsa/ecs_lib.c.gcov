@@ -1,0 +1,290 @@
+        -:    0:Source:ecs_lib.c
+        -:    0:Graph:ecs_lib.gcno
+        -:    0:Data:ecs_lib.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* crypto/ecdsa/ecs_lib.c */
+        -:    2:/* ====================================================================
+        -:    3: * Copyright (c) 1998-2005 The OpenSSL Project.  All rights reserved.
+        -:    4: *
+        -:    5: * Redistribution and use in source and binary forms, with or without
+        -:    6: * modification, are permitted provided that the following conditions
+        -:    7: * are met:
+        -:    8: *
+        -:    9: * 1. Redistributions of source code must retain the above copyright
+        -:   10: *    notice, this list of conditions and the following disclaimer. 
+        -:   11: *
+        -:   12: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   13: *    notice, this list of conditions and the following disclaimer in
+        -:   14: *    the documentation and/or other materials provided with the
+        -:   15: *    distribution.
+        -:   16: *
+        -:   17: * 3. All advertising materials mentioning features or use of this
+        -:   18: *    software must display the following acknowledgment:
+        -:   19: *    "This product includes software developed by the OpenSSL Project
+        -:   20: *    for use in the OpenSSL Toolkit. (http://www.OpenSSL.org/)"
+        -:   21: *
+        -:   22: * 4. The names "OpenSSL Toolkit" and "OpenSSL Project" must not be used to
+        -:   23: *    endorse or promote products derived from this software without
+        -:   24: *    prior written permission. For written permission, please contact
+        -:   25: *    openssl-core@OpenSSL.org.
+        -:   26: *
+        -:   27: * 5. Products derived from this software may not be called "OpenSSL"
+        -:   28: *    nor may "OpenSSL" appear in their names without prior written
+        -:   29: *    permission of the OpenSSL Project.
+        -:   30: *
+        -:   31: * 6. Redistributions of any form whatsoever must retain the following
+        -:   32: *    acknowledgment:
+        -:   33: *    "This product includes software developed by the OpenSSL Project
+        -:   34: *    for use in the OpenSSL Toolkit (http://www.OpenSSL.org/)"
+        -:   35: *
+        -:   36: * THIS SOFTWARE IS PROVIDED BY THE OpenSSL PROJECT ``AS IS'' AND ANY
+        -:   37: * EXPRESSED OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   38: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+        -:   39: * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE OpenSSL PROJECT OR
+        -:   40: * ITS CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+        -:   41: * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+        -:   42: * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+        -:   43: * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   44: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+        -:   45: * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+        -:   46: * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+        -:   47: * OF THE POSSIBILITY OF SUCH DAMAGE.
+        -:   48: * ====================================================================
+        -:   49: *
+        -:   50: * This product includes cryptographic software written by Eric Young
+        -:   51: * (eay@cryptsoft.com).  This product includes software written by Tim
+        -:   52: * Hudson (tjh@cryptsoft.com).
+        -:   53: *
+        -:   54: */
+        -:   55:
+        -:   56:#include <string.h>
+        -:   57:#include "ecs_locl.h"
+        -:   58:#ifndef OPENSSL_NO_ENGINE
+        -:   59:#include <openssl/engine.h>
+        -:   60:#endif
+        -:   61:#include <openssl/err.h>
+        -:   62:#include <openssl/bn.h>
+        -:   63:#ifdef OPENSSL_FIPS
+        -:   64:#include <openssl/fips.h>
+        -:   65:#endif
+        -:   66:
+        -:   67:const char ECDSA_version[]="ECDSA" OPENSSL_VERSION_PTEXT;
+        -:   68:
+        -:   69:static const ECDSA_METHOD *default_ECDSA_method = NULL;
+        -:   70:
+        -:   71:static void *ecdsa_data_new(void);
+        -:   72:static void *ecdsa_data_dup(void *);
+        -:   73:static void  ecdsa_data_free(void *);
+        -:   74:
+    #####:   75:void ECDSA_set_default_method(const ECDSA_METHOD *meth)
+        -:   76:{
+    #####:   77:	default_ECDSA_method = meth;
+    #####:   78:}
+        -:   79:
+    #####:   80:const ECDSA_METHOD *ECDSA_get_default_method(void)
+        -:   81:{
+    #####:   82:	if(!default_ECDSA_method) 
+        -:   83:		{
+        -:   84:#ifdef OPENSSL_FIPS
+        -:   85:		if (FIPS_mode())
+        -:   86:			return FIPS_ecdsa_openssl();
+        -:   87:		else
+        -:   88:			return ECDSA_OpenSSL();
+        -:   89:#else
+    #####:   90:		default_ECDSA_method = ECDSA_OpenSSL();
+        -:   91:#endif
+        -:   92:		}
+    #####:   93:	return default_ECDSA_method;
+        -:   94:}
+        -:   95:
+    #####:   96:int ECDSA_set_method(EC_KEY *eckey, const ECDSA_METHOD *meth)
+        -:   97:{
+        -:   98:	ECDSA_DATA *ecdsa;
+        -:   99:
+    #####:  100:	ecdsa = ecdsa_check(eckey);
+        -:  101:
+    #####:  102:	if (ecdsa == NULL)
+        -:  103:		return 0;
+        -:  104:
+        -:  105:#ifndef OPENSSL_NO_ENGINE
+    #####:  106:	if (ecdsa->engine)
+        -:  107:	{
+    #####:  108:		ENGINE_finish(ecdsa->engine);
+    #####:  109:		ecdsa->engine = NULL;
+        -:  110:	}
+        -:  111:#endif
+    #####:  112:        ecdsa->meth = meth;
+        -:  113:
+    #####:  114:        return 1;
+        -:  115:}
+        -:  116:
+    #####:  117:static ECDSA_DATA *ECDSA_DATA_new_method(ENGINE *engine)
+        -:  118:{
+        -:  119:	ECDSA_DATA *ret;
+        -:  120:
+    #####:  121:	ret=(ECDSA_DATA *)OPENSSL_malloc(sizeof(ECDSA_DATA));
+    #####:  122:	if (ret == NULL)
+        -:  123:	{
+    #####:  124:		ECDSAerr(ECDSA_F_ECDSA_DATA_NEW_METHOD, ERR_R_MALLOC_FAILURE);
+    #####:  125:		return(NULL);
+        -:  126:	}
+        -:  127:
+    #####:  128:	ret->init = NULL;
+        -:  129:
+    #####:  130:	ret->meth = ECDSA_get_default_method();
+    #####:  131:	ret->engine = engine;
+        -:  132:#ifndef OPENSSL_NO_ENGINE
+    #####:  133:	if (!ret->engine)
+    #####:  134:		ret->engine = ENGINE_get_default_ECDSA();
+    #####:  135:	if (ret->engine)
+        -:  136:	{
+    #####:  137:		ret->meth = ENGINE_get_ECDSA(ret->engine);
+    #####:  138:		if (!ret->meth)
+        -:  139:		{
+    #####:  140:			ECDSAerr(ECDSA_F_ECDSA_DATA_NEW_METHOD, ERR_R_ENGINE_LIB);
+    #####:  141:			ENGINE_finish(ret->engine);
+    #####:  142:			OPENSSL_free(ret);
+    #####:  143:			return NULL;
+        -:  144:		}
+        -:  145:	}
+        -:  146:#endif
+        -:  147:
+    #####:  148:	ret->flags = ret->meth->flags;
+    #####:  149:	CRYPTO_new_ex_data(CRYPTO_EX_INDEX_ECDSA, ret, &ret->ex_data);
+        -:  150:#if 0
+        -:  151:	if ((ret->meth->init != NULL) && !ret->meth->init(ret))
+        -:  152:	{
+        -:  153:		CRYPTO_free_ex_data(CRYPTO_EX_INDEX_ECDSA, ret, &ret->ex_data);
+        -:  154:		OPENSSL_free(ret);
+        -:  155:		ret=NULL;
+        -:  156:	}
+        -:  157:#endif	
+    #####:  158:	return(ret);
+        -:  159:}
+        -:  160:
+        -:  161:static void *ecdsa_data_new(void)
+        -:  162:{
+    #####:  163:	return (void *)ECDSA_DATA_new_method(NULL);
+        -:  164:}
+        -:  165:
+    #####:  166:static void *ecdsa_data_dup(void *data)
+        -:  167:{
+        -:  168:	ECDSA_DATA *r = (ECDSA_DATA *)data;
+        -:  169:
+        -:  170:	/* XXX: dummy operation */
+    #####:  171:	if (r == NULL)
+        -:  172:		return NULL;
+        -:  173:
+    #####:  174:	return ecdsa_data_new();
+        -:  175:}
+        -:  176:
+    #####:  177:static void ecdsa_data_free(void *data)
+        -:  178:{
+        -:  179:	ECDSA_DATA *r = (ECDSA_DATA *)data;
+        -:  180:
+        -:  181:#ifndef OPENSSL_NO_ENGINE
+    #####:  182:	if (r->engine)
+    #####:  183:		ENGINE_finish(r->engine);
+        -:  184:#endif
+    #####:  185:	CRYPTO_free_ex_data(CRYPTO_EX_INDEX_ECDSA, r, &r->ex_data);
+        -:  186:
+    #####:  187:	OPENSSL_cleanse((void *)r, sizeof(ECDSA_DATA));
+        -:  188:
+    #####:  189:	OPENSSL_free(r);
+    #####:  190:}
+        -:  191:
+    #####:  192:ECDSA_DATA *ecdsa_check(EC_KEY *key)
+        -:  193:{
+        -:  194:	ECDSA_DATA *ecdsa_data;
+        -:  195: 
+    #####:  196:	void *data = EC_KEY_get_key_method_data(key, ecdsa_data_dup,
+        -:  197:					ecdsa_data_free, ecdsa_data_free);
+    #####:  198:	if (data == NULL)
+        -:  199:	{
+        -:  200:		ecdsa_data = (ECDSA_DATA *)ecdsa_data_new();
+    #####:  201:		if (ecdsa_data == NULL)
+        -:  202:			return NULL;
+    #####:  203:		data = EC_KEY_insert_key_method_data(key, (void *)ecdsa_data,
+        -:  204:			   ecdsa_data_dup, ecdsa_data_free, ecdsa_data_free);
+    #####:  205:		if (data != NULL)
+        -:  206:			{
+        -:  207:			/* Another thread raced us to install the key_method
+        -:  208:			 * data and won. */
+    #####:  209:			ecdsa_data_free(ecdsa_data);
+        -:  210:			ecdsa_data = (ECDSA_DATA *)data;
+        -:  211:			}
+        -:  212:	}
+        -:  213:	else
+        -:  214:		ecdsa_data = (ECDSA_DATA *)data;
+        -:  215:#ifdef OPENSSL_FIPS
+        -:  216:	if (FIPS_mode() && !(ecdsa_data->flags & ECDSA_FLAG_FIPS_METHOD)
+        -:  217:			&& !(EC_KEY_get_flags(key) & EC_FLAG_NON_FIPS_ALLOW))
+        -:  218:		{
+        -:  219:		ECDSAerr(ECDSA_F_ECDSA_CHECK, ECDSA_R_NON_FIPS_METHOD);
+        -:  220:		return NULL;
+        -:  221:		}
+        -:  222:#endif
+        -:  223:
+    #####:  224:	return ecdsa_data;
+        -:  225:}
+        -:  226:
+    #####:  227:int ECDSA_size(const EC_KEY *r)
+        -:  228:{
+        -:  229:	int ret,i;
+        -:  230:	ASN1_INTEGER bs;
+        -:  231:	BIGNUM	*order=NULL;
+        -:  232:	unsigned char buf[4];
+        -:  233:	const EC_GROUP *group;
+        -:  234:
+    #####:  235:	if (r == NULL)
+        -:  236:		return 0;
+    #####:  237:	group = EC_KEY_get0_group(r);
+    #####:  238:	if (group == NULL)
+        -:  239:		return 0;
+        -:  240:
+    #####:  241:	if ((order = BN_new()) == NULL) return 0;
+    #####:  242:	if (!EC_GROUP_get_order(group,order,NULL))
+        -:  243:	{
+    #####:  244:		BN_clear_free(order);
+    #####:  245:		return 0;
+        -:  246:	} 
+    #####:  247:	i=BN_num_bits(order);
+    #####:  248:	bs.length=(i+7)/8;
+    #####:  249:	bs.data=buf;
+    #####:  250:	bs.type=V_ASN1_INTEGER;
+        -:  251:	/* If the top bit is set the asn1 encoding is 1 larger. */
+    #####:  252:	buf[0]=0xff;	
+        -:  253:
+    #####:  254:	i=i2d_ASN1_INTEGER(&bs,NULL);
+    #####:  255:	i+=i; /* r and s */
+    #####:  256:	ret=ASN1_object_size(1,i,V_ASN1_SEQUENCE);
+    #####:  257:	BN_clear_free(order);
+    #####:  258:	return(ret);
+        -:  259:}
+        -:  260:
+        -:  261:
+    #####:  262:int ECDSA_get_ex_new_index(long argl, void *argp, CRYPTO_EX_new *new_func,
+        -:  263:	     CRYPTO_EX_dup *dup_func, CRYPTO_EX_free *free_func)
+        -:  264:{
+    #####:  265:	return CRYPTO_get_ex_new_index(CRYPTO_EX_INDEX_ECDSA, argl, argp,
+        -:  266:				new_func, dup_func, free_func);
+        -:  267:}
+        -:  268:
+    #####:  269:int ECDSA_set_ex_data(EC_KEY *d, int idx, void *arg)
+        -:  270:{
+        -:  271:	ECDSA_DATA *ecdsa;
+    #####:  272:	ecdsa = ecdsa_check(d);
+    #####:  273:	if (ecdsa == NULL)
+        -:  274:		return 0;
+    #####:  275:	return(CRYPTO_set_ex_data(&ecdsa->ex_data,idx,arg));
+        -:  276:}
+        -:  277:
+    #####:  278:void *ECDSA_get_ex_data(EC_KEY *d, int idx)
+        -:  279:{
+        -:  280:	ECDSA_DATA *ecdsa;
+    #####:  281:	ecdsa = ecdsa_check(d);
+    #####:  282:	if (ecdsa == NULL)
+        -:  283:		return NULL;
+    #####:  284:	return(CRYPTO_get_ex_data(&ecdsa->ex_data,idx));
+        -:  285:}

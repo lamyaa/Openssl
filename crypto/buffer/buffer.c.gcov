@@ -1,0 +1,208 @@
+        -:    0:Source:buffer.c
+        -:    0:Graph:buffer.gcno
+        -:    0:Data:buffer.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* crypto/buffer/buffer.c */
+        -:    2:/* Copyright (C) 1995-1998 Eric Young (eay@cryptsoft.com)
+        -:    3: * All rights reserved.
+        -:    4: *
+        -:    5: * This package is an SSL implementation written
+        -:    6: * by Eric Young (eay@cryptsoft.com).
+        -:    7: * The implementation was written so as to conform with Netscapes SSL.
+        -:    8: * 
+        -:    9: * This library is free for commercial and non-commercial use as long as
+        -:   10: * the following conditions are aheared to.  The following conditions
+        -:   11: * apply to all code found in this distribution, be it the RC4, RSA,
+        -:   12: * lhash, DES, etc., code; not just the SSL code.  The SSL documentation
+        -:   13: * included with this distribution is covered by the same copyright terms
+        -:   14: * except that the holder is Tim Hudson (tjh@cryptsoft.com).
+        -:   15: * 
+        -:   16: * Copyright remains Eric Young's, and as such any Copyright notices in
+        -:   17: * the code are not to be removed.
+        -:   18: * If this package is used in a product, Eric Young should be given attribution
+        -:   19: * as the author of the parts of the library used.
+        -:   20: * This can be in the form of a textual message at program startup or
+        -:   21: * in documentation (online or textual) provided with the package.
+        -:   22: * 
+        -:   23: * Redistribution and use in source and binary forms, with or without
+        -:   24: * modification, are permitted provided that the following conditions
+        -:   25: * are met:
+        -:   26: * 1. Redistributions of source code must retain the copyright
+        -:   27: *    notice, this list of conditions and the following disclaimer.
+        -:   28: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   29: *    notice, this list of conditions and the following disclaimer in the
+        -:   30: *    documentation and/or other materials provided with the distribution.
+        -:   31: * 3. All advertising materials mentioning features or use of this software
+        -:   32: *    must display the following acknowledgement:
+        -:   33: *    "This product includes cryptographic software written by
+        -:   34: *     Eric Young (eay@cryptsoft.com)"
+        -:   35: *    The word 'cryptographic' can be left out if the rouines from the library
+        -:   36: *    being used are not cryptographic related :-).
+        -:   37: * 4. If you include any Windows specific code (or a derivative thereof) from 
+        -:   38: *    the apps directory (application code) you must include an acknowledgement:
+        -:   39: *    "This product includes software written by Tim Hudson (tjh@cryptsoft.com)"
+        -:   40: * 
+        -:   41: * THIS SOFTWARE IS PROVIDED BY ERIC YOUNG ``AS IS'' AND
+        -:   42: * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   43: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+        -:   44: * ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+        -:   45: * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+        -:   46: * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+        -:   47: * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   48: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+        -:   49: * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+        -:   50: * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+        -:   51: * SUCH DAMAGE.
+        -:   52: * 
+        -:   53: * The licence and distribution terms for any publically available version or
+        -:   54: * derivative of this code cannot be changed.  i.e. this code cannot simply be
+        -:   55: * copied and put under another distribution licence
+        -:   56: * [including the GNU Public Licence.]
+        -:   57: */
+        -:   58:
+        -:   59:#include <stdio.h>
+        -:   60:#include "cryptlib.h"
+        -:   61:#include <openssl/buffer.h>
+        -:   62:
+        -:   63:/* LIMIT_BEFORE_EXPANSION is the maximum n such that (n+3)/3*4 < 2**31. That
+        -:   64: * function is applied in several functions in this file and this limit ensures
+        -:   65: * that the result fits in an int. */
+        -:   66:#define LIMIT_BEFORE_EXPANSION 0x5ffffffc
+        -:   67:
+  1363554:   68:BUF_MEM *BUF_MEM_new(void)
+        -:   69:	{
+        -:   70:	BUF_MEM *ret;
+        -:   71:
+  1363554:   72:	ret=OPENSSL_malloc(sizeof(BUF_MEM));
+  1363554:   73:	if (ret == NULL)
+        -:   74:		{
+    #####:   75:		BUFerr(BUF_F_BUF_MEM_NEW,ERR_R_MALLOC_FAILURE);
+    #####:   76:		return(NULL);
+        -:   77:		}
+  1363554:   78:	ret->length=0;
+  1363554:   79:	ret->max=0;
+  1363554:   80:	ret->data=NULL;
+  1363554:   81:	return(ret);
+        -:   82:	}
+        -:   83:
+   193579:   84:void BUF_MEM_free(BUF_MEM *a)
+        -:   85:	{
+   193579:   86:	if(a == NULL)
+   193579:   87:	    return;
+        -:   88:
+   193579:   89:	if (a->data != NULL)
+        -:   90:		{
+    93629:   91:		memset(a->data,0,(unsigned int)a->max);
+    93629:   92:		OPENSSL_free(a->data);
+        -:   93:		}
+   193579:   94:	OPENSSL_free(a);
+        -:   95:	}
+        -:   96:
+  5191638:   97:int BUF_MEM_grow(BUF_MEM *str, size_t len)
+        -:   98:	{
+        -:   99:	char *ret;
+        -:  100:	size_t n;
+        -:  101:
+  5191638:  102:	if (str->length >= len)
+        -:  103:		{
+  3549975:  104:		str->length=len;
+  3549975:  105:		return(len);
+        -:  106:		}
+  1641663:  107:	if (str->max >= len)
+        -:  108:		{
+   327770:  109:		memset(&str->data[str->length],0,len-str->length);
+   327770:  110:		str->length=len;
+   327770:  111:		return(len);
+        -:  112:		}
+        -:  113:	/* This limit is sufficient to ensure (len+3)/3*4 < 2**31 */
+  1313893:  114:	if (len > LIMIT_BEFORE_EXPANSION)
+        -:  115:		{
+    #####:  116:		BUFerr(BUF_F_BUF_MEM_GROW,ERR_R_MALLOC_FAILURE);
+    #####:  117:		return 0;
+        -:  118:		}
+  1313893:  119:	n=(len+3)/3*4;
+  1313893:  120:	if (str->data == NULL)
+  1253604:  121:		ret=OPENSSL_malloc(n);
+        -:  122:	else
+    60289:  123:		ret=OPENSSL_realloc(str->data,n);
+  1313893:  124:	if (ret == NULL)
+        -:  125:		{
+    #####:  126:		BUFerr(BUF_F_BUF_MEM_GROW,ERR_R_MALLOC_FAILURE);
+        -:  127:		len=0;
+        -:  128:		}
+        -:  129:	else
+        -:  130:		{
+  1313893:  131:		str->data=ret;
+  1313893:  132:		str->max=n;
+  1313893:  133:		memset(&str->data[str->length],0,len-str->length);
+  1313893:  134:		str->length=len;
+        -:  135:		}
+  1313893:  136:	return(len);
+        -:  137:	}
+        -:  138:
+   230001:  139:int BUF_MEM_grow_clean(BUF_MEM *str, size_t len)
+        -:  140:	{
+        -:  141:	char *ret;
+        -:  142:	size_t n;
+        -:  143:
+   230001:  144:	if (str->length >= len)
+        -:  145:		{
+    30000:  146:		memset(&str->data[len],0,str->length-len);
+    30000:  147:		str->length=len;
+    30000:  148:		return(len);
+        -:  149:		}
+   200001:  150:	if (str->max >= len)
+        -:  151:		{
+   180000:  152:		memset(&str->data[str->length],0,len-str->length);
+   180000:  153:		str->length=len;
+   180000:  154:		return(len);
+        -:  155:		}
+        -:  156:	/* This limit is sufficient to ensure (len+3)/3*4 < 2**31 */
+    20001:  157:	if (len > LIMIT_BEFORE_EXPANSION)
+        -:  158:		{
+    #####:  159:		BUFerr(BUF_F_BUF_MEM_GROW_CLEAN,ERR_R_MALLOC_FAILURE);
+    #####:  160:		return 0;
+        -:  161:		}
+    20001:  162:	n=(len+3)/3*4;
+    20001:  163:	if (str->data == NULL)
+    10001:  164:		ret=OPENSSL_malloc(n);
+        -:  165:	else
+    10000:  166:		ret=OPENSSL_realloc_clean(str->data,str->max,n);
+    20001:  167:	if (ret == NULL)
+        -:  168:		{
+    #####:  169:		BUFerr(BUF_F_BUF_MEM_GROW_CLEAN,ERR_R_MALLOC_FAILURE);
+        -:  170:		len=0;
+        -:  171:		}
+        -:  172:	else
+        -:  173:		{
+    20001:  174:		str->data=ret;
+    20001:  175:		str->max=n;
+    20001:  176:		memset(&str->data[str->length],0,len-str->length);
+    20001:  177:		str->length=len;
+        -:  178:		}
+    20001:  179:	return(len);
+        -:  180:	}
+        -:  181:
+    #####:  182:void BUF_reverse(unsigned char *out, unsigned char *in, size_t size)
+        -:  183:	{
+        -:  184:	size_t i;
+    #####:  185:	if (in)
+        -:  186:		{
+    #####:  187:		out += size - 1;
+    #####:  188:		for (i = 0; i < size; i++)
+    #####:  189:			*in++ = *out--;
+        -:  190:		}
+        -:  191:	else
+        -:  192:		{
+        -:  193:		unsigned char *q;
+        -:  194:		char c;
+    #####:  195:		q = out + size - 1;
+    #####:  196:		for (i = 0; i < size/2; i++)
+        -:  197:			{
+    #####:  198:			c = *q;
+    #####:  199:			*q-- = *out;
+    #####:  200:			*out++ = c;
+        -:  201:			}
+        -:  202:		}
+    #####:  203:	}

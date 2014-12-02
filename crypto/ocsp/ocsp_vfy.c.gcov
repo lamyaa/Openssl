@@ -1,0 +1,455 @@
+        -:    0:Source:ocsp_vfy.c
+        -:    0:Graph:ocsp_vfy.gcno
+        -:    0:Data:ocsp_vfy.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* ocsp_vfy.c */
+        -:    2:/* Written by Dr Stephen N Henson (steve@openssl.org) for the OpenSSL
+        -:    3: * project 2000.
+        -:    4: */
+        -:    5:/* ====================================================================
+        -:    6: * Copyright (c) 2000-2004 The OpenSSL Project.  All rights reserved.
+        -:    7: *
+        -:    8: * Redistribution and use in source and binary forms, with or without
+        -:    9: * modification, are permitted provided that the following conditions
+        -:   10: * are met:
+        -:   11: *
+        -:   12: * 1. Redistributions of source code must retain the above copyright
+        -:   13: *    notice, this list of conditions and the following disclaimer. 
+        -:   14: *
+        -:   15: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   16: *    notice, this list of conditions and the following disclaimer in
+        -:   17: *    the documentation and/or other materials provided with the
+        -:   18: *    distribution.
+        -:   19: *
+        -:   20: * 3. All advertising materials mentioning features or use of this
+        -:   21: *    software must display the following acknowledgment:
+        -:   22: *    "This product includes software developed by the OpenSSL Project
+        -:   23: *    for use in the OpenSSL Toolkit. (http://www.OpenSSL.org/)"
+        -:   24: *
+        -:   25: * 4. The names "OpenSSL Toolkit" and "OpenSSL Project" must not be used to
+        -:   26: *    endorse or promote products derived from this software without
+        -:   27: *    prior written permission. For written permission, please contact
+        -:   28: *    licensing@OpenSSL.org.
+        -:   29: *
+        -:   30: * 5. Products derived from this software may not be called "OpenSSL"
+        -:   31: *    nor may "OpenSSL" appear in their names without prior written
+        -:   32: *    permission of the OpenSSL Project.
+        -:   33: *
+        -:   34: * 6. Redistributions of any form whatsoever must retain the following
+        -:   35: *    acknowledgment:
+        -:   36: *    "This product includes software developed by the OpenSSL Project
+        -:   37: *    for use in the OpenSSL Toolkit (http://www.OpenSSL.org/)"
+        -:   38: *
+        -:   39: * THIS SOFTWARE IS PROVIDED BY THE OpenSSL PROJECT ``AS IS'' AND ANY
+        -:   40: * EXPRESSED OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   41: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+        -:   42: * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE OpenSSL PROJECT OR
+        -:   43: * ITS CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+        -:   44: * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+        -:   45: * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+        -:   46: * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   47: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+        -:   48: * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+        -:   49: * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+        -:   50: * OF THE POSSIBILITY OF SUCH DAMAGE.
+        -:   51: * ====================================================================
+        -:   52: *
+        -:   53: * This product includes cryptographic software written by Eric Young
+        -:   54: * (eay@cryptsoft.com).  This product includes software written by Tim
+        -:   55: * Hudson (tjh@cryptsoft.com).
+        -:   56: *
+        -:   57: */
+        -:   58:
+        -:   59:#include <openssl/ocsp.h>
+        -:   60:#include <openssl/err.h>
+        -:   61:#include <string.h>
+        -:   62:
+        -:   63:static int ocsp_find_signer(X509 **psigner, OCSP_BASICRESP *bs, STACK_OF(X509) *certs,
+        -:   64:				X509_STORE *st, unsigned long flags);
+        -:   65:static X509 *ocsp_find_signer_sk(STACK_OF(X509) *certs, OCSP_RESPID *id);
+        -:   66:static int ocsp_check_issuer(OCSP_BASICRESP *bs, STACK_OF(X509) *chain, unsigned long flags);
+        -:   67:static int ocsp_check_ids(STACK_OF(OCSP_SINGLERESP) *sresp, OCSP_CERTID **ret);
+        -:   68:static int ocsp_match_issuerid(X509 *cert, OCSP_CERTID *cid, STACK_OF(OCSP_SINGLERESP) *sresp);
+        -:   69:static int ocsp_check_delegated(X509 *x, int flags);
+        -:   70:static int ocsp_req_find_signer(X509 **psigner, OCSP_REQUEST *req, X509_NAME *nm, STACK_OF(X509) *certs,
+        -:   71:				X509_STORE *st, unsigned long flags);
+        -:   72:
+        -:   73:/* Verify a basic response message */
+        -:   74:
+    #####:   75:int OCSP_basic_verify(OCSP_BASICRESP *bs, STACK_OF(X509) *certs,
+        -:   76:				X509_STORE *st, unsigned long flags)
+        -:   77:	{
+        -:   78:	X509 *signer, *x;
+        -:   79:	STACK_OF(X509) *chain = NULL;
+        -:   80:	X509_STORE_CTX ctx;
+        -:   81:	int i, ret = 0;
+    #####:   82:	ret = ocsp_find_signer(&signer, bs, certs, st, flags);
+    #####:   83:	if (!ret)
+        -:   84:		{
+    #####:   85:		OCSPerr(OCSP_F_OCSP_BASIC_VERIFY, OCSP_R_SIGNER_CERTIFICATE_NOT_FOUND);
+    #####:   86:		goto end;
+        -:   87:		}
+    #####:   88:	if ((ret == 2) && (flags & OCSP_TRUSTOTHER))
+    #####:   89:		flags |= OCSP_NOVERIFY;
+    #####:   90:	if (!(flags & OCSP_NOSIGS))
+        -:   91:		{
+        -:   92:		EVP_PKEY *skey;
+    #####:   93:		skey = X509_get_pubkey(signer);
+    #####:   94:		if (skey)
+        -:   95:			{
+    #####:   96:			ret = OCSP_BASICRESP_verify(bs, skey, 0);
+    #####:   97:			EVP_PKEY_free(skey);
+        -:   98:			}
+    #####:   99:		if(!skey || ret <= 0)
+        -:  100:			{
+    #####:  101:			OCSPerr(OCSP_F_OCSP_BASIC_VERIFY, OCSP_R_SIGNATURE_FAILURE);
+    #####:  102:			goto end;
+        -:  103:			}
+        -:  104:		}
+    #####:  105:	if (!(flags & OCSP_NOVERIFY))
+        -:  106:		{
+        -:  107:		int init_res;
+    #####:  108:		if(flags & OCSP_NOCHAIN)
+    #####:  109:			init_res = X509_STORE_CTX_init(&ctx, st, signer, NULL);
+        -:  110:		else
+    #####:  111:			init_res = X509_STORE_CTX_init(&ctx, st, signer, bs->certs);
+    #####:  112:		if(!init_res)
+        -:  113:			{
+        -:  114:			ret = -1;
+    #####:  115:			OCSPerr(OCSP_F_OCSP_BASIC_VERIFY,ERR_R_X509_LIB);
+    #####:  116:			goto end;
+        -:  117:			}
+        -:  118:
+    #####:  119:		X509_STORE_CTX_set_purpose(&ctx, X509_PURPOSE_OCSP_HELPER);
+    #####:  120:		ret = X509_verify_cert(&ctx);
+    #####:  121:		chain = X509_STORE_CTX_get1_chain(&ctx);
+    #####:  122:		X509_STORE_CTX_cleanup(&ctx);
+    #####:  123:                if (ret <= 0)
+        -:  124:			{
+    #####:  125:			i = X509_STORE_CTX_get_error(&ctx);	
+    #####:  126:			OCSPerr(OCSP_F_OCSP_BASIC_VERIFY,OCSP_R_CERTIFICATE_VERIFY_ERROR);
+    #####:  127:			ERR_add_error_data(2, "Verify error:",
+        -:  128:					X509_verify_cert_error_string(i));
+    #####:  129:                        goto end;
+        -:  130:                	}
+    #####:  131:		if(flags & OCSP_NOCHECKS)
+        -:  132:			{
+        -:  133:			ret = 1;
+        -:  134:			goto end;
+        -:  135:			}
+        -:  136:		/* At this point we have a valid certificate chain
+        -:  137:		 * need to verify it against the OCSP issuer criteria.
+        -:  138:		 */
+    #####:  139:		ret = ocsp_check_issuer(bs, chain, flags);
+        -:  140:
+        -:  141:		/* If fatal error or valid match then finish */
+    #####:  142:		if (ret != 0) goto end;
+        -:  143:
+        -:  144:		/* Easy case: explicitly trusted. Get root CA and
+        -:  145:		 * check for explicit trust
+        -:  146:		 */
+    #####:  147:		if(flags & OCSP_NOEXPLICIT) goto end;
+        -:  148:
+    #####:  149:		x = sk_X509_value(chain, sk_X509_num(chain) - 1);
+    #####:  150:		if(X509_check_trust(x, NID_OCSP_sign, 0) != X509_TRUST_TRUSTED)
+        -:  151:			{
+    #####:  152:			OCSPerr(OCSP_F_OCSP_BASIC_VERIFY,OCSP_R_ROOT_CA_NOT_TRUSTED);
+    #####:  153:			goto end;
+        -:  154:			}
+        -:  155:		ret = 1;
+        -:  156:		}
+        -:  157:
+        -:  158:
+        -:  159:
+        -:  160:	end:
+    #####:  161:	if(chain) sk_X509_pop_free(chain, X509_free);
+    #####:  162:	return ret;
+        -:  163:	}
+        -:  164:
+        -:  165:
+    #####:  166:static int ocsp_find_signer(X509 **psigner, OCSP_BASICRESP *bs, STACK_OF(X509) *certs,
+        -:  167:				X509_STORE *st, unsigned long flags)
+        -:  168:	{
+        -:  169:	X509 *signer;
+    #####:  170:	OCSP_RESPID *rid = bs->tbsResponseData->responderId;
+    #####:  171:	if ((signer = ocsp_find_signer_sk(certs, rid)))
+        -:  172:		{
+    #####:  173:		*psigner = signer;
+        -:  174:		return 2;
+        -:  175:		}
+    #####:  176:	if(!(flags & OCSP_NOINTERN) &&
+    #####:  177:	    (signer = ocsp_find_signer_sk(bs->certs, rid)))
+        -:  178:		{
+    #####:  179:		*psigner = signer;
+        -:  180:		return 1;
+        -:  181:		}
+        -:  182:	/* Maybe lookup from store if by subject name */
+        -:  183:
+    #####:  184:	*psigner = NULL;
+        -:  185:	return 0;
+        -:  186:	}
+        -:  187:
+        -:  188:
+    #####:  189:static X509 *ocsp_find_signer_sk(STACK_OF(X509) *certs, OCSP_RESPID *id)
+        -:  190:	{
+        -:  191:	int i;
+        -:  192:	unsigned char tmphash[SHA_DIGEST_LENGTH], *keyhash;
+        -:  193:	X509 *x;
+        -:  194:
+        -:  195:	/* Easy if lookup by name */
+    #####:  196:	if (id->type == V_OCSP_RESPID_NAME)
+    #####:  197:		return X509_find_by_subject(certs, id->value.byName);
+        -:  198:
+        -:  199:	/* Lookup by key hash */
+        -:  200:
+        -:  201:	/* If key hash isn't SHA1 length then forget it */
+    #####:  202:	if (id->value.byKey->length != SHA_DIGEST_LENGTH) return NULL;
+    #####:  203:	keyhash = id->value.byKey->data;
+        -:  204:	/* Calculate hash of each key and compare */
+    #####:  205:	for (i = 0; i < sk_X509_num(certs); i++)
+        -:  206:		{
+    #####:  207:		x = sk_X509_value(certs, i);
+    #####:  208:		X509_pubkey_digest(x, EVP_sha1(), tmphash, NULL);
+    #####:  209:		if(!memcmp(keyhash, tmphash, SHA_DIGEST_LENGTH))
+        -:  210:			return x;
+        -:  211:		}
+        -:  212:	return NULL;
+        -:  213:	}
+        -:  214:
+        -:  215:
+    #####:  216:static int ocsp_check_issuer(OCSP_BASICRESP *bs, STACK_OF(X509) *chain, unsigned long flags)
+        -:  217:	{
+        -:  218:	STACK_OF(OCSP_SINGLERESP) *sresp;
+        -:  219:	X509 *signer, *sca;
+    #####:  220:	OCSP_CERTID *caid = NULL;
+        -:  221:	int i;
+    #####:  222:	sresp = bs->tbsResponseData->responses;
+        -:  223:
+    #####:  224:	if (sk_X509_num(chain) <= 0)
+        -:  225:		{
+    #####:  226:		OCSPerr(OCSP_F_OCSP_CHECK_ISSUER, OCSP_R_NO_CERTIFICATES_IN_CHAIN);
+        -:  227:		return -1;
+        -:  228:		}
+        -:  229:
+        -:  230:	/* See if the issuer IDs match. */
+    #####:  231:	i = ocsp_check_ids(sresp, &caid);
+        -:  232:
+        -:  233:	/* If ID mismatch or other error then return */
+    #####:  234:	if (i <= 0) return i;
+        -:  235:
+    #####:  236:	signer = sk_X509_value(chain, 0);
+        -:  237:	/* Check to see if OCSP responder CA matches request CA */
+    #####:  238:	if (sk_X509_num(chain) > 1)
+        -:  239:		{
+    #####:  240:		sca = sk_X509_value(chain, 1);
+    #####:  241:		i = ocsp_match_issuerid(sca, caid, sresp);
+    #####:  242:		if (i < 0) return i;
+    #####:  243:		if (i)
+        -:  244:			{
+        -:  245:			/* We have a match, if extensions OK then success */
+    #####:  246:			if (ocsp_check_delegated(signer, flags)) return 1;
+        -:  247:			return 0;
+        -:  248:			}
+        -:  249:		}
+        -:  250:
+        -:  251:	/* Otherwise check if OCSP request signed directly by request CA */
+    #####:  252:	return ocsp_match_issuerid(signer, caid, sresp);
+        -:  253:	}
+        -:  254:
+        -:  255:
+        -:  256:/* Check the issuer certificate IDs for equality. If there is a mismatch with the same
+        -:  257: * algorithm then there's no point trying to match any certificates against the issuer.
+        -:  258: * If the issuer IDs all match then we just need to check equality against one of them.
+        -:  259: */
+        -:  260:	
+    #####:  261:static int ocsp_check_ids(STACK_OF(OCSP_SINGLERESP) *sresp, OCSP_CERTID **ret)
+        -:  262:	{
+        -:  263:	OCSP_CERTID *tmpid, *cid;
+        -:  264:	int i, idcount;
+        -:  265:
+    #####:  266:	idcount = sk_OCSP_SINGLERESP_num(sresp);
+    #####:  267:	if (idcount <= 0)
+        -:  268:		{
+    #####:  269:		OCSPerr(OCSP_F_OCSP_CHECK_IDS, OCSP_R_RESPONSE_CONTAINS_NO_REVOCATION_DATA);
+    #####:  270:		return -1;
+        -:  271:		}
+        -:  272:
+    #####:  273:	cid = sk_OCSP_SINGLERESP_value(sresp, 0)->certId;
+        -:  274:
+    #####:  275:	*ret = NULL;
+        -:  276:
+    #####:  277:	for (i = 1; i < idcount; i++)
+        -:  278:		{
+    #####:  279:		tmpid = sk_OCSP_SINGLERESP_value(sresp, i)->certId;
+        -:  280:		/* Check to see if IDs match */
+    #####:  281:		if (OCSP_id_issuer_cmp(cid, tmpid))
+        -:  282:			{
+        -:  283:			/* If algoritm mismatch let caller deal with it */
+    #####:  284:			if (OBJ_cmp(tmpid->hashAlgorithm->algorithm,
+    #####:  285:					cid->hashAlgorithm->algorithm))
+        -:  286:					return 2;
+        -:  287:			/* Else mismatch */
+    #####:  288:			return 0;
+        -:  289:			}
+        -:  290:		}
+        -:  291:
+        -:  292:	/* All IDs match: only need to check one ID */
+    #####:  293:	*ret = cid;
+    #####:  294:	return 1;
+        -:  295:	}
+        -:  296:
+        -:  297:
+    #####:  298:static int ocsp_match_issuerid(X509 *cert, OCSP_CERTID *cid,
+        -:  299:			STACK_OF(OCSP_SINGLERESP) *sresp)
+        -:  300:	{
+        -:  301:	/* If only one ID to match then do it */
+    #####:  302:	if(cid)
+        -:  303:		{
+        -:  304:		const EVP_MD *dgst;
+        -:  305:		X509_NAME *iname;
+        -:  306:		int mdlen;
+        -:  307:		unsigned char md[EVP_MAX_MD_SIZE];
+    #####:  308:		if (!(dgst = EVP_get_digestbyobj(cid->hashAlgorithm->algorithm)))
+        -:  309:			{
+    #####:  310:			OCSPerr(OCSP_F_OCSP_MATCH_ISSUERID, OCSP_R_UNKNOWN_MESSAGE_DIGEST);
+    #####:  311:			return -1;
+        -:  312:			}
+        -:  313:
+    #####:  314:		mdlen = EVP_MD_size(dgst);
+    #####:  315:		if (mdlen < 0)
+        -:  316:		    return -1;
+    #####:  317:		if ((cid->issuerNameHash->length != mdlen) ||
+    #####:  318:		   (cid->issuerKeyHash->length != mdlen))
+        -:  319:			return 0;
+    #####:  320:		iname = X509_get_subject_name(cert);
+    #####:  321:		if (!X509_NAME_digest(iname, dgst, md, NULL))
+        -:  322:			return -1;
+    #####:  323:		if (memcmp(md, cid->issuerNameHash->data, mdlen))
+        -:  324:			return 0;
+    #####:  325:		X509_pubkey_digest(cert, dgst, md, NULL);
+    #####:  326:		if (memcmp(md, cid->issuerKeyHash->data, mdlen))
+        -:  327:			return 0;
+        -:  328:
+    #####:  329:		return 1;
+        -:  330:
+        -:  331:		}
+        -:  332:	else
+        -:  333:		{
+        -:  334:		/* We have to match the whole lot */
+        -:  335:		int i, ret;
+        -:  336:		OCSP_CERTID *tmpid;
+    #####:  337:		for (i = 0; i < sk_OCSP_SINGLERESP_num(sresp); i++)
+        -:  338:			{
+    #####:  339:			tmpid = sk_OCSP_SINGLERESP_value(sresp, i)->certId;
+    #####:  340:			ret = ocsp_match_issuerid(cert, tmpid, NULL);
+    #####:  341:			if (ret <= 0) return ret;
+        -:  342:			}
+        -:  343:		return 1;
+        -:  344:		}
+        -:  345:			
+        -:  346:	}
+        -:  347:
+    #####:  348:static int ocsp_check_delegated(X509 *x, int flags)
+        -:  349:	{
+    #####:  350:	X509_check_purpose(x, -1, 0);
+    #####:  351:	if ((x->ex_flags & EXFLAG_XKUSAGE) &&
+    #####:  352:	    (x->ex_xkusage & XKU_OCSP_SIGN))
+        -:  353:		return 1;
+    #####:  354:	OCSPerr(OCSP_F_OCSP_CHECK_DELEGATED, OCSP_R_MISSING_OCSPSIGNING_USAGE);
+        -:  355:	return 0;
+        -:  356:	}
+        -:  357:
+        -:  358:/* Verify an OCSP request. This is fortunately much easier than OCSP
+        -:  359: * response verify. Just find the signers certificate and verify it
+        -:  360: * against a given trust value.
+        -:  361: */
+        -:  362:
+    #####:  363:int OCSP_request_verify(OCSP_REQUEST *req, STACK_OF(X509) *certs, X509_STORE *store, unsigned long flags)
+        -:  364:        {
+        -:  365:	X509 *signer;
+        -:  366:	X509_NAME *nm;
+        -:  367:	GENERAL_NAME *gen;
+        -:  368:	int ret;
+        -:  369:	X509_STORE_CTX ctx;
+    #####:  370:	if (!req->optionalSignature) 
+        -:  371:		{
+    #####:  372:		OCSPerr(OCSP_F_OCSP_REQUEST_VERIFY, OCSP_R_REQUEST_NOT_SIGNED);
+    #####:  373:		return 0;
+        -:  374:		}
+    #####:  375:	gen = req->tbsRequest->requestorName;
+    #####:  376:	if (!gen || gen->type != GEN_DIRNAME)
+        -:  377:		{
+    #####:  378:		OCSPerr(OCSP_F_OCSP_REQUEST_VERIFY, OCSP_R_UNSUPPORTED_REQUESTORNAME_TYPE);
+    #####:  379:		return 0;
+        -:  380:		}
+    #####:  381:	nm = gen->d.directoryName;
+    #####:  382:	ret = ocsp_req_find_signer(&signer, req, nm, certs, store, flags);
+    #####:  383:	if (ret <= 0)
+        -:  384:		{
+    #####:  385:		OCSPerr(OCSP_F_OCSP_REQUEST_VERIFY, OCSP_R_SIGNER_CERTIFICATE_NOT_FOUND);
+    #####:  386:		return 0;
+        -:  387:		}
+    #####:  388:	if ((ret == 2) && (flags & OCSP_TRUSTOTHER))
+    #####:  389:		flags |= OCSP_NOVERIFY;
+    #####:  390:	if (!(flags & OCSP_NOSIGS))
+        -:  391:		{
+        -:  392:		EVP_PKEY *skey;
+    #####:  393:		skey = X509_get_pubkey(signer);
+    #####:  394:		ret = OCSP_REQUEST_verify(req, skey);
+    #####:  395:		EVP_PKEY_free(skey);
+    #####:  396:		if(ret <= 0)
+        -:  397:			{
+    #####:  398:			OCSPerr(OCSP_F_OCSP_REQUEST_VERIFY, OCSP_R_SIGNATURE_FAILURE);
+    #####:  399:			return 0;
+        -:  400:			}
+        -:  401:		}
+    #####:  402:	if (!(flags & OCSP_NOVERIFY))
+        -:  403:		{
+        -:  404:		int init_res;
+    #####:  405:		if(flags & OCSP_NOCHAIN)
+    #####:  406:			init_res = X509_STORE_CTX_init(&ctx, store, signer, NULL);
+        -:  407:		else
+    #####:  408:			init_res = X509_STORE_CTX_init(&ctx, store, signer,
+    #####:  409:					req->optionalSignature->certs);
+    #####:  410:		if(!init_res)
+        -:  411:			{
+    #####:  412:			OCSPerr(OCSP_F_OCSP_REQUEST_VERIFY,ERR_R_X509_LIB);
+    #####:  413:			return 0;
+        -:  414:			}
+        -:  415:
+    #####:  416:		X509_STORE_CTX_set_purpose(&ctx, X509_PURPOSE_OCSP_HELPER);
+    #####:  417:		X509_STORE_CTX_set_trust(&ctx, X509_TRUST_OCSP_REQUEST);
+    #####:  418:		ret = X509_verify_cert(&ctx);
+    #####:  419:		X509_STORE_CTX_cleanup(&ctx);
+    #####:  420:                if (ret <= 0)
+        -:  421:			{
+    #####:  422:			ret = X509_STORE_CTX_get_error(&ctx);	
+    #####:  423:			OCSPerr(OCSP_F_OCSP_REQUEST_VERIFY,OCSP_R_CERTIFICATE_VERIFY_ERROR);
+    #####:  424:			ERR_add_error_data(2, "Verify error:",
+        -:  425:					X509_verify_cert_error_string(ret));
+    #####:  426:                        return 0;
+        -:  427:                	}
+        -:  428:		}
+        -:  429:	return 1;
+        -:  430:        }
+        -:  431:
+    #####:  432:static int ocsp_req_find_signer(X509 **psigner, OCSP_REQUEST *req, X509_NAME *nm, STACK_OF(X509) *certs,
+        -:  433:				X509_STORE *st, unsigned long flags)
+        -:  434:	{
+        -:  435:	X509 *signer;
+    #####:  436:	if(!(flags & OCSP_NOINTERN))
+        -:  437:		{
+    #####:  438:		signer = X509_find_by_subject(req->optionalSignature->certs, nm);
+    #####:  439:		*psigner = signer;
+        -:  440:		return 1;
+        -:  441:		}
+        -:  442:
+    #####:  443:	signer = X509_find_by_subject(certs, nm);
+    #####:  444:	if (signer)
+        -:  445:		{
+    #####:  446:		*psigner = signer;
+        -:  447:		return 2;
+        -:  448:		}
+        -:  449:	return 0;
+        -:  450:	}

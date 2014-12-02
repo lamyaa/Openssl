@@ -1,0 +1,258 @@
+        -:    0:Source:bf_nbio.c
+        -:    0:Graph:bf_nbio.gcno
+        -:    0:Data:bf_nbio.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* crypto/bio/bf_nbio.c */
+        -:    2:/* Copyright (C) 1995-1998 Eric Young (eay@cryptsoft.com)
+        -:    3: * All rights reserved.
+        -:    4: *
+        -:    5: * This package is an SSL implementation written
+        -:    6: * by Eric Young (eay@cryptsoft.com).
+        -:    7: * The implementation was written so as to conform with Netscapes SSL.
+        -:    8: * 
+        -:    9: * This library is free for commercial and non-commercial use as long as
+        -:   10: * the following conditions are aheared to.  The following conditions
+        -:   11: * apply to all code found in this distribution, be it the RC4, RSA,
+        -:   12: * lhash, DES, etc., code; not just the SSL code.  The SSL documentation
+        -:   13: * included with this distribution is covered by the same copyright terms
+        -:   14: * except that the holder is Tim Hudson (tjh@cryptsoft.com).
+        -:   15: * 
+        -:   16: * Copyright remains Eric Young's, and as such any Copyright notices in
+        -:   17: * the code are not to be removed.
+        -:   18: * If this package is used in a product, Eric Young should be given attribution
+        -:   19: * as the author of the parts of the library used.
+        -:   20: * This can be in the form of a textual message at program startup or
+        -:   21: * in documentation (online or textual) provided with the package.
+        -:   22: * 
+        -:   23: * Redistribution and use in source and binary forms, with or without
+        -:   24: * modification, are permitted provided that the following conditions
+        -:   25: * are met:
+        -:   26: * 1. Redistributions of source code must retain the copyright
+        -:   27: *    notice, this list of conditions and the following disclaimer.
+        -:   28: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   29: *    notice, this list of conditions and the following disclaimer in the
+        -:   30: *    documentation and/or other materials provided with the distribution.
+        -:   31: * 3. All advertising materials mentioning features or use of this software
+        -:   32: *    must display the following acknowledgement:
+        -:   33: *    "This product includes cryptographic software written by
+        -:   34: *     Eric Young (eay@cryptsoft.com)"
+        -:   35: *    The word 'cryptographic' can be left out if the rouines from the library
+        -:   36: *    being used are not cryptographic related :-).
+        -:   37: * 4. If you include any Windows specific code (or a derivative thereof) from 
+        -:   38: *    the apps directory (application code) you must include an acknowledgement:
+        -:   39: *    "This product includes software written by Tim Hudson (tjh@cryptsoft.com)"
+        -:   40: * 
+        -:   41: * THIS SOFTWARE IS PROVIDED BY ERIC YOUNG ``AS IS'' AND
+        -:   42: * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   43: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+        -:   44: * ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+        -:   45: * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+        -:   46: * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+        -:   47: * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   48: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+        -:   49: * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+        -:   50: * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+        -:   51: * SUCH DAMAGE.
+        -:   52: * 
+        -:   53: * The licence and distribution terms for any publically available version or
+        -:   54: * derivative of this code cannot be changed.  i.e. this code cannot simply be
+        -:   55: * copied and put under another distribution licence
+        -:   56: * [including the GNU Public Licence.]
+        -:   57: */
+        -:   58:
+        -:   59:#include <stdio.h>
+        -:   60:#include <errno.h>
+        -:   61:#include "cryptlib.h"
+        -:   62:#include <openssl/rand.h>
+        -:   63:#include <openssl/bio.h>
+        -:   64:
+        -:   65:/* BIO_put and BIO_get both add to the digest,
+        -:   66: * BIO_gets returns the digest */
+        -:   67:
+        -:   68:static int nbiof_write(BIO *h,const char *buf,int num);
+        -:   69:static int nbiof_read(BIO *h,char *buf,int size);
+        -:   70:static int nbiof_puts(BIO *h,const char *str);
+        -:   71:static int nbiof_gets(BIO *h,char *str,int size);
+        -:   72:static long nbiof_ctrl(BIO *h,int cmd,long arg1,void *arg2);
+        -:   73:static int nbiof_new(BIO *h);
+        -:   74:static int nbiof_free(BIO *data);
+        -:   75:static long nbiof_callback_ctrl(BIO *h,int cmd,bio_info_cb *fp);
+        -:   76:typedef struct nbio_test_st
+        -:   77:	{
+        -:   78:	/* only set if we sent a 'should retry' error */
+        -:   79:	int lrn;
+        -:   80:	int lwn;
+        -:   81:	} NBIO_TEST;
+        -:   82:
+        -:   83:static BIO_METHOD methods_nbiof=
+        -:   84:	{
+        -:   85:	BIO_TYPE_NBIO_TEST,
+        -:   86:	"non-blocking IO test filter",
+        -:   87:	nbiof_write,
+        -:   88:	nbiof_read,
+        -:   89:	nbiof_puts,
+        -:   90:	nbiof_gets,
+        -:   91:	nbiof_ctrl,
+        -:   92:	nbiof_new,
+        -:   93:	nbiof_free,
+        -:   94:	nbiof_callback_ctrl,
+        -:   95:	};
+        -:   96:
+    #####:   97:BIO_METHOD *BIO_f_nbio_test(void)
+        -:   98:	{
+    #####:   99:	return(&methods_nbiof);
+        -:  100:	}
+        -:  101:
+    #####:  102:static int nbiof_new(BIO *bi)
+        -:  103:	{
+        -:  104:	NBIO_TEST *nt;
+        -:  105:
+    #####:  106:	if (!(nt=(NBIO_TEST *)OPENSSL_malloc(sizeof(NBIO_TEST)))) return(0);
+    #####:  107:	nt->lrn= -1;
+    #####:  108:	nt->lwn= -1;
+    #####:  109:	bi->ptr=(char *)nt;
+    #####:  110:	bi->init=1;
+    #####:  111:	bi->flags=0;
+    #####:  112:	return(1);
+        -:  113:	}
+        -:  114:
+    #####:  115:static int nbiof_free(BIO *a)
+        -:  116:	{
+    #####:  117:	if (a == NULL) return(0);
+    #####:  118:	if (a->ptr != NULL)
+    #####:  119:		OPENSSL_free(a->ptr);
+    #####:  120:	a->ptr=NULL;
+    #####:  121:	a->init=0;
+    #####:  122:	a->flags=0;
+    #####:  123:	return(1);
+        -:  124:	}
+        -:  125:	
+    #####:  126:static int nbiof_read(BIO *b, char *out, int outl)
+        -:  127:	{
+        -:  128:	int ret=0;
+        -:  129:#if 1
+        -:  130:	int num;
+        -:  131:	unsigned char n;
+        -:  132:#endif
+        -:  133:
+    #####:  134:	if (out == NULL) return(0);
+    #####:  135:	if (b->next_bio == NULL) return(0);
+        -:  136:
+    #####:  137:	BIO_clear_retry_flags(b);
+        -:  138:#if 1
+    #####:  139:	RAND_pseudo_bytes(&n,1);
+    #####:  140:	num=(n&0x07);
+        -:  141:
+    #####:  142:	if (outl > num) outl=num;
+        -:  143:
+    #####:  144:	if (num == 0)
+        -:  145:		{
+        -:  146:		ret= -1;
+    #####:  147:		BIO_set_retry_read(b);
+        -:  148:		}
+        -:  149:	else
+        -:  150:#endif
+        -:  151:		{
+    #####:  152:		ret=BIO_read(b->next_bio,out,outl);
+    #####:  153:		if (ret < 0)
+    #####:  154:			BIO_copy_next_retry(b);
+        -:  155:		}
+    #####:  156:	return(ret);
+        -:  157:	}
+        -:  158:
+    #####:  159:static int nbiof_write(BIO *b, const char *in, int inl)
+        -:  160:	{
+        -:  161:	NBIO_TEST *nt;
+        -:  162:	int ret=0;
+        -:  163:	int num;
+        -:  164:	unsigned char n;
+        -:  165:
+    #####:  166:	if ((in == NULL) || (inl <= 0)) return(0);
+    #####:  167:	if (b->next_bio == NULL) return(0);
+    #####:  168:	nt=(NBIO_TEST *)b->ptr;
+        -:  169:
+    #####:  170:	BIO_clear_retry_flags(b);
+        -:  171:
+        -:  172:#if 1
+    #####:  173:	if (nt->lwn > 0)
+        -:  174:		{
+        -:  175:		num=nt->lwn;
+    #####:  176:		nt->lwn=0;
+        -:  177:		}
+        -:  178:	else
+        -:  179:		{
+    #####:  180:		RAND_pseudo_bytes(&n,1);
+    #####:  181:		num=(n&7);
+        -:  182:		}
+        -:  183:
+    #####:  184:	if (inl > num) inl=num;
+        -:  185:
+    #####:  186:	if (num == 0)
+        -:  187:		{
+        -:  188:		ret= -1;
+    #####:  189:		BIO_set_retry_write(b);
+        -:  190:		}
+        -:  191:	else
+        -:  192:#endif
+        -:  193:		{
+    #####:  194:		ret=BIO_write(b->next_bio,in,inl);
+    #####:  195:		if (ret < 0)
+        -:  196:			{
+    #####:  197:			BIO_copy_next_retry(b);
+    #####:  198:			nt->lwn=inl;
+        -:  199:			}
+        -:  200:		}
+    #####:  201:	return(ret);
+        -:  202:	}
+        -:  203:
+    #####:  204:static long nbiof_ctrl(BIO *b, int cmd, long num, void *ptr)
+        -:  205:	{
+        -:  206:	long ret;
+        -:  207:
+    #####:  208:	if (b->next_bio == NULL) return(0);
+    #####:  209:	switch (cmd)
+        -:  210:		{
+        -:  211:        case BIO_C_DO_STATE_MACHINE:
+    #####:  212:		BIO_clear_retry_flags(b);
+    #####:  213:		ret=BIO_ctrl(b->next_bio,cmd,num,ptr);
+    #####:  214:		BIO_copy_next_retry(b);
+    #####:  215:		break;
+        -:  216:	case BIO_CTRL_DUP:
+        -:  217:		ret=0L;
+        -:  218:		break;
+        -:  219:	default:
+    #####:  220:		ret=BIO_ctrl(b->next_bio,cmd,num,ptr);
+    #####:  221:		break;
+        -:  222:		}
+    #####:  223:	return(ret);
+        -:  224:	}
+        -:  225:
+    #####:  226:static long nbiof_callback_ctrl(BIO *b, int cmd, bio_info_cb *fp)
+        -:  227:	{
+        -:  228:	long ret=1;
+        -:  229:
+    #####:  230:	if (b->next_bio == NULL) return(0);
+        -:  231:	switch (cmd)
+        -:  232:		{
+        -:  233:	default:
+    #####:  234:		ret=BIO_callback_ctrl(b->next_bio,cmd,fp);
+        -:  235:		break;
+        -:  236:		}
+    #####:  237:	return(ret);
+        -:  238:	}
+        -:  239:
+    #####:  240:static int nbiof_gets(BIO *bp, char *buf, int size)
+        -:  241:	{
+    #####:  242:	if (bp->next_bio == NULL) return(0);
+    #####:  243:	return(BIO_gets(bp->next_bio,buf,size));
+        -:  244:	}
+        -:  245:
+        -:  246:
+    #####:  247:static int nbiof_puts(BIO *bp, const char *str)
+        -:  248:	{
+    #####:  249:	if (bp->next_bio == NULL) return(0);
+    #####:  250:	return(BIO_puts(bp->next_bio,str));
+        -:  251:	}
+        -:  252:
+        -:  253:

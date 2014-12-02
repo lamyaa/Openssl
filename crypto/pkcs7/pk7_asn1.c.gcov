@@ -1,0 +1,252 @@
+        -:    0:Source:pk7_asn1.c
+        -:    0:Graph:pk7_asn1.gcno
+        -:    0:Data:pk7_asn1.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* pk7_asn.c */
+        -:    2:/* Written by Dr Stephen N Henson (steve@openssl.org) for the OpenSSL
+        -:    3: * project 2000.
+        -:    4: */
+        -:    5:/* ====================================================================
+        -:    6: * Copyright (c) 2000 The OpenSSL Project.  All rights reserved.
+        -:    7: *
+        -:    8: * Redistribution and use in source and binary forms, with or without
+        -:    9: * modification, are permitted provided that the following conditions
+        -:   10: * are met:
+        -:   11: *
+        -:   12: * 1. Redistributions of source code must retain the above copyright
+        -:   13: *    notice, this list of conditions and the following disclaimer. 
+        -:   14: *
+        -:   15: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   16: *    notice, this list of conditions and the following disclaimer in
+        -:   17: *    the documentation and/or other materials provided with the
+        -:   18: *    distribution.
+        -:   19: *
+        -:   20: * 3. All advertising materials mentioning features or use of this
+        -:   21: *    software must display the following acknowledgment:
+        -:   22: *    "This product includes software developed by the OpenSSL Project
+        -:   23: *    for use in the OpenSSL Toolkit. (http://www.OpenSSL.org/)"
+        -:   24: *
+        -:   25: * 4. The names "OpenSSL Toolkit" and "OpenSSL Project" must not be used to
+        -:   26: *    endorse or promote products derived from this software without
+        -:   27: *    prior written permission. For written permission, please contact
+        -:   28: *    licensing@OpenSSL.org.
+        -:   29: *
+        -:   30: * 5. Products derived from this software may not be called "OpenSSL"
+        -:   31: *    nor may "OpenSSL" appear in their names without prior written
+        -:   32: *    permission of the OpenSSL Project.
+        -:   33: *
+        -:   34: * 6. Redistributions of any form whatsoever must retain the following
+        -:   35: *    acknowledgment:
+        -:   36: *    "This product includes software developed by the OpenSSL Project
+        -:   37: *    for use in the OpenSSL Toolkit (http://www.OpenSSL.org/)"
+        -:   38: *
+        -:   39: * THIS SOFTWARE IS PROVIDED BY THE OpenSSL PROJECT ``AS IS'' AND ANY
+        -:   40: * EXPRESSED OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   41: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+        -:   42: * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE OpenSSL PROJECT OR
+        -:   43: * ITS CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+        -:   44: * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+        -:   45: * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+        -:   46: * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   47: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+        -:   48: * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+        -:   49: * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+        -:   50: * OF THE POSSIBILITY OF SUCH DAMAGE.
+        -:   51: * ====================================================================
+        -:   52: *
+        -:   53: * This product includes cryptographic software written by Eric Young
+        -:   54: * (eay@cryptsoft.com).  This product includes software written by Tim
+        -:   55: * Hudson (tjh@cryptsoft.com).
+        -:   56: *
+        -:   57: */
+        -:   58:
+        -:   59:#include <stdio.h>
+        -:   60:#include "cryptlib.h"
+        -:   61:#include <openssl/asn1t.h>
+        -:   62:#include <openssl/pkcs7.h>
+        -:   63:#include <openssl/x509.h>
+        -:   64:
+        -:   65:/* PKCS#7 ASN1 module */
+        -:   66:
+        -:   67:/* This is the ANY DEFINED BY table for the top level PKCS#7 structure */
+        -:   68:
+        -:   69:ASN1_ADB_TEMPLATE(p7default) = ASN1_EXP_OPT(PKCS7, d.other, ASN1_ANY, 0);
+        -:   70:
+        -:   71:ASN1_ADB(PKCS7) = {
+        -:   72:	ADB_ENTRY(NID_pkcs7_data, ASN1_NDEF_EXP_OPT(PKCS7, d.data, ASN1_OCTET_STRING_NDEF, 0)),
+        -:   73:	ADB_ENTRY(NID_pkcs7_signed, ASN1_NDEF_EXP_OPT(PKCS7, d.sign, PKCS7_SIGNED, 0)),
+        -:   74:	ADB_ENTRY(NID_pkcs7_enveloped, ASN1_NDEF_EXP_OPT(PKCS7, d.enveloped, PKCS7_ENVELOPE, 0)),
+        -:   75:	ADB_ENTRY(NID_pkcs7_signedAndEnveloped, ASN1_NDEF_EXP_OPT(PKCS7, d.signed_and_enveloped, PKCS7_SIGN_ENVELOPE, 0)),
+        -:   76:	ADB_ENTRY(NID_pkcs7_digest, ASN1_NDEF_EXP_OPT(PKCS7, d.digest, PKCS7_DIGEST, 0)),
+        -:   77:	ADB_ENTRY(NID_pkcs7_encrypted, ASN1_NDEF_EXP_OPT(PKCS7, d.encrypted, PKCS7_ENCRYPT, 0))
+        -:   78:} ASN1_ADB_END(PKCS7, 0, type, 0, &p7default_tt, NULL);
+        -:   79:
+        -:   80:/* PKCS#7 streaming support */
+    #####:   81:static int pk7_cb(int operation, ASN1_VALUE **pval, const ASN1_ITEM *it,
+        -:   82:							void *exarg)
+        -:   83:{
+        -:   84:	ASN1_STREAM_ARG *sarg = exarg;
+        -:   85:	PKCS7 **pp7 = (PKCS7 **)pval;
+        -:   86:
+    #####:   87:	switch(operation)
+        -:   88:		{
+        -:   89:
+        -:   90:		case ASN1_OP_STREAM_PRE:
+    #####:   91:		if (PKCS7_stream(&sarg->boundary, *pp7) <= 0)
+        -:   92:			return 0;
+        -:   93:		case ASN1_OP_DETACHED_PRE:
+    #####:   94:		sarg->ndef_bio = PKCS7_dataInit(*pp7, sarg->out);
+    #####:   95:		if (!sarg->ndef_bio)
+        -:   96:			return 0;
+        -:   97:		break;
+        -:   98:
+        -:   99:		case ASN1_OP_STREAM_POST:
+        -:  100:		case ASN1_OP_DETACHED_POST:
+    #####:  101:		if (PKCS7_dataFinal(*pp7, sarg->ndef_bio) <= 0)
+        -:  102:			return 0;
+        -:  103:		break;
+        -:  104:
+        -:  105:		}
+        -:  106:	return 1;
+        -:  107:}
+        -:  108:
+        -:  109:ASN1_NDEF_SEQUENCE_cb(PKCS7, pk7_cb) = {
+        -:  110:	ASN1_SIMPLE(PKCS7, type, ASN1_OBJECT),
+        -:  111:	ASN1_ADB_OBJECT(PKCS7)
+        -:  112:}ASN1_NDEF_SEQUENCE_END_cb(PKCS7, PKCS7)
+        -:  113:
+    #####:  114:IMPLEMENT_ASN1_FUNCTIONS(PKCS7)
+    #####:  115:IMPLEMENT_ASN1_NDEF_FUNCTION(PKCS7)
+    #####:  116:IMPLEMENT_ASN1_DUP_FUNCTION(PKCS7)
+        -:  117:
+        -:  118:ASN1_NDEF_SEQUENCE(PKCS7_SIGNED) = {
+        -:  119:	ASN1_SIMPLE(PKCS7_SIGNED, version, ASN1_INTEGER),
+        -:  120:	ASN1_SET_OF(PKCS7_SIGNED, md_algs, X509_ALGOR),
+        -:  121:	ASN1_SIMPLE(PKCS7_SIGNED, contents, PKCS7),
+        -:  122:	ASN1_IMP_SEQUENCE_OF_OPT(PKCS7_SIGNED, cert, X509, 0),
+        -:  123:	ASN1_IMP_SET_OF_OPT(PKCS7_SIGNED, crl, X509_CRL, 1),
+        -:  124:	ASN1_SET_OF(PKCS7_SIGNED, signer_info, PKCS7_SIGNER_INFO)
+        -:  125:} ASN1_NDEF_SEQUENCE_END(PKCS7_SIGNED)
+        -:  126:
+    #####:  127:IMPLEMENT_ASN1_FUNCTIONS(PKCS7_SIGNED)
+        -:  128:
+        -:  129:/* Minor tweak to operation: free up EVP_PKEY */
+    #####:  130:static int si_cb(int operation, ASN1_VALUE **pval, const ASN1_ITEM *it,
+        -:  131:							void *exarg)
+        -:  132:{
+    #####:  133:	if(operation == ASN1_OP_FREE_POST) {
+    #####:  134:		PKCS7_SIGNER_INFO *si = (PKCS7_SIGNER_INFO *)*pval;
+    #####:  135:		EVP_PKEY_free(si->pkey);
+        -:  136:	}
+    #####:  137:	return 1;
+        -:  138:}
+        -:  139:
+        -:  140:ASN1_SEQUENCE_cb(PKCS7_SIGNER_INFO, si_cb) = {
+        -:  141:	ASN1_SIMPLE(PKCS7_SIGNER_INFO, version, ASN1_INTEGER),
+        -:  142:	ASN1_SIMPLE(PKCS7_SIGNER_INFO, issuer_and_serial, PKCS7_ISSUER_AND_SERIAL),
+        -:  143:	ASN1_SIMPLE(PKCS7_SIGNER_INFO, digest_alg, X509_ALGOR),
+        -:  144:	/* NB this should be a SET OF but we use a SEQUENCE OF so the
+        -:  145:	 * original order * is retained when the structure is reencoded.
+        -:  146:	 * Since the attributes are implicitly tagged this will not affect
+        -:  147:	 * the encoding.
+        -:  148:	 */
+        -:  149:	ASN1_IMP_SEQUENCE_OF_OPT(PKCS7_SIGNER_INFO, auth_attr, X509_ATTRIBUTE, 0),
+        -:  150:	ASN1_SIMPLE(PKCS7_SIGNER_INFO, digest_enc_alg, X509_ALGOR),
+        -:  151:	ASN1_SIMPLE(PKCS7_SIGNER_INFO, enc_digest, ASN1_OCTET_STRING),
+        -:  152:	ASN1_IMP_SET_OF_OPT(PKCS7_SIGNER_INFO, unauth_attr, X509_ATTRIBUTE, 1)
+        -:  153:} ASN1_SEQUENCE_END_cb(PKCS7_SIGNER_INFO, PKCS7_SIGNER_INFO)
+        -:  154:
+    #####:  155:IMPLEMENT_ASN1_FUNCTIONS(PKCS7_SIGNER_INFO)
+        -:  156:
+        -:  157:ASN1_SEQUENCE(PKCS7_ISSUER_AND_SERIAL) = {
+        -:  158:	ASN1_SIMPLE(PKCS7_ISSUER_AND_SERIAL, issuer, X509_NAME),
+        -:  159:	ASN1_SIMPLE(PKCS7_ISSUER_AND_SERIAL, serial, ASN1_INTEGER)
+        -:  160:} ASN1_SEQUENCE_END(PKCS7_ISSUER_AND_SERIAL)
+        -:  161:
+    #####:  162:IMPLEMENT_ASN1_FUNCTIONS(PKCS7_ISSUER_AND_SERIAL)
+        -:  163:
+        -:  164:ASN1_NDEF_SEQUENCE(PKCS7_ENVELOPE) = {
+        -:  165:	ASN1_SIMPLE(PKCS7_ENVELOPE, version, ASN1_INTEGER),
+        -:  166:	ASN1_SET_OF(PKCS7_ENVELOPE, recipientinfo, PKCS7_RECIP_INFO),
+        -:  167:	ASN1_SIMPLE(PKCS7_ENVELOPE, enc_data, PKCS7_ENC_CONTENT)
+        -:  168:} ASN1_NDEF_SEQUENCE_END(PKCS7_ENVELOPE)
+        -:  169:
+    #####:  170:IMPLEMENT_ASN1_FUNCTIONS(PKCS7_ENVELOPE)
+        -:  171:
+        -:  172:/* Minor tweak to operation: free up X509 */
+    #####:  173:static int ri_cb(int operation, ASN1_VALUE **pval, const ASN1_ITEM *it,
+        -:  174:								void *exarg)
+        -:  175:{
+    #####:  176:	if(operation == ASN1_OP_FREE_POST) {
+    #####:  177:		PKCS7_RECIP_INFO *ri = (PKCS7_RECIP_INFO *)*pval;
+    #####:  178:		X509_free(ri->cert);
+        -:  179:	}
+    #####:  180:	return 1;
+        -:  181:}
+        -:  182:
+        -:  183:ASN1_SEQUENCE_cb(PKCS7_RECIP_INFO, ri_cb) = {
+        -:  184:	ASN1_SIMPLE(PKCS7_RECIP_INFO, version, ASN1_INTEGER),
+        -:  185:	ASN1_SIMPLE(PKCS7_RECIP_INFO, issuer_and_serial, PKCS7_ISSUER_AND_SERIAL),
+        -:  186:	ASN1_SIMPLE(PKCS7_RECIP_INFO, key_enc_algor, X509_ALGOR),
+        -:  187:	ASN1_SIMPLE(PKCS7_RECIP_INFO, enc_key, ASN1_OCTET_STRING)
+        -:  188:} ASN1_SEQUENCE_END_cb(PKCS7_RECIP_INFO, PKCS7_RECIP_INFO)
+        -:  189:
+    #####:  190:IMPLEMENT_ASN1_FUNCTIONS(PKCS7_RECIP_INFO)
+        -:  191:
+        -:  192:ASN1_NDEF_SEQUENCE(PKCS7_ENC_CONTENT) = {
+        -:  193:	ASN1_SIMPLE(PKCS7_ENC_CONTENT, content_type, ASN1_OBJECT),
+        -:  194:	ASN1_SIMPLE(PKCS7_ENC_CONTENT, algorithm, X509_ALGOR),
+        -:  195:	ASN1_IMP_OPT(PKCS7_ENC_CONTENT, enc_data, ASN1_OCTET_STRING_NDEF, 0)
+        -:  196:} ASN1_NDEF_SEQUENCE_END(PKCS7_ENC_CONTENT)
+        -:  197:
+    #####:  198:IMPLEMENT_ASN1_FUNCTIONS(PKCS7_ENC_CONTENT)
+        -:  199:
+        -:  200:ASN1_NDEF_SEQUENCE(PKCS7_SIGN_ENVELOPE) = {
+        -:  201:	ASN1_SIMPLE(PKCS7_SIGN_ENVELOPE, version, ASN1_INTEGER),
+        -:  202:	ASN1_SET_OF(PKCS7_SIGN_ENVELOPE, recipientinfo, PKCS7_RECIP_INFO),
+        -:  203:	ASN1_SET_OF(PKCS7_SIGN_ENVELOPE, md_algs, X509_ALGOR),
+        -:  204:	ASN1_SIMPLE(PKCS7_SIGN_ENVELOPE, enc_data, PKCS7_ENC_CONTENT),
+        -:  205:	ASN1_IMP_SET_OF_OPT(PKCS7_SIGN_ENVELOPE, cert, X509, 0),
+        -:  206:	ASN1_IMP_SET_OF_OPT(PKCS7_SIGN_ENVELOPE, crl, X509_CRL, 1),
+        -:  207:	ASN1_SET_OF(PKCS7_SIGN_ENVELOPE, signer_info, PKCS7_SIGNER_INFO)
+        -:  208:} ASN1_NDEF_SEQUENCE_END(PKCS7_SIGN_ENVELOPE)
+        -:  209:
+    #####:  210:IMPLEMENT_ASN1_FUNCTIONS(PKCS7_SIGN_ENVELOPE)
+        -:  211:
+        -:  212:ASN1_NDEF_SEQUENCE(PKCS7_ENCRYPT) = {
+        -:  213:	ASN1_SIMPLE(PKCS7_ENCRYPT, version, ASN1_INTEGER),
+        -:  214:	ASN1_SIMPLE(PKCS7_ENCRYPT, enc_data, PKCS7_ENC_CONTENT)
+        -:  215:} ASN1_NDEF_SEQUENCE_END(PKCS7_ENCRYPT)
+        -:  216:
+    #####:  217:IMPLEMENT_ASN1_FUNCTIONS(PKCS7_ENCRYPT)
+        -:  218:
+        -:  219:ASN1_NDEF_SEQUENCE(PKCS7_DIGEST) = {
+        -:  220:	ASN1_SIMPLE(PKCS7_DIGEST, version, ASN1_INTEGER),
+        -:  221:	ASN1_SIMPLE(PKCS7_DIGEST, md, X509_ALGOR),
+        -:  222:	ASN1_SIMPLE(PKCS7_DIGEST, contents, PKCS7),
+        -:  223:	ASN1_SIMPLE(PKCS7_DIGEST, digest, ASN1_OCTET_STRING)
+        -:  224:} ASN1_NDEF_SEQUENCE_END(PKCS7_DIGEST)
+        -:  225:
+    #####:  226:IMPLEMENT_ASN1_FUNCTIONS(PKCS7_DIGEST)
+        -:  227:
+        -:  228:/* Specials for authenticated attributes */
+        -:  229:
+        -:  230:/* When signing attributes we want to reorder them to match the sorted
+        -:  231: * encoding.
+        -:  232: */
+        -:  233:
+        -:  234:ASN1_ITEM_TEMPLATE(PKCS7_ATTR_SIGN) = 
+        -:  235:	ASN1_EX_TEMPLATE_TYPE(ASN1_TFLG_SET_ORDER, 0, PKCS7_ATTRIBUTES, X509_ATTRIBUTE)
+        -:  236:ASN1_ITEM_TEMPLATE_END(PKCS7_ATTR_SIGN)
+        -:  237:
+        -:  238:/* When verifying attributes we need to use the received order. So 
+        -:  239: * we use SEQUENCE OF and tag it to SET OF
+        -:  240: */
+        -:  241:
+        -:  242:ASN1_ITEM_TEMPLATE(PKCS7_ATTR_VERIFY) = 
+        -:  243:	ASN1_EX_TEMPLATE_TYPE(ASN1_TFLG_SEQUENCE_OF | ASN1_TFLG_IMPTAG | ASN1_TFLG_UNIVERSAL,
+        -:  244:				V_ASN1_SET, PKCS7_ATTRIBUTES, X509_ATTRIBUTE)
+        -:  245:ASN1_ITEM_TEMPLATE_END(PKCS7_ATTR_VERIFY)
+        -:  246:
+    #####:  247:IMPLEMENT_ASN1_PRINT_FUNCTION(PKCS7)

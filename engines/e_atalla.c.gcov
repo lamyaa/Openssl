@@ -1,0 +1,612 @@
+        -:    0:Source:e_atalla.c
+        -:    0:Graph:e_atalla.gcno
+        -:    0:Data:e_atalla.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* crypto/engine/hw_atalla.c */
+        -:    2:/* Written by Geoff Thorpe (geoff@geoffthorpe.net) for the OpenSSL
+        -:    3: * project 2000.
+        -:    4: */
+        -:    5:/* ====================================================================
+        -:    6: * Copyright (c) 1999-2001 The OpenSSL Project.  All rights reserved.
+        -:    7: *
+        -:    8: * Redistribution and use in source and binary forms, with or without
+        -:    9: * modification, are permitted provided that the following conditions
+        -:   10: * are met:
+        -:   11: *
+        -:   12: * 1. Redistributions of source code must retain the above copyright
+        -:   13: *    notice, this list of conditions and the following disclaimer. 
+        -:   14: *
+        -:   15: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   16: *    notice, this list of conditions and the following disclaimer in
+        -:   17: *    the documentation and/or other materials provided with the
+        -:   18: *    distribution.
+        -:   19: *
+        -:   20: * 3. All advertising materials mentioning features or use of this
+        -:   21: *    software must display the following acknowledgment:
+        -:   22: *    "This product includes software developed by the OpenSSL Project
+        -:   23: *    for use in the OpenSSL Toolkit. (http://www.OpenSSL.org/)"
+        -:   24: *
+        -:   25: * 4. The names "OpenSSL Toolkit" and "OpenSSL Project" must not be used to
+        -:   26: *    endorse or promote products derived from this software without
+        -:   27: *    prior written permission. For written permission, please contact
+        -:   28: *    licensing@OpenSSL.org.
+        -:   29: *
+        -:   30: * 5. Products derived from this software may not be called "OpenSSL"
+        -:   31: *    nor may "OpenSSL" appear in their names without prior written
+        -:   32: *    permission of the OpenSSL Project.
+        -:   33: *
+        -:   34: * 6. Redistributions of any form whatsoever must retain the following
+        -:   35: *    acknowledgment:
+        -:   36: *    "This product includes software developed by the OpenSSL Project
+        -:   37: *    for use in the OpenSSL Toolkit (http://www.OpenSSL.org/)"
+        -:   38: *
+        -:   39: * THIS SOFTWARE IS PROVIDED BY THE OpenSSL PROJECT ``AS IS'' AND ANY
+        -:   40: * EXPRESSED OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   41: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+        -:   42: * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE OpenSSL PROJECT OR
+        -:   43: * ITS CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+        -:   44: * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+        -:   45: * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+        -:   46: * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   47: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+        -:   48: * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+        -:   49: * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+        -:   50: * OF THE POSSIBILITY OF SUCH DAMAGE.
+        -:   51: * ====================================================================
+        -:   52: *
+        -:   53: * This product includes cryptographic software written by Eric Young
+        -:   54: * (eay@cryptsoft.com).  This product includes software written by Tim
+        -:   55: * Hudson (tjh@cryptsoft.com).
+        -:   56: *
+        -:   57: */
+        -:   58:
+        -:   59:#include <stdio.h>
+        -:   60:#include <string.h>
+        -:   61:#include <openssl/crypto.h>
+        -:   62:#include <openssl/buffer.h>
+        -:   63:#include <openssl/dso.h>
+        -:   64:#include <openssl/engine.h>
+        -:   65:#ifndef OPENSSL_NO_RSA
+        -:   66:#include <openssl/rsa.h>
+        -:   67:#endif
+        -:   68:#ifndef OPENSSL_NO_DSA
+        -:   69:#include <openssl/dsa.h>
+        -:   70:#endif
+        -:   71:#ifndef OPENSSL_NO_DH
+        -:   72:#include <openssl/dh.h>
+        -:   73:#endif
+        -:   74:#include <openssl/bn.h>
+        -:   75:
+        -:   76:#ifndef OPENSSL_NO_HW
+        -:   77:#ifndef OPENSSL_NO_HW_ATALLA
+        -:   78:
+        -:   79:#ifdef FLAT_INC
+        -:   80:#include "atalla.h"
+        -:   81:#else
+        -:   82:#include "vendor_defns/atalla.h"
+        -:   83:#endif
+        -:   84:
+        -:   85:#define ATALLA_LIB_NAME "atalla engine"
+        -:   86:#include "e_atalla_err.c"
+        -:   87:
+        -:   88:static int atalla_destroy(ENGINE *e);
+        -:   89:static int atalla_init(ENGINE *e);
+        -:   90:static int atalla_finish(ENGINE *e);
+        -:   91:static int atalla_ctrl(ENGINE *e, int cmd, long i, void *p, void (*f)(void));
+        -:   92:
+        -:   93:/* BIGNUM stuff */
+        -:   94:static int atalla_mod_exp(BIGNUM *r, const BIGNUM *a, const BIGNUM *p,
+        -:   95:		const BIGNUM *m, BN_CTX *ctx);
+        -:   96:
+        -:   97:#ifndef OPENSSL_NO_RSA
+        -:   98:/* RSA stuff */
+        -:   99:static int atalla_rsa_mod_exp(BIGNUM *r0, const BIGNUM *I, RSA *rsa, BN_CTX *ctx);
+        -:  100:/* This function is aliased to mod_exp (with the mont stuff dropped). */
+        -:  101:static int atalla_mod_exp_mont(BIGNUM *r, const BIGNUM *a, const BIGNUM *p,
+        -:  102:		const BIGNUM *m, BN_CTX *ctx, BN_MONT_CTX *m_ctx);
+        -:  103:#endif
+        -:  104:
+        -:  105:#ifndef OPENSSL_NO_DSA
+        -:  106:/* DSA stuff */
+        -:  107:static int atalla_dsa_mod_exp(DSA *dsa, BIGNUM *rr, BIGNUM *a1,
+        -:  108:		BIGNUM *p1, BIGNUM *a2, BIGNUM *p2, BIGNUM *m,
+        -:  109:		BN_CTX *ctx, BN_MONT_CTX *in_mont);
+        -:  110:static int atalla_mod_exp_dsa(DSA *dsa, BIGNUM *r, BIGNUM *a,
+        -:  111:		const BIGNUM *p, const BIGNUM *m, BN_CTX *ctx,
+        -:  112:		BN_MONT_CTX *m_ctx);
+        -:  113:#endif
+        -:  114:
+        -:  115:#ifndef OPENSSL_NO_DH
+        -:  116:/* DH stuff */
+        -:  117:/* This function is alised to mod_exp (with the DH and mont dropped). */
+        -:  118:static int atalla_mod_exp_dh(const DH *dh, BIGNUM *r,
+        -:  119:		const BIGNUM *a, const BIGNUM *p,
+        -:  120:		const BIGNUM *m, BN_CTX *ctx, BN_MONT_CTX *m_ctx);
+        -:  121:#endif
+        -:  122:
+        -:  123:/* The definitions for control commands specific to this engine */
+        -:  124:#define ATALLA_CMD_SO_PATH		ENGINE_CMD_BASE
+        -:  125:static const ENGINE_CMD_DEFN atalla_cmd_defns[] = {
+        -:  126:	{ATALLA_CMD_SO_PATH,
+        -:  127:		"SO_PATH",
+        -:  128:		"Specifies the path to the 'atasi' shared library",
+        -:  129:		ENGINE_CMD_FLAG_STRING},
+        -:  130:	{0, NULL, NULL, 0}
+        -:  131:	};
+        -:  132:
+        -:  133:#ifndef OPENSSL_NO_RSA
+        -:  134:/* Our internal RSA_METHOD that we provide pointers to */
+        -:  135:static RSA_METHOD atalla_rsa =
+        -:  136:	{
+        -:  137:	"Atalla RSA method",
+        -:  138:	NULL,
+        -:  139:	NULL,
+        -:  140:	NULL,
+        -:  141:	NULL,
+        -:  142:	atalla_rsa_mod_exp,
+        -:  143:	atalla_mod_exp_mont,
+        -:  144:	NULL,
+        -:  145:	NULL,
+        -:  146:	0,
+        -:  147:	NULL,
+        -:  148:	NULL,
+        -:  149:	NULL,
+        -:  150:	NULL
+        -:  151:	};
+        -:  152:#endif
+        -:  153:
+        -:  154:#ifndef OPENSSL_NO_DSA
+        -:  155:/* Our internal DSA_METHOD that we provide pointers to */
+        -:  156:static DSA_METHOD atalla_dsa =
+        -:  157:	{
+        -:  158:	"Atalla DSA method",
+        -:  159:	NULL, /* dsa_do_sign */
+        -:  160:	NULL, /* dsa_sign_setup */
+        -:  161:	NULL, /* dsa_do_verify */
+        -:  162:	atalla_dsa_mod_exp, /* dsa_mod_exp */
+        -:  163:	atalla_mod_exp_dsa, /* bn_mod_exp */
+        -:  164:	NULL, /* init */
+        -:  165:	NULL, /* finish */
+        -:  166:	0, /* flags */
+        -:  167:	NULL, /* app_data */
+        -:  168:	NULL, /* dsa_paramgen */
+        -:  169:	NULL /* dsa_keygen */
+        -:  170:	};
+        -:  171:#endif
+        -:  172:
+        -:  173:#ifndef OPENSSL_NO_DH
+        -:  174:/* Our internal DH_METHOD that we provide pointers to */
+        -:  175:static DH_METHOD atalla_dh =
+        -:  176:	{
+        -:  177:	"Atalla DH method",
+        -:  178:	NULL,
+        -:  179:	NULL,
+        -:  180:	atalla_mod_exp_dh,
+        -:  181:	NULL,
+        -:  182:	NULL,
+        -:  183:	0,
+        -:  184:	NULL,
+        -:  185:	NULL
+        -:  186:	};
+        -:  187:#endif
+        -:  188:
+        -:  189:/* Constants used when creating the ENGINE */
+        -:  190:static const char *engine_atalla_id = "atalla";
+        -:  191:static const char *engine_atalla_name = "Atalla hardware engine support";
+        -:  192:
+        -:  193:/* This internal function is used by ENGINE_atalla() and possibly by the
+        -:  194: * "dynamic" ENGINE support too */
+    10000:  195:static int bind_helper(ENGINE *e)
+        -:  196:	{
+        -:  197:#ifndef OPENSSL_NO_RSA
+        -:  198:	const RSA_METHOD *meth1;
+        -:  199:#endif
+        -:  200:#ifndef OPENSSL_NO_DSA
+        -:  201:	const DSA_METHOD *meth2;
+        -:  202:#endif
+        -:  203:#ifndef OPENSSL_NO_DH
+        -:  204:	const DH_METHOD *meth3;
+        -:  205:#endif
+    20000:  206:	if(!ENGINE_set_id(e, engine_atalla_id) ||
+    20000:  207:			!ENGINE_set_name(e, engine_atalla_name) ||
+        -:  208:#ifndef OPENSSL_NO_RSA
+    20000:  209:			!ENGINE_set_RSA(e, &atalla_rsa) ||
+        -:  210:#endif
+        -:  211:#ifndef OPENSSL_NO_DSA
+    20000:  212:			!ENGINE_set_DSA(e, &atalla_dsa) ||
+        -:  213:#endif
+        -:  214:#ifndef OPENSSL_NO_DH
+    20000:  215:			!ENGINE_set_DH(e, &atalla_dh) ||
+        -:  216:#endif
+    20000:  217:			!ENGINE_set_destroy_function(e, atalla_destroy) ||
+    20000:  218:			!ENGINE_set_init_function(e, atalla_init) ||
+    20000:  219:			!ENGINE_set_finish_function(e, atalla_finish) ||
+    20000:  220:			!ENGINE_set_ctrl_function(e, atalla_ctrl) ||
+    10000:  221:			!ENGINE_set_cmd_defns(e, atalla_cmd_defns))
+        -:  222:		return 0;
+        -:  223:
+        -:  224:#ifndef OPENSSL_NO_RSA
+        -:  225:	/* We know that the "PKCS1_SSLeay()" functions hook properly
+        -:  226:	 * to the atalla-specific mod_exp and mod_exp_crt so we use
+        -:  227:	 * those functions. NB: We don't use ENGINE_openssl() or
+        -:  228:	 * anything "more generic" because something like the RSAref
+        -:  229:	 * code may not hook properly, and if you own one of these
+        -:  230:	 * cards then you have the right to do RSA operations on it
+        -:  231:	 * anyway! */ 
+    10000:  232:	meth1 = RSA_PKCS1_SSLeay();
+    10000:  233:	atalla_rsa.rsa_pub_enc = meth1->rsa_pub_enc;
+    10000:  234:	atalla_rsa.rsa_pub_dec = meth1->rsa_pub_dec;
+    10000:  235:	atalla_rsa.rsa_priv_enc = meth1->rsa_priv_enc;
+    10000:  236:	atalla_rsa.rsa_priv_dec = meth1->rsa_priv_dec;
+        -:  237:#endif
+        -:  238:
+        -:  239:#ifndef OPENSSL_NO_DSA
+        -:  240:	/* Use the DSA_OpenSSL() method and just hook the mod_exp-ish
+        -:  241:	 * bits. */
+    10000:  242:	meth2 = DSA_OpenSSL();
+    10000:  243:	atalla_dsa.dsa_do_sign = meth2->dsa_do_sign;
+    10000:  244:	atalla_dsa.dsa_sign_setup = meth2->dsa_sign_setup;
+    10000:  245:	atalla_dsa.dsa_do_verify = meth2->dsa_do_verify;
+        -:  246:#endif
+        -:  247:
+        -:  248:#ifndef OPENSSL_NO_DH
+        -:  249:	/* Much the same for Diffie-Hellman */
+    10000:  250:	meth3 = DH_OpenSSL();
+    10000:  251:	atalla_dh.generate_key = meth3->generate_key;
+    10000:  252:	atalla_dh.compute_key = meth3->compute_key;
+        -:  253:#endif
+        -:  254:
+        -:  255:	/* Ensure the atalla error handling is set up */
+    10000:  256:	ERR_load_ATALLA_strings();
+    10000:  257:	return 1;
+        -:  258:	}
+        -:  259:
+        -:  260:#ifdef OPENSSL_NO_DYNAMIC_ENGINE
+    10000:  261:static ENGINE *engine_atalla(void)
+        -:  262:	{
+    10000:  263:	ENGINE *ret = ENGINE_new();
+    10000:  264:	if(!ret)
+        -:  265:		return NULL;
+    10000:  266:	if(!bind_helper(ret))
+        -:  267:		{
+    #####:  268:		ENGINE_free(ret);
+    #####:  269:		return NULL;
+        -:  270:		}
+        -:  271:	return ret;
+        -:  272:	}
+        -:  273:
+    10000:  274:void ENGINE_load_atalla(void)
+        -:  275:	{
+        -:  276:	/* Copied from eng_[openssl|dyn].c */
+    10000:  277:	ENGINE *toadd = engine_atalla();
+    20000:  278:	if(!toadd) return;
+    10000:  279:	ENGINE_add(toadd);
+    10000:  280:	ENGINE_free(toadd);
+    10000:  281:	ERR_clear_error();
+        -:  282:	}
+        -:  283:#endif
+        -:  284:
+        -:  285:/* This is a process-global DSO handle used for loading and unloading
+        -:  286: * the Atalla library. NB: This is only set (or unset) during an
+        -:  287: * init() or finish() call (reference counts permitting) and they're
+        -:  288: * operating with global locks, so this should be thread-safe
+        -:  289: * implicitly. */
+        -:  290:static DSO *atalla_dso = NULL;
+        -:  291:
+        -:  292:/* These are the function pointers that are (un)set when the library has
+        -:  293: * successfully (un)loaded. */
+        -:  294:static tfnASI_GetHardwareConfig *p_Atalla_GetHardwareConfig = NULL;
+        -:  295:static tfnASI_RSAPrivateKeyOpFn *p_Atalla_RSAPrivateKeyOpFn = NULL;
+        -:  296:static tfnASI_GetPerformanceStatistics *p_Atalla_GetPerformanceStatistics = NULL;
+        -:  297:
+        -:  298:/* These are the static string constants for the DSO file name and the function
+        -:  299: * symbol names to bind to. Regrettably, the DSO name on *nix appears to be
+        -:  300: * "atasi.so" rather than something more consistent like "libatasi.so". At the
+        -:  301: * time of writing, I'm not sure what the file name on win32 is but clearly
+        -:  302: * native name translation is not possible (eg libatasi.so on *nix, and
+        -:  303: * atasi.dll on win32). For the purposes of testing, I have created a symbollic
+        -:  304: * link called "libatasi.so" so that we can use native name-translation - a
+        -:  305: * better solution will be needed. */
+        -:  306:static const char *ATALLA_LIBNAME = NULL;
+        -:  307:static const char *get_ATALLA_LIBNAME(void)
+        -:  308:	{
+    #####:  309:		if(ATALLA_LIBNAME)
+        -:  310:			return ATALLA_LIBNAME;
+        -:  311:		return "atasi";
+        -:  312:	}
+        -:  313:static void free_ATALLA_LIBNAME(void)
+        -:  314:	{
+    10000:  315:		if(ATALLA_LIBNAME)
+    #####:  316:			OPENSSL_free((void*)ATALLA_LIBNAME);
+    10000:  317:		ATALLA_LIBNAME = NULL;
+        -:  318:	}
+    #####:  319:static long set_ATALLA_LIBNAME(const char *name)
+        -:  320:	{
+        -:  321:	free_ATALLA_LIBNAME();
+    #####:  322:	return (((ATALLA_LIBNAME = BUF_strdup(name)) != NULL) ? 1 : 0);
+        -:  323:	}
+        -:  324:static const char *ATALLA_F1 = "ASI_GetHardwareConfig";
+        -:  325:static const char *ATALLA_F2 = "ASI_RSAPrivateKeyOpFn";
+        -:  326:static const char *ATALLA_F3 = "ASI_GetPerformanceStatistics";
+        -:  327:
+        -:  328:/* Destructor (complements the "ENGINE_atalla()" constructor) */
+    10000:  329:static int atalla_destroy(ENGINE *e)
+        -:  330:	{
+        -:  331:	free_ATALLA_LIBNAME();
+        -:  332:	/* Unload the atalla error strings so any error state including our
+        -:  333:	 * functs or reasons won't lead to a segfault (they simply get displayed
+        -:  334:	 * without corresponding string data because none will be found). */
+    10000:  335:	ERR_unload_ATALLA_strings();
+    10000:  336:	return 1;
+        -:  337:	}
+        -:  338:
+        -:  339:/* (de)initialisation functions. */
+    #####:  340:static int atalla_init(ENGINE *e)
+        -:  341:	{
+        -:  342:	tfnASI_GetHardwareConfig *p1;
+        -:  343:	tfnASI_RSAPrivateKeyOpFn *p2;
+        -:  344:	tfnASI_GetPerformanceStatistics *p3;
+        -:  345:	/* Not sure of the origin of this magic value, but Ben's code had it
+        -:  346:	 * and it seemed to have been working for a few people. :-) */
+        -:  347:	unsigned int config_buf[1024];
+        -:  348:
+    #####:  349:	if(atalla_dso != NULL)
+        -:  350:		{
+    #####:  351:		ATALLAerr(ATALLA_F_ATALLA_INIT,ATALLA_R_ALREADY_LOADED);
+    #####:  352:		goto err;
+        -:  353:		}
+        -:  354:	/* Attempt to load libatasi.so/atasi.dll/whatever. Needs to be
+        -:  355:	 * changed unfortunately because the Atalla drivers don't have
+        -:  356:	 * standard library names that can be platform-translated well. */
+        -:  357:	/* TODO: Work out how to actually map to the names the Atalla
+        -:  358:	 * drivers really use - for now a symbollic link needs to be
+        -:  359:	 * created on the host system from libatasi.so to atasi.so on
+        -:  360:	 * unix variants. */
+    #####:  361:	atalla_dso = DSO_load(NULL, get_ATALLA_LIBNAME(), NULL, 0);
+    #####:  362:	if(atalla_dso == NULL)
+        -:  363:		{
+    #####:  364:		ATALLAerr(ATALLA_F_ATALLA_INIT,ATALLA_R_NOT_LOADED);
+    #####:  365:		goto err;
+        -:  366:		}
+    #####:  367:	if(!(p1 = (tfnASI_GetHardwareConfig *)DSO_bind_func(
+    #####:  368:				atalla_dso, ATALLA_F1)) ||
+    #####:  369:			!(p2 = (tfnASI_RSAPrivateKeyOpFn *)DSO_bind_func(
+    #####:  370:				atalla_dso, ATALLA_F2)) ||
+    #####:  371:			!(p3 = (tfnASI_GetPerformanceStatistics *)DSO_bind_func(
+        -:  372:				atalla_dso, ATALLA_F3)))
+        -:  373:		{
+    #####:  374:		ATALLAerr(ATALLA_F_ATALLA_INIT,ATALLA_R_NOT_LOADED);
+    #####:  375:		goto err;
+        -:  376:		}
+        -:  377:	/* Copy the pointers */
+    #####:  378:	p_Atalla_GetHardwareConfig = p1;
+    #####:  379:	p_Atalla_RSAPrivateKeyOpFn = p2;
+    #####:  380:	p_Atalla_GetPerformanceStatistics = p3;
+        -:  381:	/* Perform a basic test to see if there's actually any unit
+        -:  382:	 * running. */
+    #####:  383:	if(p1(0L, config_buf) != 0)
+        -:  384:		{
+    #####:  385:		ATALLAerr(ATALLA_F_ATALLA_INIT,ATALLA_R_UNIT_FAILURE);
+    #####:  386:		goto err;
+        -:  387:		}
+        -:  388:	/* Everything's fine. */
+        -:  389:	return 1;
+        -:  390:err:
+    #####:  391:	if(atalla_dso)
+    #####:  392:		DSO_free(atalla_dso);
+    #####:  393:	atalla_dso = NULL;
+    #####:  394:	p_Atalla_GetHardwareConfig = NULL;
+    #####:  395:	p_Atalla_RSAPrivateKeyOpFn = NULL;
+    #####:  396:	p_Atalla_GetPerformanceStatistics = NULL;
+    #####:  397:	return 0;
+        -:  398:	}
+        -:  399:
+    #####:  400:static int atalla_finish(ENGINE *e)
+        -:  401:	{
+        -:  402:	free_ATALLA_LIBNAME();
+    #####:  403:	if(atalla_dso == NULL)
+        -:  404:		{
+    #####:  405:		ATALLAerr(ATALLA_F_ATALLA_FINISH,ATALLA_R_NOT_LOADED);
+    #####:  406:		return 0;
+        -:  407:		}
+    #####:  408:	if(!DSO_free(atalla_dso))
+        -:  409:		{
+    #####:  410:		ATALLAerr(ATALLA_F_ATALLA_FINISH,ATALLA_R_UNIT_FAILURE);
+    #####:  411:		return 0;
+        -:  412:		}
+    #####:  413:	atalla_dso = NULL;
+    #####:  414:	p_Atalla_GetHardwareConfig = NULL;
+    #####:  415:	p_Atalla_RSAPrivateKeyOpFn = NULL;
+    #####:  416:	p_Atalla_GetPerformanceStatistics = NULL;
+    #####:  417:	return 1;
+        -:  418:	}
+        -:  419:
+    #####:  420:static int atalla_ctrl(ENGINE *e, int cmd, long i, void *p, void (*f)(void))
+        -:  421:	{
+    #####:  422:	int initialised = ((atalla_dso == NULL) ? 0 : 1);
+    #####:  423:	switch(cmd)
+        -:  424:		{
+        -:  425:	case ATALLA_CMD_SO_PATH:
+    #####:  426:		if(p == NULL)
+        -:  427:			{
+    #####:  428:			ATALLAerr(ATALLA_F_ATALLA_CTRL,ERR_R_PASSED_NULL_PARAMETER);
+    #####:  429:			return 0;
+        -:  430:			}
+    #####:  431:		if(initialised)
+        -:  432:			{
+    #####:  433:			ATALLAerr(ATALLA_F_ATALLA_CTRL,ATALLA_R_ALREADY_LOADED);
+    #####:  434:			return 0;
+        -:  435:			}
+    #####:  436:		return set_ATALLA_LIBNAME((const char *)p);
+        -:  437:	default:
+        -:  438:		break;
+        -:  439:		}
+    #####:  440:	ATALLAerr(ATALLA_F_ATALLA_CTRL,ATALLA_R_CTRL_COMMAND_NOT_IMPLEMENTED);
+    #####:  441:	return 0;
+        -:  442:	}
+        -:  443:
+    #####:  444:static int atalla_mod_exp(BIGNUM *r, const BIGNUM *a, const BIGNUM *p,
+        -:  445:			const BIGNUM *m, BN_CTX *ctx)
+        -:  446:	{
+        -:  447:	/* I need somewhere to store temporary serialised values for
+        -:  448:	 * use with the Atalla API calls. A neat cheat - I'll use
+        -:  449:	 * BIGNUMs from the BN_CTX but access their arrays directly as
+        -:  450:	 * byte arrays <grin>. This way I don't have to clean anything
+        -:  451:	 * up. */
+        -:  452:	BIGNUM *modulus;
+        -:  453:	BIGNUM *exponent;
+        -:  454:	BIGNUM *argument;
+        -:  455:	BIGNUM *result;
+        -:  456:	RSAPrivateKey keydata;
+        -:  457:	int to_return, numbytes;
+        -:  458:
+        -:  459:	modulus = exponent = argument = result = NULL;
+        -:  460:	to_return = 0; /* expect failure */
+        -:  461:
+    #####:  462:	if(!atalla_dso)
+        -:  463:		{
+    #####:  464:		ATALLAerr(ATALLA_F_ATALLA_MOD_EXP,ATALLA_R_NOT_LOADED);
+    #####:  465:		goto err;
+        -:  466:		}
+        -:  467:	/* Prepare the params */
+    #####:  468:	BN_CTX_start(ctx);
+    #####:  469:	modulus = BN_CTX_get(ctx);
+    #####:  470:	exponent = BN_CTX_get(ctx);
+    #####:  471:	argument = BN_CTX_get(ctx);
+    #####:  472:	result = BN_CTX_get(ctx);
+    #####:  473:	if (!result)
+        -:  474:		{
+    #####:  475:		ATALLAerr(ATALLA_F_ATALLA_MOD_EXP,ATALLA_R_BN_CTX_FULL);
+    #####:  476:		goto err;
+        -:  477:		}
+    #####:  478:	if(!bn_wexpand(modulus, m->top) || !bn_wexpand(exponent, m->top) ||
+    #####:  479:	   !bn_wexpand(argument, m->top) || !bn_wexpand(result, m->top))
+        -:  480:		{
+    #####:  481:		ATALLAerr(ATALLA_F_ATALLA_MOD_EXP,ATALLA_R_BN_EXPAND_FAIL);
+    #####:  482:		goto err;
+        -:  483:		}
+        -:  484:	/* Prepare the key-data */
+        -:  485:	memset(&keydata, 0,sizeof keydata);
+    #####:  486:	numbytes = BN_num_bytes(m);
+    #####:  487:	memset(exponent->d, 0, numbytes);
+    #####:  488:	memset(modulus->d, 0, numbytes);
+    #####:  489:	BN_bn2bin(p, (unsigned char *)exponent->d + numbytes - BN_num_bytes(p));
+    #####:  490:	BN_bn2bin(m, (unsigned char *)modulus->d + numbytes - BN_num_bytes(m));
+    #####:  491:	keydata.privateExponent.data = (unsigned char *)exponent->d;
+    #####:  492:	keydata.privateExponent.len = numbytes;
+    #####:  493:	keydata.modulus.data = (unsigned char *)modulus->d;
+    #####:  494:	keydata.modulus.len = numbytes;
+        -:  495:	/* Prepare the argument */
+    #####:  496:	memset(argument->d, 0, numbytes);
+    #####:  497:	memset(result->d, 0, numbytes);
+    #####:  498:	BN_bn2bin(a, (unsigned char *)argument->d + numbytes - BN_num_bytes(a));
+        -:  499:	/* Perform the operation */
+    #####:  500:	if(p_Atalla_RSAPrivateKeyOpFn(&keydata, (unsigned char *)result->d,
+    #####:  501:			(unsigned char *)argument->d,
+    #####:  502:			keydata.modulus.len) != 0)
+        -:  503:		{
+    #####:  504:		ATALLAerr(ATALLA_F_ATALLA_MOD_EXP,ATALLA_R_REQUEST_FAILED);
+    #####:  505:		goto err;
+        -:  506:		}
+        -:  507:	/* Convert the response */
+    #####:  508:	BN_bin2bn((unsigned char *)result->d, numbytes, r);
+        -:  509:	to_return = 1;
+        -:  510:err:
+    #####:  511:	BN_CTX_end(ctx);
+    #####:  512:	return to_return;
+        -:  513:	}
+        -:  514:
+        -:  515:#ifndef OPENSSL_NO_RSA
+    #####:  516:static int atalla_rsa_mod_exp(BIGNUM *r0, const BIGNUM *I, RSA *rsa, BN_CTX *ctx)
+        -:  517:	{
+        -:  518:	int to_return = 0;
+        -:  519:
+    #####:  520:	if(!atalla_dso)
+        -:  521:		{
+    #####:  522:		ATALLAerr(ATALLA_F_ATALLA_RSA_MOD_EXP,ATALLA_R_NOT_LOADED);
+    #####:  523:		goto err;
+        -:  524:		}
+    #####:  525:	if(!rsa->d || !rsa->n)
+        -:  526:		{
+    #####:  527:		ATALLAerr(ATALLA_F_ATALLA_RSA_MOD_EXP,ATALLA_R_MISSING_KEY_COMPONENTS);
+    #####:  528:		goto err;
+        -:  529:		}
+    #####:  530:	to_return = atalla_mod_exp(r0, I, rsa->d, rsa->n, ctx);
+        -:  531:err:
+    #####:  532:	return to_return;
+        -:  533:	}
+        -:  534:#endif
+        -:  535:
+        -:  536:#ifndef OPENSSL_NO_DSA
+        -:  537:/* This code was liberated and adapted from the commented-out code in
+        -:  538: * dsa_ossl.c. Because of the unoptimised form of the Atalla acceleration
+        -:  539: * (it doesn't have a CRT form for RSA), this function means that an
+        -:  540: * Atalla system running with a DSA server certificate can handshake
+        -:  541: * around 5 or 6 times faster/more than an equivalent system running with
+        -:  542: * RSA. Just check out the "signs" statistics from the RSA and DSA parts
+        -:  543: * of "openssl speed -engine atalla dsa1024 rsa1024". */
+    #####:  544:static int atalla_dsa_mod_exp(DSA *dsa, BIGNUM *rr, BIGNUM *a1,
+        -:  545:		BIGNUM *p1, BIGNUM *a2, BIGNUM *p2, BIGNUM *m,
+        -:  546:		BN_CTX *ctx, BN_MONT_CTX *in_mont)
+        -:  547:	{
+        -:  548:	BIGNUM t;
+        -:  549:	int to_return = 0;
+        -:  550: 
+    #####:  551:	BN_init(&t);
+        -:  552:	/* let rr = a1 ^ p1 mod m */
+    #####:  553:	if (!atalla_mod_exp(rr,a1,p1,m,ctx)) goto end;
+        -:  554:	/* let t = a2 ^ p2 mod m */
+    #####:  555:	if (!atalla_mod_exp(&t,a2,p2,m,ctx)) goto end;
+        -:  556:	/* let rr = rr * t mod m */
+    #####:  557:	if (!BN_mod_mul(rr,rr,&t,m,ctx)) goto end;
+        -:  558:	to_return = 1;
+        -:  559:end:
+    #####:  560:	BN_free(&t);
+    #####:  561:	return to_return;
+        -:  562:	}
+        -:  563:
+    #####:  564:static int atalla_mod_exp_dsa(DSA *dsa, BIGNUM *r, BIGNUM *a,
+        -:  565:		const BIGNUM *p, const BIGNUM *m, BN_CTX *ctx,
+        -:  566:		BN_MONT_CTX *m_ctx)
+        -:  567:	{
+    #####:  568:	return atalla_mod_exp(r, a, p, m, ctx);
+        -:  569:	}
+        -:  570:#endif
+        -:  571:
+        -:  572:#ifndef OPENSSL_NO_RSA
+        -:  573:/* This function is aliased to mod_exp (with the mont stuff dropped). */
+    #####:  574:static int atalla_mod_exp_mont(BIGNUM *r, const BIGNUM *a, const BIGNUM *p,
+        -:  575:		const BIGNUM *m, BN_CTX *ctx, BN_MONT_CTX *m_ctx)
+        -:  576:	{
+    #####:  577:	return atalla_mod_exp(r, a, p, m, ctx);
+        -:  578:	}
+        -:  579:#endif
+        -:  580:
+        -:  581:#ifndef OPENSSL_NO_DH
+        -:  582:/* This function is aliased to mod_exp (with the dh and mont dropped). */
+    #####:  583:static int atalla_mod_exp_dh(const DH *dh, BIGNUM *r,
+        -:  584:		const BIGNUM *a, const BIGNUM *p,
+        -:  585:		const BIGNUM *m, BN_CTX *ctx, BN_MONT_CTX *m_ctx)
+        -:  586:	{
+    #####:  587:	return atalla_mod_exp(r, a, p, m, ctx);
+        -:  588:	}
+        -:  589:#endif
+        -:  590:
+        -:  591:/* This stuff is needed if this ENGINE is being compiled into a self-contained
+        -:  592: * shared-library. */
+        -:  593:#ifndef OPENSSL_NO_DYNAMIC_ENGINE
+        -:  594:static int bind_fn(ENGINE *e, const char *id)
+        -:  595:	{
+        -:  596:	if(id && (strcmp(id, engine_atalla_id) != 0))
+        -:  597:		return 0;
+        -:  598:	if(!bind_helper(e))
+        -:  599:		return 0;
+        -:  600:	return 1;
+        -:  601:	}
+        -:  602:IMPLEMENT_DYNAMIC_CHECK_FN()
+        -:  603:IMPLEMENT_DYNAMIC_BIND_FN(bind_fn)
+        -:  604:#endif /* OPENSSL_NO_DYNAMIC_ENGINE */
+        -:  605:
+        -:  606:#endif /* !OPENSSL_NO_HW_ATALLA */
+        -:  607:#endif /* !OPENSSL_NO_HW */

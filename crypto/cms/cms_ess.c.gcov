@@ -1,0 +1,425 @@
+        -:    0:Source:cms_ess.c
+        -:    0:Graph:cms_ess.gcno
+        -:    0:Data:cms_ess.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* crypto/cms/cms_ess.c */
+        -:    2:/* Written by Dr Stephen N Henson (steve@openssl.org) for the OpenSSL
+        -:    3: * project.
+        -:    4: */
+        -:    5:/* ====================================================================
+        -:    6: * Copyright (c) 2008 The OpenSSL Project.  All rights reserved.
+        -:    7: *
+        -:    8: * Redistribution and use in source and binary forms, with or without
+        -:    9: * modification, are permitted provided that the following conditions
+        -:   10: * are met:
+        -:   11: *
+        -:   12: * 1. Redistributions of source code must retain the above copyright
+        -:   13: *    notice, this list of conditions and the following disclaimer. 
+        -:   14: *
+        -:   15: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   16: *    notice, this list of conditions and the following disclaimer in
+        -:   17: *    the documentation and/or other materials provided with the
+        -:   18: *    distribution.
+        -:   19: *
+        -:   20: * 3. All advertising materials mentioning features or use of this
+        -:   21: *    software must display the following acknowledgment:
+        -:   22: *    "This product includes software developed by the OpenSSL Project
+        -:   23: *    for use in the OpenSSL Toolkit. (http://www.OpenSSL.org/)"
+        -:   24: *
+        -:   25: * 4. The names "OpenSSL Toolkit" and "OpenSSL Project" must not be used to
+        -:   26: *    endorse or promote products derived from this software without
+        -:   27: *    prior written permission. For written permission, please contact
+        -:   28: *    licensing@OpenSSL.org.
+        -:   29: *
+        -:   30: * 5. Products derived from this software may not be called "OpenSSL"
+        -:   31: *    nor may "OpenSSL" appear in their names without prior written
+        -:   32: *    permission of the OpenSSL Project.
+        -:   33: *
+        -:   34: * 6. Redistributions of any form whatsoever must retain the following
+        -:   35: *    acknowledgment:
+        -:   36: *    "This product includes software developed by the OpenSSL Project
+        -:   37: *    for use in the OpenSSL Toolkit (http://www.OpenSSL.org/)"
+        -:   38: *
+        -:   39: * THIS SOFTWARE IS PROVIDED BY THE OpenSSL PROJECT ``AS IS'' AND ANY
+        -:   40: * EXPRESSED OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   41: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+        -:   42: * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE OpenSSL PROJECT OR
+        -:   43: * ITS CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+        -:   44: * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+        -:   45: * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+        -:   46: * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   47: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+        -:   48: * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+        -:   49: * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+        -:   50: * OF THE POSSIBILITY OF SUCH DAMAGE.
+        -:   51: * ====================================================================
+        -:   52: */
+        -:   53:
+        -:   54:#include "cryptlib.h"
+        -:   55:#include <openssl/asn1t.h>
+        -:   56:#include <openssl/pem.h>
+        -:   57:#include <openssl/rand.h>
+        -:   58:#include <openssl/x509v3.h>
+        -:   59:#include <openssl/err.h>
+        -:   60:#include <openssl/cms.h>
+        -:   61:#include "cms_lcl.h"
+        -:   62:
+        -:   63:DECLARE_ASN1_ITEM(CMS_ReceiptRequest)
+        -:   64:DECLARE_ASN1_ITEM(CMS_Receipt)
+        -:   65:
+    #####:   66:IMPLEMENT_ASN1_FUNCTIONS(CMS_ReceiptRequest)
+        -:   67:
+        -:   68:/* ESS services: for now just Signed Receipt related */
+        -:   69:
+    #####:   70:int CMS_get1_ReceiptRequest(CMS_SignerInfo *si, CMS_ReceiptRequest **prr)
+        -:   71:	{
+        -:   72:	ASN1_STRING *str;
+        -:   73:	CMS_ReceiptRequest *rr = NULL;
+    #####:   74:	if (prr)
+    #####:   75:		*prr = NULL;
+    #####:   76:	str = CMS_signed_get0_data_by_OBJ(si,
+        -:   77:				OBJ_nid2obj(NID_id_smime_aa_receiptRequest),
+        -:   78:					-3, V_ASN1_SEQUENCE);
+    #####:   79:	if (!str)
+        -:   80:		return 0;
+        -:   81:
+    #####:   82:	rr = ASN1_item_unpack(str, ASN1_ITEM_rptr(CMS_ReceiptRequest));
+    #####:   83:	if (!rr)
+        -:   84:		return -1;
+    #####:   85:	if (prr)
+    #####:   86:		*prr = rr;
+        -:   87:	else
+        -:   88:		CMS_ReceiptRequest_free(rr);
+        -:   89:	return 1;
+        -:   90:	}
+        -:   91:
+    #####:   92:CMS_ReceiptRequest *CMS_ReceiptRequest_create0(unsigned char *id, int idlen,
+        -:   93:				int allorfirst,
+        -:   94:				STACK_OF(GENERAL_NAMES) *receiptList,
+        -:   95:				STACK_OF(GENERAL_NAMES) *receiptsTo)
+        -:   96:	{
+        -:   97:	CMS_ReceiptRequest *rr = NULL;
+        -:   98:
+        -:   99:	rr = CMS_ReceiptRequest_new();
+    #####:  100:	if (!rr)
+        -:  101:		goto merr;
+    #####:  102:	if (id)
+    #####:  103:		ASN1_STRING_set0(rr->signedContentIdentifier, id, idlen);
+        -:  104:	else
+        -:  105:		{
+    #####:  106:		if (!ASN1_STRING_set(rr->signedContentIdentifier, NULL, 32))
+        -:  107:			goto merr;
+    #####:  108:		if (RAND_pseudo_bytes(rr->signedContentIdentifier->data, 32) 
+        -:  109:					<= 0)
+        -:  110:			goto err;
+        -:  111:		}
+        -:  112:
+    #####:  113:	sk_GENERAL_NAMES_pop_free(rr->receiptsTo, GENERAL_NAMES_free);
+    #####:  114:	rr->receiptsTo = receiptsTo;
+        -:  115:
+    #####:  116:	if (receiptList)
+        -:  117:		{
+    #####:  118:		rr->receiptsFrom->type = 1;
+    #####:  119:		rr->receiptsFrom->d.receiptList = receiptList;
+        -:  120:		}
+        -:  121:	else
+        -:  122:		{
+    #####:  123:		rr->receiptsFrom->type = 0;
+    #####:  124:		rr->receiptsFrom->d.allOrFirstTier = allorfirst;
+        -:  125:		}
+        -:  126:
+    #####:  127:	return rr;
+        -:  128:
+        -:  129:	merr:
+    #####:  130:	CMSerr(CMS_F_CMS_RECEIPTREQUEST_CREATE0, ERR_R_MALLOC_FAILURE);
+        -:  131:
+        -:  132:	err:
+    #####:  133:	if (rr)
+        -:  134:		CMS_ReceiptRequest_free(rr);
+        -:  135:
+        -:  136:	return NULL;
+        -:  137:	
+        -:  138:	}
+        -:  139:
+    #####:  140:int CMS_add1_ReceiptRequest(CMS_SignerInfo *si, CMS_ReceiptRequest *rr)
+        -:  141:	{
+    #####:  142:	unsigned char *rrder = NULL;
+        -:  143:	int rrderlen, r = 0;
+        -:  144:
+        -:  145:	rrderlen = i2d_CMS_ReceiptRequest(rr, &rrder);
+    #####:  146:	if (rrderlen < 0)
+        -:  147:		goto merr;
+        -:  148:
+    #####:  149:	if (!CMS_signed_add1_attr_by_NID(si, NID_id_smime_aa_receiptRequest,
+        -:  150:					V_ASN1_SEQUENCE, rrder, rrderlen))
+        -:  151:		goto merr;
+        -:  152:
+        -:  153:	r = 1;
+        -:  154:
+        -:  155:	merr:
+    #####:  156:	if (!r)
+    #####:  157:		CMSerr(CMS_F_CMS_ADD1_RECEIPTREQUEST, ERR_R_MALLOC_FAILURE);
+        -:  158:
+    #####:  159:	if (rrder)
+    #####:  160:		OPENSSL_free(rrder);
+        -:  161:
+    #####:  162:	return r;
+        -:  163:	
+        -:  164:	}
+        -:  165:
+    #####:  166:void CMS_ReceiptRequest_get0_values(CMS_ReceiptRequest *rr,
+        -:  167:					ASN1_STRING **pcid,
+        -:  168:					int *pallorfirst,
+        -:  169:					STACK_OF(GENERAL_NAMES) **plist,
+        -:  170:					STACK_OF(GENERAL_NAMES) **prto)
+        -:  171:	{
+    #####:  172:	if (pcid)
+    #####:  173:		*pcid = rr->signedContentIdentifier;
+    #####:  174:	if (rr->receiptsFrom->type == 0)
+        -:  175:		{
+    #####:  176:		if (pallorfirst)
+    #####:  177:			*pallorfirst = (int)rr->receiptsFrom->d.allOrFirstTier;
+    #####:  178:		if (plist)
+    #####:  179:			*plist = NULL;
+        -:  180:		}
+        -:  181:	else
+        -:  182:		{
+    #####:  183:		if (pallorfirst)
+    #####:  184:			*pallorfirst = -1;
+    #####:  185:		if (plist)
+    #####:  186:			*plist = rr->receiptsFrom->d.receiptList;
+        -:  187:		}
+    #####:  188:	if (prto)
+    #####:  189:		*prto = rr->receiptsTo;
+    #####:  190:	}
+        -:  191:
+        -:  192:/* Digest a SignerInfo structure for msgSigDigest attribute processing */
+        -:  193:
+    #####:  194:static int cms_msgSigDigest(CMS_SignerInfo *si,
+        -:  195:				unsigned char *dig, unsigned int *diglen)
+        -:  196:	{
+        -:  197:	const EVP_MD *md;
+    #####:  198:	md = EVP_get_digestbyobj(si->digestAlgorithm->algorithm);
+    #####:  199:	if (md == NULL)
+        -:  200:		return 0;
+    #####:  201:	if (!ASN1_item_digest(ASN1_ITEM_rptr(CMS_Attributes_Verify), md,
+    #####:  202:						si->signedAttrs, dig, diglen))
+        -:  203:		return 0;
+        -:  204:	return 1;
+        -:  205:	}
+        -:  206:
+        -:  207:/* Add a msgSigDigest attribute to a SignerInfo */
+        -:  208:
+    #####:  209:int cms_msgSigDigest_add1(CMS_SignerInfo *dest, CMS_SignerInfo *src)
+        -:  210:	{
+        -:  211:	unsigned char dig[EVP_MAX_MD_SIZE];
+        -:  212:	unsigned int diglen;
+    #####:  213:	if (!cms_msgSigDigest(src, dig, &diglen))
+        -:  214:		{
+    #####:  215:		CMSerr(CMS_F_CMS_MSGSIGDIGEST_ADD1, CMS_R_MSGSIGDIGEST_ERROR);
+    #####:  216:		return 0;
+        -:  217:		}
+    #####:  218:	if (!CMS_signed_add1_attr_by_NID(dest, NID_id_smime_aa_msgSigDigest,
+        -:  219:					V_ASN1_OCTET_STRING, dig, diglen))
+        -:  220:		{
+    #####:  221:		CMSerr(CMS_F_CMS_MSGSIGDIGEST_ADD1, ERR_R_MALLOC_FAILURE);
+    #####:  222:		return 0;
+        -:  223:		}
+        -:  224:	return 1;
+        -:  225:	}
+        -:  226:
+        -:  227:/* Verify signed receipt after it has already passed normal CMS verify */
+        -:  228:
+    #####:  229:int cms_Receipt_verify(CMS_ContentInfo *cms, CMS_ContentInfo *req_cms)
+        -:  230:	{
+        -:  231:	int r = 0, i;
+    #####:  232:	CMS_ReceiptRequest *rr = NULL;
+        -:  233:	CMS_Receipt *rct = NULL;
+        -:  234:	STACK_OF(CMS_SignerInfo) *sis, *osis;
+    #####:  235:	CMS_SignerInfo *si, *osi = NULL;
+        -:  236:	ASN1_OCTET_STRING *msig, **pcont;
+        -:  237:	ASN1_OBJECT *octype;
+        -:  238:	unsigned char dig[EVP_MAX_MD_SIZE];
+        -:  239:	unsigned int diglen;
+        -:  240:
+        -:  241:	/* Get SignerInfos, also checks SignedData content type */
+    #####:  242:	osis = CMS_get0_SignerInfos(req_cms);
+    #####:  243:	sis = CMS_get0_SignerInfos(cms);
+    #####:  244:	if (!osis || !sis)
+        -:  245:		goto err;
+        -:  246:
+    #####:  247:	if (sk_CMS_SignerInfo_num(sis) != 1)
+        -:  248:		{
+    #####:  249:		CMSerr(CMS_F_CMS_RECEIPT_VERIFY, CMS_R_NEED_ONE_SIGNER);
+    #####:  250:		goto err;
+        -:  251:		}
+        -:  252:
+        -:  253:	/* Check receipt content type */
+    #####:  254:	if (OBJ_obj2nid(CMS_get0_eContentType(cms)) != NID_id_smime_ct_receipt)
+        -:  255:		{
+    #####:  256:		CMSerr(CMS_F_CMS_RECEIPT_VERIFY, CMS_R_NOT_A_SIGNED_RECEIPT);
+    #####:  257:		goto err;
+        -:  258:		}
+        -:  259:
+        -:  260:	/* Extract and decode receipt content */
+    #####:  261:	pcont = CMS_get0_content(cms);
+    #####:  262:	if (!pcont || !*pcont)
+        -:  263:		{
+    #####:  264:		CMSerr(CMS_F_CMS_RECEIPT_VERIFY, CMS_R_NO_CONTENT);
+    #####:  265:		goto err;
+        -:  266:		}
+        -:  267:
+    #####:  268:	rct = ASN1_item_unpack(*pcont, ASN1_ITEM_rptr(CMS_Receipt));
+        -:  269:
+    #####:  270:	if (!rct)	
+        -:  271:		{
+    #####:  272:		CMSerr(CMS_F_CMS_RECEIPT_VERIFY, CMS_R_RECEIPT_DECODE_ERROR);
+    #####:  273:		goto err;
+        -:  274:		}
+        -:  275:
+        -:  276:	/* Locate original request */
+        -:  277:
+    #####:  278:	for (i = 0; i < sk_CMS_SignerInfo_num(osis); i++)
+        -:  279:		{
+    #####:  280:		osi = sk_CMS_SignerInfo_value(osis, i);
+    #####:  281:		if (!ASN1_STRING_cmp(osi->signature,
+    #####:  282:					rct->originatorSignatureValue))
+        -:  283:			break;
+        -:  284:		}
+        -:  285:
+    #####:  286:	if (i == sk_CMS_SignerInfo_num(osis))
+        -:  287:		{
+    #####:  288:		CMSerr(CMS_F_CMS_RECEIPT_VERIFY, CMS_R_NO_MATCHING_SIGNATURE);
+    #####:  289:		goto err;
+        -:  290:		}
+        -:  291:
+    #####:  292:	si = sk_CMS_SignerInfo_value(sis, 0);
+        -:  293:
+        -:  294:	/* Get msgSigDigest value and compare */
+        -:  295:
+    #####:  296:	msig = CMS_signed_get0_data_by_OBJ(si,
+        -:  297:				OBJ_nid2obj(NID_id_smime_aa_msgSigDigest),
+        -:  298:					-3, V_ASN1_OCTET_STRING);
+        -:  299:
+    #####:  300:	if (!msig)
+        -:  301:		{
+    #####:  302:		CMSerr(CMS_F_CMS_RECEIPT_VERIFY, CMS_R_NO_MSGSIGDIGEST);
+    #####:  303:		goto err;
+        -:  304:		}
+        -:  305:
+    #####:  306:	if (!cms_msgSigDigest(osi, dig, &diglen))
+        -:  307:		{
+    #####:  308:		CMSerr(CMS_F_CMS_RECEIPT_VERIFY, CMS_R_MSGSIGDIGEST_ERROR);
+    #####:  309:		goto err;
+        -:  310:		}
+        -:  311:
+    #####:  312:	if (diglen != (unsigned int)msig->length)
+        -:  313:			{
+    #####:  314:			CMSerr(CMS_F_CMS_RECEIPT_VERIFY,
+        -:  315:				CMS_R_MSGSIGDIGEST_WRONG_LENGTH);
+    #####:  316:			goto err;
+        -:  317:			}
+        -:  318:
+    #####:  319:	if (memcmp(dig, msig->data, diglen))
+        -:  320:			{
+    #####:  321:			CMSerr(CMS_F_CMS_RECEIPT_VERIFY,
+        -:  322:				CMS_R_MSGSIGDIGEST_VERIFICATION_FAILURE);
+    #####:  323:			goto err;
+        -:  324:			}
+        -:  325:
+        -:  326:	/* Compare content types */
+        -:  327:
+    #####:  328:	octype = CMS_signed_get0_data_by_OBJ(osi,
+        -:  329:				OBJ_nid2obj(NID_pkcs9_contentType),
+        -:  330:					-3, V_ASN1_OBJECT);
+    #####:  331:	if (!octype)
+        -:  332:		{
+    #####:  333:		CMSerr(CMS_F_CMS_RECEIPT_VERIFY, CMS_R_NO_CONTENT_TYPE);
+    #####:  334:		goto err;
+        -:  335:		}
+        -:  336:
+        -:  337:	/* Compare details in receipt request */
+        -:  338:
+    #####:  339:	if (OBJ_cmp(octype, rct->contentType))
+        -:  340:		{
+    #####:  341:		CMSerr(CMS_F_CMS_RECEIPT_VERIFY, CMS_R_CONTENT_TYPE_MISMATCH);
+    #####:  342:		goto err;
+        -:  343:		}
+        -:  344:
+        -:  345:	/* Get original receipt request details */
+        -:  346:
+    #####:  347:	if (CMS_get1_ReceiptRequest(osi, &rr) <= 0)
+        -:  348:		{
+    #####:  349:		CMSerr(CMS_F_CMS_RECEIPT_VERIFY, CMS_R_NO_RECEIPT_REQUEST);
+    #####:  350:		goto err;
+        -:  351:		}
+        -:  352:
+    #####:  353:	if (ASN1_STRING_cmp(rr->signedContentIdentifier,
+    #####:  354:					rct->signedContentIdentifier))
+        -:  355:		{
+    #####:  356:		CMSerr(CMS_F_CMS_RECEIPT_VERIFY,
+        -:  357:					CMS_R_CONTENTIDENTIFIER_MISMATCH);
+    #####:  358:		goto err;
+        -:  359:		}
+        -:  360:
+        -:  361:	r = 1;
+        -:  362:
+        -:  363:	err:
+    #####:  364:	if (rr)
+        -:  365:		CMS_ReceiptRequest_free(rr);
+    #####:  366:	if (rct)
+    #####:  367:		M_ASN1_free_of(rct, CMS_Receipt);
+        -:  368:
+    #####:  369:	return r;
+        -:  370:
+        -:  371:	}
+        -:  372:
+        -:  373:/* Encode a Receipt into an OCTET STRING read for including into content of
+        -:  374: * a SignedData ContentInfo.
+        -:  375: */
+        -:  376:
+    #####:  377:ASN1_OCTET_STRING *cms_encode_Receipt(CMS_SignerInfo *si)
+        -:  378:	{
+        -:  379:	CMS_Receipt rct;
+    #####:  380:	CMS_ReceiptRequest *rr = NULL;
+        -:  381:	ASN1_OBJECT *ctype;
+        -:  382:	ASN1_OCTET_STRING *os = NULL;
+        -:  383:
+        -:  384:	/* Get original receipt request */
+        -:  385:
+        -:  386:	/* Get original receipt request details */
+        -:  387:
+    #####:  388:	if (CMS_get1_ReceiptRequest(si, &rr) <= 0)
+        -:  389:		{
+    #####:  390:		CMSerr(CMS_F_CMS_ENCODE_RECEIPT, CMS_R_NO_RECEIPT_REQUEST);
+    #####:  391:		goto err;
+        -:  392:		}
+        -:  393:
+        -:  394:	/* Get original content type */
+        -:  395:
+    #####:  396:	ctype = CMS_signed_get0_data_by_OBJ(si,
+        -:  397:				OBJ_nid2obj(NID_pkcs9_contentType),
+        -:  398:					-3, V_ASN1_OBJECT);
+    #####:  399:	if (!ctype)
+        -:  400:		{
+    #####:  401:		CMSerr(CMS_F_CMS_ENCODE_RECEIPT, CMS_R_NO_CONTENT_TYPE);
+    #####:  402:		goto err;
+        -:  403:		}
+        -:  404:
+    #####:  405:	rct.version = 1;
+    #####:  406:	rct.contentType = ctype;
+    #####:  407:	rct.signedContentIdentifier = rr->signedContentIdentifier;
+    #####:  408:	rct.originatorSignatureValue = si->signature;
+        -:  409:
+    #####:  410:	os = ASN1_item_pack(&rct, ASN1_ITEM_rptr(CMS_Receipt), NULL);
+        -:  411:
+        -:  412:	err:
+    #####:  413:	if (rr)
+        -:  414:		CMS_ReceiptRequest_free(rr);
+        -:  415:
+    #####:  416:	return os;
+        -:  417:
+        -:  418:	}
+        -:  419:
+        -:  420:

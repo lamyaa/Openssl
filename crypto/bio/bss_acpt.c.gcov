@@ -1,0 +1,483 @@
+        -:    0:Source:bss_acpt.c
+        -:    0:Graph:bss_acpt.gcno
+        -:    0:Data:bss_acpt.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* crypto/bio/bss_acpt.c */
+        -:    2:/* Copyright (C) 1995-1998 Eric Young (eay@cryptsoft.com)
+        -:    3: * All rights reserved.
+        -:    4: *
+        -:    5: * This package is an SSL implementation written
+        -:    6: * by Eric Young (eay@cryptsoft.com).
+        -:    7: * The implementation was written so as to conform with Netscapes SSL.
+        -:    8: * 
+        -:    9: * This library is free for commercial and non-commercial use as long as
+        -:   10: * the following conditions are aheared to.  The following conditions
+        -:   11: * apply to all code found in this distribution, be it the RC4, RSA,
+        -:   12: * lhash, DES, etc., code; not just the SSL code.  The SSL documentation
+        -:   13: * included with this distribution is covered by the same copyright terms
+        -:   14: * except that the holder is Tim Hudson (tjh@cryptsoft.com).
+        -:   15: * 
+        -:   16: * Copyright remains Eric Young's, and as such any Copyright notices in
+        -:   17: * the code are not to be removed.
+        -:   18: * If this package is used in a product, Eric Young should be given attribution
+        -:   19: * as the author of the parts of the library used.
+        -:   20: * This can be in the form of a textual message at program startup or
+        -:   21: * in documentation (online or textual) provided with the package.
+        -:   22: * 
+        -:   23: * Redistribution and use in source and binary forms, with or without
+        -:   24: * modification, are permitted provided that the following conditions
+        -:   25: * are met:
+        -:   26: * 1. Redistributions of source code must retain the copyright
+        -:   27: *    notice, this list of conditions and the following disclaimer.
+        -:   28: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   29: *    notice, this list of conditions and the following disclaimer in the
+        -:   30: *    documentation and/or other materials provided with the distribution.
+        -:   31: * 3. All advertising materials mentioning features or use of this software
+        -:   32: *    must display the following acknowledgement:
+        -:   33: *    "This product includes cryptographic software written by
+        -:   34: *     Eric Young (eay@cryptsoft.com)"
+        -:   35: *    The word 'cryptographic' can be left out if the rouines from the library
+        -:   36: *    being used are not cryptographic related :-).
+        -:   37: * 4. If you include any Windows specific code (or a derivative thereof) from 
+        -:   38: *    the apps directory (application code) you must include an acknowledgement:
+        -:   39: *    "This product includes software written by Tim Hudson (tjh@cryptsoft.com)"
+        -:   40: * 
+        -:   41: * THIS SOFTWARE IS PROVIDED BY ERIC YOUNG ``AS IS'' AND
+        -:   42: * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   43: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+        -:   44: * ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+        -:   45: * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+        -:   46: * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+        -:   47: * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   48: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+        -:   49: * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+        -:   50: * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+        -:   51: * SUCH DAMAGE.
+        -:   52: * 
+        -:   53: * The licence and distribution terms for any publically available version or
+        -:   54: * derivative of this code cannot be changed.  i.e. this code cannot simply be
+        -:   55: * copied and put under another distribution licence
+        -:   56: * [including the GNU Public Licence.]
+        -:   57: */
+        -:   58:
+        -:   59:#include <stdio.h>
+        -:   60:#include <errno.h>
+        -:   61:#define USE_SOCKETS
+        -:   62:#include "cryptlib.h"
+        -:   63:#include <openssl/bio.h>
+        -:   64:
+        -:   65:#ifndef OPENSSL_NO_SOCK
+        -:   66:
+        -:   67:#ifdef OPENSSL_SYS_WIN16
+        -:   68:#define SOCKET_PROTOCOL 0 /* more microsoft stupidity */
+        -:   69:#else
+        -:   70:#define SOCKET_PROTOCOL IPPROTO_TCP
+        -:   71:#endif
+        -:   72:
+        -:   73:#if (defined(OPENSSL_SYS_VMS) && __VMS_VER < 70000000)
+        -:   74:/* FIONBIO used as a switch to enable ioctl, and that isn't in VMS < 7.0 */
+        -:   75:#undef FIONBIO
+        -:   76:#endif
+        -:   77:
+        -:   78:typedef struct bio_accept_st
+        -:   79:	{
+        -:   80:	int state;
+        -:   81:	char *param_addr;
+        -:   82:
+        -:   83:	int accept_sock;
+        -:   84:	int accept_nbio;
+        -:   85:
+        -:   86:	char *addr;
+        -:   87:	int nbio;
+        -:   88:	/* If 0, it means normal, if 1, do a connect on bind failure,
+        -:   89:	 * and if there is no-one listening, bind with SO_REUSEADDR.
+        -:   90:	 * If 2, always use SO_REUSEADDR. */
+        -:   91:	int bind_mode;
+        -:   92:	BIO *bio_chain;
+        -:   93:	} BIO_ACCEPT;
+        -:   94:
+        -:   95:static int acpt_write(BIO *h, const char *buf, int num);
+        -:   96:static int acpt_read(BIO *h, char *buf, int size);
+        -:   97:static int acpt_puts(BIO *h, const char *str);
+        -:   98:static long acpt_ctrl(BIO *h, int cmd, long arg1, void *arg2);
+        -:   99:static int acpt_new(BIO *h);
+        -:  100:static int acpt_free(BIO *data);
+        -:  101:static int acpt_state(BIO *b, BIO_ACCEPT *c);
+        -:  102:static void acpt_close_socket(BIO *data);
+        -:  103:static BIO_ACCEPT *BIO_ACCEPT_new(void );
+        -:  104:static void BIO_ACCEPT_free(BIO_ACCEPT *a);
+        -:  105:
+        -:  106:#define ACPT_S_BEFORE			1
+        -:  107:#define ACPT_S_GET_ACCEPT_SOCKET	2
+        -:  108:#define ACPT_S_OK			3
+        -:  109:
+        -:  110:static BIO_METHOD methods_acceptp=
+        -:  111:	{
+        -:  112:	BIO_TYPE_ACCEPT,
+        -:  113:	"socket accept",
+        -:  114:	acpt_write,
+        -:  115:	acpt_read,
+        -:  116:	acpt_puts,
+        -:  117:	NULL, /* connect_gets, */
+        -:  118:	acpt_ctrl,
+        -:  119:	acpt_new,
+        -:  120:	acpt_free,
+        -:  121:	NULL,
+        -:  122:	};
+        -:  123:
+    #####:  124:BIO_METHOD *BIO_s_accept(void)
+        -:  125:	{
+    #####:  126:	return(&methods_acceptp);
+        -:  127:	}
+        -:  128:
+    #####:  129:static int acpt_new(BIO *bi)
+        -:  130:	{
+        -:  131:	BIO_ACCEPT *ba;
+        -:  132:
+    #####:  133:	bi->init=0;
+    #####:  134:	bi->num=INVALID_SOCKET;
+    #####:  135:	bi->flags=0;
+    #####:  136:	if ((ba=BIO_ACCEPT_new()) == NULL)
+        -:  137:		return(0);
+    #####:  138:	bi->ptr=(char *)ba;
+    #####:  139:	ba->state=ACPT_S_BEFORE;
+    #####:  140:	bi->shutdown=1;
+    #####:  141:	return(1);
+        -:  142:	}
+        -:  143:
+    #####:  144:static BIO_ACCEPT *BIO_ACCEPT_new(void)
+        -:  145:	{
+        -:  146:	BIO_ACCEPT *ret;
+        -:  147:
+    #####:  148:	if ((ret=(BIO_ACCEPT *)OPENSSL_malloc(sizeof(BIO_ACCEPT))) == NULL)
+        -:  149:		return(NULL);
+        -:  150:
+        -:  151:	memset(ret,0,sizeof(BIO_ACCEPT));
+    #####:  152:	ret->accept_sock=INVALID_SOCKET;
+    #####:  153:	ret->bind_mode=BIO_BIND_NORMAL;
+    #####:  154:	return(ret);
+        -:  155:	}
+        -:  156:
+    #####:  157:static void BIO_ACCEPT_free(BIO_ACCEPT *a)
+        -:  158:	{
+    #####:  159:	if(a == NULL)
+    #####:  160:	    return;
+        -:  161:
+    #####:  162:	if (a->param_addr != NULL) OPENSSL_free(a->param_addr);
+    #####:  163:	if (a->addr != NULL) OPENSSL_free(a->addr);
+    #####:  164:	if (a->bio_chain != NULL) BIO_free(a->bio_chain);
+    #####:  165:	OPENSSL_free(a);
+        -:  166:	}
+        -:  167:
+    #####:  168:static void acpt_close_socket(BIO *bio)
+        -:  169:	{
+        -:  170:	BIO_ACCEPT *c;
+        -:  171:
+    #####:  172:	c=(BIO_ACCEPT *)bio->ptr;
+    #####:  173:	if (c->accept_sock != INVALID_SOCKET)
+        -:  174:		{
+    #####:  175:		shutdown(c->accept_sock,2);
+    #####:  176:		closesocket(c->accept_sock);
+    #####:  177:		c->accept_sock=INVALID_SOCKET;
+    #####:  178:		bio->num=INVALID_SOCKET;
+        -:  179:		}
+    #####:  180:	}
+        -:  181:
+    #####:  182:static int acpt_free(BIO *a)
+        -:  183:	{
+        -:  184:	BIO_ACCEPT *data;
+        -:  185:
+    #####:  186:	if (a == NULL) return(0);
+    #####:  187:	data=(BIO_ACCEPT *)a->ptr;
+        -:  188:	 
+    #####:  189:	if (a->shutdown)
+        -:  190:		{
+    #####:  191:		acpt_close_socket(a);
+    #####:  192:		BIO_ACCEPT_free(data);
+    #####:  193:		a->ptr=NULL;
+    #####:  194:		a->flags=0;
+    #####:  195:		a->init=0;
+        -:  196:		}
+        -:  197:	return(1);
+        -:  198:	}
+        -:  199:	
+    #####:  200:static int acpt_state(BIO *b, BIO_ACCEPT *c)
+        -:  201:	{
+        -:  202:	BIO *bio=NULL,*dbio;
+        -:  203:	int s= -1;
+        -:  204:	int i;
+        -:  205:
+        -:  206:again:
+    #####:  207:	switch (c->state)
+        -:  208:		{
+        -:  209:	case ACPT_S_BEFORE:
+    #####:  210:		if (c->param_addr == NULL)
+        -:  211:			{
+    #####:  212:			BIOerr(BIO_F_ACPT_STATE,BIO_R_NO_ACCEPT_PORT_SPECIFIED);
+    #####:  213:			return(-1);
+        -:  214:			}
+    #####:  215:		s=BIO_get_accept_socket(c->param_addr,c->bind_mode);
+    #####:  216:		if (s == INVALID_SOCKET)
+        -:  217:			return(-1);
+        -:  218:
+    #####:  219:		if (c->accept_nbio)
+        -:  220:			{
+    #####:  221:			if (!BIO_socket_nbio(s,1))
+        -:  222:				{
+    #####:  223:				closesocket(s);
+    #####:  224:				BIOerr(BIO_F_ACPT_STATE,BIO_R_ERROR_SETTING_NBIO_ON_ACCEPT_SOCKET);
+    #####:  225:				return(-1);
+        -:  226:				}
+        -:  227:			}
+    #####:  228:		c->accept_sock=s;
+    #####:  229:		b->num=s;
+    #####:  230:		c->state=ACPT_S_GET_ACCEPT_SOCKET;
+    #####:  231:		return(1);
+        -:  232:		/* break; */
+        -:  233:	case ACPT_S_GET_ACCEPT_SOCKET:
+    #####:  234:		if (b->next_bio != NULL)
+        -:  235:			{
+    #####:  236:			c->state=ACPT_S_OK;
+    #####:  237:			goto again;
+        -:  238:			}
+    #####:  239:		BIO_clear_retry_flags(b);
+    #####:  240:		b->retry_reason=0;
+    #####:  241:		i=BIO_accept(c->accept_sock,&(c->addr));
+        -:  242:
+        -:  243:		/* -2 return means we should retry */
+    #####:  244:		if(i == -2)
+        -:  245:			{
+    #####:  246:			BIO_set_retry_special(b);
+    #####:  247:			b->retry_reason=BIO_RR_ACCEPT;
+    #####:  248:			return -1;
+        -:  249:			}
+        -:  250:
+    #####:  251:		if (i < 0) return(i);
+        -:  252:
+    #####:  253:		bio=BIO_new_socket(i,BIO_CLOSE);
+    #####:  254:		if (bio == NULL) goto err;
+        -:  255:
+    #####:  256:		BIO_set_callback(bio,BIO_get_callback(b));
+    #####:  257:		BIO_set_callback_arg(bio,BIO_get_callback_arg(b));
+        -:  258:
+    #####:  259:		if (c->nbio)
+        -:  260:			{
+    #####:  261:			if (!BIO_socket_nbio(i,1))
+        -:  262:				{
+    #####:  263:				BIOerr(BIO_F_ACPT_STATE,BIO_R_ERROR_SETTING_NBIO_ON_ACCEPTED_SOCKET);
+    #####:  264:				goto err;
+        -:  265:				}
+        -:  266:			}
+        -:  267:
+        -:  268:		/* If the accept BIO has an bio_chain, we dup it and
+        -:  269:		 * put the new socket at the end. */
+    #####:  270:		if (c->bio_chain != NULL)
+        -:  271:			{
+    #####:  272:			if ((dbio=BIO_dup_chain(c->bio_chain)) == NULL)
+        -:  273:				goto err;
+    #####:  274:			if (!BIO_push(dbio,bio)) goto err;
+        -:  275:			bio=dbio;
+        -:  276:			}
+    #####:  277:		if (BIO_push(b,bio) == NULL) goto err;
+        -:  278:
+    #####:  279:		c->state=ACPT_S_OK;
+    #####:  280:		return(1);
+        -:  281:err:
+    #####:  282:		if (bio != NULL)
+    #####:  283:			BIO_free(bio);
+        -:  284:		else if (s >= 0)
+        -:  285:			closesocket(s);
+        -:  286:		return(0);
+        -:  287:		/* break; */
+        -:  288:	case ACPT_S_OK:
+    #####:  289:		if (b->next_bio == NULL)
+        -:  290:			{
+    #####:  291:			c->state=ACPT_S_GET_ACCEPT_SOCKET;
+    #####:  292:			goto again;
+        -:  293:			}
+        -:  294:		return(1);
+        -:  295:		/* break; */
+        -:  296:	default:	
+        -:  297:		return(0);
+        -:  298:		/* break; */
+        -:  299:		}
+        -:  300:
+        -:  301:	}
+        -:  302:
+    #####:  303:static int acpt_read(BIO *b, char *out, int outl)
+        -:  304:	{
+        -:  305:	int ret=0;
+        -:  306:	BIO_ACCEPT *data;
+        -:  307:
+    #####:  308:	BIO_clear_retry_flags(b);
+    #####:  309:	data=(BIO_ACCEPT *)b->ptr;
+        -:  310:
+    #####:  311:	while (b->next_bio == NULL)
+        -:  312:		{
+    #####:  313:		ret=acpt_state(b,data);
+    #####:  314:		if (ret <= 0) return(ret);
+        -:  315:		}
+        -:  316:
+    #####:  317:	ret=BIO_read(b->next_bio,out,outl);
+    #####:  318:	BIO_copy_next_retry(b);
+    #####:  319:	return(ret);
+        -:  320:	}
+        -:  321:
+    #####:  322:static int acpt_write(BIO *b, const char *in, int inl)
+        -:  323:	{
+        -:  324:	int ret;
+        -:  325:	BIO_ACCEPT *data;
+        -:  326:
+    #####:  327:	BIO_clear_retry_flags(b);
+    #####:  328:	data=(BIO_ACCEPT *)b->ptr;
+        -:  329:
+    #####:  330:	while (b->next_bio == NULL)
+        -:  331:		{
+    #####:  332:		ret=acpt_state(b,data);
+    #####:  333:		if (ret <= 0) return(ret);
+        -:  334:		}
+        -:  335:
+    #####:  336:	ret=BIO_write(b->next_bio,in,inl);
+    #####:  337:	BIO_copy_next_retry(b);
+    #####:  338:	return(ret);
+        -:  339:	}
+        -:  340:
+    #####:  341:static long acpt_ctrl(BIO *b, int cmd, long num, void *ptr)
+        -:  342:	{
+        -:  343:	int *ip;
+        -:  344:	long ret=1;
+        -:  345:	BIO_ACCEPT *data;
+        -:  346:	char **pp;
+        -:  347:
+    #####:  348:	data=(BIO_ACCEPT *)b->ptr;
+        -:  349:
+    #####:  350:	switch (cmd)
+        -:  351:		{
+        -:  352:	case BIO_CTRL_RESET:
+        -:  353:		ret=0;
+    #####:  354:		data->state=ACPT_S_BEFORE;
+    #####:  355:		acpt_close_socket(b);
+    #####:  356:		b->flags=0;
+    #####:  357:		break;
+        -:  358:	case BIO_C_DO_STATE_MACHINE:
+        -:  359:		/* use this one to start the connection */
+    #####:  360:		ret=(long)acpt_state(b,data);
+    #####:  361:		break;
+        -:  362:	case BIO_C_SET_ACCEPT:
+    #####:  363:		if (ptr != NULL)
+        -:  364:			{
+    #####:  365:			if (num == 0)
+        -:  366:				{
+    #####:  367:				b->init=1;
+    #####:  368:				if (data->param_addr != NULL)
+    #####:  369:					OPENSSL_free(data->param_addr);
+    #####:  370:				data->param_addr=BUF_strdup(ptr);
+        -:  371:				}
+    #####:  372:			else if (num == 1)
+        -:  373:				{
+    #####:  374:				data->accept_nbio=(ptr != NULL);
+        -:  375:				}
+    #####:  376:			else if (num == 2)
+        -:  377:				{
+    #####:  378:				if (data->bio_chain != NULL)
+    #####:  379:					BIO_free(data->bio_chain);
+    #####:  380:				data->bio_chain=(BIO *)ptr;
+        -:  381:				}
+        -:  382:			}
+        -:  383:		break;
+        -:  384:	case BIO_C_SET_NBIO:
+    #####:  385:		data->nbio=(int)num;
+    #####:  386:		break;
+        -:  387:	case BIO_C_SET_FD:
+    #####:  388:		b->init=1;
+    #####:  389:		b->num= *((int *)ptr);
+    #####:  390:		data->accept_sock=b->num;
+    #####:  391:		data->state=ACPT_S_GET_ACCEPT_SOCKET;
+    #####:  392:		b->shutdown=(int)num;
+        -:  393:		b->init=1;
+    #####:  394:		break;
+        -:  395:	case BIO_C_GET_FD:
+    #####:  396:		if (b->init)
+        -:  397:			{
+        -:  398:			ip=(int *)ptr;
+    #####:  399:			if (ip != NULL)
+    #####:  400:				*ip=data->accept_sock;
+    #####:  401:			ret=data->accept_sock;
+        -:  402:			}
+        -:  403:		else
+        -:  404:			ret= -1;
+        -:  405:		break;
+        -:  406:	case BIO_C_GET_ACCEPT:
+    #####:  407:		if (b->init)
+        -:  408:			{
+    #####:  409:			if (ptr != NULL)
+        -:  410:				{
+        -:  411:				pp=(char **)ptr;
+    #####:  412:				*pp=data->param_addr;
+        -:  413:				}
+        -:  414:			else
+        -:  415:				ret= -1;
+        -:  416:			}
+        -:  417:		else
+        -:  418:			ret= -1;
+        -:  419:		break;
+        -:  420:	case BIO_CTRL_GET_CLOSE:
+    #####:  421:		ret=b->shutdown;
+    #####:  422:		break;
+        -:  423:	case BIO_CTRL_SET_CLOSE:
+    #####:  424:		b->shutdown=(int)num;
+    #####:  425:		break;
+        -:  426:	case BIO_CTRL_PENDING:
+        -:  427:	case BIO_CTRL_WPENDING:
+        -:  428:		ret=0;
+    #####:  429:		break;
+        -:  430:	case BIO_CTRL_FLUSH:
+        -:  431:		break;
+        -:  432:	case BIO_C_SET_BIND_MODE:
+    #####:  433:		data->bind_mode=(int)num;
+    #####:  434:		break;
+        -:  435:	case BIO_C_GET_BIND_MODE:
+    #####:  436:		ret=(long)data->bind_mode;
+    #####:  437:		break;
+        -:  438:	case BIO_CTRL_DUP:
+        -:  439:/*		dbio=(BIO *)ptr;
+        -:  440:		if (data->param_port) EAY EAY
+        -:  441:			BIO_set_port(dbio,data->param_port);
+        -:  442:		if (data->param_hostname)
+        -:  443:			BIO_set_hostname(dbio,data->param_hostname);
+        -:  444:		BIO_set_nbio(dbio,data->nbio); */
+        -:  445:		break;
+        -:  446:
+        -:  447:	default:
+        -:  448:		ret=0;
+    #####:  449:		break;
+        -:  450:		}
+    #####:  451:	return(ret);
+        -:  452:	}
+        -:  453:
+    #####:  454:static int acpt_puts(BIO *bp, const char *str)
+        -:  455:	{
+        -:  456:	int n,ret;
+        -:  457:
+    #####:  458:	n=strlen(str);
+    #####:  459:	ret=acpt_write(bp,str,n);
+    #####:  460:	return(ret);
+        -:  461:	}
+        -:  462:
+    #####:  463:BIO *BIO_new_accept(char *str)
+        -:  464:	{
+        -:  465:	BIO *ret;
+        -:  466:
+    #####:  467:	ret=BIO_new(BIO_s_accept());
+    #####:  468:	if (ret == NULL) return(NULL);
+    #####:  469:	if (BIO_set_accept_port(ret,str))
+        -:  470:		return(ret);
+        -:  471:	else
+        -:  472:		{
+    #####:  473:		BIO_free(ret);
+    #####:  474:		return(NULL);
+        -:  475:		}
+        -:  476:	}
+        -:  477:
+        -:  478:#endif

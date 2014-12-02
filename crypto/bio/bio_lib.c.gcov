@@ -1,0 +1,607 @@
+        -:    0:Source:bio_lib.c
+        -:    0:Graph:bio_lib.gcno
+        -:    0:Data:bio_lib.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* crypto/bio/bio_lib.c */
+        -:    2:/* Copyright (C) 1995-1998 Eric Young (eay@cryptsoft.com)
+        -:    3: * All rights reserved.
+        -:    4: *
+        -:    5: * This package is an SSL implementation written
+        -:    6: * by Eric Young (eay@cryptsoft.com).
+        -:    7: * The implementation was written so as to conform with Netscapes SSL.
+        -:    8: * 
+        -:    9: * This library is free for commercial and non-commercial use as long as
+        -:   10: * the following conditions are aheared to.  The following conditions
+        -:   11: * apply to all code found in this distribution, be it the RC4, RSA,
+        -:   12: * lhash, DES, etc., code; not just the SSL code.  The SSL documentation
+        -:   13: * included with this distribution is covered by the same copyright terms
+        -:   14: * except that the holder is Tim Hudson (tjh@cryptsoft.com).
+        -:   15: * 
+        -:   16: * Copyright remains Eric Young's, and as such any Copyright notices in
+        -:   17: * the code are not to be removed.
+        -:   18: * If this package is used in a product, Eric Young should be given attribution
+        -:   19: * as the author of the parts of the library used.
+        -:   20: * This can be in the form of a textual message at program startup or
+        -:   21: * in documentation (online or textual) provided with the package.
+        -:   22: * 
+        -:   23: * Redistribution and use in source and binary forms, with or without
+        -:   24: * modification, are permitted provided that the following conditions
+        -:   25: * are met:
+        -:   26: * 1. Redistributions of source code must retain the copyright
+        -:   27: *    notice, this list of conditions and the following disclaimer.
+        -:   28: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   29: *    notice, this list of conditions and the following disclaimer in the
+        -:   30: *    documentation and/or other materials provided with the distribution.
+        -:   31: * 3. All advertising materials mentioning features or use of this software
+        -:   32: *    must display the following acknowledgement:
+        -:   33: *    "This product includes cryptographic software written by
+        -:   34: *     Eric Young (eay@cryptsoft.com)"
+        -:   35: *    The word 'cryptographic' can be left out if the rouines from the library
+        -:   36: *    being used are not cryptographic related :-).
+        -:   37: * 4. If you include any Windows specific code (or a derivative thereof) from 
+        -:   38: *    the apps directory (application code) you must include an acknowledgement:
+        -:   39: *    "This product includes software written by Tim Hudson (tjh@cryptsoft.com)"
+        -:   40: * 
+        -:   41: * THIS SOFTWARE IS PROVIDED BY ERIC YOUNG ``AS IS'' AND
+        -:   42: * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   43: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+        -:   44: * ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+        -:   45: * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+        -:   46: * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+        -:   47: * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   48: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+        -:   49: * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+        -:   50: * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+        -:   51: * SUCH DAMAGE.
+        -:   52: * 
+        -:   53: * The licence and distribution terms for any publically available version or
+        -:   54: * derivative of this code cannot be changed.  i.e. this code cannot simply be
+        -:   55: * copied and put under another distribution licence
+        -:   56: * [including the GNU Public Licence.]
+        -:   57: */
+        -:   58:
+        -:   59:#include <stdio.h>
+        -:   60:#include <errno.h>
+        -:   61:#include <openssl/crypto.h>
+        -:   62:#include "cryptlib.h"
+        -:   63:#include <openssl/bio.h>
+        -:   64:#include <openssl/stack.h>
+        -:   65:
+    70000:   66:BIO *BIO_new(BIO_METHOD *method)
+        -:   67:	{
+        -:   68:	BIO *ret=NULL;
+        -:   69:
+    70000:   70:	ret=(BIO *)OPENSSL_malloc(sizeof(BIO));
+    70000:   71:	if (ret == NULL)
+        -:   72:		{
+    #####:   73:		BIOerr(BIO_F_BIO_NEW,ERR_R_MALLOC_FAILURE);
+    #####:   74:		return(NULL);
+        -:   75:		}
+    70000:   76:	if (!BIO_set(ret,method))
+        -:   77:		{
+    #####:   78:		OPENSSL_free(ret);
+        -:   79:		ret=NULL;
+        -:   80:		}
+    70000:   81:	return(ret);
+        -:   82:	}
+        -:   83:
+    70000:   84:int BIO_set(BIO *bio, BIO_METHOD *method)
+        -:   85:	{
+    70000:   86:	bio->method=method;
+    70000:   87:	bio->callback=NULL;
+    70000:   88:	bio->cb_arg=NULL;
+    70000:   89:	bio->init=0;
+    70000:   90:	bio->shutdown=1;
+    70000:   91:	bio->flags=0;
+    70000:   92:	bio->retry_reason=0;
+    70000:   93:	bio->num=0;
+    70000:   94:	bio->ptr=NULL;
+    70000:   95:	bio->prev_bio=NULL;
+    70000:   96:	bio->next_bio=NULL;
+    70000:   97:	bio->references=1;
+    70000:   98:	bio->num_read=0L;
+    70000:   99:	bio->num_write=0L;
+    70000:  100:	CRYPTO_new_ex_data(CRYPTO_EX_INDEX_BIO, bio, &bio->ex_data);
+    70000:  101:	if (method->create != NULL)
+    70000:  102:		if (!method->create(bio))
+        -:  103:			{
+    #####:  104:			CRYPTO_free_ex_data(CRYPTO_EX_INDEX_BIO, bio,
+        -:  105:					&bio->ex_data);
+    #####:  106:			return(0);
+        -:  107:			}
+        -:  108:	return(1);
+        -:  109:	}
+        -:  110:
+    70000:  111:int BIO_free(BIO *a)
+        -:  112:	{
+        -:  113:	int i;
+        -:  114:
+    70000:  115:	if (a == NULL) return(0);
+        -:  116:
+    70000:  117:	i=CRYPTO_add(&a->references,-1,CRYPTO_LOCK_BIO);
+        -:  118:#ifdef REF_PRINT
+        -:  119:	REF_PRINT("BIO",a);
+        -:  120:#endif
+    70000:  121:	if (i > 0) return(1);
+        -:  122:#ifdef REF_CHECK
+        -:  123:	if (i < 0)
+        -:  124:		{
+        -:  125:		fprintf(stderr,"BIO_free, bad reference count\n");
+        -:  126:		abort();
+        -:  127:		}
+        -:  128:#endif
+    70000:  129:	if ((a->callback != NULL) &&
+    #####:  130:		((i=(int)a->callback(a,BIO_CB_FREE,NULL,0,0L,1L)) <= 0))
+        -:  131:			return(i);
+        -:  132:
+    70000:  133:	CRYPTO_free_ex_data(CRYPTO_EX_INDEX_BIO, a, &a->ex_data);
+        -:  134:
+    70000:  135:	if ((a->method == NULL) || (a->method->destroy == NULL)) return(1);
+    70000:  136:	a->method->destroy(a);
+    70000:  137:	OPENSSL_free(a);
+    70000:  138:	return(1);
+        -:  139:	}
+        -:  140:
+    #####:  141:void BIO_vfree(BIO *a)
+    #####:  142:    { BIO_free(a); }
+        -:  143:
+   270000:  144:void BIO_clear_flags(BIO *b, int flags)
+        -:  145:	{
+   270000:  146:	b->flags &= ~flags;
+   270000:  147:	}
+        -:  148:
+    #####:  149:int	BIO_test_flags(const BIO *b, int flags)
+        -:  150:	{
+    10000:  151:	return (b->flags & flags);
+        -:  152:	}
+        -:  153:
+    10000:  154:void	BIO_set_flags(BIO *b, int flags)
+        -:  155:	{
+    20000:  156:	b->flags |= flags;
+    10000:  157:	}
+        -:  158:
+    #####:  159:long (*BIO_get_callback(const BIO *b))(struct bio_st *,int,const char *,int, long,long)
+        -:  160:	{
+    #####:  161:	return b->callback;
+        -:  162:	}
+        -:  163:
+    #####:  164:void BIO_set_callback(BIO *b, long (*cb)(struct bio_st *,int,const char *,int, long,long))
+        -:  165:	{
+    #####:  166:	b->callback = cb;
+    #####:  167:	}
+        -:  168:
+    #####:  169:void BIO_set_callback_arg(BIO *b, char *arg)
+        -:  170:	{
+    #####:  171:	b->cb_arg = arg;
+    #####:  172:	}
+        -:  173:
+    #####:  174:char * BIO_get_callback_arg(const BIO *b)
+        -:  175:	{
+    #####:  176:	return b->cb_arg;
+        -:  177:	}
+        -:  178:
+    #####:  179:const char * BIO_method_name(const BIO *b)
+        -:  180:	{
+    #####:  181:	return b->method->name;
+        -:  182:	}
+        -:  183:
+    #####:  184:int BIO_method_type(const BIO *b)
+        -:  185:	{
+    #####:  186:	return b->method->type;
+        -:  187:	}
+        -:  188:
+        -:  189:
+   130000:  190:int BIO_read(BIO *b, void *out, int outl)
+        -:  191:	{
+        -:  192:	int i;
+        -:  193:	long (*cb)(BIO *,int,const char *,int,long,long);
+        -:  194:
+   130000:  195:	if ((b == NULL) || (b->method == NULL) || (b->method->bread == NULL))
+        -:  196:		{
+    #####:  197:		BIOerr(BIO_F_BIO_READ,BIO_R_UNSUPPORTED_METHOD);
+    #####:  198:		return(-2);
+        -:  199:		}
+        -:  200:
+   130000:  201:	cb=b->callback;
+   130000:  202:	if ((cb != NULL) &&
+    #####:  203:		((i=(int)cb(b,BIO_CB_READ,out,outl,0L,1L)) <= 0))
+        -:  204:			return(i);
+        -:  205:
+   130000:  206:	if (!b->init)
+        -:  207:		{
+    #####:  208:		BIOerr(BIO_F_BIO_READ,BIO_R_UNINITIALIZED);
+    #####:  209:		return(-2);
+        -:  210:		}
+        -:  211:
+   130000:  212:	i=b->method->bread(b,out,outl);
+        -:  213:
+   130000:  214:	if (i > 0) b->num_read+=(unsigned long)i;
+        -:  215:
+   130000:  216:	if (cb != NULL)
+    #####:  217:		i=(int)cb(b,BIO_CB_READ|BIO_CB_RETURN,out,outl,
+        -:  218:			0L,(long)i);
+   130000:  219:	return(i);
+        -:  220:	}
+        -:  221:
+  3634603:  222:int BIO_write(BIO *b, const void *in, int inl)
+        -:  223:	{
+        -:  224:	int i;
+        -:  225:	long (*cb)(BIO *,int,const char *,int,long,long);
+        -:  226:
+  3634603:  227:	if (b == NULL)
+        -:  228:		return(0);
+        -:  229:
+  3634603:  230:	cb=b->callback;
+  3634603:  231:	if ((b->method == NULL) || (b->method->bwrite == NULL))
+        -:  232:		{
+    #####:  233:		BIOerr(BIO_F_BIO_WRITE,BIO_R_UNSUPPORTED_METHOD);
+    #####:  234:		return(-2);
+        -:  235:		}
+        -:  236:
+  3634603:  237:	if ((cb != NULL) &&
+    #####:  238:		((i=(int)cb(b,BIO_CB_WRITE,in,inl,0L,1L)) <= 0))
+        -:  239:			return(i);
+        -:  240:
+  3634603:  241:	if (!b->init)
+        -:  242:		{
+    #####:  243:		BIOerr(BIO_F_BIO_WRITE,BIO_R_UNINITIALIZED);
+    #####:  244:		return(-2);
+        -:  245:		}
+        -:  246:
+  3634603:  247:	i=b->method->bwrite(b,in,inl);
+        -:  248:
+  3634603:  249:	if (i > 0) b->num_write+=(unsigned long)i;
+        -:  250:
+  3634603:  251:	if (cb != NULL)
+    #####:  252:		i=(int)cb(b,BIO_CB_WRITE|BIO_CB_RETURN,in,inl,
+        -:  253:			0L,(long)i);
+  3634603:  254:	return(i);
+        -:  255:	}
+        -:  256:
+   144346:  257:int BIO_puts(BIO *b, const char *in)
+        -:  258:	{
+        -:  259:	int i;
+        -:  260:	long (*cb)(BIO *,int,const char *,int,long,long);
+        -:  261:
+   144346:  262:	if ((b == NULL) || (b->method == NULL) || (b->method->bputs == NULL))
+        -:  263:		{
+    #####:  264:		BIOerr(BIO_F_BIO_PUTS,BIO_R_UNSUPPORTED_METHOD);
+    #####:  265:		return(-2);
+        -:  266:		}
+        -:  267:
+   144346:  268:	cb=b->callback;
+        -:  269:
+   144346:  270:	if ((cb != NULL) &&
+    #####:  271:		((i=(int)cb(b,BIO_CB_PUTS,in,0,0L,1L)) <= 0))
+        -:  272:			return(i);
+        -:  273:
+   144346:  274:	if (!b->init)
+        -:  275:		{
+    #####:  276:		BIOerr(BIO_F_BIO_PUTS,BIO_R_UNINITIALIZED);
+    #####:  277:		return(-2);
+        -:  278:		}
+        -:  279:
+   144346:  280:	i=b->method->bputs(b,in);
+        -:  281:
+   144346:  282:	if (i > 0) b->num_write+=(unsigned long)i;
+        -:  283:
+   144346:  284:	if (cb != NULL)
+    #####:  285:		i=(int)cb(b,BIO_CB_PUTS|BIO_CB_RETURN,in,0,
+        -:  286:			0L,(long)i);
+   144346:  287:	return(i);
+        -:  288:	}
+        -:  289:
+  3830000:  290:int BIO_gets(BIO *b, char *in, int inl)
+        -:  291:	{
+        -:  292:	int i;
+        -:  293:	long (*cb)(BIO *,int,const char *,int,long,long);
+        -:  294:
+  3830000:  295:	if ((b == NULL) || (b->method == NULL) || (b->method->bgets == NULL))
+        -:  296:		{
+    #####:  297:		BIOerr(BIO_F_BIO_GETS,BIO_R_UNSUPPORTED_METHOD);
+    #####:  298:		return(-2);
+        -:  299:		}
+        -:  300:
+  3830000:  301:	cb=b->callback;
+        -:  302:
+  3830000:  303:	if ((cb != NULL) &&
+    #####:  304:		((i=(int)cb(b,BIO_CB_GETS,in,inl,0L,1L)) <= 0))
+        -:  305:			return(i);
+        -:  306:
+  3830000:  307:	if (!b->init)
+        -:  308:		{
+    #####:  309:		BIOerr(BIO_F_BIO_GETS,BIO_R_UNINITIALIZED);
+    #####:  310:		return(-2);
+        -:  311:		}
+        -:  312:
+  3830000:  313:	i=b->method->bgets(b,in,inl);
+        -:  314:
+  3830000:  315:	if (cb != NULL)
+    #####:  316:		i=(int)cb(b,BIO_CB_GETS|BIO_CB_RETURN,in,inl,
+        -:  317:			0L,(long)i);
+  3830000:  318:	return(i);
+        -:  319:	}
+        -:  320:
+    #####:  321:int BIO_indent(BIO *b,int indent,int max)
+        -:  322:	{
+    #####:  323:	if(indent < 0)
+        -:  324:		indent=0;
+    #####:  325:	if(indent > max)
+        -:  326:		indent=max;
+    #####:  327:	while(indent--)
+    #####:  328:		if(BIO_puts(b," ") != 1)
+        -:  329:			return 0;
+        -:  330:	return 1;
+        -:  331:	}
+        -:  332:
+    20000:  333:long BIO_int_ctrl(BIO *b, int cmd, long larg, int iarg)
+        -:  334:	{
+        -:  335:	int i;
+        -:  336:
+    20000:  337:	i=iarg;
+    20000:  338:	return(BIO_ctrl(b,cmd,larg,(char *)&i));
+        -:  339:	}
+        -:  340:
+    #####:  341:char *BIO_ptr_ctrl(BIO *b, int cmd, long larg)
+        -:  342:	{
+    #####:  343:	char *p=NULL;
+        -:  344:
+    #####:  345:	if (BIO_ctrl(b,cmd,larg,(char *)&p) <= 0)
+        -:  346:		return(NULL);
+        -:  347:	else
+    #####:  348:		return(p);
+        -:  349:	}
+        -:  350:
+   310000:  351:long BIO_ctrl(BIO *b, int cmd, long larg, void *parg)
+        -:  352:	{
+        -:  353:	long ret;
+        -:  354:	long (*cb)(BIO *,int,const char *,int,long,long);
+        -:  355:
+   310000:  356:	if (b == NULL) return(0);
+        -:  357:
+   310000:  358:	if ((b->method == NULL) || (b->method->ctrl == NULL))
+        -:  359:		{
+    #####:  360:		BIOerr(BIO_F_BIO_CTRL,BIO_R_UNSUPPORTED_METHOD);
+    #####:  361:		return(-2);
+        -:  362:		}
+        -:  363:
+   310000:  364:	cb=b->callback;
+        -:  365:
+   310000:  366:	if ((cb != NULL) &&
+        -:  367:		((ret=cb(b,BIO_CB_CTRL,parg,cmd,larg,1L)) <= 0))
+        -:  368:		return(ret);
+        -:  369:
+   310000:  370:	ret=b->method->ctrl(b,cmd,larg,parg);
+        -:  371:
+   310000:  372:	if (cb != NULL)
+    #####:  373:		ret=cb(b,BIO_CB_CTRL|BIO_CB_RETURN,parg,cmd,
+        -:  374:			larg,ret);
+   310000:  375:	return(ret);
+        -:  376:	}
+        -:  377:
+    #####:  378:long BIO_callback_ctrl(BIO *b, int cmd, void (*fp)(struct bio_st *, int, const char *, int, long, long))
+        -:  379:	{
+        -:  380:	long ret;
+        -:  381:	long (*cb)(BIO *,int,const char *,int,long,long);
+        -:  382:
+    #####:  383:	if (b == NULL) return(0);
+        -:  384:
+    #####:  385:	if ((b->method == NULL) || (b->method->callback_ctrl == NULL))
+        -:  386:		{
+    #####:  387:		BIOerr(BIO_F_BIO_CALLBACK_CTRL,BIO_R_UNSUPPORTED_METHOD);
+    #####:  388:		return(-2);
+        -:  389:		}
+        -:  390:
+    #####:  391:	cb=b->callback;
+        -:  392:
+    #####:  393:	if ((cb != NULL) &&
+        -:  394:		((ret=cb(b,BIO_CB_CTRL,(void *)&fp,cmd,0,1L)) <= 0))
+        -:  395:		return(ret);
+        -:  396:
+    #####:  397:	ret=b->method->callback_ctrl(b,cmd,fp);
+        -:  398:
+    #####:  399:	if (cb != NULL)
+    #####:  400:		ret=cb(b,BIO_CB_CTRL|BIO_CB_RETURN,(void *)&fp,cmd,
+        -:  401:			0,ret);
+    #####:  402:	return(ret);
+        -:  403:	}
+        -:  404:
+        -:  405:/* It is unfortunate to duplicate in functions what the BIO_(w)pending macros
+        -:  406: * do; but those macros have inappropriate return type, and for interfacing
+        -:  407: * from other programming languages, C macros aren't much of a help anyway. */
+    #####:  408:size_t BIO_ctrl_pending(BIO *bio)
+        -:  409:	{
+    #####:  410:	return BIO_ctrl(bio, BIO_CTRL_PENDING, 0, NULL);
+        -:  411:	}
+        -:  412:
+    #####:  413:size_t BIO_ctrl_wpending(BIO *bio)
+        -:  414:	{
+    #####:  415:	return BIO_ctrl(bio, BIO_CTRL_WPENDING, 0, NULL);
+        -:  416:	}
+        -:  417:
+        -:  418:
+        -:  419:/* put the 'bio' on the end of b's list of operators */
+    10000:  420:BIO *BIO_push(BIO *b, BIO *bio)
+        -:  421:	{
+        -:  422:	BIO *lb;
+        -:  423:
+    10000:  424:	if (b == NULL) return(bio);
+        -:  425:	lb=b;
+    10000:  426:	while (lb->next_bio != NULL)
+        -:  427:		lb=lb->next_bio;
+    10000:  428:	lb->next_bio=bio;
+    10000:  429:	if (bio != NULL)
+    10000:  430:		bio->prev_bio=lb;
+        -:  431:	/* called to do internal processing */
+    10000:  432:	BIO_ctrl(b,BIO_CTRL_PUSH,0,lb);
+    10000:  433:	return(b);
+        -:  434:	}
+        -:  435:
+        -:  436:/* Remove the first and return the rest */
+    10000:  437:BIO *BIO_pop(BIO *b)
+        -:  438:	{
+        -:  439:	BIO *ret;
+        -:  440:
+    10000:  441:	if (b == NULL) return(NULL);
+    10000:  442:	ret=b->next_bio;
+        -:  443:
+    10000:  444:	BIO_ctrl(b,BIO_CTRL_POP,0,b);
+        -:  445:
+    10000:  446:	if (b->prev_bio != NULL)
+    #####:  447:		b->prev_bio->next_bio=b->next_bio;
+    10000:  448:	if (b->next_bio != NULL)
+    10000:  449:		b->next_bio->prev_bio=b->prev_bio;
+        -:  450:
+    10000:  451:	b->next_bio=NULL;
+    10000:  452:	b->prev_bio=NULL;
+    10000:  453:	return(ret);
+        -:  454:	}
+        -:  455:
+    #####:  456:BIO *BIO_get_retry_BIO(BIO *bio, int *reason)
+        -:  457:	{
+        -:  458:	BIO *b,*last;
+        -:  459:
+        -:  460:	b=last=bio;
+        -:  461:	for (;;)
+        -:  462:		{
+    #####:  463:		if (!BIO_should_retry(b)) break;
+        -:  464:		last=b;
+    #####:  465:		b=b->next_bio;
+    #####:  466:		if (b == NULL) break;
+        -:  467:		}
+    #####:  468:	if (reason != NULL) *reason=last->retry_reason;
+    #####:  469:	return(last);
+        -:  470:	}
+        -:  471:
+    #####:  472:int BIO_get_retry_reason(BIO *bio)
+        -:  473:	{
+    #####:  474:	return(bio->retry_reason);
+        -:  475:	}
+        -:  476:
+   150000:  477:BIO *BIO_find_type(BIO *bio, int type)
+        -:  478:	{
+        -:  479:	int mt,mask;
+        -:  480:
+   150000:  481:	if(!bio) return NULL;
+   150000:  482:	mask=type&0xff;
+        -:  483:	do	{
+   150000:  484:		if (bio->method != NULL)
+        -:  485:			{
+   150000:  486:			mt=bio->method->type;
+        -:  487:
+   150000:  488:			if (!mask)
+        -:  489:				{
+   150000:  490:				if (mt & type) return(bio);
+        -:  491:				}
+    #####:  492:			else if (mt == type)
+        -:  493:				return(bio);
+        -:  494:			}
+    #####:  495:		bio=bio->next_bio;
+    #####:  496:		} while (bio != NULL);
+        -:  497:	return(NULL);
+        -:  498:	}
+        -:  499:
+    #####:  500:BIO *BIO_next(BIO *b)
+        -:  501:	{
+    #####:  502:	if(!b) return NULL;
+    #####:  503:	return b->next_bio;
+        -:  504:	}
+        -:  505:
+    10000:  506:void BIO_free_all(BIO *bio)
+        -:  507:	{
+        -:  508:	BIO *b;
+        -:  509:	int ref;
+        -:  510:
+    30000:  511:	while (bio != NULL)
+        -:  512:		{
+        -:  513:		b=bio;
+    10000:  514:		ref=b->references;
+    10000:  515:		bio=bio->next_bio;
+    10000:  516:		BIO_free(b);
+        -:  517:		/* Since ref count > 1, don't free anyone else. */
+    10000:  518:		if (ref > 1) break;
+        -:  519:		}
+    10000:  520:	}
+        -:  521:
+    #####:  522:BIO *BIO_dup_chain(BIO *in)
+        -:  523:	{
+        -:  524:	BIO *ret=NULL,*eoc=NULL,*bio,*new_bio;
+        -:  525:
+    #####:  526:	for (bio=in; bio != NULL; bio=bio->next_bio)
+        -:  527:		{
+    #####:  528:		if ((new_bio=BIO_new(bio->method)) == NULL) goto err;
+    #####:  529:		new_bio->callback=bio->callback;
+    #####:  530:		new_bio->cb_arg=bio->cb_arg;
+    #####:  531:		new_bio->init=bio->init;
+    #####:  532:		new_bio->shutdown=bio->shutdown;
+    #####:  533:		new_bio->flags=bio->flags;
+        -:  534:
+        -:  535:		/* This will let SSL_s_sock() work with stdin/stdout */
+    #####:  536:		new_bio->num=bio->num;
+        -:  537:
+    #####:  538:		if (!BIO_dup_state(bio,(char *)new_bio))
+        -:  539:			{
+    #####:  540:			BIO_free(new_bio);
+    #####:  541:			goto err;
+        -:  542:			}
+        -:  543:
+        -:  544:		/* copy app data */
+    #####:  545:		if (!CRYPTO_dup_ex_data(CRYPTO_EX_INDEX_BIO, &new_bio->ex_data,
+        -:  546:					&bio->ex_data))
+        -:  547:			goto err;
+        -:  548:
+    #####:  549:		if (ret == NULL)
+        -:  550:			{
+        -:  551:			eoc=new_bio;
+        -:  552:			ret=eoc;
+        -:  553:			}
+        -:  554:		else
+        -:  555:			{
+    #####:  556:			BIO_push(eoc,new_bio);
+        -:  557:			eoc=new_bio;
+        -:  558:			}
+        -:  559:		}
+        -:  560:	return(ret);
+        -:  561:err:
+    #####:  562:	if (ret != NULL)
+    #####:  563:		BIO_free(ret);
+        -:  564:	return(NULL);	
+        -:  565:	}
+        -:  566:
+    10000:  567:void BIO_copy_next_retry(BIO *b)
+        -:  568:	{
+    10000:  569:	BIO_set_flags(b,BIO_get_retry_flags(b->next_bio));
+    10000:  570:	b->retry_reason=b->next_bio->retry_reason;
+    10000:  571:	}
+        -:  572:
+    #####:  573:int BIO_get_ex_new_index(long argl, void *argp, CRYPTO_EX_new *new_func,
+        -:  574:	     CRYPTO_EX_dup *dup_func, CRYPTO_EX_free *free_func)
+        -:  575:	{
+    #####:  576:	return CRYPTO_get_ex_new_index(CRYPTO_EX_INDEX_BIO, argl, argp,
+        -:  577:				new_func, dup_func, free_func);
+        -:  578:	}
+        -:  579:
+    #####:  580:int BIO_set_ex_data(BIO *bio, int idx, void *data)
+        -:  581:	{
+    #####:  582:	return(CRYPTO_set_ex_data(&(bio->ex_data),idx,data));
+        -:  583:	}
+        -:  584:
+    #####:  585:void *BIO_get_ex_data(BIO *bio, int idx)
+        -:  586:	{
+    #####:  587:	return(CRYPTO_get_ex_data(&(bio->ex_data),idx));
+        -:  588:	}
+        -:  589:
+    10000:  590:unsigned long BIO_number_read(BIO *bio)
+        -:  591:{
+    10000:  592:	if(bio) return bio->num_read;
+        -:  593:	return 0;
+        -:  594:}
+        -:  595:
+    10000:  596:unsigned long BIO_number_written(BIO *bio)
+        -:  597:{
+    10000:  598:	if(bio) return bio->num_write;
+        -:  599:	return 0;
+        -:  600:}
+        -:  601:
+        -:  602:IMPLEMENT_STACK_OF(BIO)

@@ -1,0 +1,290 @@
+        -:    0:Source:gendsa.c
+        -:    0:Graph:gendsa.gcno
+        -:    0:Data:gendsa.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* apps/gendsa.c */
+        -:    2:/* Copyright (C) 1995-1998 Eric Young (eay@cryptsoft.com)
+        -:    3: * All rights reserved.
+        -:    4: *
+        -:    5: * This package is an SSL implementation written
+        -:    6: * by Eric Young (eay@cryptsoft.com).
+        -:    7: * The implementation was written so as to conform with Netscapes SSL.
+        -:    8: * 
+        -:    9: * This library is free for commercial and non-commercial use as long as
+        -:   10: * the following conditions are aheared to.  The following conditions
+        -:   11: * apply to all code found in this distribution, be it the RC4, RSA,
+        -:   12: * lhash, DES, etc., code; not just the SSL code.  The SSL documentation
+        -:   13: * included with this distribution is covered by the same copyright terms
+        -:   14: * except that the holder is Tim Hudson (tjh@cryptsoft.com).
+        -:   15: * 
+        -:   16: * Copyright remains Eric Young's, and as such any Copyright notices in
+        -:   17: * the code are not to be removed.
+        -:   18: * If this package is used in a product, Eric Young should be given attribution
+        -:   19: * as the author of the parts of the library used.
+        -:   20: * This can be in the form of a textual message at program startup or
+        -:   21: * in documentation (online or textual) provided with the package.
+        -:   22: * 
+        -:   23: * Redistribution and use in source and binary forms, with or without
+        -:   24: * modification, are permitted provided that the following conditions
+        -:   25: * are met:
+        -:   26: * 1. Redistributions of source code must retain the copyright
+        -:   27: *    notice, this list of conditions and the following disclaimer.
+        -:   28: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   29: *    notice, this list of conditions and the following disclaimer in the
+        -:   30: *    documentation and/or other materials provided with the distribution.
+        -:   31: * 3. All advertising materials mentioning features or use of this software
+        -:   32: *    must display the following acknowledgement:
+        -:   33: *    "This product includes cryptographic software written by
+        -:   34: *     Eric Young (eay@cryptsoft.com)"
+        -:   35: *    The word 'cryptographic' can be left out if the rouines from the library
+        -:   36: *    being used are not cryptographic related :-).
+        -:   37: * 4. If you include any Windows specific code (or a derivative thereof) from 
+        -:   38: *    the apps directory (application code) you must include an acknowledgement:
+        -:   39: *    "This product includes software written by Tim Hudson (tjh@cryptsoft.com)"
+        -:   40: * 
+        -:   41: * THIS SOFTWARE IS PROVIDED BY ERIC YOUNG ``AS IS'' AND
+        -:   42: * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   43: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+        -:   44: * ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+        -:   45: * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+        -:   46: * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+        -:   47: * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   48: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+        -:   49: * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+        -:   50: * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+        -:   51: * SUCH DAMAGE.
+        -:   52: * 
+        -:   53: * The licence and distribution terms for any publically available version or
+        -:   54: * derivative of this code cannot be changed.  i.e. this code cannot simply be
+        -:   55: * copied and put under another distribution licence
+        -:   56: * [including the GNU Public Licence.]
+        -:   57: */
+        -:   58:
+        -:   59:#include <openssl/opensslconf.h>	/* for OPENSSL_NO_DSA */
+        -:   60:#ifndef OPENSSL_NO_DSA
+        -:   61:#include <stdio.h>
+        -:   62:#include <string.h>
+        -:   63:#include <sys/types.h>
+        -:   64:#include <sys/stat.h>
+        -:   65:#include "apps.h"
+        -:   66:#include <openssl/bio.h>
+        -:   67:#include <openssl/err.h>
+        -:   68:#include <openssl/bn.h>
+        -:   69:#include <openssl/dsa.h>
+        -:   70:#include <openssl/x509.h>
+        -:   71:#include <openssl/pem.h>
+        -:   72:
+        -:   73:#define DEFBITS	512
+        -:   74:#undef PROG
+        -:   75:#define PROG gendsa_main
+        -:   76:
+        -:   77:int MAIN(int, char **);
+        -:   78:
+    #####:   79:int MAIN(int argc, char **argv)
+        -:   80:	{
+        -:   81:	DSA *dsa=NULL;
+        -:   82:	int ret=1;
+        -:   83:	char *outfile=NULL;
+        -:   84:	char *inrand=NULL,*dsaparams=NULL;
+    #####:   85:	char *passargout = NULL, *passout = NULL;
+        -:   86:	BIO *out=NULL,*in=NULL;
+        -:   87:	const EVP_CIPHER *enc=NULL;
+        -:   88:#ifndef OPENSSL_NO_ENGINE
+        -:   89:	char *engine=NULL;
+        -:   90:#endif
+        -:   91:
+    #####:   92:	apps_startup();
+        -:   93:
+    #####:   94:	if (bio_err == NULL)
+    #####:   95:		if ((bio_err=BIO_new(BIO_s_file())) != NULL)
+    #####:   96:			BIO_set_fp(bio_err,stderr,BIO_NOCLOSE|BIO_FP_TEXT);
+        -:   97:
+    #####:   98:	if (!load_config(bio_err, NULL))
+        -:   99:		goto end;
+        -:  100:
+    #####:  101:	argv++;
+    #####:  102:	argc--;
+        -:  103:	for (;;)
+        -:  104:		{
+    #####:  105:		if (argc <= 0) break;
+    #####:  106:		if (strcmp(*argv,"-out") == 0)
+        -:  107:			{
+    #####:  108:			if (--argc < 1) goto bad;
+    #####:  109:			outfile= *(++argv);
+        -:  110:			}
+    #####:  111:		else if (strcmp(*argv,"-passout") == 0)
+        -:  112:			{
+    #####:  113:			if (--argc < 1) goto bad;
+    #####:  114:			passargout= *(++argv);
+        -:  115:			}
+        -:  116:#ifndef OPENSSL_NO_ENGINE
+    #####:  117:		else if (strcmp(*argv,"-engine") == 0)
+        -:  118:			{
+    #####:  119:			if (--argc < 1) goto bad;
+    #####:  120:			engine= *(++argv);
+        -:  121:			}
+        -:  122:#endif
+    #####:  123:		else if (strcmp(*argv,"-rand") == 0)
+        -:  124:			{
+    #####:  125:			if (--argc < 1) goto bad;
+    #####:  126:			inrand= *(++argv);
+        -:  127:			}
+    #####:  128:		else if (strcmp(*argv,"-") == 0)
+        -:  129:			goto bad;
+        -:  130:#ifndef OPENSSL_NO_DES
+    #####:  131:		else if (strcmp(*argv,"-des") == 0)
+    #####:  132:			enc=EVP_des_cbc();
+    #####:  133:		else if (strcmp(*argv,"-des3") == 0)
+    #####:  134:			enc=EVP_des_ede3_cbc();
+        -:  135:#endif
+        -:  136:#ifndef OPENSSL_NO_IDEA
+    #####:  137:		else if (strcmp(*argv,"-idea") == 0)
+    #####:  138:			enc=EVP_idea_cbc();
+        -:  139:#endif
+        -:  140:#ifndef OPENSSL_NO_SEED
+    #####:  141:		else if (strcmp(*argv,"-seed") == 0)
+    #####:  142:			enc=EVP_seed_cbc();
+        -:  143:#endif
+        -:  144:#ifndef OPENSSL_NO_AES
+    #####:  145:		else if (strcmp(*argv,"-aes128") == 0)
+    #####:  146:			enc=EVP_aes_128_cbc();
+    #####:  147:		else if (strcmp(*argv,"-aes192") == 0)
+    #####:  148:			enc=EVP_aes_192_cbc();
+    #####:  149:		else if (strcmp(*argv,"-aes256") == 0)
+    #####:  150:			enc=EVP_aes_256_cbc();
+        -:  151:#endif
+        -:  152:#ifndef OPENSSL_NO_CAMELLIA
+    #####:  153:		else if (strcmp(*argv,"-camellia128") == 0)
+    #####:  154:			enc=EVP_camellia_128_cbc();
+    #####:  155:		else if (strcmp(*argv,"-camellia192") == 0)
+    #####:  156:			enc=EVP_camellia_192_cbc();
+    #####:  157:		else if (strcmp(*argv,"-camellia256") == 0)
+    #####:  158:			enc=EVP_camellia_256_cbc();
+        -:  159:#endif
+    #####:  160:		else if (**argv != '-' && dsaparams == NULL)
+        -:  161:			{
+        -:  162:			dsaparams = *argv;
+        -:  163:			}
+        -:  164:		else
+        -:  165:			goto bad;
+    #####:  166:		argv++;
+    #####:  167:		argc--;
+    #####:  168:		}
+        -:  169:
+    #####:  170:	if (dsaparams == NULL)
+        -:  171:		{
+        -:  172:bad:
+    #####:  173:		BIO_printf(bio_err,"usage: gendsa [args] dsaparam-file\n");
+    #####:  174:		BIO_printf(bio_err," -out file - output the key to 'file'\n");
+        -:  175:#ifndef OPENSSL_NO_DES
+    #####:  176:		BIO_printf(bio_err," -des      - encrypt the generated key with DES in cbc mode\n");
+    #####:  177:		BIO_printf(bio_err," -des3     - encrypt the generated key with DES in ede cbc mode (168 bit key)\n");
+        -:  178:#endif
+        -:  179:#ifndef OPENSSL_NO_IDEA
+    #####:  180:		BIO_printf(bio_err," -idea     - encrypt the generated key with IDEA in cbc mode\n");
+        -:  181:#endif
+        -:  182:#ifndef OPENSSL_NO_SEED
+    #####:  183:		BIO_printf(bio_err," -seed\n");
+    #####:  184:		BIO_printf(bio_err,"                 encrypt PEM output with cbc seed\n");
+        -:  185:#endif
+        -:  186:#ifndef OPENSSL_NO_AES
+    #####:  187:		BIO_printf(bio_err," -aes128, -aes192, -aes256\n");
+    #####:  188:		BIO_printf(bio_err,"                 encrypt PEM output with cbc aes\n");
+        -:  189:#endif
+        -:  190:#ifndef OPENSSL_NO_CAMELLIA
+    #####:  191:		BIO_printf(bio_err," -camellia128, -camellia192, -camellia256\n");
+    #####:  192:		BIO_printf(bio_err,"                 encrypt PEM output with cbc camellia\n");
+        -:  193:#endif
+        -:  194:#ifndef OPENSSL_NO_ENGINE
+    #####:  195:		BIO_printf(bio_err," -engine e - use engine e, possibly a hardware device.\n");
+        -:  196:#endif
+    #####:  197:		BIO_printf(bio_err," -rand file%cfile%c...\n", LIST_SEPARATOR_CHAR, LIST_SEPARATOR_CHAR);
+    #####:  198:		BIO_printf(bio_err,"           - load the file (or the files in the directory) into\n");
+    #####:  199:		BIO_printf(bio_err,"             the random number generator\n");
+    #####:  200:		BIO_printf(bio_err," dsaparam-file\n");
+    #####:  201:		BIO_printf(bio_err,"           - a DSA parameter file as generated by the dsaparam command\n");
+    #####:  202:		goto end;
+        -:  203:		}
+        -:  204:
+        -:  205:#ifndef OPENSSL_NO_ENGINE
+    #####:  206:        setup_engine(bio_err, engine, 0);
+        -:  207:#endif
+        -:  208:
+    #####:  209:	if(!app_passwd(bio_err, NULL, passargout, NULL, &passout)) {
+    #####:  210:		BIO_printf(bio_err, "Error getting password\n");
+    #####:  211:		goto end;
+        -:  212:	}
+        -:  213:
+        -:  214:
+    #####:  215:	in=BIO_new(BIO_s_file());
+    #####:  216:	if (!(BIO_read_filename(in,dsaparams)))
+        -:  217:		{
+    #####:  218:		perror(dsaparams);
+    #####:  219:		goto end;
+        -:  220:		}
+        -:  221:
+    #####:  222:	if ((dsa=PEM_read_bio_DSAparams(in,NULL,NULL,NULL)) == NULL)
+        -:  223:		{
+    #####:  224:		BIO_printf(bio_err,"unable to load DSA parameter file\n");
+    #####:  225:		goto end;
+        -:  226:		}
+    #####:  227:	BIO_free(in);
+        -:  228:	in = NULL;
+        -:  229:		
+    #####:  230:	out=BIO_new(BIO_s_file());
+    #####:  231:	if (out == NULL) goto end;
+        -:  232:
+    #####:  233:	if (outfile == NULL)
+        -:  234:		{
+    #####:  235:		BIO_set_fp(out,stdout,BIO_NOCLOSE);
+        -:  236:#ifdef OPENSSL_SYS_VMS
+        -:  237:		{
+        -:  238:		BIO *tmpbio = BIO_new(BIO_f_linebuffer());
+        -:  239:		out = BIO_push(tmpbio, out);
+        -:  240:		}
+        -:  241:#endif
+        -:  242:		}
+        -:  243:	else
+        -:  244:		{
+    #####:  245:		if (BIO_write_filename(out,outfile) <= 0)
+        -:  246:			{
+    #####:  247:			perror(outfile);
+    #####:  248:			goto end;
+        -:  249:			}
+        -:  250:		}
+        -:  251:
+    #####:  252:	if (!app_RAND_load_file(NULL, bio_err, 1) && inrand == NULL)
+        -:  253:		{
+    #####:  254:		BIO_printf(bio_err,"warning, not much extra random data, consider using the -rand option\n");
+        -:  255:		}
+    #####:  256:	if (inrand != NULL)
+    #####:  257:		BIO_printf(bio_err,"%ld semi-random bytes loaded\n",
+        -:  258:			app_RAND_load_files(inrand));
+        -:  259:
+    #####:  260:	BIO_printf(bio_err,"Generating DSA key, %d bits\n",
+    #####:  261:							BN_num_bits(dsa->p));
+    #####:  262:	if (!DSA_generate_key(dsa)) goto end;
+        -:  263:
+    #####:  264:	app_RAND_write_file(NULL, bio_err);
+        -:  265:
+    #####:  266:	if (!PEM_write_bio_DSAPrivateKey(out,dsa,enc,NULL,0,NULL, passout))
+        -:  267:		goto end;
+        -:  268:	ret=0;
+        -:  269:end:
+    #####:  270:	if (ret != 0)
+    #####:  271:		ERR_print_errors(bio_err);
+    #####:  272:	if (in != NULL) BIO_free(in);
+    #####:  273:	if (out != NULL) BIO_free_all(out);
+    #####:  274:	if (dsa != NULL) DSA_free(dsa);
+    #####:  275:	if(passout) OPENSSL_free(passout);
+        -:  276:	apps_shutdown();
+    #####:  277:	OPENSSL_EXIT(ret);
+        -:  278:	}
+        -:  279:#else /* !OPENSSL_NO_DSA */
+        -:  280:
+        -:  281:# if PEDANTIC
+        -:  282:static void *dummy=&dummy;
+        -:  283:# endif
+        -:  284:
+        -:  285:#endif

@@ -1,0 +1,247 @@
+        -:    0:Source:pem_pkey.c
+        -:    0:Graph:pem_pkey.gcno
+        -:    0:Data:pem_pkey.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* crypto/pem/pem_pkey.c */
+        -:    2:/* Copyright (C) 1995-1998 Eric Young (eay@cryptsoft.com)
+        -:    3: * All rights reserved.
+        -:    4: *
+        -:    5: * This package is an SSL implementation written
+        -:    6: * by Eric Young (eay@cryptsoft.com).
+        -:    7: * The implementation was written so as to conform with Netscapes SSL.
+        -:    8: * 
+        -:    9: * This library is free for commercial and non-commercial use as long as
+        -:   10: * the following conditions are aheared to.  The following conditions
+        -:   11: * apply to all code found in this distribution, be it the RC4, RSA,
+        -:   12: * lhash, DES, etc., code; not just the SSL code.  The SSL documentation
+        -:   13: * included with this distribution is covered by the same copyright terms
+        -:   14: * except that the holder is Tim Hudson (tjh@cryptsoft.com).
+        -:   15: * 
+        -:   16: * Copyright remains Eric Young's, and as such any Copyright notices in
+        -:   17: * the code are not to be removed.
+        -:   18: * If this package is used in a product, Eric Young should be given attribution
+        -:   19: * as the author of the parts of the library used.
+        -:   20: * This can be in the form of a textual message at program startup or
+        -:   21: * in documentation (online or textual) provided with the package.
+        -:   22: * 
+        -:   23: * Redistribution and use in source and binary forms, with or without
+        -:   24: * modification, are permitted provided that the following conditions
+        -:   25: * are met:
+        -:   26: * 1. Redistributions of source code must retain the copyright
+        -:   27: *    notice, this list of conditions and the following disclaimer.
+        -:   28: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   29: *    notice, this list of conditions and the following disclaimer in the
+        -:   30: *    documentation and/or other materials provided with the distribution.
+        -:   31: * 3. All advertising materials mentioning features or use of this software
+        -:   32: *    must display the following acknowledgement:
+        -:   33: *    "This product includes cryptographic software written by
+        -:   34: *     Eric Young (eay@cryptsoft.com)"
+        -:   35: *    The word 'cryptographic' can be left out if the rouines from the library
+        -:   36: *    being used are not cryptographic related :-).
+        -:   37: * 4. If you include any Windows specific code (or a derivative thereof) from 
+        -:   38: *    the apps directory (application code) you must include an acknowledgement:
+        -:   39: *    "This product includes software written by Tim Hudson (tjh@cryptsoft.com)"
+        -:   40: * 
+        -:   41: * THIS SOFTWARE IS PROVIDED BY ERIC YOUNG ``AS IS'' AND
+        -:   42: * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   43: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+        -:   44: * ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+        -:   45: * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+        -:   46: * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+        -:   47: * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   48: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+        -:   49: * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+        -:   50: * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+        -:   51: * SUCH DAMAGE.
+        -:   52: * 
+        -:   53: * The licence and distribution terms for any publically available version or
+        -:   54: * derivative of this code cannot be changed.  i.e. this code cannot simply be
+        -:   55: * copied and put under another distribution licence
+        -:   56: * [including the GNU Public Licence.]
+        -:   57: */
+        -:   58:
+        -:   59:#include <stdio.h>
+        -:   60:#include "cryptlib.h"
+        -:   61:#include <openssl/buffer.h>
+        -:   62:#include <openssl/objects.h>
+        -:   63:#include <openssl/evp.h>
+        -:   64:#include <openssl/rand.h>
+        -:   65:#include <openssl/x509.h>
+        -:   66:#include <openssl/pkcs12.h>
+        -:   67:#include <openssl/pem.h>
+        -:   68:#ifndef OPENSSL_NO_ENGINE
+        -:   69:#include <openssl/engine.h>
+        -:   70:#endif
+        -:   71:#include "asn1_locl.h"
+        -:   72:
+        -:   73:int pem_check_suffix(const char *pem_str, const char *suffix);
+        -:   74:
+    #####:   75:EVP_PKEY *PEM_read_bio_PrivateKey(BIO *bp, EVP_PKEY **x, pem_password_cb *cb, void *u)
+        -:   76:	{
+    #####:   77:	char *nm=NULL;
+    #####:   78:	const unsigned char *p=NULL;
+    #####:   79:	unsigned char *data=NULL;
+        -:   80:	long len;
+        -:   81:	int slen;
+        -:   82:	EVP_PKEY *ret=NULL;
+        -:   83:
+    #####:   84:	if (!PEM_bytes_read_bio(&data, &len, &nm, PEM_STRING_EVP_PKEY, bp, cb, u))
+        -:   85:		return NULL;
+    #####:   86:	p = data;
+        -:   87:
+    #####:   88:	if (strcmp(nm,PEM_STRING_PKCS8INF) == 0) {
+        -:   89:		PKCS8_PRIV_KEY_INFO *p8inf;
+    #####:   90:		p8inf=d2i_PKCS8_PRIV_KEY_INFO(NULL, &p, len);
+    #####:   91:		if(!p8inf) goto p8err;
+    #####:   92:		ret = EVP_PKCS82PKEY(p8inf);
+    #####:   93:		if(x) {
+    #####:   94:			if(*x) EVP_PKEY_free((EVP_PKEY *)*x);
+    #####:   95:			*x = ret;
+        -:   96:		}
+    #####:   97:		PKCS8_PRIV_KEY_INFO_free(p8inf);
+    #####:   98:	} else if (strcmp(nm,PEM_STRING_PKCS8) == 0) {
+        -:   99:		PKCS8_PRIV_KEY_INFO *p8inf;
+        -:  100:		X509_SIG *p8;
+        -:  101:		int klen;
+        -:  102:		char psbuf[PEM_BUFSIZE];
+    #####:  103:		p8 = d2i_X509_SIG(NULL, &p, len);
+    #####:  104:		if(!p8) goto p8err;
+    #####:  105:		if (cb) klen=cb(psbuf,PEM_BUFSIZE,0,u);
+    #####:  106:		else klen=PEM_def_callback(psbuf,PEM_BUFSIZE,0,u);
+    #####:  107:		if (klen <= 0) {
+    #####:  108:			PEMerr(PEM_F_PEM_READ_BIO_PRIVATEKEY,
+        -:  109:					PEM_R_BAD_PASSWORD_READ);
+    #####:  110:			X509_SIG_free(p8);
+    #####:  111:			goto err;
+        -:  112:		}
+    #####:  113:		p8inf = PKCS8_decrypt(p8, psbuf, klen);
+    #####:  114:		X509_SIG_free(p8);
+    #####:  115:		if(!p8inf) goto p8err;
+    #####:  116:		ret = EVP_PKCS82PKEY(p8inf);
+    #####:  117:		if(x) {
+    #####:  118:			if(*x) EVP_PKEY_free((EVP_PKEY *)*x);
+    #####:  119:			*x = ret;
+        -:  120:		}
+    #####:  121:		PKCS8_PRIV_KEY_INFO_free(p8inf);
+    #####:  122:	} else if ((slen = pem_check_suffix(nm, "PRIVATE KEY")) > 0)
+        -:  123:		{
+        -:  124:		const EVP_PKEY_ASN1_METHOD *ameth;
+    #####:  125:		ameth = EVP_PKEY_asn1_find_str(NULL, nm, slen);
+    #####:  126:		if (!ameth || !ameth->old_priv_decode)
+        -:  127:			goto p8err;
+    #####:  128:		ret=d2i_PrivateKey(ameth->pkey_id,x,&p,len);
+        -:  129:		}
+        -:  130:p8err:
+    #####:  131:	if (ret == NULL)
+    #####:  132:		PEMerr(PEM_F_PEM_READ_BIO_PRIVATEKEY,ERR_R_ASN1_LIB);
+        -:  133:err:
+    #####:  134:	OPENSSL_free(nm);
+    #####:  135:	OPENSSL_cleanse(data, len);
+    #####:  136:	OPENSSL_free(data);
+    #####:  137:	return(ret);
+        -:  138:	}
+        -:  139:
+    #####:  140:int PEM_write_bio_PrivateKey(BIO *bp, EVP_PKEY *x, const EVP_CIPHER *enc,
+        -:  141:                                               unsigned char *kstr, int klen,
+        -:  142:                                               pem_password_cb *cb, void *u)
+        -:  143:	{
+        -:  144:	char pem_str[80];
+    #####:  145:	if (!x->ameth || x->ameth->priv_encode)
+    #####:  146:		return PEM_write_bio_PKCS8PrivateKey(bp, x, enc,
+        -:  147:							(char *)kstr, klen,
+        -:  148:							cb, u);
+        -:  149:
+    #####:  150:	BIO_snprintf(pem_str, 80, "%s PRIVATE KEY", x->ameth->pem_str);
+    #####:  151:	return PEM_ASN1_write_bio((i2d_of_void *)i2d_PrivateKey,
+        -:  152:				pem_str,bp,x,enc,kstr,klen,cb,u);
+        -:  153:	}
+        -:  154:
+    #####:  155:EVP_PKEY *PEM_read_bio_Parameters(BIO *bp, EVP_PKEY **x)
+        -:  156:	{
+    #####:  157:	char *nm=NULL;
+    #####:  158:	const unsigned char *p=NULL;
+    #####:  159:	unsigned char *data=NULL;
+        -:  160:	long len;
+        -:  161:	int slen;
+        -:  162:	EVP_PKEY *ret=NULL;
+        -:  163:
+    #####:  164:	if (!PEM_bytes_read_bio(&data, &len, &nm, PEM_STRING_PARAMETERS,
+        -:  165:								bp, 0, NULL))
+        -:  166:		return NULL;
+    #####:  167:	p = data;
+        -:  168:
+    #####:  169:	if ((slen = pem_check_suffix(nm, "PARAMETERS")) > 0)
+        -:  170:		{
+    #####:  171:		ret = EVP_PKEY_new();
+    #####:  172:		if (!ret)
+        -:  173:			goto err;
+    #####:  174:		if (!EVP_PKEY_set_type_str(ret, nm, slen)
+    #####:  175:			|| !ret->ameth->param_decode
+    #####:  176:			|| !ret->ameth->param_decode(ret, &p, len))
+        -:  177:			{
+    #####:  178:			EVP_PKEY_free(ret);
+        -:  179:			ret = NULL;
+    #####:  180:			goto err;
+        -:  181:			}
+    #####:  182:		if(x)
+        -:  183:			{
+    #####:  184:			if(*x) EVP_PKEY_free((EVP_PKEY *)*x);
+    #####:  185:			*x = ret;
+        -:  186:			}
+        -:  187:		}
+        -:  188:err:
+    #####:  189:	if (ret == NULL)
+    #####:  190:		PEMerr(PEM_F_PEM_READ_BIO_PARAMETERS,ERR_R_ASN1_LIB);
+    #####:  191:	OPENSSL_free(nm);
+    #####:  192:	OPENSSL_free(data);
+    #####:  193:	return(ret);
+        -:  194:	}
+        -:  195:
+    #####:  196:int PEM_write_bio_Parameters(BIO *bp, EVP_PKEY *x)
+        -:  197:	{
+        -:  198:	char pem_str[80];
+    #####:  199:	if (!x->ameth || !x->ameth->param_encode)
+        -:  200:		return 0;
+        -:  201:
+    #####:  202:	BIO_snprintf(pem_str, 80, "%s PARAMETERS", x->ameth->pem_str);
+    #####:  203:	return PEM_ASN1_write_bio(
+    #####:  204:		(i2d_of_void *)x->ameth->param_encode,
+        -:  205:				pem_str,bp,x,NULL,NULL,0,0,NULL);
+        -:  206:	}
+        -:  207:
+        -:  208:#ifndef OPENSSL_NO_FP_API
+    #####:  209:EVP_PKEY *PEM_read_PrivateKey(FILE *fp, EVP_PKEY **x, pem_password_cb *cb, void *u)
+        -:  210:	{
+        -:  211:        BIO *b;
+        -:  212:        EVP_PKEY *ret;
+        -:  213:
+    #####:  214:        if ((b=BIO_new(BIO_s_file())) == NULL)
+        -:  215:		{
+    #####:  216:		PEMerr(PEM_F_PEM_READ_PRIVATEKEY,ERR_R_BUF_LIB);
+    #####:  217:                return(0);
+        -:  218:		}
+    #####:  219:        BIO_set_fp(b,fp,BIO_NOCLOSE);
+    #####:  220:        ret=PEM_read_bio_PrivateKey(b,x,cb,u);
+    #####:  221:        BIO_free(b);
+    #####:  222:        return(ret);
+        -:  223:	}
+        -:  224:
+    #####:  225:int PEM_write_PrivateKey(FILE *fp, EVP_PKEY *x, const EVP_CIPHER *enc,
+        -:  226:                                               unsigned char *kstr, int klen,
+        -:  227:                                               pem_password_cb *cb, void *u)
+        -:  228:	{
+        -:  229:        BIO *b;
+        -:  230:        int ret;
+        -:  231:
+    #####:  232:        if ((b=BIO_new_fp(fp, BIO_NOCLOSE)) == NULL)
+        -:  233:		{
+    #####:  234:		PEMerr(PEM_F_PEM_WRITE_PRIVATEKEY,ERR_R_BUF_LIB);
+    #####:  235:                return 0;
+        -:  236:		}
+    #####:  237:        ret=PEM_write_bio_PrivateKey(b, x, enc, kstr, klen, cb, u);
+    #####:  238:        BIO_free(b);
+    #####:  239:        return ret;
+        -:  240:	}
+        -:  241:
+        -:  242:#endif

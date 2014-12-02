@@ -1,0 +1,153 @@
+        -:    0:Source:cms_dd.c
+        -:    0:Graph:cms_dd.gcno
+        -:    0:Data:cms_dd.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* crypto/cms/cms_dd.c */
+        -:    2:/* Written by Dr Stephen N Henson (steve@openssl.org) for the OpenSSL
+        -:    3: * project.
+        -:    4: */
+        -:    5:/* ====================================================================
+        -:    6: * Copyright (c) 2008 The OpenSSL Project.  All rights reserved.
+        -:    7: *
+        -:    8: * Redistribution and use in source and binary forms, with or without
+        -:    9: * modification, are permitted provided that the following conditions
+        -:   10: * are met:
+        -:   11: *
+        -:   12: * 1. Redistributions of source code must retain the above copyright
+        -:   13: *    notice, this list of conditions and the following disclaimer. 
+        -:   14: *
+        -:   15: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   16: *    notice, this list of conditions and the following disclaimer in
+        -:   17: *    the documentation and/or other materials provided with the
+        -:   18: *    distribution.
+        -:   19: *
+        -:   20: * 3. All advertising materials mentioning features or use of this
+        -:   21: *    software must display the following acknowledgment:
+        -:   22: *    "This product includes software developed by the OpenSSL Project
+        -:   23: *    for use in the OpenSSL Toolkit. (http://www.OpenSSL.org/)"
+        -:   24: *
+        -:   25: * 4. The names "OpenSSL Toolkit" and "OpenSSL Project" must not be used to
+        -:   26: *    endorse or promote products derived from this software without
+        -:   27: *    prior written permission. For written permission, please contact
+        -:   28: *    licensing@OpenSSL.org.
+        -:   29: *
+        -:   30: * 5. Products derived from this software may not be called "OpenSSL"
+        -:   31: *    nor may "OpenSSL" appear in their names without prior written
+        -:   32: *    permission of the OpenSSL Project.
+        -:   33: *
+        -:   34: * 6. Redistributions of any form whatsoever must retain the following
+        -:   35: *    acknowledgment:
+        -:   36: *    "This product includes software developed by the OpenSSL Project
+        -:   37: *    for use in the OpenSSL Toolkit (http://www.OpenSSL.org/)"
+        -:   38: *
+        -:   39: * THIS SOFTWARE IS PROVIDED BY THE OpenSSL PROJECT ``AS IS'' AND ANY
+        -:   40: * EXPRESSED OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   41: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+        -:   42: * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE OpenSSL PROJECT OR
+        -:   43: * ITS CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+        -:   44: * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+        -:   45: * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+        -:   46: * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   47: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+        -:   48: * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+        -:   49: * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+        -:   50: * OF THE POSSIBILITY OF SUCH DAMAGE.
+        -:   51: * ====================================================================
+        -:   52: */
+        -:   53:
+        -:   54:#include "cryptlib.h"
+        -:   55:#include <openssl/asn1t.h>
+        -:   56:#include <openssl/pem.h>
+        -:   57:#include <openssl/x509v3.h>
+        -:   58:#include <openssl/err.h>
+        -:   59:#include <openssl/cms.h>
+        -:   60:#include "cms_lcl.h"
+        -:   61:
+        -:   62:DECLARE_ASN1_ITEM(CMS_DigestedData)
+        -:   63:
+        -:   64:/* CMS DigestedData Utilities */
+        -:   65:
+    #####:   66:CMS_ContentInfo *cms_DigestedData_create(const EVP_MD *md)
+        -:   67:	{
+        -:   68:	CMS_ContentInfo *cms;
+        -:   69:	CMS_DigestedData *dd;
+    #####:   70:	cms = CMS_ContentInfo_new();
+    #####:   71:	if (!cms)
+        -:   72:		return NULL;
+        -:   73:
+    #####:   74:	dd = M_ASN1_new_of(CMS_DigestedData);
+        -:   75:
+    #####:   76:	if (!dd)
+        -:   77:		goto err;
+        -:   78:
+    #####:   79:	cms->contentType = OBJ_nid2obj(NID_pkcs7_digest);
+    #####:   80:	cms->d.digestedData = dd;
+        -:   81:
+    #####:   82:	dd->version = 0;
+    #####:   83:	dd->encapContentInfo->eContentType = OBJ_nid2obj(NID_pkcs7_data);
+        -:   84:
+    #####:   85:	cms_DigestAlgorithm_set(dd->digestAlgorithm, md);
+        -:   86:
+    #####:   87:	return cms;
+        -:   88:
+        -:   89:	err:
+        -:   90:
+    #####:   91:	if (cms)
+    #####:   92:		CMS_ContentInfo_free(cms);
+        -:   93:
+        -:   94:	return NULL;
+        -:   95:	}
+        -:   96:
+    #####:   97:BIO *cms_DigestedData_init_bio(CMS_ContentInfo *cms)
+        -:   98:	{
+        -:   99:	CMS_DigestedData *dd;
+    #####:  100:	dd = cms->d.digestedData;
+    #####:  101:	return cms_DigestAlgorithm_init_bio(dd->digestAlgorithm);
+        -:  102:	}
+        -:  103:
+    #####:  104:int cms_DigestedData_do_final(CMS_ContentInfo *cms, BIO *chain, int verify)
+        -:  105:	{
+        -:  106:	EVP_MD_CTX mctx;
+        -:  107:	unsigned char md[EVP_MAX_MD_SIZE];
+        -:  108:	unsigned int mdlen;
+        -:  109:	int r = 0;
+        -:  110:	CMS_DigestedData *dd;
+    #####:  111:	EVP_MD_CTX_init(&mctx);
+        -:  112:
+    #####:  113:	dd = cms->d.digestedData;
+        -:  114:
+    #####:  115:	if (!cms_DigestAlgorithm_find_ctx(&mctx, chain, dd->digestAlgorithm))
+        -:  116:		goto err;
+        -:  117:
+    #####:  118:	if (EVP_DigestFinal_ex(&mctx, md, &mdlen) <= 0)
+        -:  119:		goto err;
+        -:  120:
+    #####:  121:	if (verify)
+        -:  122:		{
+    #####:  123:		if (mdlen != (unsigned int)dd->digest->length)
+        -:  124:			{
+    #####:  125:			CMSerr(CMS_F_CMS_DIGESTEDDATA_DO_FINAL,
+        -:  126:				CMS_R_MESSAGEDIGEST_WRONG_LENGTH);
+    #####:  127:			goto err;
+        -:  128:			}
+        -:  129:
+    #####:  130:		if (memcmp(md, dd->digest->data, mdlen))
+    #####:  131:			CMSerr(CMS_F_CMS_DIGESTEDDATA_DO_FINAL,
+        -:  132:				CMS_R_VERIFICATION_FAILURE);
+        -:  133:		else
+        -:  134:			r = 1;
+        -:  135:		}
+        -:  136:	else
+        -:  137:		{
+    #####:  138:		if (!ASN1_STRING_set(dd->digest, md, mdlen))
+        -:  139:			goto err;
+        -:  140:		r = 1;
+        -:  141:		}
+        -:  142:
+        -:  143:	err:
+    #####:  144:	EVP_MD_CTX_cleanup(&mctx);
+        -:  145:
+    #####:  146:	return r;
+        -:  147:
+        -:  148:	}

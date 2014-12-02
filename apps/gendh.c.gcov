@@ -1,0 +1,246 @@
+        -:    0:Source:gendh.c
+        -:    0:Graph:gendh.gcno
+        -:    0:Data:gendh.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* apps/gendh.c */
+        -:    2:/* obsoleted by dhparam.c */
+        -:    3:/* Copyright (C) 1995-1998 Eric Young (eay@cryptsoft.com)
+        -:    4: * All rights reserved.
+        -:    5: *
+        -:    6: * This package is an SSL implementation written
+        -:    7: * by Eric Young (eay@cryptsoft.com).
+        -:    8: * The implementation was written so as to conform with Netscapes SSL.
+        -:    9: * 
+        -:   10: * This library is free for commercial and non-commercial use as long as
+        -:   11: * the following conditions are aheared to.  The following conditions
+        -:   12: * apply to all code found in this distribution, be it the RC4, RSA,
+        -:   13: * lhash, DES, etc., code; not just the SSL code.  The SSL documentation
+        -:   14: * included with this distribution is covered by the same copyright terms
+        -:   15: * except that the holder is Tim Hudson (tjh@cryptsoft.com).
+        -:   16: * 
+        -:   17: * Copyright remains Eric Young's, and as such any Copyright notices in
+        -:   18: * the code are not to be removed.
+        -:   19: * If this package is used in a product, Eric Young should be given attribution
+        -:   20: * as the author of the parts of the library used.
+        -:   21: * This can be in the form of a textual message at program startup or
+        -:   22: * in documentation (online or textual) provided with the package.
+        -:   23: * 
+        -:   24: * Redistribution and use in source and binary forms, with or without
+        -:   25: * modification, are permitted provided that the following conditions
+        -:   26: * are met:
+        -:   27: * 1. Redistributions of source code must retain the copyright
+        -:   28: *    notice, this list of conditions and the following disclaimer.
+        -:   29: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   30: *    notice, this list of conditions and the following disclaimer in the
+        -:   31: *    documentation and/or other materials provided with the distribution.
+        -:   32: * 3. All advertising materials mentioning features or use of this software
+        -:   33: *    must display the following acknowledgement:
+        -:   34: *    "This product includes cryptographic software written by
+        -:   35: *     Eric Young (eay@cryptsoft.com)"
+        -:   36: *    The word 'cryptographic' can be left out if the rouines from the library
+        -:   37: *    being used are not cryptographic related :-).
+        -:   38: * 4. If you include any Windows specific code (or a derivative thereof) from 
+        -:   39: *    the apps directory (application code) you must include an acknowledgement:
+        -:   40: *    "This product includes software written by Tim Hudson (tjh@cryptsoft.com)"
+        -:   41: * 
+        -:   42: * THIS SOFTWARE IS PROVIDED BY ERIC YOUNG ``AS IS'' AND
+        -:   43: * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   44: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+        -:   45: * ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+        -:   46: * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+        -:   47: * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+        -:   48: * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   49: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+        -:   50: * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+        -:   51: * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+        -:   52: * SUCH DAMAGE.
+        -:   53: * 
+        -:   54: * The licence and distribution terms for any publically available version or
+        -:   55: * derivative of this code cannot be changed.  i.e. this code cannot simply be
+        -:   56: * copied and put under another distribution licence
+        -:   57: * [including the GNU Public Licence.]
+        -:   58: */
+        -:   59:
+        -:   60:#include <openssl/opensslconf.h>
+        -:   61:/* Until the key-gen callbacks are modified to use newer prototypes, we allow
+        -:   62: * deprecated functions for openssl-internal code */
+        -:   63:#ifdef OPENSSL_NO_DEPRECATED
+        -:   64:#undef OPENSSL_NO_DEPRECATED
+        -:   65:#endif
+        -:   66:
+        -:   67:#ifndef OPENSSL_NO_DH
+        -:   68:#include <stdio.h>
+        -:   69:#include <string.h>
+        -:   70:#include <sys/types.h>
+        -:   71:#include <sys/stat.h>
+        -:   72:#include "apps.h"
+        -:   73:#include <openssl/bio.h>
+        -:   74:#include <openssl/rand.h>
+        -:   75:#include <openssl/err.h>
+        -:   76:#include <openssl/bn.h>
+        -:   77:#include <openssl/dh.h>
+        -:   78:#include <openssl/x509.h>
+        -:   79:#include <openssl/pem.h>
+        -:   80:
+        -:   81:#define DEFBITS	512
+        -:   82:#undef PROG
+        -:   83:#define PROG gendh_main
+        -:   84:
+        -:   85:static int MS_CALLBACK dh_cb(int p, int n, BN_GENCB *cb);
+        -:   86:
+        -:   87:int MAIN(int, char **);
+        -:   88:
+    #####:   89:int MAIN(int argc, char **argv)
+        -:   90:	{
+        -:   91:	BN_GENCB cb;
+        -:   92:	DH *dh=NULL;
+    #####:   93:	int ret=1,num=DEFBITS;
+        -:   94:	int g=2;
+        -:   95:	char *outfile=NULL;
+        -:   96:	char *inrand=NULL;
+        -:   97:#ifndef OPENSSL_NO_ENGINE
+        -:   98:	char *engine=NULL;
+        -:   99:#endif
+        -:  100:	BIO *out=NULL;
+        -:  101:
+    #####:  102:	apps_startup();
+        -:  103:
+    #####:  104:	BN_GENCB_set(&cb, dh_cb, bio_err);
+    #####:  105:	if (bio_err == NULL)
+    #####:  106:		if ((bio_err=BIO_new(BIO_s_file())) != NULL)
+    #####:  107:			BIO_set_fp(bio_err,stderr,BIO_NOCLOSE|BIO_FP_TEXT);
+        -:  108:
+    #####:  109:	if (!load_config(bio_err, NULL))
+        -:  110:		goto end;
+        -:  111:
+    #####:  112:	argv++;
+    #####:  113:	argc--;
+        -:  114:	for (;;)
+        -:  115:		{
+    #####:  116:		if (argc <= 0) break;
+    #####:  117:		if (strcmp(*argv,"-out") == 0)
+        -:  118:			{
+    #####:  119:			if (--argc < 1) goto bad;
+    #####:  120:			outfile= *(++argv);
+        -:  121:			}
+    #####:  122:		else if (strcmp(*argv,"-2") == 0)
+        -:  123:			g=2;
+        -:  124:	/*	else if (strcmp(*argv,"-3") == 0)
+        -:  125:			g=3; */
+    #####:  126:		else if (strcmp(*argv,"-5") == 0)
+        -:  127:			g=5;
+        -:  128:#ifndef OPENSSL_NO_ENGINE
+    #####:  129:		else if (strcmp(*argv,"-engine") == 0)
+        -:  130:			{
+    #####:  131:			if (--argc < 1) goto bad;
+    #####:  132:			engine= *(++argv);
+        -:  133:			}
+        -:  134:#endif
+    #####:  135:		else if (strcmp(*argv,"-rand") == 0)
+        -:  136:			{
+    #####:  137:			if (--argc < 1) goto bad;
+    #####:  138:			inrand= *(++argv);
+        -:  139:			}
+        -:  140:		else
+        -:  141:			break;
+    #####:  142:		argv++;
+    #####:  143:		argc--;
+    #####:  144:		}
+    #####:  145:	if ((argc >= 1) && ((sscanf(*argv,"%d",&num) == 0) || (num < 0)))
+        -:  146:		{
+        -:  147:bad:
+    #####:  148:		BIO_printf(bio_err,"usage: gendh [args] [numbits]\n");
+    #####:  149:		BIO_printf(bio_err," -out file - output the key to 'file\n");
+    #####:  150:		BIO_printf(bio_err," -2        - use 2 as the generator value\n");
+        -:  151:	/*	BIO_printf(bio_err," -3        - use 3 as the generator value\n"); */
+    #####:  152:		BIO_printf(bio_err," -5        - use 5 as the generator value\n");
+        -:  153:#ifndef OPENSSL_NO_ENGINE
+    #####:  154:		BIO_printf(bio_err," -engine e - use engine e, possibly a hardware device.\n");
+        -:  155:#endif
+    #####:  156:		BIO_printf(bio_err," -rand file%cfile%c...\n", LIST_SEPARATOR_CHAR, LIST_SEPARATOR_CHAR);
+    #####:  157:		BIO_printf(bio_err,"           - load the file (or the files in the directory) into\n");
+    #####:  158:		BIO_printf(bio_err,"             the random number generator\n");
+    #####:  159:		goto end;
+        -:  160:		}
+        -:  161:		
+        -:  162:#ifndef OPENSSL_NO_ENGINE
+    #####:  163:        setup_engine(bio_err, engine, 0);
+        -:  164:#endif
+        -:  165:
+    #####:  166:	out=BIO_new(BIO_s_file());
+    #####:  167:	if (out == NULL)
+        -:  168:		{
+    #####:  169:		ERR_print_errors(bio_err);
+    #####:  170:		goto end;
+        -:  171:		}
+        -:  172:
+    #####:  173:	if (outfile == NULL)
+        -:  174:		{
+    #####:  175:		BIO_set_fp(out,stdout,BIO_NOCLOSE);
+        -:  176:#ifdef OPENSSL_SYS_VMS
+        -:  177:		{
+        -:  178:		BIO *tmpbio = BIO_new(BIO_f_linebuffer());
+        -:  179:		out = BIO_push(tmpbio, out);
+        -:  180:		}
+        -:  181:#endif
+        -:  182:		}
+        -:  183:	else
+        -:  184:		{
+    #####:  185:		if (BIO_write_filename(out,outfile) <= 0)
+        -:  186:			{
+    #####:  187:			perror(outfile);
+    #####:  188:			goto end;
+        -:  189:			}
+        -:  190:		}
+        -:  191:
+    #####:  192:	if (!app_RAND_load_file(NULL, bio_err, 1) && inrand == NULL)
+        -:  193:		{
+    #####:  194:		BIO_printf(bio_err,"warning, not much extra random data, consider using the -rand option\n");
+        -:  195:		}
+    #####:  196:	if (inrand != NULL)
+    #####:  197:		BIO_printf(bio_err,"%ld semi-random bytes loaded\n",
+        -:  198:			app_RAND_load_files(inrand));
+        -:  199:
+    #####:  200:	BIO_printf(bio_err,"Generating DH parameters, %d bit long safe prime, generator %d\n",num,g);
+    #####:  201:	BIO_printf(bio_err,"This is going to take a long time\n");
+        -:  202:
+    #####:  203:	if(((dh = DH_new()) == NULL) || !DH_generate_parameters_ex(dh, num, g, &cb))
+        -:  204:		goto end;
+        -:  205:		
+    #####:  206:	app_RAND_write_file(NULL, bio_err);
+        -:  207:
+    #####:  208:	if (!PEM_write_bio_DHparams(out,dh))
+        -:  209:		goto end;
+        -:  210:	ret=0;
+        -:  211:end:
+    #####:  212:	if (ret != 0)
+    #####:  213:		ERR_print_errors(bio_err);
+    #####:  214:	if (out != NULL) BIO_free_all(out);
+    #####:  215:	if (dh != NULL) DH_free(dh);
+        -:  216:	apps_shutdown();
+    #####:  217:	OPENSSL_EXIT(ret);
+        -:  218:	}
+        -:  219:
+    #####:  220:static int MS_CALLBACK dh_cb(int p, int n, BN_GENCB *cb)
+        -:  221:	{
+    #####:  222:	char c='*';
+        -:  223:
+    #####:  224:	if (p == 0) c='.';
+    #####:  225:	if (p == 1) c='+';
+    #####:  226:	if (p == 2) c='*';
+    #####:  227:	if (p == 3) c='\n';
+    #####:  228:	BIO_write(cb->arg,&c,1);
+    #####:  229:	(void)BIO_flush(cb->arg);
+        -:  230:#ifdef LINT
+        -:  231:	p=n;
+        -:  232:#endif
+    #####:  233:	return 1;
+        -:  234:	}
+        -:  235:#else /* !OPENSSL_NO_DH */
+        -:  236:
+        -:  237:# if PEDANTIC
+        -:  238:static void *dummy=&dummy;
+        -:  239:# endif
+        -:  240:
+        -:  241:#endif

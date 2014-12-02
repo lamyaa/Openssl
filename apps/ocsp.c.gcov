@@ -1,0 +1,1426 @@
+        -:    0:Source:ocsp.c
+        -:    0:Graph:ocsp.gcno
+        -:    0:Data:ocsp.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* ocsp.c */
+        -:    2:/* Written by Dr Stephen N Henson (steve@openssl.org) for the OpenSSL
+        -:    3: * project 2000.
+        -:    4: */
+        -:    5:/* ====================================================================
+        -:    6: * Copyright (c) 1999 The OpenSSL Project.  All rights reserved.
+        -:    7: *
+        -:    8: * Redistribution and use in source and binary forms, with or without
+        -:    9: * modification, are permitted provided that the following conditions
+        -:   10: * are met:
+        -:   11: *
+        -:   12: * 1. Redistributions of source code must retain the above copyright
+        -:   13: *    notice, this list of conditions and the following disclaimer. 
+        -:   14: *
+        -:   15: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   16: *    notice, this list of conditions and the following disclaimer in
+        -:   17: *    the documentation and/or other materials provided with the
+        -:   18: *    distribution.
+        -:   19: *
+        -:   20: * 3. All advertising materials mentioning features or use of this
+        -:   21: *    software must display the following acknowledgment:
+        -:   22: *    "This product includes software developed by the OpenSSL Project
+        -:   23: *    for use in the OpenSSL Toolkit. (http://www.OpenSSL.org/)"
+        -:   24: *
+        -:   25: * 4. The names "OpenSSL Toolkit" and "OpenSSL Project" must not be used to
+        -:   26: *    endorse or promote products derived from this software without
+        -:   27: *    prior written permission. For written permission, please contact
+        -:   28: *    licensing@OpenSSL.org.
+        -:   29: *
+        -:   30: * 5. Products derived from this software may not be called "OpenSSL"
+        -:   31: *    nor may "OpenSSL" appear in their names without prior written
+        -:   32: *    permission of the OpenSSL Project.
+        -:   33: *
+        -:   34: * 6. Redistributions of any form whatsoever must retain the following
+        -:   35: *    acknowledgment:
+        -:   36: *    "This product includes software developed by the OpenSSL Project
+        -:   37: *    for use in the OpenSSL Toolkit (http://www.OpenSSL.org/)"
+        -:   38: *
+        -:   39: * THIS SOFTWARE IS PROVIDED BY THE OpenSSL PROJECT ``AS IS'' AND ANY
+        -:   40: * EXPRESSED OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   41: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+        -:   42: * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE OpenSSL PROJECT OR
+        -:   43: * ITS CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+        -:   44: * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+        -:   45: * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+        -:   46: * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   47: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+        -:   48: * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+        -:   49: * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+        -:   50: * OF THE POSSIBILITY OF SUCH DAMAGE.
+        -:   51: * ====================================================================
+        -:   52: *
+        -:   53: * This product includes cryptographic software written by Eric Young
+        -:   54: * (eay@cryptsoft.com).  This product includes software written by Tim
+        -:   55: * Hudson (tjh@cryptsoft.com).
+        -:   56: *
+        -:   57: */
+        -:   58:#ifndef OPENSSL_NO_OCSP
+        -:   59:
+        -:   60:#ifdef OPENSSL_SYS_VMS
+        -:   61:#define _XOPEN_SOURCE_EXTENDED	/* So fd_set and friends get properly defined
+        -:   62:				   on OpenVMS */
+        -:   63:#endif
+        -:   64:
+        -:   65:#define USE_SOCKETS
+        -:   66:
+        -:   67:#include <stdio.h>
+        -:   68:#include <stdlib.h>
+        -:   69:#include <string.h>
+        -:   70:#include <time.h>
+        -:   71:#include "apps.h" /* needs to be included before the openssl headers! */
+        -:   72:#include <openssl/e_os2.h>
+        -:   73:#include <openssl/crypto.h>
+        -:   74:#include <openssl/err.h>
+        -:   75:#include <openssl/ssl.h>
+        -:   76:#include <openssl/evp.h>
+        -:   77:#include <openssl/bn.h>
+        -:   78:#include <openssl/x509v3.h>
+        -:   79:
+        -:   80:#if defined(NETWARE_CLIB)
+        -:   81:#  ifdef NETWARE_BSDSOCK
+        -:   82:#    include <sys/socket.h>
+        -:   83:#    include <sys/bsdskt.h>
+        -:   84:#  else
+        -:   85:#    include <novsock2.h>
+        -:   86:#  endif
+        -:   87:#elif defined(NETWARE_LIBC)
+        -:   88:#  ifdef NETWARE_BSDSOCK
+        -:   89:#    include <sys/select.h>
+        -:   90:#  else
+        -:   91:#    include <novsock2.h>
+        -:   92:#  endif
+        -:   93:#endif
+        -:   94:  
+        -:   95:/* Maximum leeway in validity period: default 5 minutes */
+        -:   96:#define MAX_VALIDITY_PERIOD	(5 * 60)
+        -:   97:
+        -:   98:static int add_ocsp_cert(OCSP_REQUEST **req, X509 *cert, const EVP_MD *cert_id_md, X509 *issuer,
+        -:   99:				STACK_OF(OCSP_CERTID) *ids);
+        -:  100:static int add_ocsp_serial(OCSP_REQUEST **req, char *serial, const EVP_MD * cert_id_md, X509 *issuer,
+        -:  101:				STACK_OF(OCSP_CERTID) *ids);
+        -:  102:static int print_ocsp_summary(BIO *out, OCSP_BASICRESP *bs, OCSP_REQUEST *req,
+        -:  103:			      STACK_OF(OPENSSL_STRING) *names,
+        -:  104:			      STACK_OF(OCSP_CERTID) *ids, long nsec,
+        -:  105:			      long maxage);
+        -:  106:
+        -:  107:static int make_ocsp_response(OCSP_RESPONSE **resp, OCSP_REQUEST *req, CA_DB *db,
+        -:  108:			X509 *ca, X509 *rcert, EVP_PKEY *rkey,
+        -:  109:			STACK_OF(X509) *rother, unsigned long flags,
+        -:  110:			int nmin, int ndays);
+        -:  111:
+        -:  112:static char **lookup_serial(CA_DB *db, ASN1_INTEGER *ser);
+        -:  113:static BIO *init_responder(char *port);
+        -:  114:static int do_responder(OCSP_REQUEST **preq, BIO **pcbio, BIO *acbio, char *port);
+        -:  115:static int send_ocsp_response(BIO *cbio, OCSP_RESPONSE *resp);
+        -:  116:static OCSP_RESPONSE *query_responder(BIO *err, BIO *cbio, char *path,
+        -:  117:				STACK_OF(CONF_VALUE) *headers,
+        -:  118:				OCSP_REQUEST *req, int req_timeout);
+        -:  119:
+        -:  120:#undef PROG
+        -:  121:#define PROG ocsp_main
+        -:  122:
+        -:  123:int MAIN(int, char **);
+        -:  124:
+    #####:  125:int MAIN(int argc, char **argv)
+        -:  126:	{
+        -:  127:	ENGINE *e = NULL;
+        -:  128:	char **args;
+    #####:  129:	char *host = NULL, *port = NULL, *path = "/";
+        -:  130:	char *reqin = NULL, *respin = NULL;
+        -:  131:	char *reqout = NULL, *respout = NULL;
+        -:  132:	char *signfile = NULL, *keyfile = NULL;
+        -:  133:	char *rsignfile = NULL, *rkeyfile = NULL;
+        -:  134:	char *outfile = NULL;
+    #####:  135:	int add_nonce = 1, noverify = 0, use_ssl = -1;
+    #####:  136:	STACK_OF(CONF_VALUE) *headers = NULL;
+    #####:  137:	OCSP_REQUEST *req = NULL;
+    #####:  138:	OCSP_RESPONSE *resp = NULL;
+        -:  139:	OCSP_BASICRESP *bs = NULL;
+        -:  140:	X509 *issuer = NULL, *cert = NULL;
+        -:  141:	X509 *signer = NULL, *rsigner = NULL;
+        -:  142:	EVP_PKEY *key = NULL, *rkey = NULL;
+    #####:  143:	BIO *acbio = NULL, *cbio = NULL;
+        -:  144:	BIO *derbio = NULL;
+        -:  145:	BIO *out = NULL;
+        -:  146:	int req_timeout = -1;
+        -:  147:	int req_text = 0, resp_text = 0;
+        -:  148:	long nsec = MAX_VALIDITY_PERIOD, maxage = -1;
+        -:  149:	char *CAfile = NULL, *CApath = NULL;
+        -:  150:	X509_STORE *store = NULL;
+        -:  151:	STACK_OF(X509) *sign_other = NULL, *verify_other = NULL, *rother = NULL;
+        -:  152:	char *sign_certfile = NULL, *verify_certfile = NULL, *rcertfile = NULL;
+        -:  153:	unsigned long sign_flags = 0, verify_flags = 0, rflags = 0;
+        -:  154:	int ret = 1;
+        -:  155:	int accept_count = -1;
+        -:  156:	int badarg = 0;
+        -:  157:	int i;
+        -:  158:	int ignore_err = 0;
+        -:  159:	STACK_OF(OPENSSL_STRING) *reqnames = NULL;
+        -:  160:	STACK_OF(OCSP_CERTID) *ids = NULL;
+        -:  161:
+        -:  162:	X509 *rca_cert = NULL;
+        -:  163:	char *ridx_filename = NULL;
+        -:  164:	char *rca_filename = NULL;
+        -:  165:	CA_DB *rdb = NULL;
+        -:  166:	int nmin = 0, ndays = -1;
+        -:  167:	const EVP_MD *cert_id_md = NULL;
+        -:  168:
+    #####:  169:	if (bio_err == NULL) bio_err = BIO_new_fp(stderr, BIO_NOCLOSE);
+        -:  170:
+    #####:  171:	if (!load_config(bio_err, NULL))
+        -:  172:		goto end;
+    #####:  173:	SSL_load_error_strings();
+    #####:  174:	OpenSSL_add_ssl_algorithms();
+    #####:  175:	args = argv + 1;
+    #####:  176:	reqnames = sk_OPENSSL_STRING_new_null();
+    #####:  177:	ids = sk_OCSP_CERTID_new_null();
+    #####:  178:	while (!badarg && *args && *args[0] == '-')
+        -:  179:		{
+    #####:  180:		if (!strcmp(*args, "-out"))
+        -:  181:			{
+    #####:  182:			if (args[1])
+        -:  183:				{
+    #####:  184:				args++;
+        -:  185:				outfile = *args;
+        -:  186:				}
+        -:  187:			else badarg = 1;
+        -:  188:			}
+    #####:  189:		else if (!strcmp(*args, "-timeout"))
+        -:  190:			{
+    #####:  191:			if (args[1])
+        -:  192:				{
+    #####:  193:				args++;
+    #####:  194:				req_timeout = atol(*args);
+    #####:  195:				if (req_timeout < 0)
+        -:  196:					{
+    #####:  197:					BIO_printf(bio_err,
+        -:  198:						"Illegal timeout value %s\n",
+        -:  199:						*args);
+        -:  200:					badarg = 1;
+        -:  201:					}
+        -:  202:				}
+        -:  203:			else badarg = 1;
+        -:  204:			}
+    #####:  205:		else if (!strcmp(*args, "-url"))
+        -:  206:			{
+    #####:  207:			if (args[1])
+        -:  208:				{
+    #####:  209:				args++;
+    #####:  210:				if (!OCSP_parse_url(*args, &host, &port, &path, &use_ssl))
+        -:  211:					{
+    #####:  212:					BIO_printf(bio_err, "Error parsing URL\n");
+        -:  213:					badarg = 1;
+        -:  214:					}
+        -:  215:				}
+        -:  216:			else badarg = 1;
+        -:  217:			}
+    #####:  218:		else if (!strcmp(*args, "-host"))
+        -:  219:			{
+    #####:  220:			if (args[1])
+        -:  221:				{
+    #####:  222:				args++;
+    #####:  223:				host = *args;
+        -:  224:				}
+        -:  225:			else badarg = 1;
+        -:  226:			}
+    #####:  227:		else if (!strcmp(*args, "-port"))
+        -:  228:			{
+    #####:  229:			if (args[1])
+        -:  230:				{
+    #####:  231:				args++;
+    #####:  232:				port = *args;
+        -:  233:				}
+        -:  234:			else badarg = 1;
+        -:  235:			}
+    #####:  236:		else if (!strcmp(*args, "-header"))
+        -:  237:			{
+    #####:  238:			if (args[1] && args[2])
+        -:  239:				{
+    #####:  240:				if (!X509V3_add_value(args[1], args[2], &headers))
+        -:  241:					goto end;
+    #####:  242:				args += 2;
+        -:  243:				}
+        -:  244:			else badarg = 1;
+        -:  245:			}
+    #####:  246:		else if (!strcmp(*args, "-ignore_err"))
+        -:  247:			ignore_err = 1;
+    #####:  248:		else if (!strcmp(*args, "-noverify"))
+        -:  249:			noverify = 1;
+    #####:  250:		else if (!strcmp(*args, "-nonce"))
+        -:  251:			add_nonce = 2;
+    #####:  252:		else if (!strcmp(*args, "-no_nonce"))
+        -:  253:			add_nonce = 0;
+    #####:  254:		else if (!strcmp(*args, "-resp_no_certs"))
+    #####:  255:			rflags |= OCSP_NOCERTS;
+    #####:  256:		else if (!strcmp(*args, "-resp_key_id"))
+    #####:  257:			rflags |= OCSP_RESPID_KEY;
+    #####:  258:		else if (!strcmp(*args, "-no_certs"))
+        -:  259:			sign_flags |= OCSP_NOCERTS;
+    #####:  260:		else if (!strcmp(*args, "-no_signature_verify"))
+    #####:  261:			verify_flags |= OCSP_NOSIGS;
+    #####:  262:		else if (!strcmp(*args, "-no_cert_verify"))
+    #####:  263:			verify_flags |= OCSP_NOVERIFY;
+    #####:  264:		else if (!strcmp(*args, "-no_chain"))
+    #####:  265:			verify_flags |= OCSP_NOCHAIN;
+    #####:  266:		else if (!strcmp(*args, "-no_cert_checks"))
+    #####:  267:			verify_flags |= OCSP_NOCHECKS;
+    #####:  268:		else if (!strcmp(*args, "-no_explicit"))
+    #####:  269:			verify_flags |= OCSP_NOEXPLICIT;
+    #####:  270:		else if (!strcmp(*args, "-trust_other"))
+    #####:  271:			verify_flags |= OCSP_TRUSTOTHER;
+    #####:  272:		else if (!strcmp(*args, "-no_intern"))
+    #####:  273:			verify_flags |= OCSP_NOINTERN;
+    #####:  274:		else if (!strcmp(*args, "-text"))
+        -:  275:			{
+        -:  276:			req_text = 1;
+        -:  277:			resp_text = 1;
+        -:  278:			}
+    #####:  279:		else if (!strcmp(*args, "-req_text"))
+        -:  280:			req_text = 1;
+    #####:  281:		else if (!strcmp(*args, "-resp_text"))
+        -:  282:			resp_text = 1;
+    #####:  283:		else if (!strcmp(*args, "-reqin"))
+        -:  284:			{
+    #####:  285:			if (args[1])
+        -:  286:				{
+    #####:  287:				args++;
+        -:  288:				reqin = *args;
+        -:  289:				}
+        -:  290:			else badarg = 1;
+        -:  291:			}
+    #####:  292:		else if (!strcmp(*args, "-respin"))
+        -:  293:			{
+    #####:  294:			if (args[1])
+        -:  295:				{
+    #####:  296:				args++;
+        -:  297:				respin = *args;
+        -:  298:				}
+        -:  299:			else badarg = 1;
+        -:  300:			}
+    #####:  301:		else if (!strcmp(*args, "-signer"))
+        -:  302:			{
+    #####:  303:			if (args[1])
+        -:  304:				{
+    #####:  305:				args++;
+        -:  306:				signfile = *args;
+        -:  307:				}
+        -:  308:			else badarg = 1;
+        -:  309:			}
+    #####:  310:		else if (!strcmp (*args, "-VAfile"))
+        -:  311:			{
+    #####:  312:			if (args[1])
+        -:  313:				{
+    #####:  314:				args++;
+        -:  315:				verify_certfile = *args;
+    #####:  316:				verify_flags |= OCSP_TRUSTOTHER;
+        -:  317:				}
+        -:  318:			else badarg = 1;
+        -:  319:			}
+    #####:  320:		else if (!strcmp(*args, "-sign_other"))
+        -:  321:			{
+    #####:  322:			if (args[1])
+        -:  323:				{
+    #####:  324:				args++;
+        -:  325:				sign_certfile = *args;
+        -:  326:				}
+        -:  327:			else badarg = 1;
+        -:  328:			}
+    #####:  329:		else if (!strcmp(*args, "-verify_other"))
+        -:  330:			{
+    #####:  331:			if (args[1])
+        -:  332:				{
+    #####:  333:				args++;
+        -:  334:				verify_certfile = *args;
+        -:  335:				}
+        -:  336:			else badarg = 1;
+        -:  337:			}
+    #####:  338:		else if (!strcmp (*args, "-CAfile"))
+        -:  339:			{
+    #####:  340:			if (args[1])
+        -:  341:				{
+    #####:  342:				args++;
+        -:  343:				CAfile = *args;
+        -:  344:				}
+        -:  345:			else badarg = 1;
+        -:  346:			}
+    #####:  347:		else if (!strcmp (*args, "-CApath"))
+        -:  348:			{
+    #####:  349:			if (args[1])
+        -:  350:				{
+    #####:  351:				args++;
+        -:  352:				CApath = *args;
+        -:  353:				}
+        -:  354:			else badarg = 1;
+        -:  355:			}
+    #####:  356:		else if (!strcmp (*args, "-validity_period"))
+        -:  357:			{
+    #####:  358:			if (args[1])
+        -:  359:				{
+    #####:  360:				args++;
+        -:  361:				nsec = atol(*args);
+    #####:  362:				if (nsec < 0)
+        -:  363:					{
+    #####:  364:					BIO_printf(bio_err,
+        -:  365:						"Illegal validity period %s\n",
+        -:  366:						*args);
+        -:  367:					badarg = 1;
+        -:  368:					}
+        -:  369:				}
+        -:  370:			else badarg = 1;
+        -:  371:			}
+    #####:  372:		else if (!strcmp (*args, "-status_age"))
+        -:  373:			{
+    #####:  374:			if (args[1])
+        -:  375:				{
+    #####:  376:				args++;
+        -:  377:				maxage = atol(*args);
+    #####:  378:				if (maxage < 0)
+        -:  379:					{
+    #####:  380:					BIO_printf(bio_err,
+        -:  381:						"Illegal validity age %s\n",
+        -:  382:						*args);
+        -:  383:					badarg = 1;
+        -:  384:					}
+        -:  385:				}
+        -:  386:			else badarg = 1;
+        -:  387:			}
+    #####:  388:		 else if (!strcmp(*args, "-signkey"))
+        -:  389:			{
+    #####:  390:			if (args[1])
+        -:  391:				{
+    #####:  392:				args++;
+        -:  393:				keyfile = *args;
+        -:  394:				}
+        -:  395:			else badarg = 1;
+        -:  396:			}
+    #####:  397:		else if (!strcmp(*args, "-reqout"))
+        -:  398:			{
+    #####:  399:			if (args[1])
+        -:  400:				{
+    #####:  401:				args++;
+        -:  402:				reqout = *args;
+        -:  403:				}
+        -:  404:			else badarg = 1;
+        -:  405:			}
+    #####:  406:		else if (!strcmp(*args, "-respout"))
+        -:  407:			{
+    #####:  408:			if (args[1])
+        -:  409:				{
+    #####:  410:				args++;
+        -:  411:				respout = *args;
+        -:  412:				}
+        -:  413:			else badarg = 1;
+        -:  414:			}
+    #####:  415:		 else if (!strcmp(*args, "-path"))
+        -:  416:			{
+    #####:  417:			if (args[1])
+        -:  418:				{
+    #####:  419:				args++;
+    #####:  420:				path = *args;
+        -:  421:				}
+        -:  422:			else badarg = 1;
+        -:  423:			}
+    #####:  424:		else if (!strcmp(*args, "-issuer"))
+        -:  425:			{
+    #####:  426:			if (args[1])
+        -:  427:				{
+    #####:  428:				args++;
+    #####:  429:				X509_free(issuer);
+    #####:  430:				issuer = load_cert(bio_err, *args, FORMAT_PEM,
+        -:  431:					NULL, e, "issuer certificate");
+    #####:  432:				if(!issuer) goto end;
+        -:  433:				}
+        -:  434:			else badarg = 1;
+        -:  435:			}
+    #####:  436:		else if (!strcmp (*args, "-cert"))
+        -:  437:			{
+    #####:  438:			if (args[1])
+        -:  439:				{
+    #####:  440:				args++;
+    #####:  441:				X509_free(cert);
+    #####:  442:				cert = load_cert(bio_err, *args, FORMAT_PEM,
+        -:  443:					NULL, e, "certificate");
+    #####:  444:				if(!cert) goto end;
+    #####:  445:				if (!cert_id_md) cert_id_md = EVP_sha1();
+    #####:  446:				if(!add_ocsp_cert(&req, cert, cert_id_md, issuer, ids))
+        -:  447:					goto end;
+    #####:  448:				if(!sk_OPENSSL_STRING_push(reqnames, *args))
+        -:  449:					goto end;
+        -:  450:				}
+        -:  451:			else badarg = 1;
+        -:  452:			}
+    #####:  453:		else if (!strcmp(*args, "-serial"))
+        -:  454:			{
+    #####:  455:			if (args[1])
+        -:  456:				{
+    #####:  457:				args++;
+    #####:  458:				if (!cert_id_md) cert_id_md = EVP_sha1();
+    #####:  459:				if(!add_ocsp_serial(&req, *args, cert_id_md, issuer, ids))
+        -:  460:					goto end;
+    #####:  461:				if(!sk_OPENSSL_STRING_push(reqnames, *args))
+        -:  462:					goto end;
+        -:  463:				}
+        -:  464:			else badarg = 1;
+        -:  465:			}
+    #####:  466:		else if (!strcmp(*args, "-index"))
+        -:  467:			{
+    #####:  468:			if (args[1])
+        -:  469:				{
+    #####:  470:				args++;
+        -:  471:				ridx_filename = *args;
+        -:  472:				}
+        -:  473:			else badarg = 1;
+        -:  474:			}
+    #####:  475:		else if (!strcmp(*args, "-CA"))
+        -:  476:			{
+    #####:  477:			if (args[1])
+        -:  478:				{
+    #####:  479:				args++;
+        -:  480:				rca_filename = *args;
+        -:  481:				}
+        -:  482:			else badarg = 1;
+        -:  483:			}
+    #####:  484:		else if (!strcmp (*args, "-nmin"))
+        -:  485:			{
+    #####:  486:			if (args[1])
+        -:  487:				{
+    #####:  488:				args++;
+    #####:  489:				nmin = atol(*args);
+    #####:  490:				if (nmin < 0)
+        -:  491:					{
+    #####:  492:					BIO_printf(bio_err,
+        -:  493:						"Illegal update period %s\n",
+        -:  494:						*args);
+        -:  495:					badarg = 1;
+        -:  496:					}
+        -:  497:				}
+    #####:  498:				if (ndays == -1)
+        -:  499:					ndays = 0;
+        -:  500:			else badarg = 1;
+        -:  501:			}
+    #####:  502:		else if (!strcmp (*args, "-nrequest"))
+        -:  503:			{
+    #####:  504:			if (args[1])
+        -:  505:				{
+    #####:  506:				args++;
+    #####:  507:				accept_count = atol(*args);
+    #####:  508:				if (accept_count < 0)
+        -:  509:					{
+    #####:  510:					BIO_printf(bio_err,
+        -:  511:						"Illegal accept count %s\n",
+        -:  512:						*args);
+        -:  513:					badarg = 1;
+        -:  514:					}
+        -:  515:				}
+        -:  516:			else badarg = 1;
+        -:  517:			}
+    #####:  518:		else if (!strcmp (*args, "-ndays"))
+        -:  519:			{
+    #####:  520:			if (args[1])
+        -:  521:				{
+    #####:  522:				args++;
+    #####:  523:				ndays = atol(*args);
+    #####:  524:				if (ndays < 0)
+        -:  525:					{
+    #####:  526:					BIO_printf(bio_err,
+        -:  527:						"Illegal update period %s\n",
+        -:  528:						*args);
+        -:  529:					badarg = 1;
+        -:  530:					}
+        -:  531:				}
+        -:  532:			else badarg = 1;
+        -:  533:			}
+    #####:  534:		else if (!strcmp(*args, "-rsigner"))
+        -:  535:			{
+    #####:  536:			if (args[1])
+        -:  537:				{
+    #####:  538:				args++;
+        -:  539:				rsignfile = *args;
+        -:  540:				}
+        -:  541:			else badarg = 1;
+        -:  542:			}
+    #####:  543:		else if (!strcmp(*args, "-rkey"))
+        -:  544:			{
+    #####:  545:			if (args[1])
+        -:  546:				{
+    #####:  547:				args++;
+        -:  548:				rkeyfile = *args;
+        -:  549:				}
+        -:  550:			else badarg = 1;
+        -:  551:			}
+    #####:  552:		else if (!strcmp(*args, "-rother"))
+        -:  553:			{
+    #####:  554:			if (args[1])
+        -:  555:				{
+    #####:  556:				args++;
+        -:  557:				rcertfile = *args;
+        -:  558:				}
+        -:  559:			else badarg = 1;
+        -:  560:			}
+    #####:  561:		else if ((cert_id_md = EVP_get_digestbyname((*args)+1))==NULL)
+        -:  562:			{
+        -:  563:			badarg = 1;
+        -:  564:			}
+    #####:  565:		args++;
+        -:  566:		}
+        -:  567:
+        -:  568:	/* Have we anything to do? */
+    #####:  569:	if (!req && !reqin && !respin && !(port && ridx_filename)) badarg = 1;
+        -:  570:
+    #####:  571:	if (badarg)
+        -:  572:		{
+    #####:  573:		BIO_printf (bio_err, "OCSP utility\n");
+    #####:  574:		BIO_printf (bio_err, "Usage ocsp [options]\n");
+    #####:  575:		BIO_printf (bio_err, "where options are\n");
+    #####:  576:		BIO_printf (bio_err, "-out file          output filename\n");
+    #####:  577:		BIO_printf (bio_err, "-issuer file       issuer certificate\n");
+    #####:  578:		BIO_printf (bio_err, "-cert file         certificate to check\n");
+    #####:  579:		BIO_printf (bio_err, "-serial n          serial number to check\n");
+    #####:  580:		BIO_printf (bio_err, "-signer file       certificate to sign OCSP request with\n");
+    #####:  581:		BIO_printf (bio_err, "-signkey file      private key to sign OCSP request with\n");
+    #####:  582:		BIO_printf (bio_err, "-sign_other file   additional certificates to include in signed request\n");
+    #####:  583:		BIO_printf (bio_err, "-no_certs          don't include any certificates in signed request\n");
+    #####:  584:		BIO_printf (bio_err, "-req_text          print text form of request\n");
+    #####:  585:		BIO_printf (bio_err, "-resp_text         print text form of response\n");
+    #####:  586:		BIO_printf (bio_err, "-text              print text form of request and response\n");
+    #####:  587:		BIO_printf (bio_err, "-reqout file       write DER encoded OCSP request to \"file\"\n");
+    #####:  588:		BIO_printf (bio_err, "-respout file      write DER encoded OCSP reponse to \"file\"\n");
+    #####:  589:		BIO_printf (bio_err, "-reqin file        read DER encoded OCSP request from \"file\"\n");
+    #####:  590:		BIO_printf (bio_err, "-respin file       read DER encoded OCSP reponse from \"file\"\n");
+    #####:  591:		BIO_printf (bio_err, "-nonce             add OCSP nonce to request\n");
+    #####:  592:		BIO_printf (bio_err, "-no_nonce          don't add OCSP nonce to request\n");
+    #####:  593:		BIO_printf (bio_err, "-url URL           OCSP responder URL\n");
+    #####:  594:		BIO_printf (bio_err, "-host host:n       send OCSP request to host on port n\n");
+    #####:  595:		BIO_printf (bio_err, "-path              path to use in OCSP request\n");
+    #####:  596:		BIO_printf (bio_err, "-CApath dir        trusted certificates directory\n");
+    #####:  597:		BIO_printf (bio_err, "-CAfile file       trusted certificates file\n");
+    #####:  598:		BIO_printf (bio_err, "-VAfile file       validator certificates file\n");
+    #####:  599:		BIO_printf (bio_err, "-validity_period n maximum validity discrepancy in seconds\n");
+    #####:  600:		BIO_printf (bio_err, "-status_age n      maximum status age in seconds\n");
+    #####:  601:		BIO_printf (bio_err, "-noverify          don't verify response at all\n");
+    #####:  602:		BIO_printf (bio_err, "-verify_other file additional certificates to search for signer\n");
+    #####:  603:		BIO_printf (bio_err, "-trust_other       don't verify additional certificates\n");
+    #####:  604:		BIO_printf (bio_err, "-no_intern         don't search certificates contained in response for signer\n");
+    #####:  605:		BIO_printf (bio_err, "-no_signature_verify don't check signature on response\n");
+    #####:  606:		BIO_printf (bio_err, "-no_cert_verify    don't check signing certificate\n");
+    #####:  607:		BIO_printf (bio_err, "-no_chain          don't chain verify response\n");
+    #####:  608:		BIO_printf (bio_err, "-no_cert_checks    don't do additional checks on signing certificate\n");
+    #####:  609:		BIO_printf (bio_err, "-port num		 port to run responder on\n");
+    #####:  610:		BIO_printf (bio_err, "-index file	 certificate status index file\n");
+    #####:  611:		BIO_printf (bio_err, "-CA file		 CA certificate\n");
+    #####:  612:		BIO_printf (bio_err, "-rsigner file	 responder certificate to sign responses with\n");
+    #####:  613:		BIO_printf (bio_err, "-rkey file	 responder key to sign responses with\n");
+    #####:  614:		BIO_printf (bio_err, "-rother file	 other certificates to include in response\n");
+    #####:  615:		BIO_printf (bio_err, "-resp_no_certs     don't include any certificates in response\n");
+    #####:  616:		BIO_printf (bio_err, "-nmin n	 	 number of minutes before next update\n");
+    #####:  617:		BIO_printf (bio_err, "-ndays n	 	 number of days before next update\n");
+    #####:  618:		BIO_printf (bio_err, "-resp_key_id       identify reponse by signing certificate key ID\n");
+    #####:  619:		BIO_printf (bio_err, "-nrequest n        number of requests to accept (default unlimited)\n");
+    #####:  620:		BIO_printf (bio_err, "-<dgst alg>     use specified digest in the request\n");
+    #####:  621:		goto end;
+        -:  622:		}
+        -:  623:
+    #####:  624:	if(outfile) out = BIO_new_file(outfile, "w");
+    #####:  625:	else out = BIO_new_fp(stdout, BIO_NOCLOSE);
+        -:  626:
+    #####:  627:	if(!out)
+        -:  628:		{
+    #####:  629:		BIO_printf(bio_err, "Error opening output file\n");
+    #####:  630:		goto end;
+        -:  631:		}
+        -:  632:
+    #####:  633:	if (!req && (add_nonce != 2)) add_nonce = 0;
+        -:  634:
+    #####:  635:	if (!req && reqin)
+        -:  636:		{
+    #####:  637:		derbio = BIO_new_file(reqin, "rb");
+    #####:  638:		if (!derbio)
+        -:  639:			{
+    #####:  640:			BIO_printf(bio_err, "Error Opening OCSP request file\n");
+    #####:  641:			goto end;
+        -:  642:			}
+    #####:  643:		req = d2i_OCSP_REQUEST_bio(derbio, NULL);
+    #####:  644:		BIO_free(derbio);
+    #####:  645:		if(!req)
+        -:  646:			{
+    #####:  647:			BIO_printf(bio_err, "Error reading OCSP request\n");
+    #####:  648:			goto end;
+        -:  649:			}
+        -:  650:		}
+        -:  651:
+    #####:  652:	if (!req && port)
+        -:  653:		{
+    #####:  654:		acbio = init_responder(port);
+    #####:  655:		if (!acbio)
+        -:  656:			goto end;
+        -:  657:		}
+        -:  658:
+    #####:  659:	if (rsignfile && !rdb)
+        -:  660:		{
+    #####:  661:		if (!rkeyfile) rkeyfile = rsignfile;
+    #####:  662:		rsigner = load_cert(bio_err, rsignfile, FORMAT_PEM,
+        -:  663:			NULL, e, "responder certificate");
+    #####:  664:		if (!rsigner)
+        -:  665:			{
+    #####:  666:			BIO_printf(bio_err, "Error loading responder certificate\n");
+    #####:  667:			goto end;
+        -:  668:			}
+    #####:  669:		rca_cert = load_cert(bio_err, rca_filename, FORMAT_PEM,
+        -:  670:			NULL, e, "CA certificate");
+    #####:  671:		if (rcertfile)
+        -:  672:			{
+    #####:  673:			rother = load_certs(bio_err, rcertfile, FORMAT_PEM,
+        -:  674:				NULL, e, "responder other certificates");
+    #####:  675:			if (!rother) goto end;
+        -:  676:			}
+    #####:  677:		rkey = load_key(bio_err, rkeyfile, FORMAT_PEM, 0, NULL, NULL,
+        -:  678:			"responder private key");
+    #####:  679:		if (!rkey)
+        -:  680:			goto end;
+        -:  681:		}
+    #####:  682:	if(acbio)
+    #####:  683:		BIO_printf(bio_err, "Waiting for OCSP client connections...\n");
+        -:  684:
+        -:  685:	redo_accept:
+        -:  686:
+    #####:  687:	if (acbio)
+        -:  688:		{
+    #####:  689:		if (!do_responder(&req, &cbio, acbio, port))
+        -:  690:			goto end;
+    #####:  691:		if (!req)
+        -:  692:			{
+    #####:  693:			resp = OCSP_response_create(OCSP_RESPONSE_STATUS_MALFORMEDREQUEST, NULL);
+    #####:  694:			send_ocsp_response(cbio, resp);
+    #####:  695:			goto done_resp;
+        -:  696:			}
+        -:  697:		}
+        -:  698:
+    #####:  699:	if (!req && (signfile || reqout || host || add_nonce || ridx_filename))
+        -:  700:		{
+    #####:  701:		BIO_printf(bio_err, "Need an OCSP request for this operation!\n");
+    #####:  702:		goto end;
+        -:  703:		}
+        -:  704:
+    #####:  705:	if (req && add_nonce) OCSP_request_add1_nonce(req, NULL, -1);
+        -:  706:
+    #####:  707:	if (signfile)
+        -:  708:		{
+    #####:  709:		if (!keyfile) keyfile = signfile;
+    #####:  710:		signer = load_cert(bio_err, signfile, FORMAT_PEM,
+        -:  711:			NULL, e, "signer certificate");
+    #####:  712:		if (!signer)
+        -:  713:			{
+    #####:  714:			BIO_printf(bio_err, "Error loading signer certificate\n");
+    #####:  715:			goto end;
+        -:  716:			}
+    #####:  717:		if (sign_certfile)
+        -:  718:			{
+    #####:  719:			sign_other = load_certs(bio_err, sign_certfile, FORMAT_PEM,
+        -:  720:				NULL, e, "signer certificates");
+    #####:  721:			if (!sign_other) goto end;
+        -:  722:			}
+    #####:  723:		key = load_key(bio_err, keyfile, FORMAT_PEM, 0, NULL, NULL,
+        -:  724:			"signer private key");
+    #####:  725:		if (!key)
+        -:  726:			goto end;
+        -:  727:
+    #####:  728:		if (!OCSP_request_sign(req, signer, key, NULL, sign_other, sign_flags))
+        -:  729:			{
+    #####:  730:			BIO_printf(bio_err, "Error signing OCSP request\n");
+    #####:  731:			goto end;
+        -:  732:			}
+        -:  733:		}
+        -:  734:
+    #####:  735:	if (req_text && req) OCSP_REQUEST_print(out, req, 0);
+        -:  736:
+    #####:  737:	if (reqout)
+        -:  738:		{
+    #####:  739:		derbio = BIO_new_file(reqout, "wb");
+    #####:  740:		if(!derbio)
+        -:  741:			{
+    #####:  742:			BIO_printf(bio_err, "Error opening file %s\n", reqout);
+    #####:  743:			goto end;
+        -:  744:			}
+    #####:  745:		i2d_OCSP_REQUEST_bio(derbio, req);
+    #####:  746:		BIO_free(derbio);
+        -:  747:		}
+        -:  748:
+    #####:  749:	if (ridx_filename && (!rkey || !rsigner || !rca_cert))
+        -:  750:		{
+    #####:  751:		BIO_printf(bio_err, "Need a responder certificate, key and CA for this operation!\n");
+    #####:  752:		goto end;
+        -:  753:		}
+        -:  754:
+    #####:  755:	if (ridx_filename && !rdb)
+        -:  756:		{
+    #####:  757:		rdb = load_index(ridx_filename, NULL);
+    #####:  758:		if (!rdb) goto end;
+    #####:  759:		if (!index_index(rdb)) goto end;
+        -:  760:		}
+        -:  761:
+    #####:  762:	if (rdb)
+        -:  763:		{
+    #####:  764:		i = make_ocsp_response(&resp, req, rdb, rca_cert, rsigner, rkey, rother, rflags, nmin, ndays);
+    #####:  765:		if (cbio)
+    #####:  766:			send_ocsp_response(cbio, resp);
+        -:  767:		}
+    #####:  768:	else if (host)
+        -:  769:		{
+        -:  770:#ifndef OPENSSL_NO_SOCK
+    #####:  771:		resp = process_responder(bio_err, req, host, path,
+        -:  772:					port, use_ssl, headers, req_timeout);
+    #####:  773:		if (!resp)
+        -:  774:			goto end;
+        -:  775:#else
+        -:  776:		BIO_printf(bio_err, "Error creating connect BIO - sockets not supported.\n");
+        -:  777:		goto end;
+        -:  778:#endif
+        -:  779:		}
+    #####:  780:	else if (respin)
+        -:  781:		{
+    #####:  782:		derbio = BIO_new_file(respin, "rb");
+    #####:  783:		if (!derbio)
+        -:  784:			{
+    #####:  785:			BIO_printf(bio_err, "Error Opening OCSP response file\n");
+    #####:  786:			goto end;
+        -:  787:			}
+    #####:  788:		resp = d2i_OCSP_RESPONSE_bio(derbio, NULL);
+    #####:  789:		BIO_free(derbio);
+    #####:  790:		if(!resp)
+        -:  791:			{
+    #####:  792:			BIO_printf(bio_err, "Error reading OCSP response\n");
+    #####:  793:			goto end;
+        -:  794:			}
+        -:  795:	
+        -:  796:		}
+        -:  797:	else
+        -:  798:		{
+        -:  799:		ret = 0;
+        -:  800:		goto end;
+        -:  801:		}
+        -:  802:
+        -:  803:	done_resp:
+        -:  804:
+    #####:  805:	if (respout)
+        -:  806:		{
+    #####:  807:		derbio = BIO_new_file(respout, "wb");
+    #####:  808:		if(!derbio)
+        -:  809:			{
+    #####:  810:			BIO_printf(bio_err, "Error opening file %s\n", respout);
+    #####:  811:			goto end;
+        -:  812:			}
+    #####:  813:		i2d_OCSP_RESPONSE_bio(derbio, resp);
+    #####:  814:		BIO_free(derbio);
+        -:  815:		}
+        -:  816:
+    #####:  817:	i = OCSP_response_status(resp);
+        -:  818:
+    #####:  819:	if (i != OCSP_RESPONSE_STATUS_SUCCESSFUL)
+        -:  820:		{
+    #####:  821:		BIO_printf(out, "Responder Error: %s (%d)\n",
+        -:  822:				OCSP_response_status_str(i), i);
+    #####:  823:		if (ignore_err)
+        -:  824:			goto redo_accept;
+        -:  825:		ret = 0;
+        -:  826:		goto end;
+        -:  827:		}
+        -:  828:
+    #####:  829:	if (resp_text) OCSP_RESPONSE_print(out, resp, 0);
+        -:  830:
+        -:  831:	/* If running as responder don't verify our own response */
+    #####:  832:	if (cbio)
+        -:  833:		{
+    #####:  834:		if (accept_count > 0)
+    #####:  835:			accept_count--;
+        -:  836:		/* Redo if more connections needed */
+    #####:  837:		if (accept_count)
+        -:  838:			{
+    #####:  839:			BIO_free_all(cbio);
+    #####:  840:			cbio = NULL;
+    #####:  841:			OCSP_REQUEST_free(req);
+    #####:  842:			req = NULL;
+    #####:  843:			OCSP_RESPONSE_free(resp);
+    #####:  844:			resp = NULL;
+    #####:  845:			goto redo_accept;
+        -:  846:			}
+        -:  847:		goto end;
+        -:  848:		}
+        -:  849:
+        -:  850:	if (!store)
+    #####:  851:		store = setup_verify(bio_err, CAfile, CApath);
+    #####:  852:	if (!store)
+        -:  853:		goto end;
+    #####:  854:	if (verify_certfile)
+        -:  855:		{
+    #####:  856:		verify_other = load_certs(bio_err, verify_certfile, FORMAT_PEM,
+        -:  857:			NULL, e, "validator certificate");
+    #####:  858:		if (!verify_other) goto end;
+        -:  859:		}
+        -:  860:
+    #####:  861:	bs = OCSP_response_get1_basic(resp);
+        -:  862:
+    #####:  863:	if (!bs)
+        -:  864:		{
+    #####:  865:		BIO_printf(bio_err, "Error parsing response\n");
+    #####:  866:		goto end;
+        -:  867:		}
+        -:  868:
+    #####:  869:	if (!noverify)
+        -:  870:		{
+    #####:  871:		if (req && ((i = OCSP_check_nonce(req, bs)) <= 0))
+        -:  872:			{
+    #####:  873:			if (i == -1)
+    #####:  874:				BIO_printf(bio_err, "WARNING: no nonce in response\n");
+        -:  875:			else
+        -:  876:				{
+    #####:  877:				BIO_printf(bio_err, "Nonce Verify error\n");
+    #####:  878:				goto end;
+        -:  879:				}
+        -:  880:			}
+        -:  881:
+    #####:  882:		i = OCSP_basic_verify(bs, verify_other, store, verify_flags);
+    #####:  883:                if (i < 0) i = OCSP_basic_verify(bs, NULL, store, 0);
+        -:  884:
+    #####:  885:		if(i <= 0)
+        -:  886:			{
+    #####:  887:			BIO_printf(bio_err, "Response Verify Failure\n");
+    #####:  888:			ERR_print_errors(bio_err);
+        -:  889:			}
+        -:  890:		else
+    #####:  891:			BIO_printf(bio_err, "Response verify OK\n");
+        -:  892:
+        -:  893:		}
+        -:  894:
+    #####:  895:	if (!print_ocsp_summary(out, bs, req, reqnames, ids, nsec, maxage))
+        -:  896:		goto end;
+        -:  897:
+        -:  898:	ret = 0;
+        -:  899:
+        -:  900:end:
+    #####:  901:	ERR_print_errors(bio_err);
+    #####:  902:	X509_free(signer);
+    #####:  903:	X509_STORE_free(store);
+    #####:  904:	EVP_PKEY_free(key);
+    #####:  905:	EVP_PKEY_free(rkey);
+    #####:  906:	X509_free(issuer);
+    #####:  907:	X509_free(cert);
+    #####:  908:	X509_free(rsigner);
+    #####:  909:	X509_free(rca_cert);
+    #####:  910:	free_index(rdb);
+    #####:  911:	BIO_free_all(cbio);
+    #####:  912:	BIO_free_all(acbio);
+    #####:  913:	BIO_free(out);
+    #####:  914:	OCSP_REQUEST_free(req);
+    #####:  915:	OCSP_RESPONSE_free(resp);
+    #####:  916:	OCSP_BASICRESP_free(bs);
+    #####:  917:	sk_OPENSSL_STRING_free(reqnames);
+    #####:  918:	sk_OCSP_CERTID_free(ids);
+    #####:  919:	sk_X509_pop_free(sign_other, X509_free);
+    #####:  920:	sk_X509_pop_free(verify_other, X509_free);
+    #####:  921:	sk_CONF_VALUE_pop_free(headers, X509V3_conf_free);
+        -:  922:
+    #####:  923:	if (use_ssl != -1)
+        -:  924:		{
+    #####:  925:		OPENSSL_free(host);
+    #####:  926:		OPENSSL_free(port);
+    #####:  927:		OPENSSL_free(path);
+        -:  928:		}
+        -:  929:
+    #####:  930:	OPENSSL_EXIT(ret);
+        -:  931:}
+        -:  932:
+    #####:  933:static int add_ocsp_cert(OCSP_REQUEST **req, X509 *cert, const EVP_MD *cert_id_md,X509 *issuer,
+        -:  934:				STACK_OF(OCSP_CERTID) *ids)
+        -:  935:	{
+        -:  936:	OCSP_CERTID *id;
+    #####:  937:	if(!issuer)
+        -:  938:		{
+    #####:  939:		BIO_printf(bio_err, "No issuer certificate specified\n");
+    #####:  940:		return 0;
+        -:  941:		}
+    #####:  942:	if(!*req) *req = OCSP_REQUEST_new();
+    #####:  943:	if(!*req) goto err;
+    #####:  944:	id = OCSP_cert_to_id(cert_id_md, cert, issuer);
+    #####:  945:	if(!id || !sk_OCSP_CERTID_push(ids, id)) goto err;
+    #####:  946:	if(!OCSP_request_add0_id(*req, id)) goto err;
+        -:  947:	return 1;
+        -:  948:
+        -:  949:	err:
+    #####:  950:	BIO_printf(bio_err, "Error Creating OCSP request\n");
+    #####:  951:	return 0;
+        -:  952:	}
+        -:  953:
+    #####:  954:static int add_ocsp_serial(OCSP_REQUEST **req, char *serial,const EVP_MD *cert_id_md, X509 *issuer,
+        -:  955:				STACK_OF(OCSP_CERTID) *ids)
+        -:  956:	{
+        -:  957:	OCSP_CERTID *id;
+        -:  958:	X509_NAME *iname;
+        -:  959:	ASN1_BIT_STRING *ikey;
+        -:  960:	ASN1_INTEGER *sno;
+    #####:  961:	if(!issuer)
+        -:  962:		{
+    #####:  963:		BIO_printf(bio_err, "No issuer certificate specified\n");
+    #####:  964:		return 0;
+        -:  965:		}
+    #####:  966:	if(!*req) *req = OCSP_REQUEST_new();
+    #####:  967:	if(!*req) goto err;
+    #####:  968:	iname = X509_get_subject_name(issuer);
+    #####:  969:	ikey = X509_get0_pubkey_bitstr(issuer);
+    #####:  970:	sno = s2i_ASN1_INTEGER(NULL, serial);
+    #####:  971:	if(!sno)
+        -:  972:		{
+    #####:  973:		BIO_printf(bio_err, "Error converting serial number %s\n", serial);
+    #####:  974:		return 0;
+        -:  975:		}
+    #####:  976:	id = OCSP_cert_id_new(cert_id_md, iname, ikey, sno);
+    #####:  977:	ASN1_INTEGER_free(sno);
+    #####:  978:	if(!id || !sk_OCSP_CERTID_push(ids, id)) goto err;
+    #####:  979:	if(!OCSP_request_add0_id(*req, id)) goto err;
+        -:  980:	return 1;
+        -:  981:
+        -:  982:	err:
+    #####:  983:	BIO_printf(bio_err, "Error Creating OCSP request\n");
+    #####:  984:	return 0;
+        -:  985:	}
+        -:  986:
+    #####:  987:static int print_ocsp_summary(BIO *out, OCSP_BASICRESP *bs, OCSP_REQUEST *req,
+        -:  988:			      STACK_OF(OPENSSL_STRING) *names,
+        -:  989:			      STACK_OF(OCSP_CERTID) *ids, long nsec,
+        -:  990:			      long maxage)
+        -:  991:	{
+        -:  992:	OCSP_CERTID *id;
+        -:  993:	char *name;
+        -:  994:	int i;
+        -:  995:
+        -:  996:	int status, reason;
+        -:  997:
+        -:  998:	ASN1_GENERALIZEDTIME *rev, *thisupd, *nextupd;
+        -:  999:
+    #####: 1000:	if (!bs || !req || !sk_OPENSSL_STRING_num(names) || !sk_OCSP_CERTID_num(ids))
+        -: 1001:		return 1;
+        -: 1002:
+    #####: 1003:	for (i = 0; i < sk_OCSP_CERTID_num(ids); i++)
+        -: 1004:		{
+    #####: 1005:		id = sk_OCSP_CERTID_value(ids, i);
+    #####: 1006:		name = sk_OPENSSL_STRING_value(names, i);
+    #####: 1007:		BIO_printf(out, "%s: ", name);
+        -: 1008:
+    #####: 1009:		if(!OCSP_resp_find_status(bs, id, &status, &reason,
+        -: 1010:					&rev, &thisupd, &nextupd))
+        -: 1011:			{
+    #####: 1012:			BIO_puts(out, "ERROR: No Status found.\n");
+    #####: 1013:			continue;
+        -: 1014:			}
+        -: 1015:
+        -: 1016:		/* Check validity: if invalid write to output BIO so we
+        -: 1017:		 * know which response this refers to.
+        -: 1018:		 */
+    #####: 1019:		if (!OCSP_check_validity(thisupd, nextupd, nsec, maxage))
+        -: 1020:			{
+    #####: 1021:			BIO_puts(out, "WARNING: Status times invalid.\n");
+    #####: 1022:			ERR_print_errors(out);
+        -: 1023:			}
+    #####: 1024:		BIO_printf(out, "%s\n", OCSP_cert_status_str(status));
+        -: 1025:
+    #####: 1026:		BIO_puts(out, "\tThis Update: ");
+    #####: 1027:		ASN1_GENERALIZEDTIME_print(out, thisupd);
+    #####: 1028:		BIO_puts(out, "\n");
+        -: 1029:
+    #####: 1030:		if(nextupd)
+        -: 1031:			{
+    #####: 1032:			BIO_puts(out, "\tNext Update: ");
+    #####: 1033:			ASN1_GENERALIZEDTIME_print(out, nextupd);
+    #####: 1034:			BIO_puts(out, "\n");
+        -: 1035:			}
+        -: 1036:
+    #####: 1037:		if (status != V_OCSP_CERTSTATUS_REVOKED)
+    #####: 1038:			continue;
+        -: 1039:
+    #####: 1040:		if (reason != -1)
+    #####: 1041:			BIO_printf(out, "\tReason: %s\n",
+        -: 1042:				OCSP_crl_reason_str(reason));
+        -: 1043:
+    #####: 1044:		BIO_puts(out, "\tRevocation Time: ");
+    #####: 1045:		ASN1_GENERALIZEDTIME_print(out, rev);
+    #####: 1046:		BIO_puts(out, "\n");
+        -: 1047:		}
+        -: 1048:
+        -: 1049:	return 1;
+        -: 1050:	}
+        -: 1051:
+        -: 1052:
+    #####: 1053:static int make_ocsp_response(OCSP_RESPONSE **resp, OCSP_REQUEST *req, CA_DB *db,
+        -: 1054:			X509 *ca, X509 *rcert, EVP_PKEY *rkey,
+        -: 1055:			STACK_OF(X509) *rother, unsigned long flags,
+        -: 1056:			int nmin, int ndays)
+        -: 1057:	{
+        -: 1058:	ASN1_TIME *thisupd = NULL, *nextupd = NULL;
+        -: 1059:	OCSP_CERTID *cid, *ca_id = NULL;
+        -: 1060:	OCSP_BASICRESP *bs = NULL;
+        -: 1061:	int i, id_count, ret = 1;
+        -: 1062:
+    #####: 1063:	id_count = OCSP_request_onereq_count(req);
+        -: 1064:
+    #####: 1065:	if (id_count <= 0)
+        -: 1066:		{
+    #####: 1067:		*resp = OCSP_response_create(OCSP_RESPONSE_STATUS_MALFORMEDREQUEST, NULL);
+    #####: 1068:		goto end;
+        -: 1069:		}
+        -: 1070:
+        -: 1071:
+    #####: 1072:	bs = OCSP_BASICRESP_new();
+    #####: 1073:	thisupd = X509_gmtime_adj(NULL, 0);
+    #####: 1074:	if (ndays != -1)
+    #####: 1075:		nextupd = X509_gmtime_adj(NULL, nmin * 60 + ndays * 3600 * 24 );
+        -: 1076:
+        -: 1077:	/* Examine each certificate id in the request */
+    #####: 1078:	for (i = 0; i < id_count; i++)
+        -: 1079:		{
+        -: 1080:		OCSP_ONEREQ *one;
+        -: 1081:		ASN1_INTEGER *serial;
+        -: 1082:		char **inf;
+        -: 1083:		ASN1_OBJECT *cert_id_md_oid;
+        -: 1084:		const EVP_MD *cert_id_md;
+    #####: 1085:		one = OCSP_request_onereq_get0(req, i);
+    #####: 1086:		cid = OCSP_onereq_get0_id(one);
+        -: 1087:
+    #####: 1088:		OCSP_id_get0_info(NULL,&cert_id_md_oid, NULL,NULL, cid);
+        -: 1089:
+    #####: 1090:		cert_id_md = EVP_get_digestbyobj(cert_id_md_oid);	
+    #####: 1091:		if (! cert_id_md) 
+        -: 1092:			{
+    #####: 1093:			*resp = OCSP_response_create(OCSP_RESPONSE_STATUS_INTERNALERROR,
+        -: 1094:				NULL);
+    #####: 1095:				goto end;
+        -: 1096:			}	
+    #####: 1097:		if (ca_id) OCSP_CERTID_free(ca_id);
+    #####: 1098:		ca_id = OCSP_cert_to_id(cert_id_md, NULL, ca);
+        -: 1099:
+        -: 1100:		/* Is this request about our CA? */
+    #####: 1101:		if (OCSP_id_issuer_cmp(ca_id, cid))
+        -: 1102:			{
+    #####: 1103:			OCSP_basic_add1_status(bs, cid,
+        -: 1104:						V_OCSP_CERTSTATUS_UNKNOWN,
+        -: 1105:						0, NULL,
+        -: 1106:						thisupd, nextupd);
+    #####: 1107:			continue;
+        -: 1108:			}
+    #####: 1109:		OCSP_id_get0_info(NULL, NULL, NULL, &serial, cid);
+    #####: 1110:		inf = lookup_serial(db, serial);
+    #####: 1111:		if (!inf)
+    #####: 1112:			OCSP_basic_add1_status(bs, cid,
+        -: 1113:						V_OCSP_CERTSTATUS_UNKNOWN,
+        -: 1114:						0, NULL,
+        -: 1115:						thisupd, nextupd);
+    #####: 1116:		else if (inf[DB_type][0] == DB_TYPE_VAL)
+    #####: 1117:			OCSP_basic_add1_status(bs, cid,
+        -: 1118:						V_OCSP_CERTSTATUS_GOOD,
+        -: 1119:						0, NULL,
+        -: 1120:						thisupd, nextupd);
+    #####: 1121:		else if (inf[DB_type][0] == DB_TYPE_REV)
+        -: 1122:			{
+    #####: 1123:			ASN1_OBJECT *inst = NULL;
+    #####: 1124:			ASN1_TIME *revtm = NULL;
+    #####: 1125:			ASN1_GENERALIZEDTIME *invtm = NULL;
+        -: 1126:			OCSP_SINGLERESP *single;
+    #####: 1127:			int reason = -1;
+    #####: 1128:			unpack_revinfo(&revtm, &reason, &inst, &invtm, inf[DB_rev_date]);
+    #####: 1129:			single = OCSP_basic_add1_status(bs, cid,
+        -: 1130:						V_OCSP_CERTSTATUS_REVOKED,
+        -: 1131:						reason, revtm,
+        -: 1132:						thisupd, nextupd);
+    #####: 1133:			if (invtm)
+    #####: 1134:				OCSP_SINGLERESP_add1_ext_i2d(single, NID_invalidity_date, invtm, 0, 0);
+    #####: 1135:			else if (inst)
+    #####: 1136:				OCSP_SINGLERESP_add1_ext_i2d(single, NID_hold_instruction_code, inst, 0, 0);
+    #####: 1137:			ASN1_OBJECT_free(inst);
+    #####: 1138:			ASN1_TIME_free(revtm);
+    #####: 1139:			ASN1_GENERALIZEDTIME_free(invtm);
+        -: 1140:			}
+        -: 1141:		}
+        -: 1142:
+    #####: 1143:	OCSP_copy_nonce(bs, req);
+        -: 1144:	
+    #####: 1145:	OCSP_basic_sign(bs, rcert, rkey, NULL, rother, flags);
+        -: 1146:
+    #####: 1147:	*resp = OCSP_response_create(OCSP_RESPONSE_STATUS_SUCCESSFUL, bs);
+        -: 1148:
+        -: 1149:	end:
+    #####: 1150:	ASN1_TIME_free(thisupd);
+    #####: 1151:	ASN1_TIME_free(nextupd);
+    #####: 1152:	OCSP_CERTID_free(ca_id);
+    #####: 1153:	OCSP_BASICRESP_free(bs);
+    #####: 1154:	return ret;
+        -: 1155:
+        -: 1156:	}
+        -: 1157:
+    #####: 1158:static char **lookup_serial(CA_DB *db, ASN1_INTEGER *ser)
+        -: 1159:	{
+        -: 1160:	int i;
+        -: 1161:	BIGNUM *bn = NULL;
+        -: 1162:	char *itmp, *row[DB_NUMBER],**rrow;
+    #####: 1163:	for (i = 0; i < DB_NUMBER; i++) row[i] = NULL;
+    #####: 1164:	bn = ASN1_INTEGER_to_BN(ser,NULL);
+    #####: 1165:	OPENSSL_assert(bn); /* FIXME: should report an error at this point and abort */
+    #####: 1166:	if (BN_is_zero(bn))
+    #####: 1167:		itmp = BUF_strdup("00");
+        -: 1168:	else
+    #####: 1169:		itmp = BN_bn2hex(bn);
+    #####: 1170:	row[DB_serial] = itmp;
+    #####: 1171:	BN_free(bn);
+    #####: 1172:	rrow=TXT_DB_get_by_index(db->db,DB_serial,row);
+    #####: 1173:	OPENSSL_free(itmp);
+    #####: 1174:	return rrow;
+        -: 1175:	}
+        -: 1176:
+        -: 1177:/* Quick and dirty OCSP server: read in and parse input request */
+        -: 1178:
+    #####: 1179:static BIO *init_responder(char *port)
+        -: 1180:	{
+        -: 1181:	BIO *acbio = NULL, *bufbio = NULL;
+    #####: 1182:	bufbio = BIO_new(BIO_f_buffer());
+    #####: 1183:	if (!bufbio) 
+        -: 1184:		goto err;
+        -: 1185:#ifndef OPENSSL_NO_SOCK
+    #####: 1186:	acbio = BIO_new_accept(port);
+        -: 1187:#else
+        -: 1188:	BIO_printf(bio_err, "Error setting up accept BIO - sockets not supported.\n");
+        -: 1189:#endif
+    #####: 1190:	if (!acbio)
+        -: 1191:		goto err;
+    #####: 1192:	BIO_set_accept_bios(acbio, bufbio);
+        -: 1193:	bufbio = NULL;
+        -: 1194:
+    #####: 1195:	if (BIO_do_accept(acbio) <= 0)
+        -: 1196:		{
+    #####: 1197:			BIO_printf(bio_err, "Error setting up accept BIO\n");
+    #####: 1198:			ERR_print_errors(bio_err);
+    #####: 1199:			goto err;
+        -: 1200:		}
+        -: 1201:
+        -: 1202:	return acbio;
+        -: 1203:
+        -: 1204:	err:
+    #####: 1205:	BIO_free_all(acbio);
+    #####: 1206:	BIO_free(bufbio);
+    #####: 1207:	return NULL;
+        -: 1208:	}
+        -: 1209:
+    #####: 1210:static int do_responder(OCSP_REQUEST **preq, BIO **pcbio, BIO *acbio, char *port)
+        -: 1211:	{
+        -: 1212:	int have_post = 0, len;
+        -: 1213:	OCSP_REQUEST *req = NULL;
+        -: 1214:	char inbuf[1024];
+        -: 1215:	BIO *cbio = NULL;
+        -: 1216:
+    #####: 1217:	if (BIO_do_accept(acbio) <= 0)
+        -: 1218:		{
+    #####: 1219:			BIO_printf(bio_err, "Error accepting connection\n");
+    #####: 1220:			ERR_print_errors(bio_err);
+        -: 1221:			return 0;
+        -: 1222:		}
+        -: 1223:
+    #####: 1224:	cbio = BIO_pop(acbio);
+    #####: 1225:	*pcbio = cbio;
+        -: 1226:
+        -: 1227:	for(;;)
+        -: 1228:		{
+    #####: 1229:		len = BIO_gets(cbio, inbuf, sizeof inbuf);
+    #####: 1230:		if (len <= 0)
+        -: 1231:			return 1;
+        -: 1232:		/* Look for "POST" signalling start of query */
+    #####: 1233:		if (!have_post)
+        -: 1234:			{
+    #####: 1235:			if(strncmp(inbuf, "POST", 4))
+        -: 1236:				{
+    #####: 1237:				BIO_printf(bio_err, "Invalid request\n");
+        -: 1238:				return 1;
+        -: 1239:				}
+        -: 1240:			have_post = 1;
+        -: 1241:			}
+        -: 1242:		/* Look for end of headers */
+    #####: 1243:		if ((inbuf[0] == '\r') || (inbuf[0] == '\n'))
+        -: 1244:			break;
+        -: 1245:		}
+        -: 1246:
+        -: 1247:	/* Try to read OCSP request */
+        -: 1248:
+    #####: 1249:	req = d2i_OCSP_REQUEST_bio(cbio, NULL);
+        -: 1250:
+    #####: 1251:	if (!req)
+        -: 1252:		{
+    #####: 1253:		BIO_printf(bio_err, "Error parsing OCSP request\n");
+    #####: 1254:		ERR_print_errors(bio_err);
+        -: 1255:		}
+        -: 1256:
+    #####: 1257:	*preq = req;
+        -: 1258:
+        -: 1259:	return 1;
+        -: 1260:
+        -: 1261:	}
+        -: 1262:
+    #####: 1263:static int send_ocsp_response(BIO *cbio, OCSP_RESPONSE *resp)
+        -: 1264:	{
+    #####: 1265:	char http_resp[] = 
+        -: 1266:		"HTTP/1.0 200 OK\r\nContent-type: application/ocsp-response\r\n"
+        -: 1267:		"Content-Length: %d\r\n\r\n";
+    #####: 1268:	if (!cbio)
+        -: 1269:		return 0;
+    #####: 1270:	BIO_printf(cbio, http_resp, i2d_OCSP_RESPONSE(resp, NULL));
+    #####: 1271:	i2d_OCSP_RESPONSE_bio(cbio, resp);
+    #####: 1272:	(void)BIO_flush(cbio);
+    #####: 1273:	return 1;
+        -: 1274:	}
+        -: 1275:
+    #####: 1276:static OCSP_RESPONSE *query_responder(BIO *err, BIO *cbio, char *path,
+        -: 1277:				STACK_OF(CONF_VALUE) *headers,
+        -: 1278:				OCSP_REQUEST *req, int req_timeout)
+        -: 1279:	{
+        -: 1280:	int fd;
+        -: 1281:	int rv;
+        -: 1282:	int i;
+        -: 1283:	OCSP_REQ_CTX *ctx = NULL;
+    #####: 1284:	OCSP_RESPONSE *rsp = NULL;
+        -: 1285:	fd_set confds;
+        -: 1286:	struct timeval tv;
+        -: 1287:
+    #####: 1288:	if (req_timeout != -1)
+    #####: 1289:		BIO_set_nbio(cbio, 1);
+        -: 1290:
+    #####: 1291:	rv = BIO_do_connect(cbio);
+        -: 1292:
+    #####: 1293:	if ((rv <= 0) && ((req_timeout == -1) || !BIO_should_retry(cbio)))
+        -: 1294:		{
+    #####: 1295:		BIO_puts(err, "Error connecting BIO\n");
+    #####: 1296:		return NULL;
+        -: 1297:		}
+        -: 1298:
+    #####: 1299:	if (BIO_get_fd(cbio, &fd) <= 0)
+        -: 1300:		{
+    #####: 1301:		BIO_puts(err, "Can't get connection fd\n");
+    #####: 1302:		goto err;
+        -: 1303:		}
+        -: 1304:
+    #####: 1305:	if (req_timeout != -1 && rv <= 0)
+        -: 1306:		{
+    #####: 1307:		FD_ZERO(&confds);
+    #####: 1308:		openssl_fdset(fd, &confds);
+    #####: 1309:		tv.tv_usec = 0;
+    #####: 1310:		tv.tv_sec = req_timeout;
+    #####: 1311:		rv = select(fd + 1, NULL, (void *)&confds, NULL, &tv);
+    #####: 1312:		if (rv == 0)
+        -: 1313:			{
+    #####: 1314:			BIO_puts(err, "Timeout on connect\n");
+    #####: 1315:			return NULL;
+        -: 1316:			}
+        -: 1317:		}
+        -: 1318:
+        -: 1319:
+    #####: 1320:	ctx = OCSP_sendreq_new(cbio, path, NULL, -1);
+    #####: 1321:	if (!ctx)
+        -: 1322:		return NULL;
+        -: 1323:
+    #####: 1324:	for (i = 0; i < sk_CONF_VALUE_num(headers); i++)
+        -: 1325:		{
+    #####: 1326:		CONF_VALUE *hdr = sk_CONF_VALUE_value(headers, i);
+    #####: 1327:		if (!OCSP_REQ_CTX_add1_header(ctx, hdr->name, hdr->value))
+        -: 1328:			goto err;
+        -: 1329:		}
+        -: 1330:
+    #####: 1331:	if (!OCSP_REQ_CTX_set1_req(ctx, req))
+        -: 1332:		goto err;
+        -: 1333:	
+        -: 1334:	for (;;)
+        -: 1335:		{
+    #####: 1336:		rv = OCSP_sendreq_nbio(&rsp, ctx);
+    #####: 1337:		if (rv != -1)
+        -: 1338:			break;
+    #####: 1339:		if (req_timeout == -1)
+    #####: 1340:			continue;
+    #####: 1341:		FD_ZERO(&confds);
+    #####: 1342:		openssl_fdset(fd, &confds);
+    #####: 1343:		tv.tv_usec = 0;
+    #####: 1344:		tv.tv_sec = req_timeout;
+    #####: 1345:		if (BIO_should_read(cbio))
+    #####: 1346:			rv = select(fd + 1, (void *)&confds, NULL, NULL, &tv);
+    #####: 1347:		else if (BIO_should_write(cbio))
+    #####: 1348:			rv = select(fd + 1, NULL, (void *)&confds, NULL, &tv);
+        -: 1349:		else
+        -: 1350:			{
+    #####: 1351:			BIO_puts(err, "Unexpected retry condition\n");
+    #####: 1352:			goto err;
+        -: 1353:			}
+    #####: 1354:		if (rv == 0)
+        -: 1355:			{
+    #####: 1356:			BIO_puts(err, "Timeout on request\n");
+    #####: 1357:			break;
+        -: 1358:			}
+    #####: 1359:		if (rv == -1)
+        -: 1360:			{
+    #####: 1361:			BIO_puts(err, "Select error\n");
+    #####: 1362:			break;
+        -: 1363:			}
+        -: 1364:
+        -: 1365:		}
+        -: 1366:	err:
+    #####: 1367:	if (ctx)
+    #####: 1368:		OCSP_REQ_CTX_free(ctx);
+        -: 1369:
+    #####: 1370:	return rsp;
+        -: 1371:	}
+        -: 1372:
+    #####: 1373:OCSP_RESPONSE *process_responder(BIO *err, OCSP_REQUEST *req,
+        -: 1374:			char *host, char *path, char *port, int use_ssl,
+        -: 1375:			STACK_OF(CONF_VALUE) *headers,
+        -: 1376:			int req_timeout)
+        -: 1377:	{
+        -: 1378:	BIO *cbio = NULL;
+        -: 1379:	SSL_CTX *ctx = NULL;
+        -: 1380:	OCSP_RESPONSE *resp = NULL;
+    #####: 1381:	cbio = BIO_new_connect(host);
+    #####: 1382:	if (!cbio)
+        -: 1383:		{
+    #####: 1384:		BIO_printf(err, "Error creating connect BIO\n");
+    #####: 1385:		goto end;
+        -: 1386:		}
+    #####: 1387:	if (port) BIO_set_conn_port(cbio, port);
+    #####: 1388:	if (use_ssl == 1)
+        -: 1389:		{
+        -: 1390:		BIO *sbio;
+        -: 1391:#if !defined(OPENSSL_NO_SSL2) && !defined(OPENSSL_NO_SSL3)
+    #####: 1392:		ctx = SSL_CTX_new(SSLv23_client_method());
+        -: 1393:#elif !defined(OPENSSL_NO_SSL3)
+        -: 1394:		ctx = SSL_CTX_new(SSLv3_client_method());
+        -: 1395:#elif !defined(OPENSSL_NO_SSL2)
+        -: 1396:		ctx = SSL_CTX_new(SSLv2_client_method());
+        -: 1397:#else
+        -: 1398:		BIO_printf(err, "SSL is disabled\n");
+        -: 1399:			goto end;
+        -: 1400:#endif
+    #####: 1401:		if (ctx == NULL)
+        -: 1402:			{
+    #####: 1403:			BIO_printf(err, "Error creating SSL context.\n");
+    #####: 1404:			goto end;
+        -: 1405:			}
+    #####: 1406:		SSL_CTX_set_mode(ctx, SSL_MODE_AUTO_RETRY);
+    #####: 1407:		sbio = BIO_new_ssl(ctx, 1);
+    #####: 1408:		cbio = BIO_push(sbio, cbio);
+        -: 1409:		}
+    #####: 1410:	resp = query_responder(err, cbio, path, headers, req, req_timeout);
+    #####: 1411:	if (!resp)
+    #####: 1412:		BIO_printf(bio_err, "Error querying OCSP responsder\n");
+        -: 1413:	end:
+    #####: 1414:	if (cbio)
+    #####: 1415:		BIO_free_all(cbio);
+    #####: 1416:	if (ctx)
+    #####: 1417:		SSL_CTX_free(ctx);
+    #####: 1418:	return resp;
+        -: 1419:	}
+        -: 1420:
+        -: 1421:#endif

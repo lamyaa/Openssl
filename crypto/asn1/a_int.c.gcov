@@ -1,0 +1,463 @@
+        -:    0:Source:a_int.c
+        -:    0:Graph:a_int.gcno
+        -:    0:Data:a_int.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* crypto/asn1/a_int.c */
+        -:    2:/* Copyright (C) 1995-1998 Eric Young (eay@cryptsoft.com)
+        -:    3: * All rights reserved.
+        -:    4: *
+        -:    5: * This package is an SSL implementation written
+        -:    6: * by Eric Young (eay@cryptsoft.com).
+        -:    7: * The implementation was written so as to conform with Netscapes SSL.
+        -:    8: * 
+        -:    9: * This library is free for commercial and non-commercial use as long as
+        -:   10: * the following conditions are aheared to.  The following conditions
+        -:   11: * apply to all code found in this distribution, be it the RC4, RSA,
+        -:   12: * lhash, DES, etc., code; not just the SSL code.  The SSL documentation
+        -:   13: * included with this distribution is covered by the same copyright terms
+        -:   14: * except that the holder is Tim Hudson (tjh@cryptsoft.com).
+        -:   15: * 
+        -:   16: * Copyright remains Eric Young's, and as such any Copyright notices in
+        -:   17: * the code are not to be removed.
+        -:   18: * If this package is used in a product, Eric Young should be given attribution
+        -:   19: * as the author of the parts of the library used.
+        -:   20: * This can be in the form of a textual message at program startup or
+        -:   21: * in documentation (online or textual) provided with the package.
+        -:   22: * 
+        -:   23: * Redistribution and use in source and binary forms, with or without
+        -:   24: * modification, are permitted provided that the following conditions
+        -:   25: * are met:
+        -:   26: * 1. Redistributions of source code must retain the copyright
+        -:   27: *    notice, this list of conditions and the following disclaimer.
+        -:   28: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   29: *    notice, this list of conditions and the following disclaimer in the
+        -:   30: *    documentation and/or other materials provided with the distribution.
+        -:   31: * 3. All advertising materials mentioning features or use of this software
+        -:   32: *    must display the following acknowledgement:
+        -:   33: *    "This product includes cryptographic software written by
+        -:   34: *     Eric Young (eay@cryptsoft.com)"
+        -:   35: *    The word 'cryptographic' can be left out if the rouines from the library
+        -:   36: *    being used are not cryptographic related :-).
+        -:   37: * 4. If you include any Windows specific code (or a derivative thereof) from 
+        -:   38: *    the apps directory (application code) you must include an acknowledgement:
+        -:   39: *    "This product includes software written by Tim Hudson (tjh@cryptsoft.com)"
+        -:   40: * 
+        -:   41: * THIS SOFTWARE IS PROVIDED BY ERIC YOUNG ``AS IS'' AND
+        -:   42: * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   43: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+        -:   44: * ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+        -:   45: * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+        -:   46: * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+        -:   47: * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   48: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+        -:   49: * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+        -:   50: * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+        -:   51: * SUCH DAMAGE.
+        -:   52: * 
+        -:   53: * The licence and distribution terms for any publically available version or
+        -:   54: * derivative of this code cannot be changed.  i.e. this code cannot simply be
+        -:   55: * copied and put under another distribution licence
+        -:   56: * [including the GNU Public Licence.]
+        -:   57: */
+        -:   58:
+        -:   59:#include <stdio.h>
+        -:   60:#include "cryptlib.h"
+        -:   61:#include <openssl/asn1.h>
+        -:   62:#include <openssl/bn.h>
+        -:   63:
+    #####:   64:ASN1_INTEGER *ASN1_INTEGER_dup(const ASN1_INTEGER *x)
+    #####:   65:{ return M_ASN1_INTEGER_dup(x);}
+        -:   66:
+      606:   67:int ASN1_INTEGER_cmp(const ASN1_INTEGER *x, const ASN1_INTEGER *y)
+        -:   68:	{ 
+        -:   69:	int neg, ret;
+        -:   70:	/* Compare signs */
+      606:   71:	neg = x->type & V_ASN1_NEG;
+      606:   72:	if (neg != (y->type & V_ASN1_NEG))
+        -:   73:		{
+    #####:   74:		if (neg)
+        -:   75:			return -1;
+        -:   76:		else
+    #####:   77:			return 1;
+        -:   78:		}
+        -:   79:
+      606:   80:	ret = ASN1_STRING_cmp(x, y);
+        -:   81:
+      606:   82:	if (neg)
+    #####:   83:		return -ret;
+        -:   84:	else
+        -:   85:		return ret;
+        -:   86:	}
+        -:   87:	
+        -:   88:
+        -:   89:/* 
+        -:   90: * This converts an ASN1 INTEGER into its content encoding.
+        -:   91: * The internal representation is an ASN1_STRING whose data is a big endian
+        -:   92: * representation of the value, ignoring the sign. The sign is determined by
+        -:   93: * the type: V_ASN1_INTEGER for positive and V_ASN1_NEG_INTEGER for negative. 
+        -:   94: *
+        -:   95: * Positive integers are no problem: they are almost the same as the DER
+        -:   96: * encoding, except if the first byte is >= 0x80 we need to add a zero pad.
+        -:   97: *
+        -:   98: * Negative integers are a bit trickier...
+        -:   99: * The DER representation of negative integers is in 2s complement form.
+        -:  100: * The internal form is converted by complementing each octet and finally 
+        -:  101: * adding one to the result. This can be done less messily with a little trick.
+        -:  102: * If the internal form has trailing zeroes then they will become FF by the
+        -:  103: * complement and 0 by the add one (due to carry) so just copy as many trailing 
+        -:  104: * zeros to the destination as there are in the source. The carry will add one
+        -:  105: * to the last none zero octet: so complement this octet and add one and finally
+        -:  106: * complement any left over until you get to the start of the string.
+        -:  107: *
+        -:  108: * Padding is a little trickier too. If the first bytes is > 0x80 then we pad
+        -:  109: * with 0xff. However if the first byte is 0x80 and one of the following bytes
+        -:  110: * is non-zero we pad with 0xff. The reason for this distinction is that 0x80
+        -:  111: * followed by optional zeros isn't padded.
+        -:  112: */
+        -:  113:
+    #####:  114:int i2c_ASN1_INTEGER(ASN1_INTEGER *a, unsigned char **pp)
+        -:  115:	{
+        -:  116:	int pad=0,ret,i,neg;
+        -:  117:	unsigned char *p,*n,pb=0;
+        -:  118:
+    #####:  119:	if ((a == NULL) || (a->data == NULL)) return(0);
+    #####:  120:	neg=a->type & V_ASN1_NEG;
+    #####:  121:	if (a->length == 0)
+        -:  122:		ret=1;
+        -:  123:	else
+        -:  124:		{
+        -:  125:		ret=a->length;
+    #####:  126:		i=a->data[0];
+    #####:  127:		if (!neg && (i > 127)) {
+        -:  128:			pad=1;
+        -:  129:			pb=0;
+    #####:  130:		} else if(neg) {
+    #####:  131:			if(i>128) {
+        -:  132:				pad=1;
+        -:  133:				pb=0xFF;
+    #####:  134:			} else if(i == 128) {
+        -:  135:			/*
+        -:  136:			 * Special case: if any other bytes non zero we pad:
+        -:  137:			 * otherwise we don't.
+        -:  138:			 */
+    #####:  139:				for(i = 1; i < a->length; i++) if(a->data[i]) {
+        -:  140:						pad=1;
+        -:  141:						pb=0xFF;
+        -:  142:						break;
+        -:  143:				}
+        -:  144:			}
+        -:  145:		}
+    #####:  146:		ret+=pad;
+        -:  147:		}
+    #####:  148:	if (pp == NULL) return(ret);
+    #####:  149:	p= *pp;
+        -:  150:
+    #####:  151:	if (pad) *(p++)=pb;
+    #####:  152:	if (a->length == 0) *(p++)=0;
+    #####:  153:	else if (!neg) memcpy(p,a->data,(unsigned int)a->length);
+        -:  154:	else {
+        -:  155:		/* Begin at the end of the encoding */
+    #####:  156:		n=a->data + a->length - 1;
+    #####:  157:		p += a->length - 1;
+        -:  158:		i = a->length;
+        -:  159:		/* Copy zeros to destination as long as source is zero */
+    #####:  160:		while(!*n) {
+    #####:  161:			*(p--) = 0;
+    #####:  162:			n--;
+    #####:  163:			i--;
+        -:  164:		}
+        -:  165:		/* Complement and increment next octet */
+    #####:  166:		*(p--) = ((*(n--)) ^ 0xff) + 1;
+    #####:  167:		i--;
+        -:  168:		/* Complement any octets left */
+    #####:  169:		for(;i > 0; i--) *(p--) = *(n--) ^ 0xff;
+        -:  170:	}
+        -:  171:
+    #####:  172:	*pp+=ret;
+    #####:  173:	return(ret);
+        -:  174:	}
+        -:  175:
+        -:  176:/* Convert just ASN1 INTEGER content octets to ASN1_INTEGER structure */
+        -:  177:
+    50386:  178:ASN1_INTEGER *c2i_ASN1_INTEGER(ASN1_INTEGER **a, const unsigned char **pp,
+        -:  179:	     long len)
+        -:  180:	{
+        -:  181:	ASN1_INTEGER *ret=NULL;
+        -:  182:	const unsigned char *p, *pend;
+        -:  183:	unsigned char *to,*s;
+        -:  184:	int i;
+        -:  185:
+    50386:  186:	if ((a == NULL) || ((*a) == NULL))
+        -:  187:		{
+    20411:  188:		if ((ret=M_ASN1_INTEGER_new()) == NULL) return(NULL);
+    20411:  189:		ret->type=V_ASN1_INTEGER;
+        -:  190:		}
+        -:  191:	else
+        -:  192:		ret=(*a);
+        -:  193:
+    50386:  194:	p= *pp;
+    50386:  195:	pend = p + len;
+        -:  196:
+        -:  197:	/* We must OPENSSL_malloc stuff, even for 0 bytes otherwise it
+        -:  198:	 * signifies a missing NULL parameter. */
+    50386:  199:	s=(unsigned char *)OPENSSL_malloc((int)len+1);
+    50386:  200:	if (s == NULL)
+        -:  201:		{
+        -:  202:		i=ERR_R_MALLOC_FAILURE;
+        -:  203:		goto err;
+        -:  204:		}
+        -:  205:	to=s;
+    50386:  206:	if(!len) {
+        -:  207:		/* Strictly speaking this is an illegal INTEGER but we
+        -:  208:		 * tolerate it.
+        -:  209:		 */
+    #####:  210:		ret->type=V_ASN1_INTEGER;
+    50386:  211:	} else if (*p & 0x80) /* a negative number */
+        -:  212:		{
+    #####:  213:		ret->type=V_ASN1_NEG_INTEGER;
+    #####:  214:		if ((*p == 0xff) && (len != 1)) {
+    #####:  215:			p++;
+    #####:  216:			len--;
+        -:  217:		}
+    #####:  218:		i = len;
+    #####:  219:		p += i - 1;
+    #####:  220:		to += i - 1;
+    #####:  221:		while((!*p) && i) {
+    #####:  222:			*(to--) = 0;
+    #####:  223:			i--;
+    #####:  224:			p--;
+        -:  225:		}
+        -:  226:		/* Special case: if all zeros then the number will be of
+        -:  227:		 * the form FF followed by n zero bytes: this corresponds to
+        -:  228:		 * 1 followed by n zero bytes. We've already written n zeros
+        -:  229:		 * so we just append an extra one and set the first byte to
+        -:  230:		 * a 1. This is treated separately because it is the only case
+        -:  231:		 * where the number of bytes is larger than len.
+        -:  232:		 */
+    #####:  233:		if(!i) {
+    #####:  234:			*s = 1;
+    #####:  235:			s[len] = 0;
+    #####:  236:			len++;
+        -:  237:		} else {
+    #####:  238:			*(to--) = (*(p--) ^ 0xff) + 1;
+    #####:  239:			i--;
+    #####:  240:			for(;i > 0; i--) *(to--) = *(p--) ^ 0xff;
+        -:  241:		}
+        -:  242:	} else {
+    50386:  243:		ret->type=V_ASN1_INTEGER;
+    50386:  244:		if ((*p == 0) && (len != 1))
+        -:  245:			{
+    10481:  246:			p++;
+    10481:  247:			len--;
+        -:  248:			}
+    50386:  249:		memcpy(s,p,(int)len);
+        -:  250:	}
+        -:  251:
+    50386:  252:	if (ret->data != NULL) OPENSSL_free(ret->data);
+    50386:  253:	ret->data=s;
+    50386:  254:	ret->length=(int)len;
+    50386:  255:	if (a != NULL) (*a)=ret;
+    50386:  256:	*pp=pend;
+    50386:  257:	return(ret);
+        -:  258:err:
+    #####:  259:	ASN1err(ASN1_F_C2I_ASN1_INTEGER,i);
+    #####:  260:	if ((ret != NULL) && ((a == NULL) || (*a != ret)))
+    #####:  261:		M_ASN1_INTEGER_free(ret);
+        -:  262:	return(NULL);
+        -:  263:	}
+        -:  264:
+        -:  265:
+        -:  266:/* This is a version of d2i_ASN1_INTEGER that ignores the sign bit of
+        -:  267: * ASN1 integers: some broken software can encode a positive INTEGER
+        -:  268: * with its MSB set as negative (it doesn't add a padding zero).
+        -:  269: */
+        -:  270:
+    #####:  271:ASN1_INTEGER *d2i_ASN1_UINTEGER(ASN1_INTEGER **a, const unsigned char **pp,
+        -:  272:	     long length)
+        -:  273:	{
+        -:  274:	ASN1_INTEGER *ret=NULL;
+        -:  275:	const unsigned char *p;
+        -:  276:	unsigned char *s;
+        -:  277:	long len;
+        -:  278:	int inf,tag,xclass;
+        -:  279:	int i;
+        -:  280:
+    #####:  281:	if ((a == NULL) || ((*a) == NULL))
+        -:  282:		{
+    #####:  283:		if ((ret=M_ASN1_INTEGER_new()) == NULL) return(NULL);
+    #####:  284:		ret->type=V_ASN1_INTEGER;
+        -:  285:		}
+        -:  286:	else
+        -:  287:		ret=(*a);
+        -:  288:
+    #####:  289:	p= *pp;
+    #####:  290:	inf=ASN1_get_object(&p,&len,&tag,&xclass,length);
+    #####:  291:	if (inf & 0x80)
+        -:  292:		{
+        -:  293:		i=ASN1_R_BAD_OBJECT_HEADER;
+        -:  294:		goto err;
+        -:  295:		}
+        -:  296:
+    #####:  297:	if (tag != V_ASN1_INTEGER)
+        -:  298:		{
+        -:  299:		i=ASN1_R_EXPECTING_AN_INTEGER;
+        -:  300:		goto err;
+        -:  301:		}
+        -:  302:
+        -:  303:	/* We must OPENSSL_malloc stuff, even for 0 bytes otherwise it
+        -:  304:	 * signifies a missing NULL parameter. */
+    #####:  305:	s=(unsigned char *)OPENSSL_malloc((int)len+1);
+    #####:  306:	if (s == NULL)
+        -:  307:		{
+        -:  308:		i=ERR_R_MALLOC_FAILURE;
+        -:  309:		goto err;
+        -:  310:		}
+    #####:  311:	ret->type=V_ASN1_INTEGER;
+    #####:  312:	if(len) {
+    #####:  313:		if ((*p == 0) && (len != 1))
+        -:  314:			{
+    #####:  315:			p++;
+    #####:  316:			len--;
+        -:  317:			}
+    #####:  318:		memcpy(s,p,(int)len);
+    #####:  319:		p+=len;
+        -:  320:	}
+        -:  321:
+    #####:  322:	if (ret->data != NULL) OPENSSL_free(ret->data);
+    #####:  323:	ret->data=s;
+    #####:  324:	ret->length=(int)len;
+    #####:  325:	if (a != NULL) (*a)=ret;
+    #####:  326:	*pp=p;
+    #####:  327:	return(ret);
+        -:  328:err:
+    #####:  329:	ASN1err(ASN1_F_D2I_ASN1_UINTEGER,i);
+    #####:  330:	if ((ret != NULL) && ((a == NULL) || (*a != ret)))
+    #####:  331:		M_ASN1_INTEGER_free(ret);
+        -:  332:	return(NULL);
+        -:  333:	}
+        -:  334:
+    #####:  335:int ASN1_INTEGER_set(ASN1_INTEGER *a, long v)
+        -:  336:	{
+        -:  337:	int j,k;
+        -:  338:	unsigned int i;
+        -:  339:	unsigned char buf[sizeof(long)+1];
+        -:  340:	long d;
+        -:  341:
+    #####:  342:	a->type=V_ASN1_INTEGER;
+    #####:  343:	if (a->length < (int)(sizeof(long)+1))
+        -:  344:		{
+    #####:  345:		if (a->data != NULL)
+    #####:  346:			OPENSSL_free(a->data);
+    #####:  347:		if ((a->data=(unsigned char *)OPENSSL_malloc(sizeof(long)+1)) != NULL)
+        -:  348:			memset((char *)a->data,0,sizeof(long)+1);
+        -:  349:		}
+    #####:  350:	if (a->data == NULL)
+        -:  351:		{
+    #####:  352:		ASN1err(ASN1_F_ASN1_INTEGER_SET,ERR_R_MALLOC_FAILURE);
+    #####:  353:		return(0);
+        -:  354:		}
+        -:  355:	d=v;
+    #####:  356:	if (d < 0)
+        -:  357:		{
+    #####:  358:		d= -d;
+    #####:  359:		a->type=V_ASN1_NEG_INTEGER;
+        -:  360:		}
+        -:  361:
+    #####:  362:	for (i=0; i<sizeof(long); i++)
+        -:  363:		{
+    #####:  364:		if (d == 0) break;
+    #####:  365:		buf[i]=(int)d&0xff;
+    #####:  366:		d>>=8;
+        -:  367:		}
+        -:  368:	j=0;
+    #####:  369:	for (k=i-1; k >=0; k--)
+    #####:  370:		a->data[j++]=buf[k];
+    #####:  371:	a->length=j;
+    #####:  372:	return(1);
+        -:  373:	}
+        -:  374:
+    36232:  375:long ASN1_INTEGER_get(const ASN1_INTEGER *a)
+        -:  376:	{
+        -:  377:	int neg=0,i;
+        -:  378:	long r=0;
+        -:  379:
+    36232:  380:	if (a == NULL) return(0L);
+    16797:  381:	i=a->type;
+    16797:  382:	if (i == V_ASN1_NEG_INTEGER)
+        -:  383:		neg=1;
+    16797:  384:	else if (i != V_ASN1_INTEGER)
+        -:  385:		return -1;
+        -:  386:	
+    16797:  387:	if (a->length > (int)sizeof(long))
+        -:  388:		{
+        -:  389:		/* hmm... a bit ugly, return all ones */
+        -:  390:		return -1;
+        -:  391:		}
+    16797:  392:	if (a->data == NULL)
+        -:  393:		return 0;
+        -:  394:
+    16797:  395:	for (i=0; i<a->length; i++)
+        -:  396:		{
+    16797:  397:		r<<=8;
+    16797:  398:		r|=(unsigned char)a->data[i];
+        -:  399:		}
+    16797:  400:	if (neg) r= -r;
+    16797:  401:	return(r);
+        -:  402:	}
+        -:  403:
+    #####:  404:ASN1_INTEGER *BN_to_ASN1_INTEGER(const BIGNUM *bn, ASN1_INTEGER *ai)
+        -:  405:	{
+        -:  406:	ASN1_INTEGER *ret;
+        -:  407:	int len,j;
+        -:  408:
+    #####:  409:	if (ai == NULL)
+    #####:  410:		ret=M_ASN1_INTEGER_new();
+        -:  411:	else
+        -:  412:		ret=ai;
+    #####:  413:	if (ret == NULL)
+        -:  414:		{
+    #####:  415:		ASN1err(ASN1_F_BN_TO_ASN1_INTEGER,ERR_R_NESTED_ASN1_ERROR);
+    #####:  416:		goto err;
+        -:  417:		}
+    #####:  418:	if (BN_is_negative(bn))
+    #####:  419:		ret->type = V_ASN1_NEG_INTEGER;
+    #####:  420:	else ret->type=V_ASN1_INTEGER;
+    #####:  421:	j=BN_num_bits(bn);
+    #####:  422:	len=((j == 0)?0:((j/8)+1));
+    #####:  423:	if (ret->length < len+4)
+        -:  424:		{
+    #####:  425:		unsigned char *new_data=OPENSSL_realloc(ret->data, len+4);
+    #####:  426:		if (!new_data)
+        -:  427:			{
+    #####:  428:			ASN1err(ASN1_F_BN_TO_ASN1_INTEGER,ERR_R_MALLOC_FAILURE);
+    #####:  429:			goto err;
+        -:  430:			}
+    #####:  431:		ret->data=new_data;
+        -:  432:		}
+    #####:  433:	ret->length=BN_bn2bin(bn,ret->data);
+        -:  434:	/* Correct zero case */
+    #####:  435:	if(!ret->length)
+        -:  436:		{
+    #####:  437:		ret->data[0] = 0;
+    #####:  438:		ret->length = 1;
+        -:  439:		}
+    #####:  440:	return(ret);
+        -:  441:err:
+    #####:  442:	if (ret != ai) M_ASN1_INTEGER_free(ret);
+        -:  443:	return(NULL);
+        -:  444:	}
+        -:  445:
+    #####:  446:BIGNUM *ASN1_INTEGER_to_BN(const ASN1_INTEGER *ai, BIGNUM *bn)
+        -:  447:	{
+        -:  448:	BIGNUM *ret;
+        -:  449:
+    #####:  450:	if ((ret=BN_bin2bn(ai->data,ai->length,bn)) == NULL)
+    #####:  451:		ASN1err(ASN1_F_ASN1_INTEGER_TO_BN,ASN1_R_BN_LIB);
+    #####:  452:	else if(ai->type == V_ASN1_NEG_INTEGER)
+    #####:  453:		BN_set_negative(ret, 1);
+    #####:  454:	return(ret);
+        -:  455:	}
+        -:  456:
+        -:  457:IMPLEMENT_STACK_OF(ASN1_INTEGER)
+        -:  458:IMPLEMENT_ASN1_SET_OF(ASN1_INTEGER)

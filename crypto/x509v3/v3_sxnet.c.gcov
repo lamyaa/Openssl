@@ -1,0 +1,267 @@
+        -:    0:Source:v3_sxnet.c
+        -:    0:Graph:v3_sxnet.gcno
+        -:    0:Data:v3_sxnet.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* v3_sxnet.c */
+        -:    2:/* Written by Dr Stephen N Henson (steve@openssl.org) for the OpenSSL
+        -:    3: * project 1999.
+        -:    4: */
+        -:    5:/* ====================================================================
+        -:    6: * Copyright (c) 1999 The OpenSSL Project.  All rights reserved.
+        -:    7: *
+        -:    8: * Redistribution and use in source and binary forms, with or without
+        -:    9: * modification, are permitted provided that the following conditions
+        -:   10: * are met:
+        -:   11: *
+        -:   12: * 1. Redistributions of source code must retain the above copyright
+        -:   13: *    notice, this list of conditions and the following disclaimer. 
+        -:   14: *
+        -:   15: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   16: *    notice, this list of conditions and the following disclaimer in
+        -:   17: *    the documentation and/or other materials provided with the
+        -:   18: *    distribution.
+        -:   19: *
+        -:   20: * 3. All advertising materials mentioning features or use of this
+        -:   21: *    software must display the following acknowledgment:
+        -:   22: *    "This product includes software developed by the OpenSSL Project
+        -:   23: *    for use in the OpenSSL Toolkit. (http://www.OpenSSL.org/)"
+        -:   24: *
+        -:   25: * 4. The names "OpenSSL Toolkit" and "OpenSSL Project" must not be used to
+        -:   26: *    endorse or promote products derived from this software without
+        -:   27: *    prior written permission. For written permission, please contact
+        -:   28: *    licensing@OpenSSL.org.
+        -:   29: *
+        -:   30: * 5. Products derived from this software may not be called "OpenSSL"
+        -:   31: *    nor may "OpenSSL" appear in their names without prior written
+        -:   32: *    permission of the OpenSSL Project.
+        -:   33: *
+        -:   34: * 6. Redistributions of any form whatsoever must retain the following
+        -:   35: *    acknowledgment:
+        -:   36: *    "This product includes software developed by the OpenSSL Project
+        -:   37: *    for use in the OpenSSL Toolkit (http://www.OpenSSL.org/)"
+        -:   38: *
+        -:   39: * THIS SOFTWARE IS PROVIDED BY THE OpenSSL PROJECT ``AS IS'' AND ANY
+        -:   40: * EXPRESSED OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   41: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+        -:   42: * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE OpenSSL PROJECT OR
+        -:   43: * ITS CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+        -:   44: * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+        -:   45: * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+        -:   46: * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   47: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+        -:   48: * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+        -:   49: * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+        -:   50: * OF THE POSSIBILITY OF SUCH DAMAGE.
+        -:   51: * ====================================================================
+        -:   52: *
+        -:   53: * This product includes cryptographic software written by Eric Young
+        -:   54: * (eay@cryptsoft.com).  This product includes software written by Tim
+        -:   55: * Hudson (tjh@cryptsoft.com).
+        -:   56: *
+        -:   57: */
+        -:   58:
+        -:   59:#include <stdio.h>
+        -:   60:#include "cryptlib.h"
+        -:   61:#include <openssl/conf.h>
+        -:   62:#include <openssl/asn1.h>
+        -:   63:#include <openssl/asn1t.h>
+        -:   64:#include <openssl/x509v3.h>
+        -:   65:
+        -:   66:/* Support for Thawte strong extranet extension */
+        -:   67:
+        -:   68:#define SXNET_TEST
+        -:   69:
+        -:   70:static int sxnet_i2r(X509V3_EXT_METHOD *method, SXNET *sx, BIO *out, int indent);
+        -:   71:#ifdef SXNET_TEST
+        -:   72:static SXNET * sxnet_v2i(X509V3_EXT_METHOD *method, X509V3_CTX *ctx,
+        -:   73:						STACK_OF(CONF_VALUE) *nval);
+        -:   74:#endif
+        -:   75:const X509V3_EXT_METHOD v3_sxnet = {
+        -:   76:NID_sxnet, X509V3_EXT_MULTILINE, ASN1_ITEM_ref(SXNET),
+        -:   77:0,0,0,0,
+        -:   78:0,0,
+        -:   79:0, 
+        -:   80:#ifdef SXNET_TEST
+        -:   81:(X509V3_EXT_V2I)sxnet_v2i,
+        -:   82:#else
+        -:   83:0,
+        -:   84:#endif
+        -:   85:(X509V3_EXT_I2R)sxnet_i2r,
+        -:   86:0,
+        -:   87:NULL
+        -:   88:};
+        -:   89:
+        -:   90:ASN1_SEQUENCE(SXNETID) = {
+        -:   91:	ASN1_SIMPLE(SXNETID, zone, ASN1_INTEGER),
+        -:   92:	ASN1_SIMPLE(SXNETID, user, ASN1_OCTET_STRING)
+        -:   93:} ASN1_SEQUENCE_END(SXNETID)
+        -:   94:
+    #####:   95:IMPLEMENT_ASN1_FUNCTIONS(SXNETID)
+        -:   96:
+        -:   97:ASN1_SEQUENCE(SXNET) = {
+        -:   98:	ASN1_SIMPLE(SXNET, version, ASN1_INTEGER),
+        -:   99:	ASN1_SEQUENCE_OF(SXNET, ids, SXNETID)
+        -:  100:} ASN1_SEQUENCE_END(SXNET)
+        -:  101:
+    #####:  102:IMPLEMENT_ASN1_FUNCTIONS(SXNET)
+        -:  103:
+    #####:  104:static int sxnet_i2r(X509V3_EXT_METHOD *method, SXNET *sx, BIO *out,
+        -:  105:	     int indent)
+        -:  106:{
+        -:  107:	long v;
+        -:  108:	char *tmp;
+        -:  109:	SXNETID *id;
+        -:  110:	int i;
+    #####:  111:	v = ASN1_INTEGER_get(sx->version);
+    #####:  112:	BIO_printf(out, "%*sVersion: %ld (0x%lX)", indent, "", v + 1, v);
+    #####:  113:	for(i = 0; i < sk_SXNETID_num(sx->ids); i++) {
+    #####:  114:		id = sk_SXNETID_value(sx->ids, i);
+    #####:  115:		tmp = i2s_ASN1_INTEGER(NULL, id->zone);
+    #####:  116:		BIO_printf(out, "\n%*sZone: %s, User: ", indent, "", tmp);
+    #####:  117:		OPENSSL_free(tmp);
+    #####:  118:		M_ASN1_OCTET_STRING_print(out, id->user);
+        -:  119:	}
+    #####:  120:	return 1;
+        -:  121:}
+        -:  122:
+        -:  123:#ifdef SXNET_TEST
+        -:  124:
+        -:  125:/* NBB: this is used for testing only. It should *not* be used for anything
+        -:  126: * else because it will just take static IDs from the configuration file and
+        -:  127: * they should really be separate values for each user.
+        -:  128: */
+        -:  129:
+        -:  130:
+    #####:  131:static SXNET * sxnet_v2i(X509V3_EXT_METHOD *method, X509V3_CTX *ctx,
+        -:  132:	     STACK_OF(CONF_VALUE) *nval)
+        -:  133:{
+        -:  134:	CONF_VALUE *cnf;
+    #####:  135:	SXNET *sx = NULL;
+        -:  136:	int i;
+    #####:  137:	for(i = 0; i < sk_CONF_VALUE_num(nval); i++) {
+    #####:  138:		cnf = sk_CONF_VALUE_value(nval, i);
+    #####:  139:		if(!SXNET_add_id_asc(&sx, cnf->name, cnf->value, -1))
+        -:  140:								 return NULL;
+        -:  141:	}
+    #####:  142:	return sx;
+        -:  143:}
+        -:  144:		
+        -:  145:	
+        -:  146:#endif
+        -:  147:
+        -:  148:/* Strong Extranet utility functions */
+        -:  149:
+        -:  150:/* Add an id given the zone as an ASCII number */
+        -:  151:
+    #####:  152:int SXNET_add_id_asc(SXNET **psx, char *zone, char *user,
+        -:  153:	     int userlen)
+        -:  154:{
+        -:  155:	ASN1_INTEGER *izone = NULL;
+    #####:  156:	if(!(izone = s2i_ASN1_INTEGER(NULL, zone))) {
+    #####:  157:		X509V3err(X509V3_F_SXNET_ADD_ID_ASC,X509V3_R_ERROR_CONVERTING_ZONE);
+    #####:  158:		return 0;
+        -:  159:	}
+    #####:  160:	return SXNET_add_id_INTEGER(psx, izone, user, userlen);
+        -:  161:}
+        -:  162:
+        -:  163:/* Add an id given the zone as an unsigned long */
+        -:  164:
+    #####:  165:int SXNET_add_id_ulong(SXNET **psx, unsigned long lzone, char *user,
+        -:  166:	     int userlen)
+        -:  167:{
+        -:  168:	ASN1_INTEGER *izone = NULL;
+    #####:  169:	if(!(izone = M_ASN1_INTEGER_new()) || !ASN1_INTEGER_set(izone, lzone)) {
+    #####:  170:		X509V3err(X509V3_F_SXNET_ADD_ID_ULONG,ERR_R_MALLOC_FAILURE);
+    #####:  171:		M_ASN1_INTEGER_free(izone);
+    #####:  172:		return 0;
+        -:  173:	}
+    #####:  174:	return SXNET_add_id_INTEGER(psx, izone, user, userlen);
+        -:  175:	
+        -:  176:}
+        -:  177:
+        -:  178:/* Add an id given the zone as an ASN1_INTEGER.
+        -:  179: * Note this version uses the passed integer and doesn't make a copy so don't
+        -:  180: * free it up afterwards.
+        -:  181: */
+        -:  182:
+    #####:  183:int SXNET_add_id_INTEGER(SXNET **psx, ASN1_INTEGER *zone, char *user,
+        -:  184:	     int userlen)
+        -:  185:{
+        -:  186:	SXNET *sx = NULL;
+        -:  187:	SXNETID *id = NULL;
+    #####:  188:	if(!psx || !zone || !user) {
+    #####:  189:		X509V3err(X509V3_F_SXNET_ADD_ID_INTEGER,X509V3_R_INVALID_NULL_ARGUMENT);
+    #####:  190:		return 0;
+        -:  191:	}
+    #####:  192:	if(userlen == -1) userlen = strlen(user);
+    #####:  193:	if(userlen > 64) {
+    #####:  194:		X509V3err(X509V3_F_SXNET_ADD_ID_INTEGER,X509V3_R_USER_TOO_LONG);
+    #####:  195:		return 0;
+        -:  196:	}
+    #####:  197:	if(!*psx) {
+    #####:  198:		if(!(sx = SXNET_new())) goto err;
+    #####:  199:		if(!ASN1_INTEGER_set(sx->version, 0)) goto err;
+    #####:  200:		*psx = sx;
+        -:  201:	} else sx = *psx;
+    #####:  202:	if(SXNET_get_id_INTEGER(sx, zone)) {
+    #####:  203:		X509V3err(X509V3_F_SXNET_ADD_ID_INTEGER,X509V3_R_DUPLICATE_ZONE_ID);
+    #####:  204:		return 0;
+        -:  205:	}
+        -:  206:
+    #####:  207:	if(!(id = SXNETID_new())) goto err;
+    #####:  208:	if(userlen == -1) userlen = strlen(user);
+        -:  209:		
+    #####:  210:	if(!M_ASN1_OCTET_STRING_set(id->user, user, userlen)) goto err;
+    #####:  211:	if(!sk_SXNETID_push(sx->ids, id)) goto err;
+    #####:  212:	id->zone = zone;
+    #####:  213:	return 1;
+        -:  214:	
+        -:  215:	err:
+    #####:  216:	X509V3err(X509V3_F_SXNET_ADD_ID_INTEGER,ERR_R_MALLOC_FAILURE);
+        -:  217:	SXNETID_free(id);
+        -:  218:	SXNET_free(sx);
+    #####:  219:	*psx = NULL;
+    #####:  220:	return 0;
+        -:  221:}
+        -:  222:
+    #####:  223:ASN1_OCTET_STRING *SXNET_get_id_asc(SXNET *sx, char *zone)
+        -:  224:{
+        -:  225:	ASN1_INTEGER *izone = NULL;
+        -:  226:	ASN1_OCTET_STRING *oct;
+    #####:  227:	if(!(izone = s2i_ASN1_INTEGER(NULL, zone))) {
+    #####:  228:		X509V3err(X509V3_F_SXNET_GET_ID_ASC,X509V3_R_ERROR_CONVERTING_ZONE);
+    #####:  229:		return NULL;
+        -:  230:	}
+    #####:  231:	oct = SXNET_get_id_INTEGER(sx, izone);
+    #####:  232:	M_ASN1_INTEGER_free(izone);
+    #####:  233:	return oct;
+        -:  234:}
+        -:  235:
+    #####:  236:ASN1_OCTET_STRING *SXNET_get_id_ulong(SXNET *sx, unsigned long lzone)
+        -:  237:{
+        -:  238:	ASN1_INTEGER *izone = NULL;
+        -:  239:	ASN1_OCTET_STRING *oct;
+    #####:  240:	if(!(izone = M_ASN1_INTEGER_new()) || !ASN1_INTEGER_set(izone, lzone)) {
+    #####:  241:		X509V3err(X509V3_F_SXNET_GET_ID_ULONG,ERR_R_MALLOC_FAILURE);
+    #####:  242:		M_ASN1_INTEGER_free(izone);
+    #####:  243:		return NULL;
+        -:  244:	}
+    #####:  245:	oct = SXNET_get_id_INTEGER(sx, izone);
+    #####:  246:	M_ASN1_INTEGER_free(izone);
+    #####:  247:	return oct;
+        -:  248:}
+        -:  249:
+    #####:  250:ASN1_OCTET_STRING *SXNET_get_id_INTEGER(SXNET *sx, ASN1_INTEGER *zone)
+        -:  251:{
+        -:  252:	SXNETID *id;
+        -:  253:	int i;
+    #####:  254:	for(i = 0; i < sk_SXNETID_num(sx->ids); i++) {
+    #####:  255:		id = sk_SXNETID_value(sx->ids, i);
+    #####:  256:		if(!M_ASN1_INTEGER_cmp(id->zone, zone)) return id->user;
+        -:  257:	}
+        -:  258:	return NULL;
+        -:  259:}
+        -:  260:
+        -:  261:IMPLEMENT_STACK_OF(SXNETID)
+        -:  262:IMPLEMENT_ASN1_SET_OF(SXNETID)

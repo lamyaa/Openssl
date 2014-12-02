@@ -1,0 +1,417 @@
+        -:    0:Source:dsa_ossl.c
+        -:    0:Graph:dsa_ossl.gcno
+        -:    0:Data:dsa_ossl.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* crypto/dsa/dsa_ossl.c */
+        -:    2:/* Copyright (C) 1995-1998 Eric Young (eay@cryptsoft.com)
+        -:    3: * All rights reserved.
+        -:    4: *
+        -:    5: * This package is an SSL implementation written
+        -:    6: * by Eric Young (eay@cryptsoft.com).
+        -:    7: * The implementation was written so as to conform with Netscapes SSL.
+        -:    8: * 
+        -:    9: * This library is free for commercial and non-commercial use as long as
+        -:   10: * the following conditions are aheared to.  The following conditions
+        -:   11: * apply to all code found in this distribution, be it the RC4, RSA,
+        -:   12: * lhash, DES, etc., code; not just the SSL code.  The SSL documentation
+        -:   13: * included with this distribution is covered by the same copyright terms
+        -:   14: * except that the holder is Tim Hudson (tjh@cryptsoft.com).
+        -:   15: * 
+        -:   16: * Copyright remains Eric Young's, and as such any Copyright notices in
+        -:   17: * the code are not to be removed.
+        -:   18: * If this package is used in a product, Eric Young should be given attribution
+        -:   19: * as the author of the parts of the library used.
+        -:   20: * This can be in the form of a textual message at program startup or
+        -:   21: * in documentation (online or textual) provided with the package.
+        -:   22: * 
+        -:   23: * Redistribution and use in source and binary forms, with or without
+        -:   24: * modification, are permitted provided that the following conditions
+        -:   25: * are met:
+        -:   26: * 1. Redistributions of source code must retain the copyright
+        -:   27: *    notice, this list of conditions and the following disclaimer.
+        -:   28: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   29: *    notice, this list of conditions and the following disclaimer in the
+        -:   30: *    documentation and/or other materials provided with the distribution.
+        -:   31: * 3. All advertising materials mentioning features or use of this software
+        -:   32: *    must display the following acknowledgement:
+        -:   33: *    "This product includes cryptographic software written by
+        -:   34: *     Eric Young (eay@cryptsoft.com)"
+        -:   35: *    The word 'cryptographic' can be left out if the rouines from the library
+        -:   36: *    being used are not cryptographic related :-).
+        -:   37: * 4. If you include any Windows specific code (or a derivative thereof) from 
+        -:   38: *    the apps directory (application code) you must include an acknowledgement:
+        -:   39: *    "This product includes software written by Tim Hudson (tjh@cryptsoft.com)"
+        -:   40: * 
+        -:   41: * THIS SOFTWARE IS PROVIDED BY ERIC YOUNG ``AS IS'' AND
+        -:   42: * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   43: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+        -:   44: * ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+        -:   45: * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+        -:   46: * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+        -:   47: * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   48: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+        -:   49: * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+        -:   50: * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+        -:   51: * SUCH DAMAGE.
+        -:   52: * 
+        -:   53: * The licence and distribution terms for any publically available version or
+        -:   54: * derivative of this code cannot be changed.  i.e. this code cannot simply be
+        -:   55: * copied and put under another distribution licence
+        -:   56: * [including the GNU Public Licence.]
+        -:   57: */
+        -:   58:
+        -:   59:/* Original version from Steven Schoch <schoch@sheba.arc.nasa.gov> */
+        -:   60:
+        -:   61:#include <stdio.h>
+        -:   62:#include "cryptlib.h"
+        -:   63:#include <openssl/bn.h>
+        -:   64:#include <openssl/sha.h>
+        -:   65:#include <openssl/dsa.h>
+        -:   66:#include <openssl/rand.h>
+        -:   67:#include <openssl/asn1.h>
+        -:   68:
+        -:   69:static DSA_SIG *dsa_do_sign(const unsigned char *dgst, int dlen, DSA *dsa);
+        -:   70:static int dsa_sign_setup(DSA *dsa, BN_CTX *ctx_in, BIGNUM **kinvp, BIGNUM **rp);
+        -:   71:static int dsa_do_verify(const unsigned char *dgst, int dgst_len, DSA_SIG *sig,
+        -:   72:			 DSA *dsa);
+        -:   73:static int dsa_init(DSA *dsa);
+        -:   74:static int dsa_finish(DSA *dsa);
+        -:   75:
+        -:   76:static DSA_METHOD openssl_dsa_meth = {
+        -:   77:"OpenSSL DSA method",
+        -:   78:dsa_do_sign,
+        -:   79:dsa_sign_setup,
+        -:   80:dsa_do_verify,
+        -:   81:NULL, /* dsa_mod_exp, */
+        -:   82:NULL, /* dsa_bn_mod_exp, */
+        -:   83:dsa_init,
+        -:   84:dsa_finish,
+        -:   85:0,
+        -:   86:NULL,
+        -:   87:NULL,
+        -:   88:NULL
+        -:   89:};
+        -:   90:
+        -:   91:/* These macro wrappers replace attempts to use the dsa_mod_exp() and
+        -:   92: * bn_mod_exp() handlers in the DSA_METHOD structure. We avoid the problem of
+        -:   93: * having a the macro work as an expression by bundling an "err_instr". So;
+        -:   94: * 
+        -:   95: *     if (!dsa->meth->bn_mod_exp(dsa, r,dsa->g,&k,dsa->p,ctx,
+        -:   96: *                 dsa->method_mont_p)) goto err;
+        -:   97: *
+        -:   98: * can be replaced by;
+        -:   99: *
+        -:  100: *     DSA_BN_MOD_EXP(goto err, dsa, r, dsa->g, &k, dsa->p, ctx,
+        -:  101: *                 dsa->method_mont_p);
+        -:  102: */
+        -:  103:
+        -:  104:#define DSA_MOD_EXP(err_instr,dsa,rr,a1,p1,a2,p2,m,ctx,in_mont) \
+        -:  105:	do { \
+        -:  106:	int _tmp_res53; \
+        -:  107:	if((dsa)->meth->dsa_mod_exp) \
+        -:  108:		_tmp_res53 = (dsa)->meth->dsa_mod_exp((dsa), (rr), (a1), (p1), \
+        -:  109:				(a2), (p2), (m), (ctx), (in_mont)); \
+        -:  110:	else \
+        -:  111:		_tmp_res53 = BN_mod_exp2_mont((rr), (a1), (p1), (a2), (p2), \
+        -:  112:				(m), (ctx), (in_mont)); \
+        -:  113:	if(!_tmp_res53) err_instr; \
+        -:  114:	} while(0)
+        -:  115:#define DSA_BN_MOD_EXP(err_instr,dsa,r,a,p,m,ctx,m_ctx) \
+        -:  116:	do { \
+        -:  117:	int _tmp_res53; \
+        -:  118:	if((dsa)->meth->bn_mod_exp) \
+        -:  119:		_tmp_res53 = (dsa)->meth->bn_mod_exp((dsa), (r), (a), (p), \
+        -:  120:				(m), (ctx), (m_ctx)); \
+        -:  121:	else \
+        -:  122:		_tmp_res53 = BN_mod_exp_mont((r), (a), (p), (m), (ctx), (m_ctx)); \
+        -:  123:	if(!_tmp_res53) err_instr; \
+        -:  124:	} while(0)
+        -:  125:
+    50000:  126:const DSA_METHOD *DSA_OpenSSL(void)
+        -:  127:{
+    50000:  128:	return &openssl_dsa_meth;
+        -:  129:}
+        -:  130:
+    #####:  131:static DSA_SIG *dsa_do_sign(const unsigned char *dgst, int dlen, DSA *dsa)
+        -:  132:	{
+    #####:  133:	BIGNUM *kinv=NULL,*r=NULL,*s=NULL;
+        -:  134:	BIGNUM m;
+        -:  135:	BIGNUM xr;
+        -:  136:	BN_CTX *ctx=NULL;
+        -:  137:	int reason=ERR_R_BN_LIB;
+        -:  138:	DSA_SIG *ret=NULL;
+        -:  139:	int noredo = 0;
+        -:  140:
+    #####:  141:	BN_init(&m);
+    #####:  142:	BN_init(&xr);
+        -:  143:
+    #####:  144:	if (!dsa->p || !dsa->q || !dsa->g)
+        -:  145:		{
+        -:  146:		reason=DSA_R_MISSING_PARAMETERS;
+        -:  147:		goto err;
+        -:  148:		}
+        -:  149:
+    #####:  150:	s=BN_new();
+    #####:  151:	if (s == NULL) goto err;
+    #####:  152:	ctx=BN_CTX_new();
+    #####:  153:	if (ctx == NULL) goto err;
+        -:  154:redo:
+    #####:  155:	if ((dsa->kinv == NULL) || (dsa->r == NULL))
+        -:  156:		{
+    #####:  157:		if (!DSA_sign_setup(dsa,ctx,&kinv,&r)) goto err;
+        -:  158:		}
+        -:  159:	else
+        -:  160:		{
+    #####:  161:		kinv=dsa->kinv;
+    #####:  162:		dsa->kinv=NULL;
+    #####:  163:		r=dsa->r;
+    #####:  164:		dsa->r=NULL;
+        -:  165:		noredo = 1;
+        -:  166:		}
+        -:  167:
+        -:  168:	
+    #####:  169:	if (dlen > BN_num_bytes(dsa->q))
+        -:  170:		/* if the digest length is greater than the size of q use the
+        -:  171:		 * BN_num_bits(dsa->q) leftmost bits of the digest, see
+        -:  172:		 * fips 186-3, 4.2 */
+    #####:  173:		dlen = BN_num_bytes(dsa->q);
+    #####:  174:	if (BN_bin2bn(dgst,dlen,&m) == NULL)
+        -:  175:		goto err;
+        -:  176:
+        -:  177:	/* Compute  s = inv(k) (m + xr) mod q */
+    #####:  178:	if (!BN_mod_mul(&xr,dsa->priv_key,r,dsa->q,ctx)) goto err;/* s = xr */
+    #####:  179:	if (!BN_add(s, &xr, &m)) goto err;		/* s = m + xr */
+    #####:  180:	if (BN_cmp(s,dsa->q) > 0)
+    #####:  181:		if (!BN_sub(s,s,dsa->q)) goto err;
+    #####:  182:	if (!BN_mod_mul(s,s,kinv,dsa->q,ctx)) goto err;
+        -:  183:
+    #####:  184:	ret=DSA_SIG_new();
+    #####:  185:	if (ret == NULL) goto err;
+        -:  186:	/* Redo if r or s is zero as required by FIPS 186-3: this is
+        -:  187:	 * very unlikely.
+        -:  188:	 */
+    #####:  189:	if (BN_is_zero(r) || BN_is_zero(s))
+        -:  190:		{
+    #####:  191:		if (noredo)
+        -:  192:			{
+        -:  193:			reason = DSA_R_NEED_NEW_SETUP_VALUES;
+        -:  194:			goto err;
+        -:  195:			}
+        -:  196:		goto redo;
+        -:  197:		}
+    #####:  198:	ret->r = r;
+    #####:  199:	ret->s = s;
+        -:  200:	
+        -:  201:err:
+    #####:  202:	if (!ret)
+        -:  203:		{
+    #####:  204:		DSAerr(DSA_F_DSA_DO_SIGN,reason);
+    #####:  205:		BN_free(r);
+    #####:  206:		BN_free(s);
+        -:  207:		}
+    #####:  208:	if (ctx != NULL) BN_CTX_free(ctx);
+    #####:  209:	BN_clear_free(&m);
+    #####:  210:	BN_clear_free(&xr);
+    #####:  211:	if (kinv != NULL) /* dsa->kinv is NULL now if we used it */
+    #####:  212:	    BN_clear_free(kinv);
+    #####:  213:	return(ret);
+        -:  214:	}
+        -:  215:
+    #####:  216:static int dsa_sign_setup(DSA *dsa, BN_CTX *ctx_in, BIGNUM **kinvp, BIGNUM **rp)
+        -:  217:	{
+        -:  218:	BN_CTX *ctx;
+        -:  219:	BIGNUM k,kq,*K,*kinv=NULL,*r=NULL;
+        -:  220:	int ret=0;
+        -:  221:
+    #####:  222:	if (!dsa->p || !dsa->q || !dsa->g)
+        -:  223:		{
+    #####:  224:		DSAerr(DSA_F_DSA_SIGN_SETUP,DSA_R_MISSING_PARAMETERS);
+    #####:  225:		return 0;
+        -:  226:		}
+        -:  227:
+    #####:  228:	BN_init(&k);
+    #####:  229:	BN_init(&kq);
+        -:  230:
+    #####:  231:	if (ctx_in == NULL)
+        -:  232:		{
+    #####:  233:		if ((ctx=BN_CTX_new()) == NULL) goto err;
+        -:  234:		}
+        -:  235:	else
+        -:  236:		ctx=ctx_in;
+        -:  237:
+    #####:  238:	if ((r=BN_new()) == NULL) goto err;
+        -:  239:
+        -:  240:	/* Get random k */
+        -:  241:	do
+    #####:  242:		if (!BN_rand_range(&k, dsa->q)) goto err;
+    #####:  243:	while (BN_is_zero(&k));
+    #####:  244:	if ((dsa->flags & DSA_FLAG_NO_EXP_CONSTTIME) == 0)
+        -:  245:		{
+    #####:  246:		BN_set_flags(&k, BN_FLG_CONSTTIME);
+        -:  247:		}
+        -:  248:
+    #####:  249:	if (dsa->flags & DSA_FLAG_CACHE_MONT_P)
+        -:  250:		{
+    #####:  251:		if (!BN_MONT_CTX_set_locked(&dsa->method_mont_p,
+        -:  252:						CRYPTO_LOCK_DSA,
+    #####:  253:						dsa->p, ctx))
+        -:  254:			goto err;
+        -:  255:		}
+        -:  256:
+        -:  257:	/* Compute r = (g^k mod p) mod q */
+        -:  258:
+    #####:  259:	if ((dsa->flags & DSA_FLAG_NO_EXP_CONSTTIME) == 0)
+        -:  260:		{
+    #####:  261:		if (!BN_copy(&kq, &k)) goto err;
+        -:  262:
+        -:  263:		/* We do not want timing information to leak the length of k,
+        -:  264:		 * so we compute g^k using an equivalent exponent of fixed length.
+        -:  265:		 *
+        -:  266:		 * (This is a kludge that we need because the BN_mod_exp_mont()
+        -:  267:		 * does not let us specify the desired timing behaviour.) */
+        -:  268:
+    #####:  269:		if (!BN_add(&kq, &kq, dsa->q)) goto err;
+    #####:  270:		if (BN_num_bits(&kq) <= BN_num_bits(dsa->q))
+        -:  271:			{
+    #####:  272:			if (!BN_add(&kq, &kq, dsa->q)) goto err;
+        -:  273:			}
+        -:  274:
+        -:  275:		K = &kq;
+        -:  276:		}
+        -:  277:	else
+        -:  278:		{
+        -:  279:		K = &k;
+        -:  280:		}
+    #####:  281:	DSA_BN_MOD_EXP(goto err, dsa, r, dsa->g, K, dsa->p, ctx,
+        -:  282:			dsa->method_mont_p);
+    #####:  283:	if (!BN_mod(r,r,dsa->q,ctx)) goto err;
+        -:  284:
+        -:  285:	/* Compute  part of 's = inv(k) (m + xr) mod q' */
+    #####:  286:	if ((kinv=BN_mod_inverse(NULL,&k,dsa->q,ctx)) == NULL) goto err;
+        -:  287:
+    #####:  288:	if (*kinvp != NULL) BN_clear_free(*kinvp);
+    #####:  289:	*kinvp=kinv;
+        -:  290:	kinv=NULL;
+    #####:  291:	if (*rp != NULL) BN_clear_free(*rp);
+    #####:  292:	*rp=r;
+        -:  293:	ret=1;
+        -:  294:err:
+    #####:  295:	if (!ret)
+        -:  296:		{
+    #####:  297:		DSAerr(DSA_F_DSA_SIGN_SETUP,ERR_R_BN_LIB);
+    #####:  298:		if (r != NULL)
+    #####:  299:			BN_clear_free(r);
+        -:  300:		}
+    #####:  301:	if (ctx_in == NULL) BN_CTX_free(ctx);
+    #####:  302:	BN_clear_free(&k);
+    #####:  303:	BN_clear_free(&kq);
+    #####:  304:	return(ret);
+        -:  305:	}
+        -:  306:
+    #####:  307:static int dsa_do_verify(const unsigned char *dgst, int dgst_len, DSA_SIG *sig,
+        -:  308:			 DSA *dsa)
+        -:  309:	{
+        -:  310:	BN_CTX *ctx;
+        -:  311:	BIGNUM u1,u2,t1;
+        -:  312:	BN_MONT_CTX *mont=NULL;
+        -:  313:	int ret = -1, i;
+    #####:  314:	if (!dsa->p || !dsa->q || !dsa->g)
+        -:  315:		{
+    #####:  316:		DSAerr(DSA_F_DSA_DO_VERIFY,DSA_R_MISSING_PARAMETERS);
+    #####:  317:		return -1;
+        -:  318:		}
+        -:  319:
+    #####:  320:	i = BN_num_bits(dsa->q);
+        -:  321:	/* fips 186-3 allows only different sizes for q */
+    #####:  322:	if (i != 160 && i != 224 && i != 256)
+        -:  323:		{
+    #####:  324:		DSAerr(DSA_F_DSA_DO_VERIFY,DSA_R_BAD_Q_VALUE);
+    #####:  325:		return -1;
+        -:  326:		}
+        -:  327:
+    #####:  328:	if (BN_num_bits(dsa->p) > OPENSSL_DSA_MAX_MODULUS_BITS)
+        -:  329:		{
+    #####:  330:		DSAerr(DSA_F_DSA_DO_VERIFY,DSA_R_MODULUS_TOO_LARGE);
+    #####:  331:		return -1;
+        -:  332:		}
+    #####:  333:	BN_init(&u1);
+    #####:  334:	BN_init(&u2);
+    #####:  335:	BN_init(&t1);
+        -:  336:
+    #####:  337:	if ((ctx=BN_CTX_new()) == NULL) goto err;
+        -:  338:
+    #####:  339:	if (BN_is_zero(sig->r) || BN_is_negative(sig->r) ||
+    #####:  340:	    BN_ucmp(sig->r, dsa->q) >= 0)
+        -:  341:		{
+        -:  342:		ret = 0;
+        -:  343:		goto err;
+        -:  344:		}
+    #####:  345:	if (BN_is_zero(sig->s) || BN_is_negative(sig->s) ||
+    #####:  346:	    BN_ucmp(sig->s, dsa->q) >= 0)
+        -:  347:		{
+        -:  348:		ret = 0;
+        -:  349:		goto err;
+        -:  350:		}
+        -:  351:
+        -:  352:	/* Calculate W = inv(S) mod Q
+        -:  353:	 * save W in u2 */
+    #####:  354:	if ((BN_mod_inverse(&u2,sig->s,dsa->q,ctx)) == NULL) goto err;
+        -:  355:
+        -:  356:	/* save M in u1 */
+    #####:  357:	if (dgst_len > (i >> 3))
+        -:  358:		/* if the digest length is greater than the size of q use the
+        -:  359:		 * BN_num_bits(dsa->q) leftmost bits of the digest, see
+        -:  360:		 * fips 186-3, 4.2 */
+        -:  361:		dgst_len = (i >> 3);
+    #####:  362:	if (BN_bin2bn(dgst,dgst_len,&u1) == NULL) goto err;
+        -:  363:
+        -:  364:	/* u1 = M * w mod q */
+    #####:  365:	if (!BN_mod_mul(&u1,&u1,&u2,dsa->q,ctx)) goto err;
+        -:  366:
+        -:  367:	/* u2 = r * w mod q */
+    #####:  368:	if (!BN_mod_mul(&u2,sig->r,&u2,dsa->q,ctx)) goto err;
+        -:  369:
+        -:  370:
+    #####:  371:	if (dsa->flags & DSA_FLAG_CACHE_MONT_P)
+        -:  372:		{
+    #####:  373:		mont = BN_MONT_CTX_set_locked(&dsa->method_mont_p,
+    #####:  374:					CRYPTO_LOCK_DSA, dsa->p, ctx);
+    #####:  375:		if (!mont)
+        -:  376:			goto err;
+        -:  377:		}
+        -:  378:
+        -:  379:
+    #####:  380:	DSA_MOD_EXP(goto err, dsa, &t1, dsa->g, &u1, dsa->pub_key, &u2, dsa->p, ctx, mont);
+        -:  381:	/* BN_copy(&u1,&t1); */
+        -:  382:	/* let u1 = u1 mod q */
+    #####:  383:	if (!BN_mod(&u1,&t1,dsa->q,ctx)) goto err;
+        -:  384:
+        -:  385:	/* V is now in u1.  If the signature is correct, it will be
+        -:  386:	 * equal to R. */
+    #####:  387:	ret=(BN_ucmp(&u1, sig->r) == 0);
+        -:  388:
+        -:  389:	err:
+        -:  390:	/* XXX: surely this is wrong - if ret is 0, it just didn't verify;
+        -:  391:	   there is no error in BN. Test should be ret == -1 (Ben) */
+    #####:  392:	if (ret != 1) DSAerr(DSA_F_DSA_DO_VERIFY,ERR_R_BN_LIB);
+    #####:  393:	if (ctx != NULL) BN_CTX_free(ctx);
+    #####:  394:	BN_free(&u1);
+    #####:  395:	BN_free(&u2);
+    #####:  396:	BN_free(&t1);
+    #####:  397:	return(ret);
+        -:  398:	}
+        -:  399:
+    #####:  400:static int dsa_init(DSA *dsa)
+        -:  401:{
+    #####:  402:	dsa->flags|=DSA_FLAG_CACHE_MONT_P;
+    #####:  403:	return(1);
+        -:  404:}
+        -:  405:
+    #####:  406:static int dsa_finish(DSA *dsa)
+        -:  407:{
+    #####:  408:	if(dsa->method_mont_p)
+    #####:  409:		BN_MONT_CTX_free(dsa->method_mont_p);
+    #####:  410:	return(1);
+        -:  411:}
+        -:  412:

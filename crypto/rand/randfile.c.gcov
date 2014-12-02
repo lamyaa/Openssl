@@ -1,0 +1,333 @@
+        -:    0:Source:randfile.c
+        -:    0:Graph:randfile.gcno
+        -:    0:Data:randfile.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* crypto/rand/randfile.c */
+        -:    2:/* Copyright (C) 1995-1998 Eric Young (eay@cryptsoft.com)
+        -:    3: * All rights reserved.
+        -:    4: *
+        -:    5: * This package is an SSL implementation written
+        -:    6: * by Eric Young (eay@cryptsoft.com).
+        -:    7: * The implementation was written so as to conform with Netscapes SSL.
+        -:    8: * 
+        -:    9: * This library is free for commercial and non-commercial use as long as
+        -:   10: * the following conditions are aheared to.  The following conditions
+        -:   11: * apply to all code found in this distribution, be it the RC4, RSA,
+        -:   12: * lhash, DES, etc., code; not just the SSL code.  The SSL documentation
+        -:   13: * included with this distribution is covered by the same copyright terms
+        -:   14: * except that the holder is Tim Hudson (tjh@cryptsoft.com).
+        -:   15: * 
+        -:   16: * Copyright remains Eric Young's, and as such any Copyright notices in
+        -:   17: * the code are not to be removed.
+        -:   18: * If this package is used in a product, Eric Young should be given attribution
+        -:   19: * as the author of the parts of the library used.
+        -:   20: * This can be in the form of a textual message at program startup or
+        -:   21: * in documentation (online or textual) provided with the package.
+        -:   22: * 
+        -:   23: * Redistribution and use in source and binary forms, with or without
+        -:   24: * modification, are permitted provided that the following conditions
+        -:   25: * are met:
+        -:   26: * 1. Redistributions of source code must retain the copyright
+        -:   27: *    notice, this list of conditions and the following disclaimer.
+        -:   28: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   29: *    notice, this list of conditions and the following disclaimer in the
+        -:   30: *    documentation and/or other materials provided with the distribution.
+        -:   31: * 3. All advertising materials mentioning features or use of this software
+        -:   32: *    must display the following acknowledgement:
+        -:   33: *    "This product includes cryptographic software written by
+        -:   34: *     Eric Young (eay@cryptsoft.com)"
+        -:   35: *    The word 'cryptographic' can be left out if the rouines from the library
+        -:   36: *    being used are not cryptographic related :-).
+        -:   37: * 4. If you include any Windows specific code (or a derivative thereof) from 
+        -:   38: *    the apps directory (application code) you must include an acknowledgement:
+        -:   39: *    "This product includes software written by Tim Hudson (tjh@cryptsoft.com)"
+        -:   40: * 
+        -:   41: * THIS SOFTWARE IS PROVIDED BY ERIC YOUNG ``AS IS'' AND
+        -:   42: * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   43: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+        -:   44: * ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+        -:   45: * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+        -:   46: * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+        -:   47: * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   48: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+        -:   49: * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+        -:   50: * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+        -:   51: * SUCH DAMAGE.
+        -:   52: * 
+        -:   53: * The licence and distribution terms for any publically available version or
+        -:   54: * derivative of this code cannot be changed.  i.e. this code cannot simply be
+        -:   55: * copied and put under another distribution licence
+        -:   56: * [including the GNU Public Licence.]
+        -:   57: */
+        -:   58:
+        -:   59:/* We need to define this to get macros like S_IFBLK and S_IFCHR */
+        -:   60:#if !defined(OPENSSL_SYS_VXWORKS)
+        -:   61:#define _XOPEN_SOURCE 500
+        -:   62:#endif
+        -:   63:
+        -:   64:#include <errno.h>
+        -:   65:#include <stdio.h>
+        -:   66:#include <stdlib.h>
+        -:   67:#include <string.h>
+        -:   68:
+        -:   69:#include "e_os.h"
+        -:   70:#include <openssl/crypto.h>
+        -:   71:#include <openssl/rand.h>
+        -:   72:#include <openssl/buffer.h>
+        -:   73:
+        -:   74:#ifdef OPENSSL_SYS_VMS
+        -:   75:#include <unixio.h>
+        -:   76:#endif
+        -:   77:#ifndef NO_SYS_TYPES_H
+        -:   78:# include <sys/types.h>
+        -:   79:#endif
+        -:   80:#ifndef OPENSSL_NO_POSIX_IO
+        -:   81:# include <sys/stat.h>
+        -:   82:#endif
+        -:   83:
+        -:   84:#ifdef _WIN32
+        -:   85:#define stat	_stat
+        -:   86:#define chmod	_chmod
+        -:   87:#define open	_open
+        -:   88:#define fdopen	_fdopen
+        -:   89:#endif
+        -:   90:
+        -:   91:#undef BUFSIZE
+        -:   92:#define BUFSIZE	1024
+        -:   93:#define RAND_DATA 1024
+        -:   94:
+        -:   95:#ifdef OPENSSL_SYS_VMS
+        -:   96:/* This declaration is a nasty hack to get around vms' extension to fopen
+        -:   97: * for passing in sharing options being disabled by our /STANDARD=ANSI89 */
+        -:   98:static FILE *(*const vms_fopen)(const char *, const char *, ...) =
+        -:   99:    (FILE *(*)(const char *, const char *, ...))fopen;
+        -:  100:#define VMS_OPEN_ATTRS "shr=get,put,upd,del","ctx=bin,stm","rfm=stm","rat=none","mrs=0"
+        -:  101:#endif
+        -:  102:
+        -:  103:/* #define RFILE ".rnd" - defined in ../../e_os.h */
+        -:  104:
+        -:  105:/* Note that these functions are intended for seed files only.
+        -:  106: * Entropy devices and EGD sockets are handled in rand_unix.c */
+        -:  107:
+    10000:  108:int RAND_load_file(const char *file, long bytes)
+        -:  109:	{
+        -:  110:	/* If bytes >= 0, read up to 'bytes' bytes.
+        -:  111:	 * if bytes == -1, read complete file. */
+        -:  112:
+        -:  113:	MS_STATIC unsigned char buf[BUFSIZE];
+        -:  114:#ifndef OPENSSL_NO_POSIX_IO
+        -:  115:	struct stat sb;
+        -:  116:#endif
+        -:  117:	int i,ret=0,n;
+        -:  118:	FILE *in;
+        -:  119:
+    10000:  120:	if (file == NULL) return(0);
+        -:  121:
+        -:  122:#ifndef OPENSSL_NO_POSIX_IO
+        -:  123:#ifdef PURIFY
+        -:  124:	/* struct stat can have padding and unused fields that may not be
+        -:  125:	 * initialized in the call to stat(). We need to clear the entire
+        -:  126:	 * structure before calling RAND_add() to avoid complaints from
+        -:  127:	 * applications such as Valgrind.
+        -:  128:	 */
+        -:  129:	memset(&sb, 0, sizeof(sb));
+        -:  130:#endif
+    10000:  131:	if (stat(file,&sb) < 0) return(0);
+    10000:  132:	RAND_add(&sb,sizeof(sb),0.0);
+        -:  133:#endif
+    10000:  134:	if (bytes == 0) return(ret);
+        -:  135:
+        -:  136:#ifdef OPENSSL_SYS_VMS
+        -:  137:	in=vms_fopen(file,"rb",VMS_OPEN_ATTRS);
+        -:  138:#else
+    10000:  139:	in=fopen(file,"rb");
+        -:  140:#endif
+    10000:  141:	if (in == NULL) goto err;
+        -:  142:#if defined(S_IFBLK) && defined(S_IFCHR) && !defined(OPENSSL_NO_POSIX_IO)
+    10000:  143:	if (sb.st_mode & (S_IFBLK | S_IFCHR)) {
+        -:  144:	  /* this file is a device. we don't want read an infinite number
+        -:  145:	   * of bytes from a random device, nor do we want to use buffered
+        -:  146:	   * I/O because we will waste system entropy. 
+        -:  147:	   */
+    #####:  148:	  bytes = (bytes == -1) ? 2048 : bytes; /* ok, is 2048 enough? */
+        -:  149:#ifndef OPENSSL_NO_SETVBUF_IONBF
+    #####:  150:	  setvbuf(in, NULL, _IONBF, 0); /* don't do buffered reads */
+        -:  151:#endif /* ndef OPENSSL_NO_SETVBUF_IONBF */
+        -:  152:	}
+        -:  153:#endif
+        -:  154:	for (;;)
+        -:  155:		{
+    20000:  156:		if (bytes > 0)
+    #####:  157:			n = (bytes < BUFSIZE)?(int)bytes:BUFSIZE;
+        -:  158:		else
+        -:  159:			n = BUFSIZE;
+    40000:  160:		i=fread(buf,1,n,in);
+    20000:  161:		if (i <= 0) break;
+        -:  162:#ifdef PURIFY
+        -:  163:		RAND_add(buf,i,(double)i);
+        -:  164:#else
+        -:  165:		/* even if n != i, use the full array */
+    10000:  166:		RAND_add(buf,n,(double)i);
+        -:  167:#endif
+    10000:  168:		ret+=i;
+    10000:  169:		if (bytes > 0)
+        -:  170:			{
+    #####:  171:			bytes-=n;
+    #####:  172:			if (bytes <= 0) break;
+        -:  173:			}
+        -:  174:		}
+    10000:  175:	fclose(in);
+    10000:  176:	OPENSSL_cleanse(buf,BUFSIZE);
+        -:  177:err:
+    10000:  178:	return(ret);
+        -:  179:	}
+        -:  180:
+    #####:  181:int RAND_write_file(const char *file)
+        -:  182:	{
+        -:  183:	unsigned char buf[BUFSIZE];
+        -:  184:	int i,ret=0,rand_err=0;
+        -:  185:	FILE *out = NULL;
+        -:  186:	int n;
+        -:  187:#ifndef OPENSSL_NO_POSIX_IO
+        -:  188:	struct stat sb;
+        -:  189:	
+        -:  190:	i=stat(file,&sb);
+    #####:  191:	if (i != -1) { 
+        -:  192:#if defined(S_ISBLK) && defined(S_ISCHR)
+    #####:  193:	  if (S_ISBLK(sb.st_mode) || S_ISCHR(sb.st_mode)) {
+        -:  194:	    /* this file is a device. we don't write back to it. 
+        -:  195:	     * we "succeed" on the assumption this is some sort 
+        -:  196:	     * of random device. Otherwise attempting to write to 
+        -:  197:	     * and chmod the device causes problems.
+        -:  198:	     */
+        -:  199:	    return(1); 
+        -:  200:	  }
+        -:  201:#endif
+        -:  202:	}
+        -:  203:#endif
+        -:  204:
+        -:  205:#if defined(O_CREAT) && !defined(OPENSSL_NO_POSIX_IO) && !defined(OPENSSL_SYS_VMS)
+        -:  206:	{
+        -:  207:#ifndef O_BINARY
+        -:  208:#define O_BINARY 0
+        -:  209:#endif
+        -:  210:	/* chmod(..., 0600) is too late to protect the file,
+        -:  211:	 * permissions should be restrictive from the start */
+        -:  212:	int fd = open(file, O_WRONLY|O_CREAT|O_BINARY, 0600);
+        -:  213:	if (fd != -1)
+        -:  214:		out = fdopen(fd, "wb");
+        -:  215:	}
+        -:  216:#endif
+        -:  217:
+        -:  218:#ifdef OPENSSL_SYS_VMS
+        -:  219:	/* VMS NOTE: Prior versions of this routine created a _new_
+        -:  220:	 * version of the rand file for each call into this routine, then
+        -:  221:	 * deleted all existing versions named ;-1, and finally renamed
+        -:  222:	 * the current version as ';1'. Under concurrent usage, this
+        -:  223:	 * resulted in an RMS race condition in rename() which could
+        -:  224:	 * orphan files (see vms message help for RMS$_REENT). With the
+        -:  225:	 * fopen() calls below, openssl/VMS now shares the top-level
+        -:  226:	 * version of the rand file. Note that there may still be
+        -:  227:	 * conditions where the top-level rand file is locked. If so, this
+        -:  228:	 * code will then create a new version of the rand file. Without
+        -:  229:	 * the delete and rename code, this can result in ascending file
+        -:  230:	 * versions that stop at version 32767, and this routine will then
+        -:  231:	 * return an error. The remedy for this is to recode the calling
+        -:  232:	 * application to avoid concurrent use of the rand file, or
+        -:  233:	 * synchronize usage at the application level. Also consider
+        -:  234:	 * whether or not you NEED a persistent rand file in a concurrent
+        -:  235:	 * use situation. 
+        -:  236:	 */
+        -:  237:
+        -:  238:	out = vms_fopen(file,"rb+",VMS_OPEN_ATTRS);
+        -:  239:	if (out == NULL)
+        -:  240:		out = vms_fopen(file,"wb",VMS_OPEN_ATTRS);
+        -:  241:#else
+        -:  242:	if (out == NULL)
+    #####:  243:		out = fopen(file,"wb");
+        -:  244:#endif
+    #####:  245:	if (out == NULL) goto err;
+        -:  246:
+        -:  247:#ifndef NO_CHMOD
+    #####:  248:	chmod(file,0600);
+        -:  249:#endif
+        -:  250:	n=RAND_DATA;
+        -:  251:	for (;;)
+        -:  252:		{
+        -:  253:		i=(n > BUFSIZE)?BUFSIZE:n;
+        -:  254:		n-=BUFSIZE;
+    #####:  255:		if (RAND_bytes(buf,i) <= 0)
+        -:  256:			rand_err=1;
+    #####:  257:		i=fwrite(buf,1,i,out);
+    #####:  258:		if (i <= 0)
+        -:  259:			{
+        -:  260:			ret=0;
+        -:  261:			break;
+        -:  262:			}
+        -:  263:		ret+=i;
+        -:  264:		if (n <= 0) break;
+        -:  265:                }
+        -:  266:
+    #####:  267:	fclose(out);
+    #####:  268:	OPENSSL_cleanse(buf,BUFSIZE);
+        -:  269:err:
+    #####:  270:	return (rand_err ? -1 : ret);
+        -:  271:	}
+        -:  272:
+    10000:  273:const char *RAND_file_name(char *buf, size_t size)
+        -:  274:	{
+        -:  275:	char *s=NULL;
+        -:  276:#ifdef __OpenBSD__
+        -:  277:	struct stat sb;
+        -:  278:#endif
+        -:  279:
+    10000:  280:	if (OPENSSL_issetugid() == 0)
+    10000:  281:		s=getenv("RANDFILE");
+    10000:  282:	if (s != NULL && *s && strlen(s) + 1 < size)
+        -:  283:		{
+    #####:  284:		if (BUF_strlcpy(buf,s,size) >= size)
+        -:  285:			return NULL;
+        -:  286:		}
+        -:  287:	else
+        -:  288:		{
+    10000:  289:		if (OPENSSL_issetugid() == 0)
+    10000:  290:			s=getenv("HOME");
+        -:  291:#ifdef DEFAULT_HOME
+        -:  292:		if (s == NULL)
+        -:  293:			{
+        -:  294:			s = DEFAULT_HOME;
+        -:  295:			}
+        -:  296:#endif
+    10000:  297:		if (s && *s && strlen(s)+strlen(RFILE)+2 < size)
+        -:  298:			{
+    10000:  299:			BUF_strlcpy(buf,s,size);
+        -:  300:#ifndef OPENSSL_SYS_VMS
+    10000:  301:			BUF_strlcat(buf,"/",size);
+        -:  302:#endif
+    10000:  303:			BUF_strlcat(buf,RFILE,size);
+        -:  304:			}
+        -:  305:		else
+    #####:  306:		  	buf[0] = '\0'; /* no file name */
+        -:  307:		}
+        -:  308:
+        -:  309:#ifdef __OpenBSD__
+        -:  310:	/* given that all random loads just fail if the file can't be 
+        -:  311:	 * seen on a stat, we stat the file we're returning, if it
+        -:  312:	 * fails, use /dev/arandom instead. this allows the user to 
+        -:  313:	 * use their own source for good random data, but defaults
+        -:  314:	 * to something hopefully decent if that isn't available. 
+        -:  315:	 */
+        -:  316:
+        -:  317:	if (!buf[0])
+        -:  318:		if (BUF_strlcpy(buf,"/dev/arandom",size) >= size) {
+        -:  319:			return(NULL);
+        -:  320:		}	
+        -:  321:	if (stat(buf,&sb) == -1)
+        -:  322:		if (BUF_strlcpy(buf,"/dev/arandom",size) >= size) {
+        -:  323:			return(NULL);
+        -:  324:		}	
+        -:  325:
+        -:  326:#endif
+    10000:  327:	return(buf);
+        -:  328:	}

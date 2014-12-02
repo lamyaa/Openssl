@@ -1,0 +1,293 @@
+        -:    0:Source:gost_eng.c
+        -:    0:Graph:gost_eng.gcno
+        -:    0:Data:gost_eng.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/**********************************************************************
+        -:    2: *                          gost_eng.c                                *
+        -:    3: *             Copyright (c) 2005-2006 Cryptocom LTD                  *
+        -:    4: *         This file is distributed under the same license as OpenSSL *
+        -:    5: *                                                                    *
+        -:    6: *              Main file of GOST engine                              *
+        -:    7: *       for OpenSSL                                                  *
+        -:    8: *          Requires OpenSSL 0.9.9 for compilation                    *
+        -:    9: **********************************************************************/
+        -:   10:#include <string.h>
+        -:   11:#include <openssl/crypto.h>
+        -:   12:#include <openssl/err.h>
+        -:   13:#include <openssl/evp.h>
+        -:   14:#include <openssl/engine.h>
+        -:   15:#include <openssl/obj_mac.h>
+        -:   16:#include "e_gost_err.h"
+        -:   17:#include "gost_lcl.h"
+        -:   18:static const char *engine_gost_id = "gost";
+        -:   19:static const char *engine_gost_name = "Reference implementation of GOST engine";
+        -:   20:
+        -:   21:/* Symmetric cipher and digest function registrar */
+        -:   22:
+        -:   23:static int gost_ciphers(ENGINE *e, const EVP_CIPHER **cipher,
+        -:   24:	const int **nids, int nid);
+        -:   25:
+        -:   26:static int gost_digests(ENGINE *e, const EVP_MD **digest,
+        -:   27:	const int **nids, int ind);
+        -:   28:
+        -:   29:static int gost_pkey_meths (ENGINE *e, EVP_PKEY_METHOD **pmeth,
+        -:   30:	const int **nids, int nid);
+        -:   31:
+        -:   32:static int gost_pkey_asn1_meths (ENGINE *e, EVP_PKEY_ASN1_METHOD **ameth,
+        -:   33:	const int **nids, int nid);
+        -:   34:
+        -:   35:static int gost_cipher_nids[] =
+        -:   36:    {NID_id_Gost28147_89, NID_gost89_cnt,0};
+        -:   37:
+        -:   38:static int gost_digest_nids[] =
+        -:   39:	{NID_id_GostR3411_94,NID_id_Gost28147_89_MAC, 0};
+        -:   40:
+        -:   41:static int gost_pkey_meth_nids[] = 
+        -:   42:	{NID_id_GostR3410_94,
+        -:   43:	 NID_id_GostR3410_2001, NID_id_Gost28147_89_MAC, 0};
+        -:   44:
+        -:   45:static EVP_PKEY_METHOD *pmeth_GostR3410_94 = NULL,
+        -:   46:	 *pmeth_GostR3410_2001 = NULL,
+        -:   47:	*pmeth_Gost28147_MAC = NULL;
+        -:   48:
+        -:   49:static EVP_PKEY_ASN1_METHOD *ameth_GostR3410_94 = NULL,
+        -:   50:	*ameth_GostR3410_2001 = NULL,
+        -:   51:	*ameth_Gost28147_MAC = NULL;
+        -:   52:
+        -:   53:
+    #####:   54:static int gost_engine_init(ENGINE *e)
+        -:   55:	{ 
+    #####:   56:	return 1;
+        -:   57:	}
+        -:   58:
+    #####:   59:static int gost_engine_finish(ENGINE *e)
+        -:   60:	{ 
+    #####:   61:	return 1;
+        -:   62:	}
+        -:   63:
+    10000:   64:static int gost_engine_destroy(ENGINE *e)
+        -:   65:	{ 
+    10000:   66:	gost_param_free();
+        -:   67:
+    10000:   68:	pmeth_GostR3410_94 = NULL;
+    10000:   69:	pmeth_GostR3410_2001 = NULL;
+    10000:   70:	pmeth_Gost28147_MAC = NULL;
+    10000:   71:	ameth_GostR3410_94 = NULL;
+    10000:   72:	ameth_GostR3410_2001 = NULL;
+    10000:   73:	ameth_Gost28147_MAC = NULL;
+    10000:   74:	return 1;
+        -:   75:	}
+        -:   76:
+    10000:   77:static int bind_gost (ENGINE *e,const char *id) 
+        -:   78:	{
+        -:   79:	int ret = 0;
+    10000:   80:	if (id && strcmp(id, engine_gost_id)) return 0;
+    10000:   81:	if (ameth_GostR3410_94)
+        -:   82:		{
+        -:   83:		printf("GOST engine already loaded\n");
+        -:   84:		goto end;
+        -:   85:		}
+        -:   86:
+    10000:   87:	if (!ENGINE_set_id(e, engine_gost_id)) 
+        -:   88:		{
+        -:   89:		printf("ENGINE_set_id failed\n"); 
+        -:   90:		goto end;
+        -:   91:		}	
+    10000:   92:	if (!ENGINE_set_name(e, engine_gost_name)) 
+        -:   93:		{
+        -:   94:		printf("ENGINE_set_name failed\n");
+        -:   95:		goto end;
+        -:   96:		}	
+    10000:   97:	if (!ENGINE_set_digests(e, gost_digests)) 
+        -:   98:		{
+        -:   99:		printf("ENGINE_set_digests failed\n");
+        -:  100:		goto end;
+        -:  101:		}	
+    10000:  102:	if (! ENGINE_set_ciphers(e, gost_ciphers)) 
+        -:  103:		{
+        -:  104:		printf("ENGINE_set_ciphers failed\n");
+        -:  105:		goto end;
+        -:  106:		}	
+    10000:  107:	if (! ENGINE_set_pkey_meths(e, gost_pkey_meths)) 
+        -:  108:		{
+        -:  109:		printf("ENGINE_set_pkey_meths failed\n");
+        -:  110:		goto end;
+        -:  111:		}	
+    10000:  112:	if (! ENGINE_set_pkey_asn1_meths(e, gost_pkey_asn1_meths)) 
+        -:  113:		{
+        -:  114:		printf("ENGINE_set_pkey_asn1_meths failed\n");
+        -:  115:		goto end;
+        -:  116:		}	
+        -:  117:	/* Control function and commands */
+    10000:  118:	if (!ENGINE_set_cmd_defns(e,gost_cmds)) 
+        -:  119:		{
+    #####:  120:		fprintf(stderr,"ENGINE_set_cmd_defns failed\n");
+        -:  121:		goto end;
+        -:  122:		}	
+    10000:  123:	if (!ENGINE_set_ctrl_function(e,gost_control_func)) 
+        -:  124:		{
+    #####:  125:		fprintf(stderr,"ENGINE_set_ctrl_func failed\n");
+        -:  126:		goto end;
+        -:  127:		}	
+    10000:  128:	if ( ! ENGINE_set_destroy_function(e, gost_engine_destroy)
+    10000:  129:		|| ! ENGINE_set_init_function(e,gost_engine_init)
+    10000:  130:		|| ! ENGINE_set_finish_function(e,gost_engine_finish))
+        -:  131:		{
+        -:  132:		goto end;
+        -:  133:		}
+        -:  134:
+    10000:  135:	if (!register_ameth_gost(NID_id_GostR3410_94, &ameth_GostR3410_94, "GOST94", "GOST R 34.10-94")) goto end;
+    10000:  136:	if (!register_ameth_gost(NID_id_GostR3410_2001, &ameth_GostR3410_2001, "GOST2001", "GOST R 34.10-2001")) goto end;
+    10000:  137:	if (!register_ameth_gost(NID_id_Gost28147_89_MAC, &ameth_Gost28147_MAC,
+        -:  138:		"GOST-MAC", "GOST 28147-89 MAC")) goto end;
+        -:  139:
+    10000:  140:	if (!register_pmeth_gost(NID_id_GostR3410_94, &pmeth_GostR3410_94, 0)) goto end;
+    10000:  141:	if (!register_pmeth_gost(NID_id_GostR3410_2001, &pmeth_GostR3410_2001, 0)) goto end;
+    10000:  142:	if (!register_pmeth_gost(NID_id_Gost28147_89_MAC, &pmeth_Gost28147_MAC, 0))
+        -:  143:		goto end;
+    10000:  144:	if ( ! ENGINE_register_ciphers(e)
+    10000:  145:		|| ! ENGINE_register_digests(e)
+    10000:  146:		|| ! ENGINE_register_pkey_meths(e)
+        -:  147:		/* These two actually should go in LIST_ADD command */
+    10000:  148:		|| ! EVP_add_cipher(&cipher_gost)
+    10000:  149:		|| ! EVP_add_cipher(&cipher_gost_cpacnt)
+    10000:  150:		|| ! EVP_add_digest(&digest_gost)
+    10000:  151:		|| ! EVP_add_digest(&imit_gost_cpa)
+        -:  152:		)
+        -:  153:		{
+        -:  154:		goto end;
+        -:  155:		}
+        -:  156:
+    10000:  157:	ERR_load_GOST_strings();
+        -:  158:	ret = 1;
+        -:  159:	end:
+    10000:  160:	return ret;
+        -:  161:	}	
+        -:  162:
+        -:  163:#ifndef OPENSSL_NO_DYNAMIC_ENGINE
+        -:  164:IMPLEMENT_DYNAMIC_BIND_FN(bind_gost)
+        -:  165:IMPLEMENT_DYNAMIC_CHECK_FN()
+        -:  166:#endif  /* ndef OPENSSL_NO_DYNAMIC_ENGINE */
+        -:  167:
+    20000:  168:static int gost_digests(ENGINE *e, const EVP_MD **digest,
+        -:  169:	const int **nids, int nid)
+        -:  170:	{ 
+        -:  171:	int ok =1 ;
+    20000:  172:	if (!digest) 
+        -:  173:		{
+    20000:  174:		*nids = gost_digest_nids;
+    20000:  175:		return 2; 
+        -:  176:		}
+        -:  177:	/*printf("Digest no %d requested\n",nid);*/
+    #####:  178:	if(nid == NID_id_GostR3411_94) 
+        -:  179:		{
+    #####:  180:		*digest = &digest_gost;
+        -:  181:		}
+    #####:  182:	else if (nid == NID_id_Gost28147_89_MAC) 
+        -:  183:		{
+    #####:  184:		*digest = &imit_gost_cpa;
+        -:  185:		}
+        -:  186:	else
+        -:  187:		{
+        -:  188:		ok =0;
+    #####:  189:		*digest = NULL;
+        -:  190:		}
+    #####:  191:	return ok;
+        -:  192:	}	
+        -:  193:	
+    20000:  194:static int gost_ciphers (ENGINE *e,const EVP_CIPHER **cipher,
+        -:  195:	const int **nids, int nid) 
+        -:  196:	{
+        -:  197:	int ok = 1;
+    20000:  198:	if (!cipher) 
+        -:  199:		{
+    20000:  200:		*nids = gost_cipher_nids;
+    20000:  201:		return 2; /* two ciphers are supported */
+        -:  202:		}
+        -:  203:
+    #####:  204:	if(nid == NID_id_Gost28147_89) 
+        -:  205:		{
+    #####:  206:		*cipher = &cipher_gost;
+        -:  207:		}
+    #####:  208:	else if  (nid == NID_gost89_cnt) 
+        -:  209:		{
+    #####:  210:		*cipher = &cipher_gost_cpacnt;
+        -:  211:		}
+        -:  212:	else	
+        -:  213:		{
+        -:  214:		ok = 0;
+    #####:  215:		*cipher = NULL;
+        -:  216:		}
+    #####:  217:	return ok;
+        -:  218:	}	
+        -:  219:
+    60000:  220:static int gost_pkey_meths (ENGINE *e, EVP_PKEY_METHOD **pmeth,
+        -:  221:	const int **nids, int nid)
+        -:  222:	{
+    60000:  223:	if (!pmeth) 
+        -:  224:		{
+    30000:  225:		*nids = gost_pkey_meth_nids;
+    30000:  226:		return 3;
+        -:  227:		}
+        -:  228:
+    30000:  229:	switch (nid) 
+        -:  230:		{
+    10000:  231:		case NID_id_GostR3410_94: *pmeth = pmeth_GostR3410_94; return 1;
+    10000:  232:		case NID_id_GostR3410_2001: *pmeth = pmeth_GostR3410_2001; return 1;
+    10000:  233:		case NID_id_Gost28147_89_MAC: *pmeth = pmeth_Gost28147_MAC; return 1;
+        -:  234:		default:;
+        -:  235:		}
+        -:  236:	
+    #####:  237:	*pmeth = NULL;
+    #####:  238:	return 0;
+        -:  239:	}
+        -:  240:
+    40000:  241:static int gost_pkey_asn1_meths (ENGINE *e, EVP_PKEY_ASN1_METHOD **ameth,
+        -:  242:	const int **nids, int nid)
+        -:  243:	{
+    40000:  244:	if (!ameth) 
+        -:  245:		{
+    10000:  246:		*nids = gost_pkey_meth_nids;
+    10000:  247:		return 3;
+        -:  248:		}
+    30000:  249:	switch (nid) 
+        -:  250:		{
+    10000:  251:		case NID_id_GostR3410_94: *ameth = ameth_GostR3410_94; return 1;
+    10000:  252:		case NID_id_GostR3410_2001: *ameth = ameth_GostR3410_2001; return 1;
+    10000:  253:		case NID_id_Gost28147_89_MAC: *ameth = ameth_Gost28147_MAC; return 1;
+        -:  254:	
+        -:  255:		default:;
+        -:  256:		}
+        -:  257:	
+    #####:  258:	*ameth = NULL;
+    #####:  259:	return 0;
+        -:  260:	}
+        -:  261:
+        -:  262:#ifdef OPENSSL_NO_DYNAMIC_ENGINE
+    10000:  263:static ENGINE *engine_gost(void)
+        -:  264:	{	
+    10000:  265:	ENGINE *ret = ENGINE_new();
+    10000:  266:	if (!ret)
+        -:  267:		return NULL;
+    10000:  268:	if (!bind_gost(ret,engine_gost_id)) 
+        -:  269:		{
+    #####:  270:		ENGINE_free(ret);
+    #####:  271:		return NULL;
+        -:  272:		}
+        -:  273:	return ret;
+        -:  274:	}
+        -:  275:	
+    10000:  276:void ENGINE_load_gost(void)
+        -:  277:	{
+        -:  278:	ENGINE *toadd;
+    10000:  279:	if (pmeth_GostR3410_94)
+        -:  280:		return;
+    10000:  281:	toadd = engine_gost();
+    10000:  282:	if (!toadd) return;
+    10000:  283:	ENGINE_add(toadd);
+    10000:  284:	ENGINE_free(toadd);
+    10000:  285:	ERR_clear_error();
+        -:  286:	}
+        -:  287:#endif	
+        -:  288:

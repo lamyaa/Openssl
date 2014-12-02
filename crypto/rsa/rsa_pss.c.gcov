@@ -1,0 +1,305 @@
+        -:    0:Source:rsa_pss.c
+        -:    0:Graph:rsa_pss.gcno
+        -:    0:Data:rsa_pss.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* rsa_pss.c */
+        -:    2:/* Written by Dr Stephen N Henson (steve@openssl.org) for the OpenSSL
+        -:    3: * project 2005.
+        -:    4: */
+        -:    5:/* ====================================================================
+        -:    6: * Copyright (c) 2005 The OpenSSL Project.  All rights reserved.
+        -:    7: *
+        -:    8: * Redistribution and use in source and binary forms, with or without
+        -:    9: * modification, are permitted provided that the following conditions
+        -:   10: * are met:
+        -:   11: *
+        -:   12: * 1. Redistributions of source code must retain the above copyright
+        -:   13: *    notice, this list of conditions and the following disclaimer. 
+        -:   14: *
+        -:   15: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   16: *    notice, this list of conditions and the following disclaimer in
+        -:   17: *    the documentation and/or other materials provided with the
+        -:   18: *    distribution.
+        -:   19: *
+        -:   20: * 3. All advertising materials mentioning features or use of this
+        -:   21: *    software must display the following acknowledgment:
+        -:   22: *    "This product includes software developed by the OpenSSL Project
+        -:   23: *    for use in the OpenSSL Toolkit. (http://www.OpenSSL.org/)"
+        -:   24: *
+        -:   25: * 4. The names "OpenSSL Toolkit" and "OpenSSL Project" must not be used to
+        -:   26: *    endorse or promote products derived from this software without
+        -:   27: *    prior written permission. For written permission, please contact
+        -:   28: *    licensing@OpenSSL.org.
+        -:   29: *
+        -:   30: * 5. Products derived from this software may not be called "OpenSSL"
+        -:   31: *    nor may "OpenSSL" appear in their names without prior written
+        -:   32: *    permission of the OpenSSL Project.
+        -:   33: *
+        -:   34: * 6. Redistributions of any form whatsoever must retain the following
+        -:   35: *    acknowledgment:
+        -:   36: *    "This product includes software developed by the OpenSSL Project
+        -:   37: *    for use in the OpenSSL Toolkit (http://www.OpenSSL.org/)"
+        -:   38: *
+        -:   39: * THIS SOFTWARE IS PROVIDED BY THE OpenSSL PROJECT ``AS IS'' AND ANY
+        -:   40: * EXPRESSED OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   41: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+        -:   42: * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE OpenSSL PROJECT OR
+        -:   43: * ITS CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+        -:   44: * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+        -:   45: * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+        -:   46: * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   47: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+        -:   48: * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+        -:   49: * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+        -:   50: * OF THE POSSIBILITY OF SUCH DAMAGE.
+        -:   51: * ====================================================================
+        -:   52: *
+        -:   53: * This product includes cryptographic software written by Eric Young
+        -:   54: * (eay@cryptsoft.com).  This product includes software written by Tim
+        -:   55: * Hudson (tjh@cryptsoft.com).
+        -:   56: *
+        -:   57: */
+        -:   58:
+        -:   59:#include <stdio.h>
+        -:   60:#include "cryptlib.h"
+        -:   61:#include <openssl/bn.h>
+        -:   62:#include <openssl/rsa.h>
+        -:   63:#include <openssl/evp.h>
+        -:   64:#include <openssl/rand.h>
+        -:   65:#include <openssl/sha.h>
+        -:   66:
+        -:   67:static const unsigned char zeroes[] = {0,0,0,0,0,0,0,0};
+        -:   68:
+        -:   69:#if defined(_MSC_VER) && defined(_ARM_)
+        -:   70:#pragma optimize("g", off)
+        -:   71:#endif
+        -:   72:
+    #####:   73:int RSA_verify_PKCS1_PSS(RSA *rsa, const unsigned char *mHash,
+        -:   74:			const EVP_MD *Hash, const unsigned char *EM, int sLen)
+        -:   75:	{
+    #####:   76:	return RSA_verify_PKCS1_PSS_mgf1(rsa, mHash, Hash, NULL, EM, sLen);
+        -:   77:	}
+        -:   78:
+    #####:   79:int RSA_verify_PKCS1_PSS_mgf1(RSA *rsa, const unsigned char *mHash,
+        -:   80:			const EVP_MD *Hash, const EVP_MD *mgf1Hash,
+        -:   81:			const unsigned char *EM, int sLen)
+        -:   82:	{
+        -:   83:	int i;
+        -:   84:	int ret = 0;
+        -:   85:	int hLen, maskedDBLen, MSBits, emLen;
+        -:   86:	const unsigned char *H;
+        -:   87:	unsigned char *DB = NULL;
+        -:   88:	EVP_MD_CTX ctx;
+        -:   89:	unsigned char H_[EVP_MAX_MD_SIZE];
+    #####:   90:	EVP_MD_CTX_init(&ctx);
+        -:   91:
+    #####:   92:	if (mgf1Hash == NULL)
+        -:   93:		mgf1Hash = Hash;
+        -:   94:
+    #####:   95:	hLen = EVP_MD_size(Hash);
+    #####:   96:	if (hLen < 0)
+        -:   97:		goto err;
+        -:   98:	/*
+        -:   99:	 * Negative sLen has special meanings:
+        -:  100:	 *	-1	sLen == hLen
+        -:  101:	 *	-2	salt length is autorecovered from signature
+        -:  102:	 *	-N	reserved
+        -:  103:	 */
+    #####:  104:	if      (sLen == -1)	sLen = hLen;
+    #####:  105:	else if (sLen == -2)	sLen = -2;
+    #####:  106:	else if (sLen < -2)
+        -:  107:		{
+    #####:  108:		RSAerr(RSA_F_RSA_VERIFY_PKCS1_PSS_MGF1, RSA_R_SLEN_CHECK_FAILED);
+    #####:  109:		goto err;
+        -:  110:		}
+        -:  111:
+    #####:  112:	MSBits = (BN_num_bits(rsa->n) - 1) & 0x7;
+    #####:  113:	emLen = RSA_size(rsa);
+    #####:  114:	if (EM[0] & (0xFF << MSBits))
+        -:  115:		{
+    #####:  116:		RSAerr(RSA_F_RSA_VERIFY_PKCS1_PSS_MGF1, RSA_R_FIRST_OCTET_INVALID);
+    #####:  117:		goto err;
+        -:  118:		}
+    #####:  119:	if (MSBits == 0)
+        -:  120:		{
+    #####:  121:		EM++;
+    #####:  122:		emLen--;
+        -:  123:		}
+    #####:  124:	if (emLen < (hLen + sLen + 2)) /* sLen can be small negative */
+        -:  125:		{
+    #####:  126:		RSAerr(RSA_F_RSA_VERIFY_PKCS1_PSS_MGF1, RSA_R_DATA_TOO_LARGE);
+    #####:  127:		goto err;
+        -:  128:		}
+    #####:  129:	if (EM[emLen - 1] != 0xbc)
+        -:  130:		{
+    #####:  131:		RSAerr(RSA_F_RSA_VERIFY_PKCS1_PSS_MGF1, RSA_R_LAST_OCTET_INVALID);
+    #####:  132:		goto err;
+        -:  133:		}
+    #####:  134:	maskedDBLen = emLen - hLen - 1;
+    #####:  135:	H = EM + maskedDBLen;
+    #####:  136:	DB = OPENSSL_malloc(maskedDBLen);
+    #####:  137:	if (!DB)
+        -:  138:		{
+    #####:  139:		RSAerr(RSA_F_RSA_VERIFY_PKCS1_PSS_MGF1, ERR_R_MALLOC_FAILURE);
+    #####:  140:		goto err;
+        -:  141:		}
+    #####:  142:	if (PKCS1_MGF1(DB, maskedDBLen, H, hLen, mgf1Hash) < 0)
+        -:  143:		goto err;
+    #####:  144:	for (i = 0; i < maskedDBLen; i++)
+    #####:  145:		DB[i] ^= EM[i];
+    #####:  146:	if (MSBits)
+    #####:  147:		DB[0] &= 0xFF >> (8 - MSBits);
+    #####:  148:	for (i = 0; DB[i] == 0 && i < (maskedDBLen-1); i++) ;
+    #####:  149:	if (DB[i++] != 0x1)
+        -:  150:		{
+    #####:  151:		RSAerr(RSA_F_RSA_VERIFY_PKCS1_PSS_MGF1, RSA_R_SLEN_RECOVERY_FAILED);
+    #####:  152:		goto err;
+        -:  153:		}
+    #####:  154:	if (sLen >= 0 && (maskedDBLen - i) != sLen)
+        -:  155:		{
+    #####:  156:		RSAerr(RSA_F_RSA_VERIFY_PKCS1_PSS_MGF1, RSA_R_SLEN_CHECK_FAILED);
+    #####:  157:		goto err;
+        -:  158:		}
+    #####:  159:	if (!EVP_DigestInit_ex(&ctx, Hash, NULL)
+    #####:  160:		|| !EVP_DigestUpdate(&ctx, zeroes, sizeof zeroes)
+    #####:  161:		|| !EVP_DigestUpdate(&ctx, mHash, hLen))
+        -:  162:		goto err;
+    #####:  163:	if (maskedDBLen - i)
+        -:  164:		{
+    #####:  165:		if (!EVP_DigestUpdate(&ctx, DB + i, maskedDBLen - i))
+        -:  166:			goto err;
+        -:  167:		}
+    #####:  168:	if (!EVP_DigestFinal_ex(&ctx, H_, NULL))
+        -:  169:		goto err;
+    #####:  170:	if (memcmp(H_, H, hLen))
+        -:  171:		{
+    #####:  172:		RSAerr(RSA_F_RSA_VERIFY_PKCS1_PSS_MGF1, RSA_R_BAD_SIGNATURE);
+        -:  173:		ret = 0;
+        -:  174:		}
+        -:  175:	else 
+        -:  176:		ret = 1;
+        -:  177:
+        -:  178:	err:
+    #####:  179:	if (DB)
+    #####:  180:		OPENSSL_free(DB);
+    #####:  181:	EVP_MD_CTX_cleanup(&ctx);
+        -:  182:
+    #####:  183:	return ret;
+        -:  184:
+        -:  185:	}
+        -:  186:
+    #####:  187:int RSA_padding_add_PKCS1_PSS(RSA *rsa, unsigned char *EM,
+        -:  188:			const unsigned char *mHash,
+        -:  189:			const EVP_MD *Hash, int sLen)
+        -:  190:	{
+    #####:  191:	return RSA_padding_add_PKCS1_PSS_mgf1(rsa, EM, mHash, Hash, NULL, sLen);
+        -:  192:	}
+        -:  193:
+    #####:  194:int RSA_padding_add_PKCS1_PSS_mgf1(RSA *rsa, unsigned char *EM,
+        -:  195:			const unsigned char *mHash,
+        -:  196:			const EVP_MD *Hash, const EVP_MD *mgf1Hash, int sLen)
+        -:  197:	{
+        -:  198:	int i;
+        -:  199:	int ret = 0;
+        -:  200:	int hLen, maskedDBLen, MSBits, emLen;
+        -:  201:	unsigned char *H, *salt = NULL, *p;
+        -:  202:	EVP_MD_CTX ctx;
+        -:  203:
+    #####:  204:	if (mgf1Hash == NULL)
+        -:  205:		mgf1Hash = Hash;
+        -:  206:
+    #####:  207:	hLen = EVP_MD_size(Hash);
+    #####:  208:	if (hLen < 0)
+        -:  209:		goto err;
+        -:  210:	/*
+        -:  211:	 * Negative sLen has special meanings:
+        -:  212:	 *	-1	sLen == hLen
+        -:  213:	 *	-2	salt length is maximized
+        -:  214:	 *	-N	reserved
+        -:  215:	 */
+    #####:  216:	if      (sLen == -1)	sLen = hLen;
+    #####:  217:	else if (sLen == -2)	sLen = -2;
+    #####:  218:	else if (sLen < -2)
+        -:  219:		{
+    #####:  220:		RSAerr(RSA_F_RSA_PADDING_ADD_PKCS1_PSS_MGF1, RSA_R_SLEN_CHECK_FAILED);
+    #####:  221:		goto err;
+        -:  222:		}
+        -:  223:
+    #####:  224:	MSBits = (BN_num_bits(rsa->n) - 1) & 0x7;
+    #####:  225:	emLen = RSA_size(rsa);
+    #####:  226:	if (MSBits == 0)
+        -:  227:		{
+    #####:  228:		*EM++ = 0;
+    #####:  229:		emLen--;
+        -:  230:		}
+    #####:  231:	if (sLen == -2)
+        -:  232:		{
+    #####:  233:		sLen = emLen - hLen - 2;
+        -:  234:		}
+    #####:  235:	else if (emLen < (hLen + sLen + 2))
+        -:  236:		{
+    #####:  237:		RSAerr(RSA_F_RSA_PADDING_ADD_PKCS1_PSS_MGF1,RSA_R_DATA_TOO_LARGE_FOR_KEY_SIZE);
+    #####:  238:		goto err;
+        -:  239:		}
+    #####:  240:	if (sLen > 0)
+        -:  241:		{
+    #####:  242:		salt = OPENSSL_malloc(sLen);
+    #####:  243:		if (!salt)
+        -:  244:			{
+    #####:  245:			RSAerr(RSA_F_RSA_PADDING_ADD_PKCS1_PSS_MGF1,ERR_R_MALLOC_FAILURE);
+    #####:  246:			goto err;
+        -:  247:			}
+    #####:  248:		if (RAND_bytes(salt, sLen) <= 0)
+        -:  249:			goto err;
+        -:  250:		}
+    #####:  251:	maskedDBLen = emLen - hLen - 1;
+    #####:  252:	H = EM + maskedDBLen;
+    #####:  253:	EVP_MD_CTX_init(&ctx);
+    #####:  254:	if (!EVP_DigestInit_ex(&ctx, Hash, NULL)
+    #####:  255:		|| !EVP_DigestUpdate(&ctx, zeroes, sizeof zeroes)
+    #####:  256:		|| !EVP_DigestUpdate(&ctx, mHash, hLen))
+        -:  257:		goto err;
+    #####:  258:	if (sLen && !EVP_DigestUpdate(&ctx, salt, sLen))
+        -:  259:		goto err;
+    #####:  260:	if (!EVP_DigestFinal_ex(&ctx, H, NULL))
+        -:  261:		goto err;
+    #####:  262:	EVP_MD_CTX_cleanup(&ctx);
+        -:  263:
+        -:  264:	/* Generate dbMask in place then perform XOR on it */
+    #####:  265:	if (PKCS1_MGF1(EM, maskedDBLen, H, hLen, mgf1Hash))
+        -:  266:		goto err;
+        -:  267:
+        -:  268:	p = EM;
+        -:  269:
+        -:  270:	/* Initial PS XORs with all zeroes which is a NOP so just update
+        -:  271:	 * pointer. Note from a test above this value is guaranteed to
+        -:  272:	 * be non-negative.
+        -:  273:	 */
+    #####:  274:	p += emLen - sLen - hLen - 2;
+    #####:  275:	*p++ ^= 0x1;
+    #####:  276:	if (sLen > 0)
+        -:  277:		{
+    #####:  278:		for (i = 0; i < sLen; i++)
+    #####:  279:			*p++ ^= salt[i];
+        -:  280:		}
+    #####:  281:	if (MSBits)
+    #####:  282:		EM[0] &= 0xFF >> (8 - MSBits);
+        -:  283:
+        -:  284:	/* H is already in place so just set final 0xbc */
+        -:  285:
+    #####:  286:	EM[emLen - 1] = 0xbc;
+        -:  287:
+        -:  288:	ret = 1;
+        -:  289:
+        -:  290:	err:
+    #####:  291:	if (salt)
+    #####:  292:		OPENSSL_free(salt);
+        -:  293:
+    #####:  294:	return ret;
+        -:  295:
+        -:  296:	}
+        -:  297:
+        -:  298:#if defined(_MSC_VER)
+        -:  299:#pragma optimize("",on)
+        -:  300:#endif

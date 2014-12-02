@@ -1,0 +1,585 @@
+        -:    0:Source:e_aes_cbc_hmac_sha1.c
+        -:    0:Graph:e_aes_cbc_hmac_sha1.gcno
+        -:    0:Data:e_aes_cbc_hmac_sha1.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* ====================================================================
+        -:    2: * Copyright (c) 2011-2013 The OpenSSL Project.  All rights reserved.
+        -:    3: *
+        -:    4: * Redistribution and use in source and binary forms, with or without
+        -:    5: * modification, are permitted provided that the following conditions
+        -:    6: * are met:
+        -:    7: *
+        -:    8: * 1. Redistributions of source code must retain the above copyright
+        -:    9: *    notice, this list of conditions and the following disclaimer.
+        -:   10: *
+        -:   11: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   12: *    notice, this list of conditions and the following disclaimer in
+        -:   13: *    the documentation and/or other materials provided with the
+        -:   14: *    distribution.
+        -:   15: *
+        -:   16: * 3. All advertising materials mentioning features or use of this
+        -:   17: *    software must display the following acknowledgment:
+        -:   18: *    "This product includes software developed by the OpenSSL Project
+        -:   19: *    for use in the OpenSSL Toolkit. (http://www.OpenSSL.org/)"
+        -:   20: *
+        -:   21: * 4. The names "OpenSSL Toolkit" and "OpenSSL Project" must not be used to
+        -:   22: *    endorse or promote products derived from this software without
+        -:   23: *    prior written permission. For written permission, please contact
+        -:   24: *    licensing@OpenSSL.org.
+        -:   25: *
+        -:   26: * 5. Products derived from this software may not be called "OpenSSL"
+        -:   27: *    nor may "OpenSSL" appear in their names without prior written
+        -:   28: *    permission of the OpenSSL Project.
+        -:   29: *
+        -:   30: * 6. Redistributions of any form whatsoever must retain the following
+        -:   31: *    acknowledgment:
+        -:   32: *    "This product includes software developed by the OpenSSL Project
+        -:   33: *    for use in the OpenSSL Toolkit (http://www.OpenSSL.org/)"
+        -:   34: *
+        -:   35: * THIS SOFTWARE IS PROVIDED BY THE OpenSSL PROJECT ``AS IS'' AND ANY
+        -:   36: * EXPRESSED OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   37: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+        -:   38: * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE OpenSSL PROJECT OR
+        -:   39: * ITS CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+        -:   40: * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+        -:   41: * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+        -:   42: * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   43: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+        -:   44: * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+        -:   45: * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+        -:   46: * OF THE POSSIBILITY OF SUCH DAMAGE.
+        -:   47: * ====================================================================
+        -:   48: */
+        -:   49:
+        -:   50:#include <openssl/opensslconf.h>
+        -:   51:
+        -:   52:#include <stdio.h>
+        -:   53:#include <string.h>
+        -:   54:
+        -:   55:#if !defined(OPENSSL_NO_AES) && !defined(OPENSSL_NO_SHA1)
+        -:   56:
+        -:   57:#include <openssl/evp.h>
+        -:   58:#include <openssl/objects.h>
+        -:   59:#include <openssl/aes.h>
+        -:   60:#include <openssl/sha.h>
+        -:   61:#include "evp_locl.h"
+        -:   62:
+        -:   63:#ifndef EVP_CIPH_FLAG_AEAD_CIPHER
+        -:   64:#define EVP_CIPH_FLAG_AEAD_CIPHER	0x200000
+        -:   65:#define EVP_CTRL_AEAD_TLS1_AAD		0x16
+        -:   66:#define EVP_CTRL_AEAD_SET_MAC_KEY	0x17
+        -:   67:#endif
+        -:   68:
+        -:   69:#if !defined(EVP_CIPH_FLAG_DEFAULT_ASN1)
+        -:   70:#define EVP_CIPH_FLAG_DEFAULT_ASN1 0
+        -:   71:#endif
+        -:   72:
+        -:   73:#define TLS1_1_VERSION 0x0302
+        -:   74:
+        -:   75:typedef struct
+        -:   76:    {
+        -:   77:    AES_KEY		ks;
+        -:   78:    SHA_CTX		head,tail,md;
+        -:   79:    size_t		payload_length;	/* AAD length in decrypt case */
+        -:   80:    union {
+        -:   81:	unsigned int	tls_ver;
+        -:   82:    	unsigned char	tls_aad[16];	/* 13 used */
+        -:   83:    } aux;
+        -:   84:    } EVP_AES_HMAC_SHA1;
+        -:   85:
+        -:   86:#define NO_PAYLOAD_LENGTH	((size_t)-1)
+        -:   87:
+        -:   88:#if	defined(AES_ASM) &&	( \
+        -:   89:	defined(__x86_64)	|| defined(__x86_64__)	|| \
+        -:   90:	defined(_M_AMD64)	|| defined(_M_X64)	|| \
+        -:   91:	defined(__INTEL__)	)
+        -:   92:
+        -:   93:#if defined(__GNUC__) && __GNUC__>=2 && !defined(PEDANTIC)
+        -:   94:# define BSWAP(x) ({ unsigned int r=(x); asm ("bswapl %0":"=r"(r):"0"(r)); r; })
+        -:   95:#endif
+        -:   96:
+        -:   97:extern unsigned int OPENSSL_ia32cap_P[2];
+        -:   98:#define AESNI_CAPABLE   (1<<(57-32))
+        -:   99:
+        -:  100:int aesni_set_encrypt_key(const unsigned char *userKey, int bits,
+        -:  101:			      AES_KEY *key);
+        -:  102:int aesni_set_decrypt_key(const unsigned char *userKey, int bits,
+        -:  103:			      AES_KEY *key);
+        -:  104:
+        -:  105:void aesni_cbc_encrypt(const unsigned char *in,
+        -:  106:			   unsigned char *out,
+        -:  107:			   size_t length,
+        -:  108:			   const AES_KEY *key,
+        -:  109:			   unsigned char *ivec, int enc);
+        -:  110:
+        -:  111:void aesni_cbc_sha1_enc (const void *inp, void *out, size_t blocks,
+        -:  112:		const AES_KEY *key, unsigned char iv[16],
+        -:  113:		SHA_CTX *ctx,const void *in0);
+        -:  114:
+        -:  115:#define data(ctx) ((EVP_AES_HMAC_SHA1 *)(ctx)->cipher_data)
+        -:  116:
+    #####:  117:static int aesni_cbc_hmac_sha1_init_key(EVP_CIPHER_CTX *ctx,
+        -:  118:			const unsigned char *inkey,
+        -:  119:			const unsigned char *iv, int enc)
+        -:  120:	{
+    #####:  121:	EVP_AES_HMAC_SHA1 *key = data(ctx);
+        -:  122:	int ret;
+        -:  123:
+    #####:  124:	if (enc)
+    #####:  125:		ret=aesni_set_encrypt_key(inkey,ctx->key_len*8,&key->ks);
+        -:  126:	else
+    #####:  127:		ret=aesni_set_decrypt_key(inkey,ctx->key_len*8,&key->ks);
+        -:  128:
+    #####:  129:	SHA1_Init(&key->head);	/* handy when benchmarking */
+    #####:  130:	key->tail = key->head;
+    #####:  131:	key->md   = key->head;
+        -:  132:
+    #####:  133:	key->payload_length = NO_PAYLOAD_LENGTH;
+        -:  134:
+    #####:  135:	return ret<0?0:1;
+        -:  136:	}
+        -:  137:
+        -:  138:#define	STITCHED_CALL
+        -:  139:
+        -:  140:#if !defined(STITCHED_CALL)
+        -:  141:#define	aes_off 0
+        -:  142:#endif
+        -:  143:
+        -:  144:void sha1_block_data_order (void *c,const void *p,size_t len);
+        -:  145:
+    #####:  146:static void sha1_update(SHA_CTX *c,const void *data,size_t len)
+        -:  147:{	const unsigned char *ptr = data;
+        -:  148:	size_t res;
+        -:  149:
+    #####:  150:	if ((res = c->num)) {
+    #####:  151:		res = SHA_CBLOCK-res;
+    #####:  152:		if (len<res) res=len;
+    #####:  153:		SHA1_Update (c,ptr,res);
+    #####:  154:		ptr += res;
+    #####:  155:		len -= res;
+        -:  156:	}
+        -:  157:
+    #####:  158:	res = len % SHA_CBLOCK;
+    #####:  159:	len -= res;
+        -:  160:
+    #####:  161:	if (len) {
+    #####:  162:		sha1_block_data_order(c,ptr,len/SHA_CBLOCK);
+        -:  163:
+    #####:  164:		ptr += len;
+    #####:  165:		c->Nh += len>>29;
+    #####:  166:		c->Nl += len<<=3;
+    #####:  167:		if (c->Nl<(unsigned int)len) c->Nh++;
+        -:  168:	}
+        -:  169:
+    #####:  170:	if (res)
+    #####:  171:		SHA1_Update(c,ptr,res);
+    #####:  172:}
+        -:  173:
+        -:  174:#ifdef SHA1_Update
+        -:  175:#undef SHA1_Update
+        -:  176:#endif
+        -:  177:#define SHA1_Update sha1_update
+        -:  178:
+    #####:  179:static int aesni_cbc_hmac_sha1_cipher(EVP_CIPHER_CTX *ctx, unsigned char *out,
+        -:  180:		      const unsigned char *in, size_t len)
+        -:  181:	{
+    #####:  182:	EVP_AES_HMAC_SHA1 *key = data(ctx);
+        -:  183:	unsigned int l;
+    #####:  184:	size_t	plen = key->payload_length,
+        -:  185:		iv = 0,		/* explicit IV in TLS 1.1 and later */
+        -:  186:		sha_off = 0;
+        -:  187:#if defined(STITCHED_CALL)
+        -:  188:	size_t	aes_off = 0,
+        -:  189:		blocks;
+        -:  190:
+    #####:  191:	sha_off = SHA_CBLOCK-key->md.num;
+        -:  192:#endif
+        -:  193:
+    #####:  194:	key->payload_length = NO_PAYLOAD_LENGTH;
+        -:  195:
+    #####:  196:	if (len%AES_BLOCK_SIZE) return 0;
+        -:  197:
+    #####:  198:	if (ctx->encrypt) {
+    #####:  199:		if (plen==NO_PAYLOAD_LENGTH)
+        -:  200:			plen = len;
+    #####:  201:		else if (len!=((plen+SHA_DIGEST_LENGTH+AES_BLOCK_SIZE)&-AES_BLOCK_SIZE))
+        -:  202:			return 0;
+    #####:  203:		else if (key->aux.tls_ver >= TLS1_1_VERSION)
+        -:  204:			iv = AES_BLOCK_SIZE;
+        -:  205:
+        -:  206:#if defined(STITCHED_CALL)
+    #####:  207:		if (plen>(sha_off+iv) && (blocks=(plen-(sha_off+iv))/SHA_CBLOCK)) {
+    #####:  208:			SHA1_Update(&key->md,in+iv,sha_off);
+        -:  209:
+    #####:  210:			aesni_cbc_sha1_enc(in,out,blocks,&key->ks,
+    #####:  211:				ctx->iv,&key->md,in+iv+sha_off);
+    #####:  212:			blocks *= SHA_CBLOCK;
+        -:  213:			aes_off += blocks;
+    #####:  214:			sha_off += blocks;
+    #####:  215:			key->md.Nh += blocks>>29;
+    #####:  216:			key->md.Nl += blocks<<=3;
+    #####:  217:			if (key->md.Nl<(unsigned int)blocks) key->md.Nh++;
+        -:  218:		} else {
+        -:  219:			sha_off = 0;
+        -:  220:		}
+        -:  221:#endif
+    #####:  222:		sha_off += iv;
+    #####:  223:		SHA1_Update(&key->md,in+sha_off,plen-sha_off);
+        -:  224:
+    #####:  225:		if (plen!=len)	{	/* "TLS" mode of operation */
+    #####:  226:			if (in!=out)
+    #####:  227:				memcpy(out+aes_off,in+aes_off,plen-aes_off);
+        -:  228:
+        -:  229:			/* calculate HMAC and append it to payload */
+    #####:  230:			SHA1_Final(out+plen,&key->md);
+    #####:  231:			key->md = key->tail;
+    #####:  232:			SHA1_Update(&key->md,out+plen,SHA_DIGEST_LENGTH);
+    #####:  233:			SHA1_Final(out+plen,&key->md);
+        -:  234:
+        -:  235:			/* pad the payload|hmac */
+    #####:  236:			plen += SHA_DIGEST_LENGTH;
+    #####:  237:			for (l=len-plen-1;plen<len;plen++) out[plen]=l;
+        -:  238:			/* encrypt HMAC|padding at once */
+    #####:  239:			aesni_cbc_encrypt(out+aes_off,out+aes_off,len-aes_off,
+    #####:  240:					&key->ks,ctx->iv,1);
+        -:  241:		} else {
+    #####:  242:			aesni_cbc_encrypt(in+aes_off,out+aes_off,len-aes_off,
+    #####:  243:					&key->ks,ctx->iv,1);
+        -:  244:		}
+        -:  245:	} else {
+        -:  246:		union { unsigned int  u[SHA_DIGEST_LENGTH/sizeof(unsigned int)];
+        -:  247:			unsigned char c[32+SHA_DIGEST_LENGTH]; } mac, *pmac;
+        -:  248:
+        -:  249:		/* arrange cache line alignment */
+    #####:  250:		pmac = (void *)(((size_t)mac.c+31)&((size_t)0-32));
+        -:  251:
+        -:  252:		/* decrypt HMAC|padding at once */
+    #####:  253:		aesni_cbc_encrypt(in,out,len,
+    #####:  254:				&key->ks,ctx->iv,0);
+        -:  255:
+    #####:  256:		if (plen) {	/* "TLS" mode of operation */
+        -:  257:			size_t inp_len, mask, j, i;
+        -:  258:			unsigned int res, maxpad, pad, bitlen;
+        -:  259:			int ret = 1;
+        -:  260:			union {	unsigned int  u[SHA_LBLOCK];
+        -:  261:				unsigned char c[SHA_CBLOCK]; }
+    #####:  262:				*data = (void *)key->md.data;
+        -:  263:
+    #####:  264:			if ((key->aux.tls_aad[plen-4]<<8|key->aux.tls_aad[plen-3])
+        -:  265:			    >= TLS1_1_VERSION)
+        -:  266:				iv = AES_BLOCK_SIZE;
+        -:  267:
+    #####:  268:			if (len<(iv+SHA_DIGEST_LENGTH+1))
+    #####:  269:				return 0;
+        -:  270:
+        -:  271:			/* omit explicit iv */
+    #####:  272:			out += iv;
+    #####:  273:			len -= iv;
+        -:  274:
+        -:  275:			/* figure out payload length */
+    #####:  276:			pad = out[len-1];
+    #####:  277:			maxpad = len-(SHA_DIGEST_LENGTH+1);
+    #####:  278:			maxpad |= (255-maxpad)>>(sizeof(maxpad)*8-8);
+    #####:  279:			maxpad &= 255;
+        -:  280:
+    #####:  281:			inp_len = len - (SHA_DIGEST_LENGTH+pad+1);
+    #####:  282:			mask = (0-((inp_len-len)>>(sizeof(inp_len)*8-1)));
+    #####:  283:			inp_len &= mask;
+    #####:  284:			ret &= (int)mask;
+        -:  285:
+    #####:  286:			key->aux.tls_aad[plen-2] = inp_len>>8;
+    #####:  287:			key->aux.tls_aad[plen-1] = inp_len;
+        -:  288:
+        -:  289:			/* calculate HMAC */
+    #####:  290:			key->md = key->head;
+    #####:  291:			SHA1_Update(&key->md,key->aux.tls_aad,plen);
+        -:  292:
+        -:  293:#if 1
+    #####:  294:			len -= SHA_DIGEST_LENGTH;		/* amend mac */
+    #####:  295:			if (len>=(256+SHA_CBLOCK)) {
+    #####:  296:				j = (len-(256+SHA_CBLOCK))&(0-SHA_CBLOCK);
+    #####:  297:				j += SHA_CBLOCK-key->md.num;
+    #####:  298:				SHA1_Update(&key->md,out,j);
+    #####:  299:				out += j;
+    #####:  300:				len -= j;
+    #####:  301:				inp_len -= j;
+        -:  302:			}
+        -:  303:
+        -:  304:			/* but pretend as if we hashed padded payload */
+    #####:  305:			bitlen = key->md.Nl+(inp_len<<3);	/* at most 18 bits */
+        -:  306:#ifdef BSWAP
+    #####:  307:			bitlen = BSWAP(bitlen);
+        -:  308:#else
+        -:  309:			mac.c[0] = 0;
+        -:  310:			mac.c[1] = (unsigned char)(bitlen>>16);
+        -:  311:			mac.c[2] = (unsigned char)(bitlen>>8);
+        -:  312:			mac.c[3] = (unsigned char)bitlen;
+        -:  313:			bitlen = mac.u[0];
+        -:  314:#endif
+        -:  315:
+    #####:  316:			pmac->u[0]=0;
+    #####:  317:			pmac->u[1]=0;
+    #####:  318:			pmac->u[2]=0;
+    #####:  319:			pmac->u[3]=0;
+    #####:  320:			pmac->u[4]=0;
+        -:  321:
+    #####:  322:			for (res=key->md.num, j=0;j<len;j++) {
+    #####:  323:				size_t c = out[j];
+    #####:  324:				mask = (j-inp_len)>>(sizeof(j)*8-8);
+    #####:  325:				c &= mask;
+    #####:  326:				c |= 0x80&~mask&~((inp_len-j)>>(sizeof(j)*8-8));
+    #####:  327:				data->c[res++]=(unsigned char)c;
+        -:  328:
+    #####:  329:				if (res!=SHA_CBLOCK) continue;
+        -:  330:
+    #####:  331:				mask = 0-((inp_len+8-j)>>(sizeof(j)*8-1));
+    #####:  332:				data->u[SHA_LBLOCK-1] |= bitlen&mask;
+    #####:  333:				sha1_block_data_order(&key->md,data,1);
+    #####:  334:				mask &= 0-((j-inp_len-73)>>(sizeof(j)*8-1));
+    #####:  335:				pmac->u[0] |= key->md.h0 & mask;
+    #####:  336:				pmac->u[1] |= key->md.h1 & mask;
+    #####:  337:				pmac->u[2] |= key->md.h2 & mask;
+    #####:  338:				pmac->u[3] |= key->md.h3 & mask;
+    #####:  339:				pmac->u[4] |= key->md.h4 & mask;
+        -:  340:				res=0;
+        -:  341:			}
+        -:  342:
+    #####:  343:			for(i=res;i<SHA_CBLOCK;i++,j++) data->c[i]=0;
+        -:  344:
+    #####:  345:			if (res>SHA_CBLOCK-8) {
+    #####:  346:				mask = 0-((inp_len+8-j)>>(sizeof(j)*8-1));
+    #####:  347:				data->u[SHA_LBLOCK-1] |= bitlen&mask;
+    #####:  348:				sha1_block_data_order(&key->md,data,1);
+    #####:  349:				mask &= 0-((j-inp_len-73)>>(sizeof(j)*8-1));
+    #####:  350:				pmac->u[0] |= key->md.h0 & mask;
+    #####:  351:				pmac->u[1] |= key->md.h1 & mask;
+    #####:  352:				pmac->u[2] |= key->md.h2 & mask;
+    #####:  353:				pmac->u[3] |= key->md.h3 & mask;
+    #####:  354:				pmac->u[4] |= key->md.h4 & mask;
+        -:  355:
+        -:  356:				memset(data,0,SHA_CBLOCK);
+    #####:  357:				j+=64;
+        -:  358:			}
+    #####:  359:			data->u[SHA_LBLOCK-1] = bitlen;
+    #####:  360:			sha1_block_data_order(&key->md,data,1);
+    #####:  361:			mask = 0-((j-inp_len-73)>>(sizeof(j)*8-1));
+    #####:  362:			pmac->u[0] |= key->md.h0 & mask;
+    #####:  363:			pmac->u[1] |= key->md.h1 & mask;
+    #####:  364:			pmac->u[2] |= key->md.h2 & mask;
+    #####:  365:			pmac->u[3] |= key->md.h3 & mask;
+    #####:  366:			pmac->u[4] |= key->md.h4 & mask;
+        -:  367:
+        -:  368:#ifdef BSWAP
+    #####:  369:			pmac->u[0] = BSWAP(pmac->u[0]);
+    #####:  370:			pmac->u[1] = BSWAP(pmac->u[1]);
+    #####:  371:			pmac->u[2] = BSWAP(pmac->u[2]);
+    #####:  372:			pmac->u[3] = BSWAP(pmac->u[3]);
+    #####:  373:			pmac->u[4] = BSWAP(pmac->u[4]);
+        -:  374:#else
+        -:  375:			for (i=0;i<5;i++) {
+        -:  376:				res = pmac->u[i];
+        -:  377:				pmac->c[4*i+0]=(unsigned char)(res>>24);
+        -:  378:				pmac->c[4*i+1]=(unsigned char)(res>>16);
+        -:  379:				pmac->c[4*i+2]=(unsigned char)(res>>8);
+        -:  380:				pmac->c[4*i+3]=(unsigned char)res;
+        -:  381:			}
+        -:  382:#endif
+    #####:  383:			len += SHA_DIGEST_LENGTH;
+        -:  384:#else
+        -:  385:			SHA1_Update(&key->md,out,inp_len);
+        -:  386:			res = key->md.num;
+        -:  387:			SHA1_Final(pmac->c,&key->md);
+        -:  388:
+        -:  389:			{
+        -:  390:			unsigned int inp_blocks, pad_blocks;
+        -:  391:
+        -:  392:			/* but pretend as if we hashed padded payload */
+        -:  393:			inp_blocks = 1+((SHA_CBLOCK-9-res)>>(sizeof(res)*8-1));
+        -:  394:			res += (unsigned int)(len-inp_len);
+        -:  395:			pad_blocks = res / SHA_CBLOCK;
+        -:  396:			res %= SHA_CBLOCK;
+        -:  397:			pad_blocks += 1+((SHA_CBLOCK-9-res)>>(sizeof(res)*8-1));
+        -:  398:			for (;inp_blocks<pad_blocks;inp_blocks++)
+        -:  399:				sha1_block_data_order(&key->md,data,1);
+        -:  400:			}
+        -:  401:#endif
+    #####:  402:			key->md = key->tail;
+    #####:  403:			SHA1_Update(&key->md,pmac->c,SHA_DIGEST_LENGTH);
+    #####:  404:			SHA1_Final(pmac->c,&key->md);
+        -:  405:
+        -:  406:			/* verify HMAC */
+    #####:  407:			out += inp_len;
+    #####:  408:			len -= inp_len;
+        -:  409:#if 1
+        -:  410:			{
+    #####:  411:			unsigned char *p = out+len-1-maxpad-SHA_DIGEST_LENGTH;
+    #####:  412:			size_t off = out-p;
+        -:  413:			unsigned int c, cmask;
+        -:  414:
+    #####:  415:			maxpad += SHA_DIGEST_LENGTH;
+    #####:  416:			for (res=0,i=0,j=0;j<maxpad;j++) {
+    #####:  417:				c = p[j];
+    #####:  418:				cmask = ((int)(j-off-SHA_DIGEST_LENGTH))>>(sizeof(int)*8-1);
+    #####:  419:				res |= (c^pad)&~cmask;	/* ... and padding */
+    #####:  420:				cmask &= ((int)(off-1-j))>>(sizeof(int)*8-1);
+    #####:  421:				res |= (c^pmac->c[i])&cmask;
+    #####:  422:				i += 1&cmask;
+        -:  423:			}
+        -:  424:			maxpad -= SHA_DIGEST_LENGTH;
+        -:  425:
+    #####:  426:			res = 0-((0-res)>>(sizeof(res)*8-1));
+    #####:  427:			ret &= (int)~res;
+        -:  428:			}
+        -:  429:#else
+        -:  430:			for (res=0,i=0;i<SHA_DIGEST_LENGTH;i++)
+        -:  431:				res |= out[i]^pmac->c[i];
+        -:  432:			res = 0-((0-res)>>(sizeof(res)*8-1));
+        -:  433:			ret &= (int)~res;
+        -:  434:
+        -:  435:			/* verify padding */
+        -:  436:			pad = (pad&~res) | (maxpad&res);
+        -:  437:			out = out+len-1-pad;
+        -:  438:			for (res=0,i=0;i<pad;i++)
+        -:  439:				res |= out[i]^pad;
+        -:  440:
+        -:  441:			res = (0-res)>>(sizeof(res)*8-1);
+        -:  442:			ret &= (int)~res;
+        -:  443:#endif
+    #####:  444:			return ret;
+        -:  445:		} else {
+    #####:  446:			SHA1_Update(&key->md,out,len);
+        -:  447:		}
+        -:  448:	}
+        -:  449:
+        -:  450:	return 1;
+        -:  451:	}
+        -:  452:
+    #####:  453:static int aesni_cbc_hmac_sha1_ctrl(EVP_CIPHER_CTX *ctx, int type, int arg, void *ptr)
+        -:  454:	{
+    #####:  455:	EVP_AES_HMAC_SHA1 *key = data(ctx);
+        -:  456:
+    #####:  457:	switch (type)
+        -:  458:		{
+        -:  459:	case EVP_CTRL_AEAD_SET_MAC_KEY:
+        -:  460:		{
+        -:  461:		unsigned int  i;
+        -:  462:		unsigned char hmac_key[64];
+        -:  463:
+        -:  464:		memset (hmac_key,0,sizeof(hmac_key));
+        -:  465:
+    #####:  466:		if (arg > (int)sizeof(hmac_key)) {
+    #####:  467:			SHA1_Init(&key->head);
+    #####:  468:			SHA1_Update(&key->head,ptr,arg);
+    #####:  469:			SHA1_Final(hmac_key,&key->head);
+        -:  470:		} else {
+    #####:  471:			memcpy(hmac_key,ptr,arg);
+        -:  472:		}
+        -:  473:
+    #####:  474:		for (i=0;i<sizeof(hmac_key);i++)
+    #####:  475:			hmac_key[i] ^= 0x36;		/* ipad */
+    #####:  476:		SHA1_Init(&key->head);
+    #####:  477:		SHA1_Update(&key->head,hmac_key,sizeof(hmac_key));
+        -:  478:
+    #####:  479:		for (i=0;i<sizeof(hmac_key);i++)
+    #####:  480:			hmac_key[i] ^= 0x36^0x5c;	/* opad */
+    #####:  481:		SHA1_Init(&key->tail);
+    #####:  482:		SHA1_Update(&key->tail,hmac_key,sizeof(hmac_key));
+        -:  483:
+    #####:  484:		OPENSSL_cleanse(hmac_key,sizeof(hmac_key));
+        -:  485:
+        -:  486:		return 1;
+        -:  487:		}
+        -:  488:	case EVP_CTRL_AEAD_TLS1_AAD:
+        -:  489:		{
+        -:  490:		unsigned char *p=ptr;
+    #####:  491:		unsigned int   len=p[arg-2]<<8|p[arg-1];
+        -:  492:
+    #####:  493:		if (ctx->encrypt)
+        -:  494:			{
+    #####:  495:			key->payload_length = len;
+    #####:  496:			if ((key->aux.tls_ver=p[arg-4]<<8|p[arg-3]) >= TLS1_1_VERSION) {
+    #####:  497:				len -= AES_BLOCK_SIZE;
+    #####:  498:				p[arg-2] = len>>8;
+    #####:  499:				p[arg-1] = len;
+        -:  500:			}
+    #####:  501:			key->md = key->head;
+    #####:  502:			SHA1_Update(&key->md,p,arg);
+        -:  503:
+    #####:  504:			return (int)(((len+SHA_DIGEST_LENGTH+AES_BLOCK_SIZE)&-AES_BLOCK_SIZE)
+    #####:  505:				- len);
+        -:  506:			}
+        -:  507:		else
+        -:  508:			{
+    #####:  509:			if (arg>13) arg = 13;
+    #####:  510:			memcpy(key->aux.tls_aad,ptr,arg);
+    #####:  511:			key->payload_length = arg;
+        -:  512:
+    #####:  513:			return SHA_DIGEST_LENGTH;
+        -:  514:			}
+        -:  515:		}
+        -:  516:	default:
+        -:  517:		return -1;
+        -:  518:		}
+        -:  519:	}
+        -:  520:
+        -:  521:static EVP_CIPHER aesni_128_cbc_hmac_sha1_cipher =
+        -:  522:	{
+        -:  523:#ifdef NID_aes_128_cbc_hmac_sha1
+        -:  524:	NID_aes_128_cbc_hmac_sha1,
+        -:  525:#else
+        -:  526:	NID_undef,
+        -:  527:#endif
+        -:  528:	16,16,16,
+        -:  529:	EVP_CIPH_CBC_MODE|EVP_CIPH_FLAG_DEFAULT_ASN1|EVP_CIPH_FLAG_AEAD_CIPHER,
+        -:  530:	aesni_cbc_hmac_sha1_init_key,
+        -:  531:	aesni_cbc_hmac_sha1_cipher,
+        -:  532:	NULL,
+        -:  533:	sizeof(EVP_AES_HMAC_SHA1),
+        -:  534:	EVP_CIPH_FLAG_DEFAULT_ASN1?NULL:EVP_CIPHER_set_asn1_iv,
+        -:  535:	EVP_CIPH_FLAG_DEFAULT_ASN1?NULL:EVP_CIPHER_get_asn1_iv,
+        -:  536:	aesni_cbc_hmac_sha1_ctrl,
+        -:  537:	NULL
+        -:  538:	};
+        -:  539:
+        -:  540:static EVP_CIPHER aesni_256_cbc_hmac_sha1_cipher =
+        -:  541:	{
+        -:  542:#ifdef NID_aes_256_cbc_hmac_sha1
+        -:  543:	NID_aes_256_cbc_hmac_sha1,
+        -:  544:#else
+        -:  545:	NID_undef,
+        -:  546:#endif
+        -:  547:	16,32,16,
+        -:  548:	EVP_CIPH_CBC_MODE|EVP_CIPH_FLAG_DEFAULT_ASN1|EVP_CIPH_FLAG_AEAD_CIPHER,
+        -:  549:	aesni_cbc_hmac_sha1_init_key,
+        -:  550:	aesni_cbc_hmac_sha1_cipher,
+        -:  551:	NULL,
+        -:  552:	sizeof(EVP_AES_HMAC_SHA1),
+        -:  553:	EVP_CIPH_FLAG_DEFAULT_ASN1?NULL:EVP_CIPHER_set_asn1_iv,
+        -:  554:	EVP_CIPH_FLAG_DEFAULT_ASN1?NULL:EVP_CIPHER_get_asn1_iv,
+        -:  555:	aesni_cbc_hmac_sha1_ctrl,
+        -:  556:	NULL
+        -:  557:	};
+        -:  558:
+    20000:  559:const EVP_CIPHER *EVP_aes_128_cbc_hmac_sha1(void)
+        -:  560:	{
+    40000:  561:	return(OPENSSL_ia32cap_P[1]&AESNI_CAPABLE?
+    20000:  562:		&aesni_128_cbc_hmac_sha1_cipher:NULL);
+        -:  563:	}
+        -:  564:
+    20000:  565:const EVP_CIPHER *EVP_aes_256_cbc_hmac_sha1(void)
+        -:  566:	{
+    40000:  567:	return(OPENSSL_ia32cap_P[1]&AESNI_CAPABLE?
+    20000:  568:		&aesni_256_cbc_hmac_sha1_cipher:NULL);
+        -:  569:	}
+        -:  570:#else
+        -:  571:const EVP_CIPHER *EVP_aes_128_cbc_hmac_sha1(void)
+        -:  572:	{
+        -:  573:	return NULL;
+        -:  574:	}
+        -:  575:const EVP_CIPHER *EVP_aes_256_cbc_hmac_sha1(void)
+        -:  576:	{
+        -:  577:	return NULL;
+        -:  578:	}
+        -:  579:#endif
+        -:  580:#endif

@@ -1,0 +1,319 @@
+        -:    0:Source:a_bytes.c
+        -:    0:Graph:a_bytes.gcno
+        -:    0:Data:a_bytes.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* crypto/asn1/a_bytes.c */
+        -:    2:/* Copyright (C) 1995-1998 Eric Young (eay@cryptsoft.com)
+        -:    3: * All rights reserved.
+        -:    4: *
+        -:    5: * This package is an SSL implementation written
+        -:    6: * by Eric Young (eay@cryptsoft.com).
+        -:    7: * The implementation was written so as to conform with Netscapes SSL.
+        -:    8: * 
+        -:    9: * This library is free for commercial and non-commercial use as long as
+        -:   10: * the following conditions are aheared to.  The following conditions
+        -:   11: * apply to all code found in this distribution, be it the RC4, RSA,
+        -:   12: * lhash, DES, etc., code; not just the SSL code.  The SSL documentation
+        -:   13: * included with this distribution is covered by the same copyright terms
+        -:   14: * except that the holder is Tim Hudson (tjh@cryptsoft.com).
+        -:   15: * 
+        -:   16: * Copyright remains Eric Young's, and as such any Copyright notices in
+        -:   17: * the code are not to be removed.
+        -:   18: * If this package is used in a product, Eric Young should be given attribution
+        -:   19: * as the author of the parts of the library used.
+        -:   20: * This can be in the form of a textual message at program startup or
+        -:   21: * in documentation (online or textual) provided with the package.
+        -:   22: * 
+        -:   23: * Redistribution and use in source and binary forms, with or without
+        -:   24: * modification, are permitted provided that the following conditions
+        -:   25: * are met:
+        -:   26: * 1. Redistributions of source code must retain the copyright
+        -:   27: *    notice, this list of conditions and the following disclaimer.
+        -:   28: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   29: *    notice, this list of conditions and the following disclaimer in the
+        -:   30: *    documentation and/or other materials provided with the distribution.
+        -:   31: * 3. All advertising materials mentioning features or use of this software
+        -:   32: *    must display the following acknowledgement:
+        -:   33: *    "This product includes cryptographic software written by
+        -:   34: *     Eric Young (eay@cryptsoft.com)"
+        -:   35: *    The word 'cryptographic' can be left out if the rouines from the library
+        -:   36: *    being used are not cryptographic related :-).
+        -:   37: * 4. If you include any Windows specific code (or a derivative thereof) from 
+        -:   38: *    the apps directory (application code) you must include an acknowledgement:
+        -:   39: *    "This product includes software written by Tim Hudson (tjh@cryptsoft.com)"
+        -:   40: * 
+        -:   41: * THIS SOFTWARE IS PROVIDED BY ERIC YOUNG ``AS IS'' AND
+        -:   42: * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   43: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+        -:   44: * ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+        -:   45: * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+        -:   46: * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+        -:   47: * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   48: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+        -:   49: * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+        -:   50: * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+        -:   51: * SUCH DAMAGE.
+        -:   52: * 
+        -:   53: * The licence and distribution terms for any publically available version or
+        -:   54: * derivative of this code cannot be changed.  i.e. this code cannot simply be
+        -:   55: * copied and put under another distribution licence
+        -:   56: * [including the GNU Public Licence.]
+        -:   57: */
+        -:   58:
+        -:   59:#include <stdio.h>
+        -:   60:#include "cryptlib.h"
+        -:   61:#include <openssl/asn1.h>
+        -:   62:
+        -:   63:static int asn1_collate_primitive(ASN1_STRING *a, ASN1_const_CTX *c);
+        -:   64:/* type is a 'bitmap' of acceptable string types.
+        -:   65: */
+    #####:   66:ASN1_STRING *d2i_ASN1_type_bytes(ASN1_STRING **a, const unsigned char **pp,
+        -:   67:	     long length, int type)
+        -:   68:	{
+        -:   69:	ASN1_STRING *ret=NULL;
+        -:   70:	const unsigned char *p;
+        -:   71:	unsigned char *s;
+        -:   72:	long len;
+        -:   73:	int inf,tag,xclass;
+        -:   74:	int i=0;
+        -:   75:
+    #####:   76:	p= *pp;
+    #####:   77:	inf=ASN1_get_object(&p,&len,&tag,&xclass,length);
+    #####:   78:	if (inf & 0x80) goto err;
+        -:   79:
+    #####:   80:	if (tag >= 32)
+        -:   81:		{
+        -:   82:		i=ASN1_R_TAG_VALUE_TOO_HIGH;
+        -:   83:		goto err;
+        -:   84:		}
+    #####:   85:	if (!(ASN1_tag2bit(tag) & type))
+        -:   86:		{
+        -:   87:		i=ASN1_R_WRONG_TYPE;
+        -:   88:		goto err;
+        -:   89:		}
+        -:   90:
+        -:   91:	/* If a bit-string, exit early */
+    #####:   92:	if (tag == V_ASN1_BIT_STRING)
+    #####:   93:		return(d2i_ASN1_BIT_STRING(a,pp,length));
+        -:   94:
+    #####:   95:	if ((a == NULL) || ((*a) == NULL))
+        -:   96:		{
+    #####:   97:		if ((ret=ASN1_STRING_new()) == NULL) return(NULL);
+        -:   98:		}
+        -:   99:	else
+        -:  100:		ret=(*a);
+        -:  101:
+    #####:  102:	if (len != 0)
+        -:  103:		{
+    #####:  104:		s=(unsigned char *)OPENSSL_malloc((int)len+1);
+    #####:  105:		if (s == NULL)
+        -:  106:			{
+        -:  107:			i=ERR_R_MALLOC_FAILURE;
+        -:  108:			goto err;
+        -:  109:			}
+    #####:  110:		memcpy(s,p,(int)len);
+    #####:  111:		s[len]='\0';
+    #####:  112:		p+=len;
+        -:  113:		}
+        -:  114:	else
+        -:  115:		s=NULL;
+        -:  116:
+    #####:  117:	if (ret->data != NULL) OPENSSL_free(ret->data);
+    #####:  118:	ret->length=(int)len;
+    #####:  119:	ret->data=s;
+    #####:  120:	ret->type=tag;
+    #####:  121:	if (a != NULL) (*a)=ret;
+    #####:  122:	*pp=p;
+    #####:  123:	return(ret);
+        -:  124:err:
+    #####:  125:	ASN1err(ASN1_F_D2I_ASN1_TYPE_BYTES,i);
+    #####:  126:	if ((ret != NULL) && ((a == NULL) || (*a != ret)))
+    #####:  127:		ASN1_STRING_free(ret);
+        -:  128:	return(NULL);
+        -:  129:	}
+        -:  130:
+    #####:  131:int i2d_ASN1_bytes(ASN1_STRING *a, unsigned char **pp, int tag, int xclass)
+        -:  132:	{
+        -:  133:	int ret,r,constructed;
+        -:  134:	unsigned char *p;
+        -:  135:
+    #####:  136:	if (a == NULL)  return(0);
+        -:  137:
+    #####:  138:	if (tag == V_ASN1_BIT_STRING)
+    #####:  139:		return(i2d_ASN1_BIT_STRING(a,pp));
+        -:  140:		
+    #####:  141:	ret=a->length;
+    #####:  142:	r=ASN1_object_size(0,ret,tag);
+    #####:  143:	if (pp == NULL) return(r);
+    #####:  144:	p= *pp;
+        -:  145:
+    #####:  146:	if ((tag == V_ASN1_SEQUENCE) || (tag == V_ASN1_SET))
+        -:  147:		constructed=1;
+        -:  148:	else
+        -:  149:		constructed=0;
+    #####:  150:	ASN1_put_object(&p,constructed,ret,tag,xclass);
+    #####:  151:	memcpy(p,a->data,a->length);
+    #####:  152:	p+=a->length;
+    #####:  153:	*pp= p;
+    #####:  154:	return(r);
+        -:  155:	}
+        -:  156:
+    #####:  157:ASN1_STRING *d2i_ASN1_bytes(ASN1_STRING **a, const unsigned char **pp,
+        -:  158:	     long length, int Ptag, int Pclass)
+        -:  159:	{
+        -:  160:	ASN1_STRING *ret=NULL;
+        -:  161:	const unsigned char *p;
+        -:  162:	unsigned char *s;
+        -:  163:	long len;
+        -:  164:	int inf,tag,xclass;
+        -:  165:	int i=0;
+        -:  166:
+    #####:  167:	if ((a == NULL) || ((*a) == NULL))
+        -:  168:		{
+    #####:  169:		if ((ret=ASN1_STRING_new()) == NULL) return(NULL);
+        -:  170:		}
+        -:  171:	else
+        -:  172:		ret=(*a);
+        -:  173:
+    #####:  174:	p= *pp;
+    #####:  175:	inf=ASN1_get_object(&p,&len,&tag,&xclass,length);
+    #####:  176:	if (inf & 0x80)
+        -:  177:		{
+        -:  178:		i=ASN1_R_BAD_OBJECT_HEADER;
+        -:  179:		goto err;
+        -:  180:		}
+        -:  181:
+    #####:  182:	if (tag != Ptag)
+        -:  183:		{
+        -:  184:		i=ASN1_R_WRONG_TAG;
+        -:  185:		goto err;
+        -:  186:		}
+        -:  187:
+    #####:  188:	if (inf & V_ASN1_CONSTRUCTED)
+        -:  189:		{
+        -:  190:		ASN1_const_CTX c;
+        -:  191:
+    #####:  192:		c.pp=pp;
+    #####:  193:		c.p=p;
+    #####:  194:		c.inf=inf;
+    #####:  195:		c.slen=len;
+    #####:  196:		c.tag=Ptag;
+    #####:  197:		c.xclass=Pclass;
+    #####:  198:		c.max=(length == 0)?0:(p+length);
+    #####:  199:		if (!asn1_collate_primitive(ret,&c)) 
+        -:  200:			goto err; 
+        -:  201:		else
+        -:  202:			{
+    #####:  203:			p=c.p;
+        -:  204:			}
+        -:  205:		}
+        -:  206:	else
+        -:  207:		{
+    #####:  208:		if (len != 0)
+        -:  209:			{
+    #####:  210:			if ((ret->length < len) || (ret->data == NULL))
+        -:  211:				{
+    #####:  212:				if (ret->data != NULL) OPENSSL_free(ret->data);
+    #####:  213:				s=(unsigned char *)OPENSSL_malloc((int)len + 1);
+    #####:  214:				if (s == NULL)
+        -:  215:					{
+        -:  216:					i=ERR_R_MALLOC_FAILURE;
+        -:  217:					goto err;
+        -:  218:					}
+        -:  219:				}
+        -:  220:			else
+        -:  221:				s=ret->data;
+    #####:  222:			memcpy(s,p,(int)len);
+    #####:  223:			s[len] = '\0';
+    #####:  224:			p+=len;
+        -:  225:			}
+        -:  226:		else
+        -:  227:			{
+        -:  228:			s=NULL;
+    #####:  229:			if (ret->data != NULL) OPENSSL_free(ret->data);
+        -:  230:			}
+        -:  231:
+    #####:  232:		ret->length=(int)len;
+    #####:  233:		ret->data=s;
+    #####:  234:		ret->type=Ptag;
+        -:  235:		}
+        -:  236:
+    #####:  237:	if (a != NULL) (*a)=ret;
+    #####:  238:	*pp=p;
+    #####:  239:	return(ret);
+        -:  240:err:
+    #####:  241:	if ((ret != NULL) && ((a == NULL) || (*a != ret)))
+    #####:  242:		ASN1_STRING_free(ret);
+    #####:  243:	ASN1err(ASN1_F_D2I_ASN1_BYTES,i);
+    #####:  244:	return(NULL);
+        -:  245:	}
+        -:  246:
+        -:  247:
+        -:  248:/* We are about to parse 0..n d2i_ASN1_bytes objects, we are to collapse
+        -:  249: * them into the one structure that is then returned */
+        -:  250:/* There have been a few bug fixes for this function from
+        -:  251: * Paul Keogh <paul.keogh@sse.ie>, many thanks to him */
+    #####:  252:static int asn1_collate_primitive(ASN1_STRING *a, ASN1_const_CTX *c)
+        -:  253:	{
+    #####:  254:	ASN1_STRING *os=NULL;
+        -:  255:	BUF_MEM b;
+        -:  256:	int num;
+        -:  257:
+    #####:  258:	b.length=0;
+    #####:  259:	b.max=0;
+    #####:  260:	b.data=NULL;
+        -:  261:
+    #####:  262:	if (a == NULL)
+        -:  263:		{
+    #####:  264:		c->error=ERR_R_PASSED_NULL_PARAMETER;
+    #####:  265:		goto err;
+        -:  266:		}
+        -:  267:
+        -:  268:	num=0;
+        -:  269:	for (;;)
+        -:  270:		{
+    #####:  271:		if (c->inf & 1)
+        -:  272:			{
+    #####:  273:			c->eos=ASN1_const_check_infinite_end(&c->p,
+    #####:  274:				(long)(c->max-c->p));
+    #####:  275:			if (c->eos) break;
+        -:  276:			}
+        -:  277:		else
+        -:  278:			{
+    #####:  279:			if (c->slen <= 0) break;
+        -:  280:			}
+        -:  281:
+    #####:  282:		c->q=c->p;
+    #####:  283:		if (d2i_ASN1_bytes(&os,&c->p,c->max-c->p,c->tag,c->xclass)
+        -:  284:			== NULL)
+        -:  285:			{
+    #####:  286:			c->error=ERR_R_ASN1_LIB;
+    #####:  287:			goto err;
+        -:  288:			}
+        -:  289:
+    #####:  290:		if (!BUF_MEM_grow_clean(&b,num+os->length))
+        -:  291:			{
+    #####:  292:			c->error=ERR_R_BUF_LIB;
+    #####:  293:			goto err;
+        -:  294:			}
+    #####:  295:		memcpy(&(b.data[num]),os->data,os->length);
+    #####:  296:		if (!(c->inf & 1))
+    #####:  297:			c->slen-=(c->p-c->q);
+    #####:  298:		num+=os->length;
+    #####:  299:		}
+        -:  300:
+    #####:  301:	if (!asn1_const_Finish(c)) goto err;
+        -:  302:
+    #####:  303:	a->length=num;
+    #####:  304:	if (a->data != NULL) OPENSSL_free(a->data);
+    #####:  305:	a->data=(unsigned char *)b.data;
+    #####:  306:	if (os != NULL) ASN1_STRING_free(os);
+        -:  307:	return(1);
+        -:  308:err:
+    #####:  309:	ASN1err(ASN1_F_ASN1_COLLATE_PRIMITIVE,c->error);
+    #####:  310:	if (os != NULL) ASN1_STRING_free(os);
+    #####:  311:	if (b.data != NULL) OPENSSL_free(b.data);
+        -:  312:	return(0);
+        -:  313:	}
+        -:  314:

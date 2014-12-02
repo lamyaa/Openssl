@@ -1,0 +1,1164 @@
+        -:    0:Source:ssl_sess.c
+        -:    0:Graph:ssl_sess.gcno
+        -:    0:Data:ssl_sess.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* ssl/ssl_sess.c */
+        -:    2:/* Copyright (C) 1995-1998 Eric Young (eay@cryptsoft.com)
+        -:    3: * All rights reserved.
+        -:    4: *
+        -:    5: * This package is an SSL implementation written
+        -:    6: * by Eric Young (eay@cryptsoft.com).
+        -:    7: * The implementation was written so as to conform with Netscapes SSL.
+        -:    8: * 
+        -:    9: * This library is free for commercial and non-commercial use as long as
+        -:   10: * the following conditions are aheared to.  The following conditions
+        -:   11: * apply to all code found in this distribution, be it the RC4, RSA,
+        -:   12: * lhash, DES, etc., code; not just the SSL code.  The SSL documentation
+        -:   13: * included with this distribution is covered by the same copyright terms
+        -:   14: * except that the holder is Tim Hudson (tjh@cryptsoft.com).
+        -:   15: * 
+        -:   16: * Copyright remains Eric Young's, and as such any Copyright notices in
+        -:   17: * the code are not to be removed.
+        -:   18: * If this package is used in a product, Eric Young should be given attribution
+        -:   19: * as the author of the parts of the library used.
+        -:   20: * This can be in the form of a textual message at program startup or
+        -:   21: * in documentation (online or textual) provided with the package.
+        -:   22: * 
+        -:   23: * Redistribution and use in source and binary forms, with or without
+        -:   24: * modification, are permitted provided that the following conditions
+        -:   25: * are met:
+        -:   26: * 1. Redistributions of source code must retain the copyright
+        -:   27: *    notice, this list of conditions and the following disclaimer.
+        -:   28: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   29: *    notice, this list of conditions and the following disclaimer in the
+        -:   30: *    documentation and/or other materials provided with the distribution.
+        -:   31: * 3. All advertising materials mentioning features or use of this software
+        -:   32: *    must display the following acknowledgement:
+        -:   33: *    "This product includes cryptographic software written by
+        -:   34: *     Eric Young (eay@cryptsoft.com)"
+        -:   35: *    The word 'cryptographic' can be left out if the rouines from the library
+        -:   36: *    being used are not cryptographic related :-).
+        -:   37: * 4. If you include any Windows specific code (or a derivative thereof) from 
+        -:   38: *    the apps directory (application code) you must include an acknowledgement:
+        -:   39: *    "This product includes software written by Tim Hudson (tjh@cryptsoft.com)"
+        -:   40: * 
+        -:   41: * THIS SOFTWARE IS PROVIDED BY ERIC YOUNG ``AS IS'' AND
+        -:   42: * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   43: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+        -:   44: * ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+        -:   45: * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+        -:   46: * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+        -:   47: * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   48: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+        -:   49: * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+        -:   50: * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+        -:   51: * SUCH DAMAGE.
+        -:   52: * 
+        -:   53: * The licence and distribution terms for any publically available version or
+        -:   54: * derivative of this code cannot be changed.  i.e. this code cannot simply be
+        -:   55: * copied and put under another distribution licence
+        -:   56: * [including the GNU Public Licence.]
+        -:   57: */
+        -:   58:/* ====================================================================
+        -:   59: * Copyright (c) 1998-2006 The OpenSSL Project.  All rights reserved.
+        -:   60: *
+        -:   61: * Redistribution and use in source and binary forms, with or without
+        -:   62: * modification, are permitted provided that the following conditions
+        -:   63: * are met:
+        -:   64: *
+        -:   65: * 1. Redistributions of source code must retain the above copyright
+        -:   66: *    notice, this list of conditions and the following disclaimer. 
+        -:   67: *
+        -:   68: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   69: *    notice, this list of conditions and the following disclaimer in
+        -:   70: *    the documentation and/or other materials provided with the
+        -:   71: *    distribution.
+        -:   72: *
+        -:   73: * 3. All advertising materials mentioning features or use of this
+        -:   74: *    software must display the following acknowledgment:
+        -:   75: *    "This product includes software developed by the OpenSSL Project
+        -:   76: *    for use in the OpenSSL Toolkit. (http://www.openssl.org/)"
+        -:   77: *
+        -:   78: * 4. The names "OpenSSL Toolkit" and "OpenSSL Project" must not be used to
+        -:   79: *    endorse or promote products derived from this software without
+        -:   80: *    prior written permission. For written permission, please contact
+        -:   81: *    openssl-core@openssl.org.
+        -:   82: *
+        -:   83: * 5. Products derived from this software may not be called "OpenSSL"
+        -:   84: *    nor may "OpenSSL" appear in their names without prior written
+        -:   85: *    permission of the OpenSSL Project.
+        -:   86: *
+        -:   87: * 6. Redistributions of any form whatsoever must retain the following
+        -:   88: *    acknowledgment:
+        -:   89: *    "This product includes software developed by the OpenSSL Project
+        -:   90: *    for use in the OpenSSL Toolkit (http://www.openssl.org/)"
+        -:   91: *
+        -:   92: * THIS SOFTWARE IS PROVIDED BY THE OpenSSL PROJECT ``AS IS'' AND ANY
+        -:   93: * EXPRESSED OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   94: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+        -:   95: * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE OpenSSL PROJECT OR
+        -:   96: * ITS CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+        -:   97: * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+        -:   98: * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+        -:   99: * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:  100: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+        -:  101: * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+        -:  102: * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+        -:  103: * OF THE POSSIBILITY OF SUCH DAMAGE.
+        -:  104: * ====================================================================
+        -:  105: *
+        -:  106: * This product includes cryptographic software written by Eric Young
+        -:  107: * (eay@cryptsoft.com).  This product includes software written by Tim
+        -:  108: * Hudson (tjh@cryptsoft.com).
+        -:  109: *
+        -:  110: */
+        -:  111:/* ====================================================================
+        -:  112: * Copyright 2005 Nokia. All rights reserved.
+        -:  113: *
+        -:  114: * The portions of the attached software ("Contribution") is developed by
+        -:  115: * Nokia Corporation and is licensed pursuant to the OpenSSL open source
+        -:  116: * license.
+        -:  117: *
+        -:  118: * The Contribution, originally written by Mika Kousa and Pasi Eronen of
+        -:  119: * Nokia Corporation, consists of the "PSK" (Pre-Shared Key) ciphersuites
+        -:  120: * support (see RFC 4279) to OpenSSL.
+        -:  121: *
+        -:  122: * No patent licenses or other rights except those expressly stated in
+        -:  123: * the OpenSSL open source license shall be deemed granted or received
+        -:  124: * expressly, by implication, estoppel, or otherwise.
+        -:  125: *
+        -:  126: * No assurances are provided by Nokia that the Contribution does not
+        -:  127: * infringe the patent or other intellectual property rights of any third
+        -:  128: * party or that the license provides you with all the necessary rights
+        -:  129: * to make use of the Contribution.
+        -:  130: *
+        -:  131: * THE SOFTWARE IS PROVIDED "AS IS" WITHOUT WARRANTY OF ANY KIND. IN
+        -:  132: * ADDITION TO THE DISCLAIMERS INCLUDED IN THE LICENSE, NOKIA
+        -:  133: * SPECIFICALLY DISCLAIMS ANY LIABILITY FOR CLAIMS BROUGHT BY YOU OR ANY
+        -:  134: * OTHER ENTITY BASED ON INFRINGEMENT OF INTELLECTUAL PROPERTY RIGHTS OR
+        -:  135: * OTHERWISE.
+        -:  136: */
+        -:  137:
+        -:  138:#include <stdio.h>
+        -:  139:#include <openssl/lhash.h>
+        -:  140:#include <openssl/rand.h>
+        -:  141:#ifndef OPENSSL_NO_ENGINE
+        -:  142:#include <openssl/engine.h>
+        -:  143:#endif
+        -:  144:#include "ssl_locl.h"
+        -:  145:
+        -:  146:static void SSL_SESSION_list_remove(SSL_CTX *ctx, SSL_SESSION *s);
+        -:  147:static void SSL_SESSION_list_add(SSL_CTX *ctx,SSL_SESSION *s);
+        -:  148:static int remove_session_lock(SSL_CTX *ctx, SSL_SESSION *c, int lck);
+        -:  149:
+    10000:  150:SSL_SESSION *SSL_get_session(const SSL *ssl)
+        -:  151:/* aka SSL_get0_session; gets 0 objects, just returns a copy of the pointer */
+        -:  152:	{
+    10000:  153:	return(ssl->session);
+        -:  154:	}
+        -:  155:
+    #####:  156:SSL_SESSION *SSL_get1_session(SSL *ssl)
+        -:  157:/* variant of SSL_get_session: caller really gets something */
+        -:  158:	{
+        -:  159:	SSL_SESSION *sess;
+        -:  160:	/* Need to lock this all up rather than just use CRYPTO_add so that
+        -:  161:	 * somebody doesn't free ssl->session between when we check it's
+        -:  162:	 * non-null and when we up the reference count. */
+    #####:  163:	CRYPTO_w_lock(CRYPTO_LOCK_SSL_SESSION);
+    #####:  164:	sess = ssl->session;
+    #####:  165:	if(sess)
+    #####:  166:		sess->references++;
+    #####:  167:	CRYPTO_w_unlock(CRYPTO_LOCK_SSL_SESSION);
+    #####:  168:	return(sess);
+        -:  169:	}
+        -:  170:
+    #####:  171:int SSL_SESSION_get_ex_new_index(long argl, void *argp, CRYPTO_EX_new *new_func,
+        -:  172:	     CRYPTO_EX_dup *dup_func, CRYPTO_EX_free *free_func)
+        -:  173:	{
+    #####:  174:	return CRYPTO_get_ex_new_index(CRYPTO_EX_INDEX_SSL_SESSION, argl, argp,
+        -:  175:			new_func, dup_func, free_func);
+        -:  176:	}
+        -:  177:
+    #####:  178:int SSL_SESSION_set_ex_data(SSL_SESSION *s, int idx, void *arg)
+        -:  179:	{
+    #####:  180:	return(CRYPTO_set_ex_data(&s->ex_data,idx,arg));
+        -:  181:	}
+        -:  182:
+    #####:  183:void *SSL_SESSION_get_ex_data(const SSL_SESSION *s, int idx)
+        -:  184:	{
+    #####:  185:	return(CRYPTO_get_ex_data(&s->ex_data,idx));
+        -:  186:	}
+        -:  187:
+    10000:  188:SSL_SESSION *SSL_SESSION_new(void)
+        -:  189:	{
+        -:  190:	SSL_SESSION *ss;
+        -:  191:
+    10000:  192:	ss=(SSL_SESSION *)OPENSSL_malloc(sizeof(SSL_SESSION));
+    10000:  193:	if (ss == NULL)
+        -:  194:		{
+    #####:  195:		SSLerr(SSL_F_SSL_SESSION_NEW,ERR_R_MALLOC_FAILURE);
+    #####:  196:		return(0);
+        -:  197:		}
+        -:  198:	memset(ss,0,sizeof(SSL_SESSION));
+        -:  199:
+    10000:  200:	ss->verify_result = 1; /* avoid 0 (= X509_V_OK) just in case */
+    10000:  201:	ss->references=1;
+    10000:  202:	ss->timeout=60*5+4; /* 5 minute timeout by default */
+    10000:  203:	ss->time=(unsigned long)time(NULL);
+    10000:  204:	ss->prev=NULL;
+    10000:  205:	ss->next=NULL;
+    10000:  206:	ss->compress_meth=0;
+        -:  207:#ifndef OPENSSL_NO_TLSEXT
+    10000:  208:	ss->tlsext_hostname = NULL; 
+        -:  209:#ifndef OPENSSL_NO_EC
+    10000:  210:	ss->tlsext_ecpointformatlist_length = 0;
+    10000:  211:	ss->tlsext_ecpointformatlist = NULL;
+    10000:  212:	ss->tlsext_ellipticcurvelist_length = 0;
+    10000:  213:	ss->tlsext_ellipticcurvelist = NULL;
+        -:  214:#endif
+        -:  215:#endif
+    10000:  216:	CRYPTO_new_ex_data(CRYPTO_EX_INDEX_SSL_SESSION, ss, &ss->ex_data);
+        -:  217:#ifndef OPENSSL_NO_PSK
+    10000:  218:	ss->psk_identity_hint=NULL;
+    10000:  219:	ss->psk_identity=NULL;
+        -:  220:#endif
+        -:  221:#ifndef OPENSSL_NO_SRP
+    10000:  222:	ss->srp_username=NULL;
+        -:  223:#endif
+    10000:  224:	return(ss);
+        -:  225:	}
+        -:  226:
+    #####:  227:const unsigned char *SSL_SESSION_get_id(const SSL_SESSION *s, unsigned int *len)
+        -:  228:	{
+    #####:  229:	if(len)
+    #####:  230:		*len = s->session_id_length;
+    #####:  231:	return s->session_id;
+        -:  232:	}
+        -:  233:
+    #####:  234:unsigned int SSL_SESSION_get_compress_id(const SSL_SESSION *s)
+        -:  235:	{
+    #####:  236:	return s->compress_meth;
+        -:  237:	}
+        -:  238:
+        -:  239:/* Even with SSLv2, we have 16 bytes (128 bits) of session ID space. SSLv3/TLSv1
+        -:  240: * has 32 bytes (256 bits). As such, filling the ID with random gunk repeatedly
+        -:  241: * until we have no conflict is going to complete in one iteration pretty much
+        -:  242: * "most" of the time (btw: understatement). So, if it takes us 10 iterations
+        -:  243: * and we still can't avoid a conflict - well that's a reasonable point to call
+        -:  244: * it quits. Either the RAND code is broken or someone is trying to open roughly
+        -:  245: * very close to 2^128 (or 2^256) SSL sessions to our server. How you might
+        -:  246: * store that many sessions is perhaps a more interesting question ... */
+        -:  247:
+        -:  248:#define MAX_SESS_ID_ATTEMPTS 10
+    #####:  249:static int def_generate_session_id(const SSL *ssl, unsigned char *id,
+        -:  250:				unsigned int *id_len)
+        -:  251:{
+        -:  252:	unsigned int retry = 0;
+        -:  253:	do
+    #####:  254:		if (RAND_pseudo_bytes(id, *id_len) <= 0)
+        -:  255:			return 0;
+    #####:  256:	while(SSL_has_matching_session_id(ssl, id, *id_len) &&
+    #####:  257:		(++retry < MAX_SESS_ID_ATTEMPTS));
+    #####:  258:	if(retry < MAX_SESS_ID_ATTEMPTS)
+        -:  259:		return 1;
+        -:  260:	/* else - woops a session_id match */
+        -:  261:	/* XXX We should also check the external cache --
+        -:  262:	 * but the probability of a collision is negligible, and
+        -:  263:	 * we could not prevent the concurrent creation of sessions
+        -:  264:	 * with identical IDs since we currently don't have means
+        -:  265:	 * to atomically check whether a session ID already exists
+        -:  266:	 * and make a reservation for it if it does not
+        -:  267:	 * (this problem applies to the internal cache as well).
+        -:  268:	 */
+    #####:  269:	return 0;
+        -:  270:}
+        -:  271:
+    10000:  272:int ssl_get_new_session(SSL *s, int session)
+        -:  273:	{
+        -:  274:	/* This gets used by clients and servers. */
+        -:  275:
+        -:  276:	unsigned int tmp;
+        -:  277:	SSL_SESSION *ss=NULL;
+        -:  278:	GEN_SESSION_CB cb = def_generate_session_id;
+        -:  279:
+    10000:  280:	if ((ss=SSL_SESSION_new()) == NULL) return(0);
+        -:  281:
+        -:  282:	/* If the context has a default timeout, use it */
+    10000:  283:	if (s->session_ctx->session_timeout == 0)
+    #####:  284:		ss->timeout=SSL_get_default_timeout(s);
+        -:  285:	else
+    10000:  286:		ss->timeout=s->session_ctx->session_timeout;
+        -:  287:
+    10000:  288:	if (s->session != NULL)
+        -:  289:		{
+    #####:  290:		SSL_SESSION_free(s->session);
+    #####:  291:		s->session=NULL;
+        -:  292:		}
+        -:  293:
+    10000:  294:	if (session)
+        -:  295:		{
+    #####:  296:		if (s->version == SSL2_VERSION)
+        -:  297:			{
+    #####:  298:			ss->ssl_version=SSL2_VERSION;
+    #####:  299:			ss->session_id_length=SSL2_SSL_SESSION_ID_LENGTH;
+        -:  300:			}
+    #####:  301:		else if (s->version == SSL3_VERSION)
+        -:  302:			{
+    #####:  303:			ss->ssl_version=SSL3_VERSION;
+    #####:  304:			ss->session_id_length=SSL3_SSL_SESSION_ID_LENGTH;
+        -:  305:			}
+    #####:  306:		else if (s->version == TLS1_VERSION)
+        -:  307:			{
+    #####:  308:			ss->ssl_version=TLS1_VERSION;
+    #####:  309:			ss->session_id_length=SSL3_SSL_SESSION_ID_LENGTH;
+        -:  310:			}
+    #####:  311:		else if (s->version == TLS1_1_VERSION)
+        -:  312:			{
+    #####:  313:			ss->ssl_version=TLS1_1_VERSION;
+    #####:  314:			ss->session_id_length=SSL3_SSL_SESSION_ID_LENGTH;
+        -:  315:			}
+    #####:  316:		else if (s->version == TLS1_2_VERSION)
+        -:  317:			{
+    #####:  318:			ss->ssl_version=TLS1_2_VERSION;
+    #####:  319:			ss->session_id_length=SSL3_SSL_SESSION_ID_LENGTH;
+        -:  320:			}
+    #####:  321:		else if (s->version == DTLS1_BAD_VER)
+        -:  322:			{
+    #####:  323:			ss->ssl_version=DTLS1_BAD_VER;
+    #####:  324:			ss->session_id_length=SSL3_SSL_SESSION_ID_LENGTH;
+        -:  325:			}
+    #####:  326:		else if (s->version == DTLS1_VERSION)
+        -:  327:			{
+    #####:  328:			ss->ssl_version=DTLS1_VERSION;
+    #####:  329:			ss->session_id_length=SSL3_SSL_SESSION_ID_LENGTH;
+        -:  330:			}
+        -:  331:		else
+        -:  332:			{
+    #####:  333:			SSLerr(SSL_F_SSL_GET_NEW_SESSION,SSL_R_UNSUPPORTED_SSL_VERSION);
+    #####:  334:			SSL_SESSION_free(ss);
+    #####:  335:			return(0);
+        -:  336:			}
+        -:  337:#ifndef OPENSSL_NO_TLSEXT
+        -:  338:		/* If RFC4507 ticket use empty session ID */
+    #####:  339:		if (s->tlsext_ticket_expected)
+        -:  340:			{
+    #####:  341:			ss->session_id_length = 0;
+    #####:  342:			goto sess_id_done;
+        -:  343:			}
+        -:  344:#endif
+        -:  345:		/* Choose which callback will set the session ID */
+    #####:  346:		CRYPTO_r_lock(CRYPTO_LOCK_SSL_CTX);
+    #####:  347:		if(s->generate_session_id)
+        -:  348:			cb = s->generate_session_id;
+    #####:  349:		else if(s->session_ctx->generate_session_id)
+        -:  350:			cb = s->session_ctx->generate_session_id;
+    #####:  351:		CRYPTO_r_unlock(CRYPTO_LOCK_SSL_CTX);
+        -:  352:		/* Choose a session ID */
+    #####:  353:		tmp = ss->session_id_length;
+    #####:  354:		if(!cb(s, ss->session_id, &tmp))
+        -:  355:			{
+        -:  356:			/* The callback failed */
+    #####:  357:			SSLerr(SSL_F_SSL_GET_NEW_SESSION,
+        -:  358:				SSL_R_SSL_SESSION_ID_CALLBACK_FAILED);
+    #####:  359:			SSL_SESSION_free(ss);
+    #####:  360:			return(0);
+        -:  361:			}
+        -:  362:		/* Don't allow the callback to set the session length to zero.
+        -:  363:		 * nor set it higher than it was. */
+    #####:  364:		if(!tmp || (tmp > ss->session_id_length))
+        -:  365:			{
+        -:  366:			/* The callback set an illegal length */
+    #####:  367:			SSLerr(SSL_F_SSL_GET_NEW_SESSION,
+        -:  368:				SSL_R_SSL_SESSION_ID_HAS_BAD_LENGTH);
+    #####:  369:			SSL_SESSION_free(ss);
+    #####:  370:			return(0);
+        -:  371:			}
+        -:  372:		/* If the session length was shrunk and we're SSLv2, pad it */
+    #####:  373:		if((tmp < ss->session_id_length) && (s->version == SSL2_VERSION))
+    #####:  374:			memset(ss->session_id + tmp, 0, ss->session_id_length - tmp);
+        -:  375:		else
+    #####:  376:			ss->session_id_length = tmp;
+        -:  377:		/* Finally, check for a conflict */
+    #####:  378:		if(SSL_has_matching_session_id(s, ss->session_id,
+        -:  379:						ss->session_id_length))
+        -:  380:			{
+    #####:  381:			SSLerr(SSL_F_SSL_GET_NEW_SESSION,
+        -:  382:				SSL_R_SSL_SESSION_ID_CONFLICT);
+    #####:  383:			SSL_SESSION_free(ss);
+    #####:  384:			return(0);
+        -:  385:			}
+        -:  386:#ifndef OPENSSL_NO_TLSEXT
+        -:  387:		sess_id_done:
+    #####:  388:		if (s->tlsext_hostname) {
+    #####:  389:			ss->tlsext_hostname = BUF_strdup(s->tlsext_hostname);
+    #####:  390:			if (ss->tlsext_hostname == NULL) {
+    #####:  391:				SSLerr(SSL_F_SSL_GET_NEW_SESSION, ERR_R_INTERNAL_ERROR);
+    #####:  392:				SSL_SESSION_free(ss);
+    #####:  393:				return 0;
+        -:  394:				}
+        -:  395:			}
+        -:  396:#ifndef OPENSSL_NO_EC
+    #####:  397:		if (s->tlsext_ecpointformatlist)
+        -:  398:			{
+    #####:  399:			if (ss->tlsext_ecpointformatlist != NULL) OPENSSL_free(ss->tlsext_ecpointformatlist);
+    #####:  400:			if ((ss->tlsext_ecpointformatlist = OPENSSL_malloc(s->tlsext_ecpointformatlist_length)) == NULL)
+        -:  401:				{
+    #####:  402:				SSLerr(SSL_F_SSL_GET_NEW_SESSION, ERR_R_MALLOC_FAILURE);
+    #####:  403:				SSL_SESSION_free(ss);
+    #####:  404:				return 0;
+        -:  405:				}
+    #####:  406:			ss->tlsext_ecpointformatlist_length = s->tlsext_ecpointformatlist_length;
+    #####:  407:			memcpy(ss->tlsext_ecpointformatlist, s->tlsext_ecpointformatlist, s->tlsext_ecpointformatlist_length);
+        -:  408:			}
+    #####:  409:		if (s->tlsext_ellipticcurvelist)
+        -:  410:			{
+    #####:  411:			if (ss->tlsext_ellipticcurvelist != NULL) OPENSSL_free(ss->tlsext_ellipticcurvelist);
+    #####:  412:			if ((ss->tlsext_ellipticcurvelist = OPENSSL_malloc(s->tlsext_ellipticcurvelist_length)) == NULL)
+        -:  413:				{
+    #####:  414:				SSLerr(SSL_F_SSL_GET_NEW_SESSION, ERR_R_MALLOC_FAILURE);
+    #####:  415:				SSL_SESSION_free(ss);
+    #####:  416:				return 0;
+        -:  417:				}
+    #####:  418:			ss->tlsext_ellipticcurvelist_length = s->tlsext_ellipticcurvelist_length;
+    #####:  419:			memcpy(ss->tlsext_ellipticcurvelist, s->tlsext_ellipticcurvelist, s->tlsext_ellipticcurvelist_length);
+        -:  420:			}
+        -:  421:#endif
+        -:  422:#endif
+        -:  423:		}
+        -:  424:	else
+        -:  425:		{
+    10000:  426:		ss->session_id_length=0;
+        -:  427:		}
+        -:  428:
+    10000:  429:	if (s->sid_ctx_length > sizeof ss->sid_ctx)
+        -:  430:		{
+    #####:  431:		SSLerr(SSL_F_SSL_GET_NEW_SESSION, ERR_R_INTERNAL_ERROR);
+    #####:  432:		SSL_SESSION_free(ss);
+    #####:  433:		return 0;
+        -:  434:		}
+    10000:  435:	memcpy(ss->sid_ctx,s->sid_ctx,s->sid_ctx_length);
+    10000:  436:	ss->sid_ctx_length=s->sid_ctx_length;
+    10000:  437:	s->session=ss;
+    10000:  438:	ss->ssl_version=s->version;
+    10000:  439:	ss->verify_result = X509_V_OK;
+        -:  440:
+    10000:  441:	return(1);
+        -:  442:	}
+        -:  443:
+        -:  444:/* ssl_get_prev attempts to find an SSL_SESSION to be used to resume this
+        -:  445: * connection. It is only called by servers.
+        -:  446: *
+        -:  447: *   session_id: points at the session ID in the ClientHello. This code will
+        -:  448: *       read past the end of this in order to parse out the session ticket
+        -:  449: *       extension, if any.
+        -:  450: *   len: the length of the session ID.
+        -:  451: *   limit: a pointer to the first byte after the ClientHello.
+        -:  452: *
+        -:  453: * Returns:
+        -:  454: *   -1: error
+        -:  455: *    0: a session may have been found.
+        -:  456: *
+        -:  457: * Side effects:
+        -:  458: *   - If a session is found then s->session is pointed at it (after freeing an
+        -:  459: *     existing session if need be) and s->verify_result is set from the session.
+        -:  460: *   - Both for new and resumed sessions, s->tlsext_ticket_expected is set to 1
+        -:  461: *     if the server should issue a new session ticket (to 0 otherwise).
+        -:  462: */
+    #####:  463:int ssl_get_prev_session(SSL *s, unsigned char *session_id, int len,
+        -:  464:			const unsigned char *limit)
+        -:  465:	{
+        -:  466:	/* This is used only by servers. */
+        -:  467:
+    #####:  468:	SSL_SESSION *ret=NULL;
+        -:  469:	int fatal = 0;
+        -:  470:	int try_session_cache = 1;
+        -:  471:#ifndef OPENSSL_NO_TLSEXT
+        -:  472:	int r;
+        -:  473:#endif
+        -:  474:
+    #####:  475:	if (len > SSL_MAX_SSL_SESSION_ID_LENGTH)
+        -:  476:		goto err;
+        -:  477:
+    #####:  478:	if (len == 0)
+        -:  479:		try_session_cache = 0;
+        -:  480:
+        -:  481:#ifndef OPENSSL_NO_TLSEXT
+    #####:  482:	r = tls1_process_ticket(s, session_id, len, limit, &ret); /* sets s->tlsext_ticket_expected */
+    #####:  483:	switch (r)
+        -:  484:		{
+        -:  485:	case -1: /* Error during processing */
+        -:  486:		fatal = 1;
+        -:  487:		goto err;
+        -:  488:	case 0: /* No ticket found */
+        -:  489:	case 1: /* Zero length ticket found */
+        -:  490:		break; /* Ok to carry on processing session id. */
+        -:  491:	case 2: /* Ticket found but not decrypted. */
+        -:  492:	case 3: /* Ticket decrypted, *ret has been set. */
+        -:  493:		try_session_cache = 0;
+    #####:  494:		break;
+        -:  495:	default:
+    #####:  496:		abort();
+        -:  497:		}
+        -:  498:#endif
+        -:  499:
+    #####:  500:	if (try_session_cache &&
+    #####:  501:	    ret == NULL &&
+    #####:  502:	    !(s->session_ctx->session_cache_mode & SSL_SESS_CACHE_NO_INTERNAL_LOOKUP))
+        -:  503:		{
+        -:  504:		SSL_SESSION data;
+    #####:  505:		data.ssl_version=s->version;
+    #####:  506:		data.session_id_length=len;
+    #####:  507:		if (len == 0)
+    #####:  508:			return 0;
+    #####:  509:		memcpy(data.session_id,session_id,len);
+    #####:  510:		CRYPTO_r_lock(CRYPTO_LOCK_SSL_CTX);
+    #####:  511:		ret=lh_SSL_SESSION_retrieve(s->session_ctx->sessions,&data);
+    #####:  512:		if (ret != NULL)
+        -:  513:			{
+        -:  514:			/* don't allow other threads to steal it: */
+    #####:  515:			CRYPTO_add(&ret->references,1,CRYPTO_LOCK_SSL_SESSION);
+        -:  516:			}
+    #####:  517:		CRYPTO_r_unlock(CRYPTO_LOCK_SSL_CTX);
+    #####:  518:		if (ret == NULL)
+    #####:  519:			s->session_ctx->stats.sess_miss++;
+        -:  520:		}
+        -:  521:
+    #####:  522:	if (try_session_cache &&
+    #####:  523:	    ret == NULL &&
+    #####:  524:	    s->session_ctx->get_session_cb != NULL)
+        -:  525:		{
+    #####:  526:		int copy=1;
+        -:  527:	
+    #####:  528:		if ((ret=s->session_ctx->get_session_cb(s,session_id,len,&copy)))
+        -:  529:			{
+    #####:  530:			s->session_ctx->stats.sess_cb_hit++;
+        -:  531:
+        -:  532:			/* Increment reference count now if the session callback
+        -:  533:			 * asks us to do so (note that if the session structures
+        -:  534:			 * returned by the callback are shared between threads,
+        -:  535:			 * it must handle the reference count itself [i.e. copy == 0],
+        -:  536:			 * or things won't be thread-safe). */
+    #####:  537:			if (copy)
+    #####:  538:				CRYPTO_add(&ret->references,1,CRYPTO_LOCK_SSL_SESSION);
+        -:  539:
+        -:  540:			/* Add the externally cached session to the internal
+        -:  541:			 * cache as well if and only if we are supposed to. */
+    #####:  542:			if(!(s->session_ctx->session_cache_mode & SSL_SESS_CACHE_NO_INTERNAL_STORE))
+        -:  543:				/* The following should not return 1, otherwise,
+        -:  544:				 * things are very strange */
+    #####:  545:				SSL_CTX_add_session(s->session_ctx,ret);
+        -:  546:			}
+        -:  547:		}
+        -:  548:
+    #####:  549:	if (ret == NULL)
+        -:  550:		goto err;
+        -:  551:
+        -:  552:	/* Now ret is non-NULL and we own one of its reference counts. */
+        -:  553:
+    #####:  554:	if (ret->sid_ctx_length != s->sid_ctx_length
+    #####:  555:	    || memcmp(ret->sid_ctx,s->sid_ctx,ret->sid_ctx_length))
+        -:  556:		{
+        -:  557:		/* We have the session requested by the client, but we don't
+        -:  558:		 * want to use it in this context. */
+        -:  559:		goto err; /* treat like cache miss */
+        -:  560:		}
+        -:  561:	
+    #####:  562:	if((s->verify_mode & SSL_VERIFY_PEER) && s->sid_ctx_length == 0)
+        -:  563:		{
+        -:  564:		/* We can't be sure if this session is being used out of
+        -:  565:		 * context, which is especially important for SSL_VERIFY_PEER.
+        -:  566:		 * The application should have used SSL[_CTX]_set_session_id_context.
+        -:  567:		 *
+        -:  568:		 * For this error case, we generate an error instead of treating
+        -:  569:		 * the event like a cache miss (otherwise it would be easy for
+        -:  570:		 * applications to effectively disable the session cache by
+        -:  571:		 * accident without anyone noticing).
+        -:  572:		 */
+        -:  573:		
+    #####:  574:		SSLerr(SSL_F_SSL_GET_PREV_SESSION,SSL_R_SESSION_ID_CONTEXT_UNINITIALIZED);
+        -:  575:		fatal = 1;
+    #####:  576:		goto err;
+        -:  577:		}
+        -:  578:
+    #####:  579:	if (ret->cipher == NULL)
+        -:  580:		{
+        -:  581:		unsigned char buf[5],*p;
+        -:  582:		unsigned long l;
+        -:  583:
+        -:  584:		p=buf;
+    #####:  585:		l=ret->cipher_id;
+    #####:  586:		l2n(l,p);
+    #####:  587:		if ((ret->ssl_version>>8) >= SSL3_VERSION_MAJOR)
+    #####:  588:			ret->cipher=ssl_get_cipher_by_char(s,&(buf[2]));
+        -:  589:		else 
+    #####:  590:			ret->cipher=ssl_get_cipher_by_char(s,&(buf[1]));
+    #####:  591:		if (ret->cipher == NULL)
+        -:  592:			goto err;
+        -:  593:		}
+        -:  594:
+    #####:  595:	if (ret->timeout < (long)(time(NULL) - ret->time)) /* timeout */
+        -:  596:		{
+    #####:  597:		s->session_ctx->stats.sess_timeout++;
+    #####:  598:		if (try_session_cache)
+        -:  599:			{
+        -:  600:			/* session was from the cache, so remove it */
+        -:  601:			SSL_CTX_remove_session(s->session_ctx,ret);
+        -:  602:			}
+        -:  603:		goto err;
+        -:  604:		}
+        -:  605:
+    #####:  606:	s->session_ctx->stats.sess_hit++;
+        -:  607:
+    #####:  608:	if (s->session != NULL)
+    #####:  609:		SSL_SESSION_free(s->session);
+    #####:  610:	s->session=ret;
+    #####:  611:	s->verify_result = s->session->verify_result;
+    #####:  612:	return 1;
+        -:  613:
+        -:  614: err:
+    #####:  615:	if (ret != NULL)
+        -:  616:		{
+    #####:  617:		SSL_SESSION_free(ret);
+        -:  618:#ifndef OPENSSL_NO_TLSEXT
+    #####:  619:		if (!try_session_cache)
+        -:  620:			{
+        -:  621:			/* The session was from a ticket, so we should
+        -:  622:			 * issue a ticket for the new session */
+    #####:  623:			s->tlsext_ticket_expected = 1;
+        -:  624:			}
+        -:  625:#endif
+        -:  626:		}
+    #####:  627:	if (fatal)
+        -:  628:		return -1;
+        -:  629:	else
+    #####:  630:		return 0;
+        -:  631:	}
+        -:  632:
+    #####:  633:int SSL_CTX_add_session(SSL_CTX *ctx, SSL_SESSION *c)
+        -:  634:	{
+        -:  635:	int ret=0;
+        -:  636:	SSL_SESSION *s;
+        -:  637:
+        -:  638:	/* add just 1 reference count for the SSL_CTX's session cache
+        -:  639:	 * even though it has two ways of access: each session is in a
+        -:  640:	 * doubly linked list and an lhash */
+    #####:  641:	CRYPTO_add(&c->references,1,CRYPTO_LOCK_SSL_SESSION);
+        -:  642:	/* if session c is in already in cache, we take back the increment later */
+        -:  643:
+    #####:  644:	CRYPTO_w_lock(CRYPTO_LOCK_SSL_CTX);
+    #####:  645:	s=lh_SSL_SESSION_insert(ctx->sessions,c);
+        -:  646:	
+        -:  647:	/* s != NULL iff we already had a session with the given PID.
+        -:  648:	 * In this case, s == c should hold (then we did not really modify
+        -:  649:	 * ctx->sessions), or we're in trouble. */
+    #####:  650:	if (s != NULL && s != c)
+        -:  651:		{
+        -:  652:		/* We *are* in trouble ... */
+    #####:  653:		SSL_SESSION_list_remove(ctx,s);
+    #####:  654:		SSL_SESSION_free(s);
+        -:  655:		/* ... so pretend the other session did not exist in cache
+        -:  656:		 * (we cannot handle two SSL_SESSION structures with identical
+        -:  657:		 * session ID in the same cache, which could happen e.g. when
+        -:  658:		 * two threads concurrently obtain the same session from an external
+        -:  659:		 * cache) */
+        -:  660:		s = NULL;
+        -:  661:		}
+        -:  662:
+        -:  663: 	/* Put at the head of the queue unless it is already in the cache */
+    #####:  664:	if (s == NULL)
+    #####:  665:		SSL_SESSION_list_add(ctx,c);
+        -:  666:
+    #####:  667:	if (s != NULL)
+        -:  668:		{
+        -:  669:		/* existing cache entry -- decrement previously incremented reference
+        -:  670:		 * count because it already takes into account the cache */
+        -:  671:
+    #####:  672:		SSL_SESSION_free(s); /* s == c */
+        -:  673:		ret=0;
+        -:  674:		}
+        -:  675:	else
+        -:  676:		{
+        -:  677:		/* new cache entry -- remove old ones if cache has become too large */
+        -:  678:		
+        -:  679:		ret=1;
+        -:  680:
+    #####:  681:		if (SSL_CTX_sess_get_cache_size(ctx) > 0)
+        -:  682:			{
+    #####:  683:			while (SSL_CTX_sess_number(ctx) >
+    #####:  684:				SSL_CTX_sess_get_cache_size(ctx))
+        -:  685:				{
+    #####:  686:				if (!remove_session_lock(ctx,
+    #####:  687:					ctx->session_cache_tail, 0))
+        -:  688:					break;
+        -:  689:				else
+    #####:  690:					ctx->stats.sess_cache_full++;
+        -:  691:				}
+        -:  692:			}
+        -:  693:		}
+    #####:  694:	CRYPTO_w_unlock(CRYPTO_LOCK_SSL_CTX);
+    #####:  695:	return(ret);
+        -:  696:	}
+        -:  697:
+    #####:  698:int SSL_CTX_remove_session(SSL_CTX *ctx, SSL_SESSION *c)
+        -:  699:{
+    #####:  700:	return remove_session_lock(ctx, c, 1);
+        -:  701:}
+        -:  702:
+    #####:  703:static int remove_session_lock(SSL_CTX *ctx, SSL_SESSION *c, int lck)
+        -:  704:	{
+        -:  705:	SSL_SESSION *r;
+        -:  706:	int ret=0;
+        -:  707:
+    #####:  708:	if ((c != NULL) && (c->session_id_length != 0))
+        -:  709:		{
+    #####:  710:		if(lck) CRYPTO_w_lock(CRYPTO_LOCK_SSL_CTX);
+    #####:  711:		if ((r = lh_SSL_SESSION_retrieve(ctx->sessions,c)) == c)
+        -:  712:			{
+        -:  713:			ret=1;
+    #####:  714:			r=lh_SSL_SESSION_delete(ctx->sessions,c);
+    #####:  715:			SSL_SESSION_list_remove(ctx,c);
+        -:  716:			}
+        -:  717:
+    #####:  718:		if(lck) CRYPTO_w_unlock(CRYPTO_LOCK_SSL_CTX);
+        -:  719:
+    #####:  720:		if (ret)
+        -:  721:			{
+    #####:  722:			r->not_resumable=1;
+    #####:  723:			if (ctx->remove_session_cb != NULL)
+    #####:  724:				ctx->remove_session_cb(ctx,r);
+    #####:  725:			SSL_SESSION_free(r);
+        -:  726:			}
+        -:  727:		}
+        -:  728:	else
+        -:  729:		ret=0;
+    #####:  730:	return(ret);
+        -:  731:	}
+        -:  732:
+    10000:  733:void SSL_SESSION_free(SSL_SESSION *ss)
+        -:  734:	{
+        -:  735:	int i;
+        -:  736:
+    10000:  737:	if(ss == NULL)
+        -:  738:	    return;
+        -:  739:
+    10000:  740:	i=CRYPTO_add(&ss->references,-1,CRYPTO_LOCK_SSL_SESSION);
+        -:  741:#ifdef REF_PRINT
+        -:  742:	REF_PRINT("SSL_SESSION",ss);
+        -:  743:#endif
+    10000:  744:	if (i > 0) return;
+        -:  745:#ifdef REF_CHECK
+        -:  746:	if (i < 0)
+        -:  747:		{
+        -:  748:		fprintf(stderr,"SSL_SESSION_free, bad reference count\n");
+        -:  749:		abort(); /* ok */
+        -:  750:		}
+        -:  751:#endif
+        -:  752:
+    10000:  753:	CRYPTO_free_ex_data(CRYPTO_EX_INDEX_SSL_SESSION, ss, &ss->ex_data);
+        -:  754:
+    10000:  755:	OPENSSL_cleanse(ss->key_arg,sizeof ss->key_arg);
+    10000:  756:	OPENSSL_cleanse(ss->master_key,sizeof ss->master_key);
+    10000:  757:	OPENSSL_cleanse(ss->session_id,sizeof ss->session_id);
+    10000:  758:	if (ss->sess_cert != NULL) ssl_sess_cert_free(ss->sess_cert);
+    10000:  759:	if (ss->peer != NULL) X509_free(ss->peer);
+    10000:  760:	if (ss->ciphers != NULL) sk_SSL_CIPHER_free(ss->ciphers);
+        -:  761:#ifndef OPENSSL_NO_TLSEXT
+    10000:  762:	if (ss->tlsext_hostname != NULL) OPENSSL_free(ss->tlsext_hostname);
+    10000:  763:	if (ss->tlsext_tick != NULL) OPENSSL_free(ss->tlsext_tick);
+        -:  764:#ifndef OPENSSL_NO_EC
+    10000:  765:	ss->tlsext_ecpointformatlist_length = 0;
+    10000:  766:	if (ss->tlsext_ecpointformatlist != NULL) OPENSSL_free(ss->tlsext_ecpointformatlist);
+    10000:  767:	ss->tlsext_ellipticcurvelist_length = 0;
+    10000:  768:	if (ss->tlsext_ellipticcurvelist != NULL) OPENSSL_free(ss->tlsext_ellipticcurvelist);
+        -:  769:#endif /* OPENSSL_NO_EC */
+        -:  770:#endif
+        -:  771:#ifndef OPENSSL_NO_PSK
+    10000:  772:	if (ss->psk_identity_hint != NULL)
+    #####:  773:		OPENSSL_free(ss->psk_identity_hint);
+    10000:  774:	if (ss->psk_identity != NULL)
+    #####:  775:		OPENSSL_free(ss->psk_identity);
+        -:  776:#endif
+        -:  777:#ifndef OPENSSL_NO_SRP
+    10000:  778:	if (ss->srp_username != NULL)
+    #####:  779:		OPENSSL_free(ss->srp_username);
+        -:  780:#endif
+    10000:  781:	OPENSSL_cleanse(ss,sizeof(*ss));
+    10000:  782:	OPENSSL_free(ss);
+        -:  783:	}
+        -:  784:
+    #####:  785:int SSL_set_session(SSL *s, SSL_SESSION *session)
+        -:  786:	{
+        -:  787:	int ret=0;
+        -:  788:	const SSL_METHOD *meth;
+        -:  789:
+    #####:  790:	if (session != NULL)
+        -:  791:		{
+    #####:  792:		meth=s->ctx->method->get_ssl_method(session->ssl_version);
+    #####:  793:		if (meth == NULL)
+    #####:  794:			meth=s->method->get_ssl_method(session->ssl_version);
+    #####:  795:		if (meth == NULL)
+        -:  796:			{
+    #####:  797:			SSLerr(SSL_F_SSL_SET_SESSION,SSL_R_UNABLE_TO_FIND_SSL_METHOD);
+    #####:  798:			return(0);
+        -:  799:			}
+        -:  800:
+    #####:  801:		if (meth != s->method)
+        -:  802:			{
+    #####:  803:			if (!SSL_set_ssl_method(s,meth))
+        -:  804:				return(0);
+        -:  805:			}
+        -:  806:
+        -:  807:#ifndef OPENSSL_NO_KRB5
+        -:  808:                if (s->kssl_ctx && !s->kssl_ctx->client_princ &&
+        -:  809:                    session->krb5_client_princ_len > 0)
+        -:  810:                {
+        -:  811:                    s->kssl_ctx->client_princ = (char *)OPENSSL_malloc(session->krb5_client_princ_len + 1);
+        -:  812:                    memcpy(s->kssl_ctx->client_princ,session->krb5_client_princ,
+        -:  813:                            session->krb5_client_princ_len);
+        -:  814:                    s->kssl_ctx->client_princ[session->krb5_client_princ_len] = '\0';
+        -:  815:                }
+        -:  816:#endif /* OPENSSL_NO_KRB5 */
+        -:  817:
+        -:  818:		/* CRYPTO_w_lock(CRYPTO_LOCK_SSL);*/
+    #####:  819:		CRYPTO_add(&session->references,1,CRYPTO_LOCK_SSL_SESSION);
+    #####:  820:		if (s->session != NULL)
+    #####:  821:			SSL_SESSION_free(s->session);
+    #####:  822:		s->session=session;
+    #####:  823:		s->verify_result = s->session->verify_result;
+        -:  824:		/* CRYPTO_w_unlock(CRYPTO_LOCK_SSL);*/
+        -:  825:		ret=1;
+        -:  826:		}
+        -:  827:	else
+        -:  828:		{
+    #####:  829:		if (s->session != NULL)
+        -:  830:			{
+    #####:  831:			SSL_SESSION_free(s->session);
+    #####:  832:			s->session=NULL;
+        -:  833:			}
+        -:  834:
+    #####:  835:		meth=s->ctx->method;
+    #####:  836:		if (meth != s->method)
+        -:  837:			{
+    #####:  838:			if (!SSL_set_ssl_method(s,meth))
+        -:  839:				return(0);
+        -:  840:			}
+        -:  841:		ret=1;
+        -:  842:		}
+        -:  843:	return(ret);
+        -:  844:	}
+        -:  845:
+    #####:  846:long SSL_SESSION_set_timeout(SSL_SESSION *s, long t)
+        -:  847:	{
+    #####:  848:	if (s == NULL) return(0);
+    #####:  849:	s->timeout=t;
+    #####:  850:	return(1);
+        -:  851:	}
+        -:  852:
+    #####:  853:long SSL_SESSION_get_timeout(const SSL_SESSION *s)
+        -:  854:	{
+    #####:  855:	if (s == NULL) return(0);
+    #####:  856:	return(s->timeout);
+        -:  857:	}
+        -:  858:
+    #####:  859:long SSL_SESSION_get_time(const SSL_SESSION *s)
+        -:  860:	{
+    #####:  861:	if (s == NULL) return(0);
+    #####:  862:	return(s->time);
+        -:  863:	}
+        -:  864:
+    #####:  865:long SSL_SESSION_set_time(SSL_SESSION *s, long t)
+        -:  866:	{
+    #####:  867:	if (s == NULL) return(0);
+    #####:  868:	s->time=t;
+    #####:  869:	return(t);
+        -:  870:	}
+        -:  871:
+    #####:  872:X509 *SSL_SESSION_get0_peer(SSL_SESSION *s)
+        -:  873:	{
+    #####:  874:	return s->peer;
+        -:  875:	}
+        -:  876:
+    #####:  877:int SSL_SESSION_set1_id_context(SSL_SESSION *s,const unsigned char *sid_ctx,
+        -:  878:			       unsigned int sid_ctx_len)
+        -:  879:	{
+    #####:  880:	if(sid_ctx_len > SSL_MAX_SID_CTX_LENGTH)
+        -:  881:		{
+    #####:  882:		SSLerr(SSL_F_SSL_SESSION_SET1_ID_CONTEXT,SSL_R_SSL_SESSION_ID_CONTEXT_TOO_LONG);
+    #####:  883:		return 0;
+        -:  884:		}
+    #####:  885:	s->sid_ctx_length=sid_ctx_len;
+    #####:  886:	memcpy(s->sid_ctx,sid_ctx,sid_ctx_len);
+        -:  887:
+    #####:  888:	return 1;
+        -:  889:	}
+        -:  890:
+    #####:  891:long SSL_CTX_set_timeout(SSL_CTX *s, long t)
+        -:  892:	{
+        -:  893:	long l;
+    #####:  894:	if (s == NULL) return(0);
+    #####:  895:	l=s->session_timeout;
+    #####:  896:	s->session_timeout=t;
+    #####:  897:	return(l);
+        -:  898:	}
+        -:  899:
+    #####:  900:long SSL_CTX_get_timeout(const SSL_CTX *s)
+        -:  901:	{
+    #####:  902:	if (s == NULL) return(0);
+    #####:  903:	return(s->session_timeout);
+        -:  904:	}
+        -:  905:
+        -:  906:#ifndef OPENSSL_NO_TLSEXT
+    #####:  907:int SSL_set_session_secret_cb(SSL *s, int (*tls_session_secret_cb)(SSL *s, void *secret, int *secret_len,
+        -:  908:	STACK_OF(SSL_CIPHER) *peer_ciphers, SSL_CIPHER **cipher, void *arg), void *arg)
+        -:  909:	{
+    #####:  910:	if (s == NULL) return(0);
+    #####:  911:	s->tls_session_secret_cb = tls_session_secret_cb;
+    #####:  912:	s->tls_session_secret_cb_arg = arg;
+    #####:  913:	return(1);
+        -:  914:	}
+        -:  915:
+    #####:  916:int SSL_set_session_ticket_ext_cb(SSL *s, tls_session_ticket_ext_cb_fn cb,
+        -:  917:				  void *arg)
+        -:  918:	{
+    #####:  919:	if (s == NULL) return(0);
+    #####:  920:	s->tls_session_ticket_ext_cb = cb;
+    #####:  921:	s->tls_session_ticket_ext_cb_arg = arg;
+    #####:  922:	return(1);
+        -:  923:	}
+        -:  924:
+    #####:  925:int SSL_set_session_ticket_ext(SSL *s, void *ext_data, int ext_len)
+        -:  926:	{
+    #####:  927:	if (s->version >= TLS1_VERSION)
+        -:  928:		{
+    #####:  929:		if (s->tlsext_session_ticket)
+        -:  930:			{
+    #####:  931:			OPENSSL_free(s->tlsext_session_ticket);
+    #####:  932:			s->tlsext_session_ticket = NULL;
+        -:  933:			}
+        -:  934:
+    #####:  935:		s->tlsext_session_ticket = OPENSSL_malloc(sizeof(TLS_SESSION_TICKET_EXT) + ext_len);
+    #####:  936:		if (!s->tlsext_session_ticket)
+        -:  937:			{
+    #####:  938:			SSLerr(SSL_F_SSL_SET_SESSION_TICKET_EXT, ERR_R_MALLOC_FAILURE);
+    #####:  939:			return 0;
+        -:  940:			}
+        -:  941:
+    #####:  942:		if (ext_data)
+        -:  943:			{
+    #####:  944:			s->tlsext_session_ticket->length = ext_len;
+    #####:  945:			s->tlsext_session_ticket->data = s->tlsext_session_ticket + 1;
+    #####:  946:			memcpy(s->tlsext_session_ticket->data, ext_data, ext_len);
+        -:  947:			}
+        -:  948:		else
+        -:  949:			{
+    #####:  950:			s->tlsext_session_ticket->length = 0;
+    #####:  951:			s->tlsext_session_ticket->data = NULL;
+        -:  952:			}
+        -:  953:
+        -:  954:		return 1;
+        -:  955:		}
+        -:  956:
+        -:  957:	return 0;
+        -:  958:	}
+        -:  959:#endif /* OPENSSL_NO_TLSEXT */
+        -:  960:
+        -:  961:typedef struct timeout_param_st
+        -:  962:	{
+        -:  963:	SSL_CTX *ctx;
+        -:  964:	long time;
+        -:  965:	LHASH_OF(SSL_SESSION) *cache;
+        -:  966:	} TIMEOUT_PARAM;
+        -:  967:
+    #####:  968:static void timeout_doall_arg(SSL_SESSION *s, TIMEOUT_PARAM *p)
+        -:  969:	{
+    #####:  970:	if ((p->time == 0) || (p->time > (s->time+s->timeout))) /* timeout */
+        -:  971:		{
+        -:  972:		/* The reason we don't call SSL_CTX_remove_session() is to
+        -:  973:		 * save on locking overhead */
+    #####:  974:		(void)lh_SSL_SESSION_delete(p->cache,s);
+    #####:  975:		SSL_SESSION_list_remove(p->ctx,s);
+    #####:  976:		s->not_resumable=1;
+    #####:  977:		if (p->ctx->remove_session_cb != NULL)
+    #####:  978:			p->ctx->remove_session_cb(p->ctx,s);
+    #####:  979:		SSL_SESSION_free(s);
+        -:  980:		}
+    #####:  981:	}
+        -:  982:
+    #####:  983:static IMPLEMENT_LHASH_DOALL_ARG_FN(timeout, SSL_SESSION, TIMEOUT_PARAM)
+        -:  984:
+    10000:  985:void SSL_CTX_flush_sessions(SSL_CTX *s, long t)
+        -:  986:	{
+        -:  987:	unsigned long i;
+        -:  988:	TIMEOUT_PARAM tp;
+        -:  989:
+    10000:  990:	tp.ctx=s;
+    10000:  991:	tp.cache=s->sessions;
+    10000:  992:	if (tp.cache == NULL) return;
+    10000:  993:	tp.time=t;
+    10000:  994:	CRYPTO_w_lock(CRYPTO_LOCK_SSL_CTX);
+    10000:  995:	i=CHECKED_LHASH_OF(SSL_SESSION, tp.cache)->down_load;
+    10000:  996:	CHECKED_LHASH_OF(SSL_SESSION, tp.cache)->down_load=0;
+    10000:  997:	lh_SSL_SESSION_doall_arg(tp.cache, LHASH_DOALL_ARG_FN(timeout),
+        -:  998:				 TIMEOUT_PARAM, &tp);
+    10000:  999:	CHECKED_LHASH_OF(SSL_SESSION, tp.cache)->down_load=i;
+    10000: 1000:	CRYPTO_w_unlock(CRYPTO_LOCK_SSL_CTX);
+        -: 1001:	}
+        -: 1002:
+    30000: 1003:int ssl_clear_bad_session(SSL *s)
+        -: 1004:	{
+    40000: 1005:	if (	(s->session != NULL) &&
+    10000: 1006:		!(s->shutdown & SSL_SENT_SHUTDOWN) &&
+    #####: 1007:		!(SSL_in_init(s) || SSL_in_before(s)))
+        -: 1008:		{
+    #####: 1009:		SSL_CTX_remove_session(s->ctx,s->session);
+    #####: 1010:		return(1);
+        -: 1011:		}
+        -: 1012:	else
+        -: 1013:		return(0);
+        -: 1014:	}
+        -: 1015:
+        -: 1016:/* locked by SSL_CTX in the calling function */
+    #####: 1017:static void SSL_SESSION_list_remove(SSL_CTX *ctx, SSL_SESSION *s)
+        -: 1018:	{
+    #####: 1019:	if ((s->next == NULL) || (s->prev == NULL)) return;
+        -: 1020:
+    #####: 1021:	if (s->next == (SSL_SESSION *)&(ctx->session_cache_tail))
+        -: 1022:		{ /* last element in list */
+    #####: 1023:		if (s->prev == (SSL_SESSION *)&(ctx->session_cache_head))
+        -: 1024:			{ /* only one element in list */
+    #####: 1025:			ctx->session_cache_head=NULL;
+    #####: 1026:			ctx->session_cache_tail=NULL;
+        -: 1027:			}
+        -: 1028:		else
+        -: 1029:			{
+    #####: 1030:			ctx->session_cache_tail=s->prev;
+    #####: 1031:			s->prev->next=(SSL_SESSION *)&(ctx->session_cache_tail);
+        -: 1032:			}
+        -: 1033:		}
+        -: 1034:	else
+        -: 1035:		{
+    #####: 1036:		if (s->prev == (SSL_SESSION *)&(ctx->session_cache_head))
+        -: 1037:			{ /* first element in list */
+    #####: 1038:			ctx->session_cache_head=s->next;
+    #####: 1039:			s->next->prev=(SSL_SESSION *)&(ctx->session_cache_head);
+        -: 1040:			}
+        -: 1041:		else
+        -: 1042:			{ /* middle of list */
+    #####: 1043:			s->next->prev=s->prev;
+    #####: 1044:			s->prev->next=s->next;
+        -: 1045:			}
+        -: 1046:		}
+    #####: 1047:	s->prev=s->next=NULL;
+        -: 1048:	}
+        -: 1049:
+    #####: 1050:static void SSL_SESSION_list_add(SSL_CTX *ctx, SSL_SESSION *s)
+        -: 1051:	{
+    #####: 1052:	if ((s->next != NULL) && (s->prev != NULL))
+    #####: 1053:		SSL_SESSION_list_remove(ctx,s);
+        -: 1054:
+    #####: 1055:	if (ctx->session_cache_head == NULL)
+        -: 1056:		{
+    #####: 1057:		ctx->session_cache_head=s;
+    #####: 1058:		ctx->session_cache_tail=s;
+    #####: 1059:		s->prev=(SSL_SESSION *)&(ctx->session_cache_head);
+    #####: 1060:		s->next=(SSL_SESSION *)&(ctx->session_cache_tail);
+        -: 1061:		}
+        -: 1062:	else
+        -: 1063:		{
+    #####: 1064:		s->next=ctx->session_cache_head;
+    #####: 1065:		s->next->prev=s;
+    #####: 1066:		s->prev=(SSL_SESSION *)&(ctx->session_cache_head);
+    #####: 1067:		ctx->session_cache_head=s;
+        -: 1068:		}
+    #####: 1069:	}
+        -: 1070:
+    #####: 1071:void SSL_CTX_sess_set_new_cb(SSL_CTX *ctx,
+        -: 1072:	int (*cb)(struct ssl_st *ssl,SSL_SESSION *sess))
+        -: 1073:	{
+    #####: 1074:	ctx->new_session_cb=cb;
+    #####: 1075:	}
+        -: 1076:
+    #####: 1077:int (*SSL_CTX_sess_get_new_cb(SSL_CTX *ctx))(SSL *ssl, SSL_SESSION *sess)
+        -: 1078:	{
+    #####: 1079:	return ctx->new_session_cb;
+        -: 1080:	}
+        -: 1081:
+    #####: 1082:void SSL_CTX_sess_set_remove_cb(SSL_CTX *ctx,
+        -: 1083:	void (*cb)(SSL_CTX *ctx,SSL_SESSION *sess))
+        -: 1084:	{
+    #####: 1085:	ctx->remove_session_cb=cb;
+    #####: 1086:	}
+        -: 1087:
+    #####: 1088:void (*SSL_CTX_sess_get_remove_cb(SSL_CTX *ctx))(SSL_CTX * ctx,SSL_SESSION *sess)
+        -: 1089:	{
+    #####: 1090:	return ctx->remove_session_cb;
+        -: 1091:	}
+        -: 1092:
+    #####: 1093:void SSL_CTX_sess_set_get_cb(SSL_CTX *ctx,
+        -: 1094:	SSL_SESSION *(*cb)(struct ssl_st *ssl,
+        -: 1095:	         unsigned char *data,int len,int *copy))
+        -: 1096:	{
+    #####: 1097:	ctx->get_session_cb=cb;
+    #####: 1098:	}
+        -: 1099:
+    #####: 1100:SSL_SESSION * (*SSL_CTX_sess_get_get_cb(SSL_CTX *ctx))(SSL *ssl,
+        -: 1101:	         unsigned char *data,int len,int *copy)
+        -: 1102:	{
+    #####: 1103:	return ctx->get_session_cb;
+        -: 1104:	}
+        -: 1105:
+    #####: 1106:void SSL_CTX_set_info_callback(SSL_CTX *ctx, 
+        -: 1107:	void (*cb)(const SSL *ssl,int type,int val))
+        -: 1108:	{
+    #####: 1109:	ctx->info_callback=cb;
+    #####: 1110:	}
+        -: 1111:
+    #####: 1112:void (*SSL_CTX_get_info_callback(SSL_CTX *ctx))(const SSL *ssl,int type,int val)
+        -: 1113:	{
+    #####: 1114:	return ctx->info_callback;
+        -: 1115:	}
+        -: 1116:
+    #####: 1117:void SSL_CTX_set_client_cert_cb(SSL_CTX *ctx,
+        -: 1118:	int (*cb)(SSL *ssl, X509 **x509, EVP_PKEY **pkey))
+        -: 1119:	{
+    #####: 1120:	ctx->client_cert_cb=cb;
+    #####: 1121:	}
+        -: 1122:
+    #####: 1123:int (*SSL_CTX_get_client_cert_cb(SSL_CTX *ctx))(SSL * ssl, X509 ** x509 , EVP_PKEY **pkey)
+        -: 1124:	{
+    #####: 1125:	return ctx->client_cert_cb;
+        -: 1126:	}
+        -: 1127:
+        -: 1128:#ifndef OPENSSL_NO_ENGINE
+    #####: 1129:int SSL_CTX_set_client_cert_engine(SSL_CTX *ctx, ENGINE *e)
+        -: 1130:	{
+    #####: 1131:	if (!ENGINE_init(e))
+        -: 1132:		{
+    #####: 1133:		SSLerr(SSL_F_SSL_CTX_SET_CLIENT_CERT_ENGINE, ERR_R_ENGINE_LIB);
+    #####: 1134:		return 0;
+        -: 1135:		}
+    #####: 1136:	if(!ENGINE_get_ssl_client_cert_function(e))
+        -: 1137:		{
+    #####: 1138:		SSLerr(SSL_F_SSL_CTX_SET_CLIENT_CERT_ENGINE, SSL_R_NO_CLIENT_CERT_METHOD);
+    #####: 1139:		ENGINE_finish(e);
+    #####: 1140:		return 0;
+        -: 1141:		}
+    #####: 1142:	ctx->client_cert_engine = e;
+    #####: 1143:	return 1;
+        -: 1144:	}
+        -: 1145:#endif
+        -: 1146:
+    #####: 1147:void SSL_CTX_set_cookie_generate_cb(SSL_CTX *ctx,
+        -: 1148:	int (*cb)(SSL *ssl, unsigned char *cookie, unsigned int *cookie_len))
+        -: 1149:	{
+    #####: 1150:	ctx->app_gen_cookie_cb=cb;
+    #####: 1151:	}
+        -: 1152:
+    #####: 1153:void SSL_CTX_set_cookie_verify_cb(SSL_CTX *ctx,
+        -: 1154:	int (*cb)(SSL *ssl, unsigned char *cookie, unsigned int cookie_len))
+        -: 1155:	{
+    #####: 1156:	ctx->app_verify_cookie_cb=cb;
+    #####: 1157:	}
+        -: 1158:
+    #####: 1159:IMPLEMENT_PEM_rw(SSL_SESSION, SSL_SESSION, PEM_STRING_SSL_SESSION, SSL_SESSION)

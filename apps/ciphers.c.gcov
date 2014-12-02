@@ -1,0 +1,236 @@
+        -:    0:Source:ciphers.c
+        -:    0:Graph:ciphers.gcno
+        -:    0:Data:ciphers.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* apps/ciphers.c */
+        -:    2:/* Copyright (C) 1995-1998 Eric Young (eay@cryptsoft.com)
+        -:    3: * All rights reserved.
+        -:    4: *
+        -:    5: * This package is an SSL implementation written
+        -:    6: * by Eric Young (eay@cryptsoft.com).
+        -:    7: * The implementation was written so as to conform with Netscapes SSL.
+        -:    8: * 
+        -:    9: * This library is free for commercial and non-commercial use as long as
+        -:   10: * the following conditions are aheared to.  The following conditions
+        -:   11: * apply to all code found in this distribution, be it the RC4, RSA,
+        -:   12: * lhash, DES, etc., code; not just the SSL code.  The SSL documentation
+        -:   13: * included with this distribution is covered by the same copyright terms
+        -:   14: * except that the holder is Tim Hudson (tjh@cryptsoft.com).
+        -:   15: * 
+        -:   16: * Copyright remains Eric Young's, and as such any Copyright notices in
+        -:   17: * the code are not to be removed.
+        -:   18: * If this package is used in a product, Eric Young should be given attribution
+        -:   19: * as the author of the parts of the library used.
+        -:   20: * This can be in the form of a textual message at program startup or
+        -:   21: * in documentation (online or textual) provided with the package.
+        -:   22: * 
+        -:   23: * Redistribution and use in source and binary forms, with or without
+        -:   24: * modification, are permitted provided that the following conditions
+        -:   25: * are met:
+        -:   26: * 1. Redistributions of source code must retain the copyright
+        -:   27: *    notice, this list of conditions and the following disclaimer.
+        -:   28: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   29: *    notice, this list of conditions and the following disclaimer in the
+        -:   30: *    documentation and/or other materials provided with the distribution.
+        -:   31: * 3. All advertising materials mentioning features or use of this software
+        -:   32: *    must display the following acknowledgement:
+        -:   33: *    "This product includes cryptographic software written by
+        -:   34: *     Eric Young (eay@cryptsoft.com)"
+        -:   35: *    The word 'cryptographic' can be left out if the rouines from the library
+        -:   36: *    being used are not cryptographic related :-).
+        -:   37: * 4. If you include any Windows specific code (or a derivative thereof) from 
+        -:   38: *    the apps directory (application code) you must include an acknowledgement:
+        -:   39: *    "This product includes software written by Tim Hudson (tjh@cryptsoft.com)"
+        -:   40: * 
+        -:   41: * THIS SOFTWARE IS PROVIDED BY ERIC YOUNG ``AS IS'' AND
+        -:   42: * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   43: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+        -:   44: * ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+        -:   45: * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+        -:   46: * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+        -:   47: * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   48: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+        -:   49: * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+        -:   50: * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+        -:   51: * SUCH DAMAGE.
+        -:   52: * 
+        -:   53: * The licence and distribution terms for any publically available version or
+        -:   54: * derivative of this code cannot be changed.  i.e. this code cannot simply be
+        -:   55: * copied and put under another distribution licence
+        -:   56: * [including the GNU Public Licence.]
+        -:   57: */
+        -:   58:
+        -:   59:#include <stdio.h>
+        -:   60:#include <stdlib.h>
+        -:   61:#include <string.h>
+        -:   62:#ifdef OPENSSL_NO_STDIO
+        -:   63:#define APPS_WIN16
+        -:   64:#endif
+        -:   65:#include "apps.h"
+        -:   66:#include <openssl/err.h>
+        -:   67:#include <openssl/ssl.h>
+        -:   68:
+        -:   69:#undef PROG
+        -:   70:#define PROG	ciphers_main
+        -:   71:
+        -:   72:static const char *ciphers_usage[]={
+        -:   73:"usage: ciphers args\n",
+        -:   74:" -v          - verbose mode, a textual listing of the SSL/TLS ciphers in OpenSSL\n",
+        -:   75:" -V          - even more verbose\n",
+        -:   76:" -ssl2       - SSL2 mode\n",
+        -:   77:" -ssl3       - SSL3 mode\n",
+        -:   78:" -tls1       - TLS1 mode\n",
+        -:   79:NULL
+        -:   80:};
+        -:   81:
+        -:   82:int MAIN(int, char **);
+        -:   83:
+    #####:   84:int MAIN(int argc, char **argv)
+        -:   85:	{
+        -:   86:	int ret=1,i;
+        -:   87:	int verbose=0,Verbose=0;
+        -:   88:	const char **pp;
+        -:   89:	const char *p;
+        -:   90:	int badops=0;
+        -:   91:	SSL_CTX *ctx=NULL;
+        -:   92:	SSL *ssl=NULL;
+        -:   93:	char *ciphers=NULL;
+        -:   94:	const SSL_METHOD *meth=NULL;
+        -:   95:	STACK_OF(SSL_CIPHER) *sk;
+        -:   96:	char buf[512];
+        -:   97:	BIO *STDout=NULL;
+        -:   98:
+        -:   99:#if !defined(OPENSSL_NO_SSL2) && !defined(OPENSSL_NO_SSL3)
+    #####:  100:	meth=SSLv23_server_method();
+        -:  101:#elif !defined(OPENSSL_NO_SSL3)
+        -:  102:	meth=SSLv3_server_method();
+        -:  103:#elif !defined(OPENSSL_NO_SSL2)
+        -:  104:	meth=SSLv2_server_method();
+        -:  105:#endif
+        -:  106:
+    #####:  107:	apps_startup();
+        -:  108:
+    #####:  109:	if (bio_err == NULL)
+    #####:  110:		bio_err=BIO_new_fp(stderr,BIO_NOCLOSE);
+    #####:  111:	STDout=BIO_new_fp(stdout,BIO_NOCLOSE);
+        -:  112:#ifdef OPENSSL_SYS_VMS
+        -:  113:	{
+        -:  114:	BIO *tmpbio = BIO_new(BIO_f_linebuffer());
+        -:  115:	STDout = BIO_push(tmpbio, STDout);
+        -:  116:	}
+        -:  117:#endif
+    #####:  118:	if (!load_config(bio_err, NULL))
+        -:  119:		goto end;
+        -:  120:
+    #####:  121:	argc--;
+    #####:  122:	argv++;
+    #####:  123:	while (argc >= 1)
+        -:  124:		{
+    #####:  125:		if (strcmp(*argv,"-v") == 0)
+        -:  126:			verbose=1;
+    #####:  127:		else if (strcmp(*argv,"-V") == 0)
+        -:  128:			verbose=Verbose=1;
+        -:  129:#ifndef OPENSSL_NO_SSL2
+    #####:  130:		else if (strcmp(*argv,"-ssl2") == 0)
+    #####:  131:			meth=SSLv2_client_method();
+        -:  132:#endif
+        -:  133:#ifndef OPENSSL_NO_SSL3
+    #####:  134:		else if (strcmp(*argv,"-ssl3") == 0)
+    #####:  135:			meth=SSLv3_client_method();
+        -:  136:#endif
+        -:  137:#ifndef OPENSSL_NO_TLS1
+    #####:  138:		else if (strcmp(*argv,"-tls1") == 0)
+    #####:  139:			meth=TLSv1_client_method();
+        -:  140:#endif
+    #####:  141:		else if ((strncmp(*argv,"-h",2) == 0) ||
+    #####:  142:			 (strcmp(*argv,"-?") == 0))
+        -:  143:			{
+        -:  144:			badops=1;
+        -:  145:			break;
+        -:  146:			}
+        -:  147:		else
+        -:  148:			{
+        -:  149:			ciphers= *argv;
+        -:  150:			}
+    #####:  151:		argc--;
+    #####:  152:		argv++;
+        -:  153:		}
+        -:  154:
+    #####:  155:	if (badops)
+        -:  156:		{
+    #####:  157:		for (pp=ciphers_usage; (*pp != NULL); pp++)
+    #####:  158:			BIO_printf(bio_err,"%s",*pp);
+        -:  159:		goto end;
+        -:  160:		}
+        -:  161:
+    #####:  162:	OpenSSL_add_ssl_algorithms();
+        -:  163:
+    #####:  164:	ctx=SSL_CTX_new(meth);
+    #####:  165:	if (ctx == NULL) goto err;
+    #####:  166:	if (ciphers != NULL) {
+    #####:  167:		if(!SSL_CTX_set_cipher_list(ctx,ciphers)) {
+    #####:  168:			BIO_printf(bio_err, "Error in cipher list\n");
+    #####:  169:			goto err;
+        -:  170:		}
+        -:  171:	}
+    #####:  172:	ssl=SSL_new(ctx);
+    #####:  173:	if (ssl == NULL) goto err;
+        -:  174:
+        -:  175:
+    #####:  176:	if (!verbose)
+        -:  177:		{
+    #####:  178:		for (i=0; ; i++)
+        -:  179:			{
+    #####:  180:			p=SSL_get_cipher_list(ssl,i);
+    #####:  181:			if (p == NULL) break;
+    #####:  182:			if (i != 0) BIO_printf(STDout,":");
+    #####:  183:			BIO_printf(STDout,"%s",p);
+    #####:  184:			}
+    #####:  185:		BIO_printf(STDout,"\n");
+        -:  186:		}
+        -:  187:	else /* verbose */
+        -:  188:		{
+    #####:  189:		sk=SSL_get_ciphers(ssl);
+        -:  190:
+    #####:  191:		for (i=0; i<sk_SSL_CIPHER_num(sk); i++)
+        -:  192:			{
+        -:  193:			SSL_CIPHER *c;
+        -:  194:
+    #####:  195:			c = sk_SSL_CIPHER_value(sk,i);
+        -:  196:			
+    #####:  197:			if (Verbose)
+        -:  198:				{
+    #####:  199:				unsigned long id = SSL_CIPHER_get_id(c);
+    #####:  200:				int id0 = (int)(id >> 24);
+    #####:  201:				int id1 = (int)((id >> 16) & 0xffL);
+    #####:  202:				int id2 = (int)((id >> 8) & 0xffL);
+    #####:  203:				int id3 = (int)(id & 0xffL);
+        -:  204:				
+    #####:  205:				if ((id & 0xff000000L) == 0x02000000L)
+    #####:  206:					BIO_printf(STDout, "     0x%02X,0x%02X,0x%02X - ", id1, id2, id3); /* SSL2 cipher */
+    #####:  207:				else if ((id & 0xff000000L) == 0x03000000L)
+    #####:  208:					BIO_printf(STDout, "          0x%02X,0x%02X - ", id2, id3); /* SSL3 cipher */
+        -:  209:				else
+    #####:  210:					BIO_printf(STDout, "0x%02X,0x%02X,0x%02X,0x%02X - ", id0, id1, id2, id3); /* whatever */
+        -:  211:				}
+        -:  212:
+    #####:  213:			BIO_puts(STDout,SSL_CIPHER_description(c,buf,sizeof buf));
+        -:  214:			}
+        -:  215:		}
+        -:  216:
+        -:  217:	ret=0;
+        -:  218:	if (0)
+        -:  219:		{
+        -:  220:err:
+    #####:  221:		SSL_load_error_strings();
+    #####:  222:		ERR_print_errors(bio_err);
+        -:  223:		}
+        -:  224:end:
+    #####:  225:	if (ctx != NULL) SSL_CTX_free(ctx);
+    #####:  226:	if (ssl != NULL) SSL_free(ssl);
+    #####:  227:	if (STDout != NULL) BIO_free_all(STDout);
+        -:  228:	apps_shutdown();
+    #####:  229:	OPENSSL_EXIT(ret);
+        -:  230:	}
+        -:  231:

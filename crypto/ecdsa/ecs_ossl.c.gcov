@@ -1,0 +1,488 @@
+        -:    0:Source:ecs_ossl.c
+        -:    0:Graph:ecs_ossl.gcno
+        -:    0:Data:ecs_ossl.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* crypto/ecdsa/ecs_ossl.c */
+        -:    2:/*
+        -:    3: * Written by Nils Larsch for the OpenSSL project
+        -:    4: */
+        -:    5:/* ====================================================================
+        -:    6: * Copyright (c) 1998-2004 The OpenSSL Project.  All rights reserved.
+        -:    7: *
+        -:    8: * Redistribution and use in source and binary forms, with or without
+        -:    9: * modification, are permitted provided that the following conditions
+        -:   10: * are met:
+        -:   11: *
+        -:   12: * 1. Redistributions of source code must retain the above copyright
+        -:   13: *    notice, this list of conditions and the following disclaimer. 
+        -:   14: *
+        -:   15: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   16: *    notice, this list of conditions and the following disclaimer in
+        -:   17: *    the documentation and/or other materials provided with the
+        -:   18: *    distribution.
+        -:   19: *
+        -:   20: * 3. All advertising materials mentioning features or use of this
+        -:   21: *    software must display the following acknowledgment:
+        -:   22: *    "This product includes software developed by the OpenSSL Project
+        -:   23: *    for use in the OpenSSL Toolkit. (http://www.OpenSSL.org/)"
+        -:   24: *
+        -:   25: * 4. The names "OpenSSL Toolkit" and "OpenSSL Project" must not be used to
+        -:   26: *    endorse or promote products derived from this software without
+        -:   27: *    prior written permission. For written permission, please contact
+        -:   28: *    openssl-core@OpenSSL.org.
+        -:   29: *
+        -:   30: * 5. Products derived from this software may not be called "OpenSSL"
+        -:   31: *    nor may "OpenSSL" appear in their names without prior written
+        -:   32: *    permission of the OpenSSL Project.
+        -:   33: *
+        -:   34: * 6. Redistributions of any form whatsoever must retain the following
+        -:   35: *    acknowledgment:
+        -:   36: *    "This product includes software developed by the OpenSSL Project
+        -:   37: *    for use in the OpenSSL Toolkit (http://www.OpenSSL.org/)"
+        -:   38: *
+        -:   39: * THIS SOFTWARE IS PROVIDED BY THE OpenSSL PROJECT ``AS IS'' AND ANY
+        -:   40: * EXPRESSED OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   41: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+        -:   42: * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE OpenSSL PROJECT OR
+        -:   43: * ITS CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+        -:   44: * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+        -:   45: * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+        -:   46: * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   47: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+        -:   48: * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+        -:   49: * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+        -:   50: * OF THE POSSIBILITY OF SUCH DAMAGE.
+        -:   51: * ====================================================================
+        -:   52: *
+        -:   53: * This product includes cryptographic software written by Eric Young
+        -:   54: * (eay@cryptsoft.com).  This product includes software written by Tim
+        -:   55: * Hudson (tjh@cryptsoft.com).
+        -:   56: *
+        -:   57: */
+        -:   58:
+        -:   59:#include "ecs_locl.h"
+        -:   60:#include <openssl/err.h>
+        -:   61:#include <openssl/obj_mac.h>
+        -:   62:#include <openssl/bn.h>
+        -:   63:
+        -:   64:static ECDSA_SIG *ecdsa_do_sign(const unsigned char *dgst, int dlen, 
+        -:   65:		const BIGNUM *, const BIGNUM *, EC_KEY *eckey);
+        -:   66:static int ecdsa_sign_setup(EC_KEY *eckey, BN_CTX *ctx_in, BIGNUM **kinvp, 
+        -:   67:		BIGNUM **rp);
+        -:   68:static int ecdsa_do_verify(const unsigned char *dgst, int dgst_len, 
+        -:   69:		const ECDSA_SIG *sig, EC_KEY *eckey);
+        -:   70:
+        -:   71:static ECDSA_METHOD openssl_ecdsa_meth = {
+        -:   72:	"OpenSSL ECDSA method",
+        -:   73:	ecdsa_do_sign,
+        -:   74:	ecdsa_sign_setup,
+        -:   75:	ecdsa_do_verify,
+        -:   76:#if 0
+        -:   77:	NULL, /* init     */
+        -:   78:	NULL, /* finish   */
+        -:   79:#endif
+        -:   80:	0,    /* flags    */
+        -:   81:	NULL  /* app_data */
+        -:   82:};
+        -:   83:
+    #####:   84:const ECDSA_METHOD *ECDSA_OpenSSL(void)
+        -:   85:{
+    #####:   86:	return &openssl_ecdsa_meth;
+        -:   87:}
+        -:   88:
+    #####:   89:static int ecdsa_sign_setup(EC_KEY *eckey, BN_CTX *ctx_in, BIGNUM **kinvp,
+        -:   90:		BIGNUM **rp)
+        -:   91:{
+        -:   92:	BN_CTX   *ctx = NULL;
+        -:   93:	BIGNUM	 *k = NULL, *r = NULL, *order = NULL, *X = NULL;
+        -:   94:	EC_POINT *tmp_point=NULL;
+        -:   95:	const EC_GROUP *group;
+        -:   96:	int 	 ret = 0;
+        -:   97:
+    #####:   98:	if (eckey == NULL || (group = EC_KEY_get0_group(eckey)) == NULL)
+        -:   99:	{
+    #####:  100:		ECDSAerr(ECDSA_F_ECDSA_SIGN_SETUP, ERR_R_PASSED_NULL_PARAMETER);
+    #####:  101:		return 0;
+        -:  102:	}
+        -:  103:
+    #####:  104:	if (ctx_in == NULL) 
+        -:  105:	{
+    #####:  106:		if ((ctx = BN_CTX_new()) == NULL)
+        -:  107:		{
+    #####:  108:			ECDSAerr(ECDSA_F_ECDSA_SIGN_SETUP,ERR_R_MALLOC_FAILURE);
+    #####:  109:			return 0;
+        -:  110:		}
+        -:  111:	}
+        -:  112:	else
+        -:  113:		ctx = ctx_in;
+        -:  114:
+    #####:  115:	k     = BN_new();	/* this value is later returned in *kinvp */
+    #####:  116:	r     = BN_new();	/* this value is later returned in *rp    */
+    #####:  117:	order = BN_new();
+    #####:  118:	X     = BN_new();
+    #####:  119:	if (!k || !r || !order || !X)
+        -:  120:	{
+    #####:  121:		ECDSAerr(ECDSA_F_ECDSA_SIGN_SETUP, ERR_R_MALLOC_FAILURE);
+    #####:  122:		goto err;
+        -:  123:	}
+    #####:  124:	if ((tmp_point = EC_POINT_new(group)) == NULL)
+        -:  125:	{
+    #####:  126:		ECDSAerr(ECDSA_F_ECDSA_SIGN_SETUP, ERR_R_EC_LIB);
+    #####:  127:		goto err;
+        -:  128:	}
+    #####:  129:	if (!EC_GROUP_get_order(group, order, ctx))
+        -:  130:	{
+    #####:  131:		ECDSAerr(ECDSA_F_ECDSA_SIGN_SETUP, ERR_R_EC_LIB);
+    #####:  132:		goto err;
+        -:  133:	}
+        -:  134:	
+        -:  135:	do
+        -:  136:	{
+        -:  137:		/* get random k */	
+        -:  138:		do
+    #####:  139:			if (!BN_rand_range(k, order))
+        -:  140:			{
+    #####:  141:				ECDSAerr(ECDSA_F_ECDSA_SIGN_SETUP,
+        -:  142:				 ECDSA_R_RANDOM_NUMBER_GENERATION_FAILED);	
+    #####:  143:				goto err;
+        -:  144:			}
+    #####:  145:		while (BN_is_zero(k));
+        -:  146:
+        -:  147:		/* We do not want timing information to leak the length of k,
+        -:  148:		 * so we compute G*k using an equivalent scalar of fixed
+        -:  149:		 * bit-length. */
+        -:  150:
+    #####:  151:		if (!BN_add(k, k, order)) goto err;
+    #####:  152:		if (BN_num_bits(k) <= BN_num_bits(order))
+    #####:  153:			if (!BN_add(k, k, order)) goto err;
+        -:  154:
+        -:  155:		/* compute r the x-coordinate of generator * k */
+    #####:  156:		if (!EC_POINT_mul(group, tmp_point, k, NULL, NULL, ctx))
+        -:  157:		{
+    #####:  158:			ECDSAerr(ECDSA_F_ECDSA_SIGN_SETUP, ERR_R_EC_LIB);
+    #####:  159:			goto err;
+        -:  160:		}
+    #####:  161:		if (EC_METHOD_get_field_type(EC_GROUP_method_of(group)) == NID_X9_62_prime_field)
+        -:  162:		{
+    #####:  163:			if (!EC_POINT_get_affine_coordinates_GFp(group,
+        -:  164:				tmp_point, X, NULL, ctx))
+        -:  165:			{
+    #####:  166:				ECDSAerr(ECDSA_F_ECDSA_SIGN_SETUP,ERR_R_EC_LIB);
+    #####:  167:				goto err;
+        -:  168:			}
+        -:  169:		}
+        -:  170:#ifndef OPENSSL_NO_EC2M
+        -:  171:		else /* NID_X9_62_characteristic_two_field */
+        -:  172:		{
+    #####:  173:			if (!EC_POINT_get_affine_coordinates_GF2m(group,
+        -:  174:				tmp_point, X, NULL, ctx))
+        -:  175:			{
+    #####:  176:				ECDSAerr(ECDSA_F_ECDSA_SIGN_SETUP,ERR_R_EC_LIB);
+    #####:  177:				goto err;
+        -:  178:			}
+        -:  179:		}
+        -:  180:#endif
+    #####:  181:		if (!BN_nnmod(r, X, order, ctx))
+        -:  182:		{
+    #####:  183:			ECDSAerr(ECDSA_F_ECDSA_SIGN_SETUP, ERR_R_BN_LIB);
+    #####:  184:			goto err;
+        -:  185:		}
+        -:  186:	}
+    #####:  187:	while (BN_is_zero(r));
+        -:  188:
+        -:  189:	/* compute the inverse of k */
+    #####:  190:	if (!BN_mod_inverse(k, k, order, ctx))
+        -:  191:	{
+    #####:  192:		ECDSAerr(ECDSA_F_ECDSA_SIGN_SETUP, ERR_R_BN_LIB);
+    #####:  193:		goto err;	
+        -:  194:	}
+        -:  195:	/* clear old values if necessary */
+    #####:  196:	if (*rp != NULL)
+    #####:  197:		BN_clear_free(*rp);
+    #####:  198:	if (*kinvp != NULL) 
+    #####:  199:		BN_clear_free(*kinvp);
+        -:  200:	/* save the pre-computed values  */
+    #####:  201:	*rp    = r;
+    #####:  202:	*kinvp = k;
+        -:  203:	ret = 1;
+        -:  204:err:
+    #####:  205:	if (!ret)
+        -:  206:	{
+    #####:  207:		if (k != NULL) BN_clear_free(k);
+    #####:  208:		if (r != NULL) BN_clear_free(r);
+        -:  209:	}
+    #####:  210:	if (ctx_in == NULL) 
+    #####:  211:		BN_CTX_free(ctx);
+    #####:  212:	if (order != NULL)
+    #####:  213:		BN_free(order);
+    #####:  214:	if (tmp_point != NULL) 
+    #####:  215:		EC_POINT_free(tmp_point);
+    #####:  216:	if (X)
+    #####:  217:		BN_clear_free(X);
+    #####:  218:	return(ret);
+        -:  219:}
+        -:  220:
+        -:  221:
+    #####:  222:static ECDSA_SIG *ecdsa_do_sign(const unsigned char *dgst, int dgst_len, 
+        -:  223:		const BIGNUM *in_kinv, const BIGNUM *in_r, EC_KEY *eckey)
+        -:  224:{
+        -:  225:	int     ok = 0, i;
+    #####:  226:	BIGNUM *kinv=NULL, *s, *m=NULL,*tmp=NULL,*order=NULL;
+        -:  227:	const BIGNUM *ckinv;
+        -:  228:	BN_CTX     *ctx = NULL;
+        -:  229:	const EC_GROUP   *group;
+        -:  230:	ECDSA_SIG  *ret;
+        -:  231:	ECDSA_DATA *ecdsa;
+        -:  232:	const BIGNUM *priv_key;
+        -:  233:
+    #####:  234:	ecdsa    = ecdsa_check(eckey);
+    #####:  235:	group    = EC_KEY_get0_group(eckey);
+    #####:  236:	priv_key = EC_KEY_get0_private_key(eckey);
+        -:  237:	
+    #####:  238:	if (group == NULL || priv_key == NULL || ecdsa == NULL)
+        -:  239:	{
+    #####:  240:		ECDSAerr(ECDSA_F_ECDSA_DO_SIGN, ERR_R_PASSED_NULL_PARAMETER);
+    #####:  241:		return NULL;
+        -:  242:	}
+        -:  243:
+    #####:  244:	ret = ECDSA_SIG_new();
+    #####:  245:	if (!ret)
+        -:  246:	{
+    #####:  247:		ECDSAerr(ECDSA_F_ECDSA_DO_SIGN, ERR_R_MALLOC_FAILURE);
+    #####:  248:		return NULL;
+        -:  249:	}
+    #####:  250:	s = ret->s;
+        -:  251:
+    #####:  252:	if ((ctx = BN_CTX_new()) == NULL || (order = BN_new()) == NULL ||
+    #####:  253:		(tmp = BN_new()) == NULL || (m = BN_new()) == NULL)
+        -:  254:	{
+    #####:  255:		ECDSAerr(ECDSA_F_ECDSA_DO_SIGN, ERR_R_MALLOC_FAILURE);
+    #####:  256:		goto err;
+        -:  257:	}
+        -:  258:
+    #####:  259:	if (!EC_GROUP_get_order(group, order, ctx))
+        -:  260:	{
+    #####:  261:		ECDSAerr(ECDSA_F_ECDSA_DO_SIGN, ERR_R_EC_LIB);
+    #####:  262:		goto err;
+        -:  263:	}
+    #####:  264:	i = BN_num_bits(order);
+        -:  265:	/* Need to truncate digest if it is too long: first truncate whole
+        -:  266:	 * bytes.
+        -:  267:	 */
+    #####:  268:	if (8 * dgst_len > i)
+    #####:  269:		dgst_len = (i + 7)/8;
+    #####:  270:	if (!BN_bin2bn(dgst, dgst_len, m))
+        -:  271:	{
+    #####:  272:		ECDSAerr(ECDSA_F_ECDSA_DO_SIGN, ERR_R_BN_LIB);
+    #####:  273:		goto err;
+        -:  274:	}
+        -:  275:	/* If still too long truncate remaining bits with a shift */
+    #####:  276:	if ((8 * dgst_len > i) && !BN_rshift(m, m, 8 - (i & 0x7)))
+        -:  277:	{
+    #####:  278:		ECDSAerr(ECDSA_F_ECDSA_DO_SIGN, ERR_R_BN_LIB);
+    #####:  279:		goto err;
+        -:  280:	}
+        -:  281:	do
+        -:  282:	{
+    #####:  283:		if (in_kinv == NULL || in_r == NULL)
+        -:  284:		{
+    #####:  285:			if (!ECDSA_sign_setup(eckey, ctx, &kinv, &ret->r))
+        -:  286:			{
+    #####:  287:				ECDSAerr(ECDSA_F_ECDSA_DO_SIGN,ERR_R_ECDSA_LIB);
+    #####:  288:				goto err;
+        -:  289:			}
+    #####:  290:			ckinv = kinv;
+        -:  291:		}
+        -:  292:		else
+        -:  293:		{
+        -:  294:			ckinv  = in_kinv;
+    #####:  295:			if (BN_copy(ret->r, in_r) == NULL)
+        -:  296:			{
+    #####:  297:				ECDSAerr(ECDSA_F_ECDSA_DO_SIGN, ERR_R_MALLOC_FAILURE);
+    #####:  298:				goto err;
+        -:  299:			}
+        -:  300:		}
+        -:  301:
+    #####:  302:		if (!BN_mod_mul(tmp, priv_key, ret->r, order, ctx))
+        -:  303:		{
+    #####:  304:			ECDSAerr(ECDSA_F_ECDSA_DO_SIGN, ERR_R_BN_LIB);
+    #####:  305:			goto err;
+        -:  306:		}
+    #####:  307:		if (!BN_mod_add_quick(s, tmp, m, order))
+        -:  308:		{
+    #####:  309:			ECDSAerr(ECDSA_F_ECDSA_DO_SIGN, ERR_R_BN_LIB);
+    #####:  310:			goto err;
+        -:  311:		}
+    #####:  312:		if (!BN_mod_mul(s, s, ckinv, order, ctx))
+        -:  313:		{
+    #####:  314:			ECDSAerr(ECDSA_F_ECDSA_DO_SIGN, ERR_R_BN_LIB);
+    #####:  315:			goto err;
+        -:  316:		}
+    #####:  317:		if (BN_is_zero(s))
+        -:  318:		{
+        -:  319:			/* if kinv and r have been supplied by the caller
+        -:  320:			 * don't to generate new kinv and r values */
+    #####:  321:			if (in_kinv != NULL && in_r != NULL)
+        -:  322:			{
+    #####:  323:				ECDSAerr(ECDSA_F_ECDSA_DO_SIGN, ECDSA_R_NEED_NEW_SETUP_VALUES);
+    #####:  324:				goto err;
+        -:  325:			}
+        -:  326:		}
+        -:  327:		else
+        -:  328:			/* s != 0 => we have a valid signature */
+        -:  329:			break;
+        -:  330:	}
+        -:  331:	while (1);
+        -:  332:
+        -:  333:	ok = 1;
+        -:  334:err:
+    #####:  335:	if (!ok)
+        -:  336:	{
+    #####:  337:		ECDSA_SIG_free(ret);
+        -:  338:		ret = NULL;
+        -:  339:	}
+    #####:  340:	if (ctx)
+    #####:  341:		BN_CTX_free(ctx);
+    #####:  342:	if (m)
+    #####:  343:		BN_clear_free(m);
+    #####:  344:	if (tmp)
+    #####:  345:		BN_clear_free(tmp);
+    #####:  346:	if (order)
+    #####:  347:		BN_free(order);
+    #####:  348:	if (kinv)
+    #####:  349:		BN_clear_free(kinv);
+    #####:  350:	return ret;
+        -:  351:}
+        -:  352:
+    #####:  353:static int ecdsa_do_verify(const unsigned char *dgst, int dgst_len,
+        -:  354:		const ECDSA_SIG *sig, EC_KEY *eckey)
+        -:  355:{
+        -:  356:	int ret = -1, i;
+        -:  357:	BN_CTX   *ctx;
+        -:  358:	BIGNUM   *order, *u1, *u2, *m, *X;
+        -:  359:	EC_POINT *point = NULL;
+        -:  360:	const EC_GROUP *group;
+        -:  361:	const EC_POINT *pub_key;
+        -:  362:
+        -:  363:	/* check input values */
+    #####:  364:	if (eckey == NULL || (group = EC_KEY_get0_group(eckey)) == NULL ||
+    #####:  365:	    (pub_key = EC_KEY_get0_public_key(eckey)) == NULL || sig == NULL)
+        -:  366:	{
+    #####:  367:		ECDSAerr(ECDSA_F_ECDSA_DO_VERIFY, ECDSA_R_MISSING_PARAMETERS);
+    #####:  368:		return -1;
+        -:  369:	}
+        -:  370:
+    #####:  371:	ctx = BN_CTX_new();
+    #####:  372:	if (!ctx)
+        -:  373:	{
+    #####:  374:		ECDSAerr(ECDSA_F_ECDSA_DO_VERIFY, ERR_R_MALLOC_FAILURE);
+    #####:  375:		return -1;
+        -:  376:	}
+    #####:  377:	BN_CTX_start(ctx);
+    #####:  378:	order = BN_CTX_get(ctx);	
+    #####:  379:	u1    = BN_CTX_get(ctx);
+    #####:  380:	u2    = BN_CTX_get(ctx);
+    #####:  381:	m     = BN_CTX_get(ctx);
+    #####:  382:	X     = BN_CTX_get(ctx);
+    #####:  383:	if (!X)
+        -:  384:	{
+    #####:  385:		ECDSAerr(ECDSA_F_ECDSA_DO_VERIFY, ERR_R_BN_LIB);
+    #####:  386:		goto err;
+        -:  387:	}
+        -:  388:	
+    #####:  389:	if (!EC_GROUP_get_order(group, order, ctx))
+        -:  390:	{
+    #####:  391:		ECDSAerr(ECDSA_F_ECDSA_DO_VERIFY, ERR_R_EC_LIB);
+    #####:  392:		goto err;
+        -:  393:	}
+        -:  394:
+    #####:  395:	if (BN_is_zero(sig->r)          || BN_is_negative(sig->r) || 
+    #####:  396:	    BN_ucmp(sig->r, order) >= 0 || BN_is_zero(sig->s)  ||
+    #####:  397:	    BN_is_negative(sig->s)      || BN_ucmp(sig->s, order) >= 0)
+        -:  398:	{
+    #####:  399:		ECDSAerr(ECDSA_F_ECDSA_DO_VERIFY, ECDSA_R_BAD_SIGNATURE);
+        -:  400:		ret = 0;	/* signature is invalid */
+    #####:  401:		goto err;
+        -:  402:	}
+        -:  403:	/* calculate tmp1 = inv(S) mod order */
+    #####:  404:	if (!BN_mod_inverse(u2, sig->s, order, ctx))
+        -:  405:	{
+    #####:  406:		ECDSAerr(ECDSA_F_ECDSA_DO_VERIFY, ERR_R_BN_LIB);
+    #####:  407:		goto err;
+        -:  408:	}
+        -:  409:	/* digest -> m */
+    #####:  410:	i = BN_num_bits(order);
+        -:  411:	/* Need to truncate digest if it is too long: first truncate whole
+        -:  412:	 * bytes.
+        -:  413:	 */
+    #####:  414:	if (8 * dgst_len > i)
+    #####:  415:		dgst_len = (i + 7)/8;
+    #####:  416:	if (!BN_bin2bn(dgst, dgst_len, m))
+        -:  417:	{
+    #####:  418:		ECDSAerr(ECDSA_F_ECDSA_DO_VERIFY, ERR_R_BN_LIB);
+    #####:  419:		goto err;
+        -:  420:	}
+        -:  421:	/* If still too long truncate remaining bits with a shift */
+    #####:  422:	if ((8 * dgst_len > i) && !BN_rshift(m, m, 8 - (i & 0x7)))
+        -:  423:	{
+    #####:  424:		ECDSAerr(ECDSA_F_ECDSA_DO_VERIFY, ERR_R_BN_LIB);
+    #####:  425:		goto err;
+        -:  426:	}
+        -:  427:	/* u1 = m * tmp mod order */
+    #####:  428:	if (!BN_mod_mul(u1, m, u2, order, ctx))
+        -:  429:	{
+    #####:  430:		ECDSAerr(ECDSA_F_ECDSA_DO_VERIFY, ERR_R_BN_LIB);
+    #####:  431:		goto err;
+        -:  432:	}
+        -:  433:	/* u2 = r * w mod q */
+    #####:  434:	if (!BN_mod_mul(u2, sig->r, u2, order, ctx))
+        -:  435:	{
+    #####:  436:		ECDSAerr(ECDSA_F_ECDSA_DO_VERIFY, ERR_R_BN_LIB);
+    #####:  437:		goto err;
+        -:  438:	}
+        -:  439:
+    #####:  440:	if ((point = EC_POINT_new(group)) == NULL)
+        -:  441:	{
+    #####:  442:		ECDSAerr(ECDSA_F_ECDSA_DO_VERIFY, ERR_R_MALLOC_FAILURE);
+    #####:  443:		goto err;
+        -:  444:	}
+    #####:  445:	if (!EC_POINT_mul(group, point, u1, pub_key, u2, ctx))
+        -:  446:	{
+    #####:  447:		ECDSAerr(ECDSA_F_ECDSA_DO_VERIFY, ERR_R_EC_LIB);
+    #####:  448:		goto err;
+        -:  449:	}
+    #####:  450:	if (EC_METHOD_get_field_type(EC_GROUP_method_of(group)) == NID_X9_62_prime_field)
+        -:  451:	{
+    #####:  452:		if (!EC_POINT_get_affine_coordinates_GFp(group,
+        -:  453:			point, X, NULL, ctx))
+        -:  454:		{
+    #####:  455:			ECDSAerr(ECDSA_F_ECDSA_DO_VERIFY, ERR_R_EC_LIB);
+    #####:  456:			goto err;
+        -:  457:		}
+        -:  458:	}
+        -:  459:#ifndef OPENSSL_NO_EC2M
+        -:  460:	else /* NID_X9_62_characteristic_two_field */
+        -:  461:	{
+    #####:  462:		if (!EC_POINT_get_affine_coordinates_GF2m(group,
+        -:  463:			point, X, NULL, ctx))
+        -:  464:		{
+    #####:  465:			ECDSAerr(ECDSA_F_ECDSA_DO_VERIFY, ERR_R_EC_LIB);
+    #####:  466:			goto err;
+        -:  467:		}
+        -:  468:	}
+        -:  469:#endif	
+    #####:  470:	if (!BN_nnmod(u1, X, order, ctx))
+        -:  471:	{
+    #####:  472:		ECDSAerr(ECDSA_F_ECDSA_DO_VERIFY, ERR_R_BN_LIB);
+    #####:  473:		goto err;
+        -:  474:	}
+        -:  475:	/*  if the signature is correct u1 is equal to sig->r */
+    #####:  476:	ret = (BN_ucmp(u1, sig->r) == 0);
+        -:  477:err:
+    #####:  478:	BN_CTX_end(ctx);
+    #####:  479:	BN_CTX_free(ctx);
+    #####:  480:	if (point)
+    #####:  481:		EC_POINT_free(point);
+    #####:  482:	return ret;
+        -:  483:}

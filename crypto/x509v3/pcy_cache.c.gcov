@@ -1,0 +1,291 @@
+        -:    0:Source:pcy_cache.c
+        -:    0:Graph:pcy_cache.gcno
+        -:    0:Data:pcy_cache.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* pcy_cache.c */
+        -:    2:/* Written by Dr Stephen N Henson (steve@openssl.org) for the OpenSSL
+        -:    3: * project 2004.
+        -:    4: */
+        -:    5:/* ====================================================================
+        -:    6: * Copyright (c) 2004 The OpenSSL Project.  All rights reserved.
+        -:    7: *
+        -:    8: * Redistribution and use in source and binary forms, with or without
+        -:    9: * modification, are permitted provided that the following conditions
+        -:   10: * are met:
+        -:   11: *
+        -:   12: * 1. Redistributions of source code must retain the above copyright
+        -:   13: *    notice, this list of conditions and the following disclaimer. 
+        -:   14: *
+        -:   15: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   16: *    notice, this list of conditions and the following disclaimer in
+        -:   17: *    the documentation and/or other materials provided with the
+        -:   18: *    distribution.
+        -:   19: *
+        -:   20: * 3. All advertising materials mentioning features or use of this
+        -:   21: *    software must display the following acknowledgment:
+        -:   22: *    "This product includes software developed by the OpenSSL Project
+        -:   23: *    for use in the OpenSSL Toolkit. (http://www.OpenSSL.org/)"
+        -:   24: *
+        -:   25: * 4. The names "OpenSSL Toolkit" and "OpenSSL Project" must not be used to
+        -:   26: *    endorse or promote products derived from this software without
+        -:   27: *    prior written permission. For written permission, please contact
+        -:   28: *    licensing@OpenSSL.org.
+        -:   29: *
+        -:   30: * 5. Products derived from this software may not be called "OpenSSL"
+        -:   31: *    nor may "OpenSSL" appear in their names without prior written
+        -:   32: *    permission of the OpenSSL Project.
+        -:   33: *
+        -:   34: * 6. Redistributions of any form whatsoever must retain the following
+        -:   35: *    acknowledgment:
+        -:   36: *    "This product includes software developed by the OpenSSL Project
+        -:   37: *    for use in the OpenSSL Toolkit (http://www.OpenSSL.org/)"
+        -:   38: *
+        -:   39: * THIS SOFTWARE IS PROVIDED BY THE OpenSSL PROJECT ``AS IS'' AND ANY
+        -:   40: * EXPRESSED OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   41: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+        -:   42: * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE OpenSSL PROJECT OR
+        -:   43: * ITS CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+        -:   44: * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+        -:   45: * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+        -:   46: * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   47: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+        -:   48: * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+        -:   49: * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+        -:   50: * OF THE POSSIBILITY OF SUCH DAMAGE.
+        -:   51: * ====================================================================
+        -:   52: *
+        -:   53: * This product includes cryptographic software written by Eric Young
+        -:   54: * (eay@cryptsoft.com).  This product includes software written by Tim
+        -:   55: * Hudson (tjh@cryptsoft.com).
+        -:   56: *
+        -:   57: */
+        -:   58:
+        -:   59:#include "cryptlib.h"
+        -:   60:#include <openssl/x509.h>
+        -:   61:#include <openssl/x509v3.h>
+        -:   62:
+        -:   63:#include "pcy_int.h"
+        -:   64:
+        -:   65:static int policy_data_cmp(const X509_POLICY_DATA * const *a,
+        -:   66:				const X509_POLICY_DATA * const *b);
+        -:   67:static int policy_cache_set_int(long *out, ASN1_INTEGER *value);
+        -:   68:
+        -:   69:/* Set cache entry according to CertificatePolicies extension.
+        -:   70: * Note: this destroys the passed CERTIFICATEPOLICIES structure.
+        -:   71: */
+        -:   72:
+    #####:   73:static int policy_cache_create(X509 *x,
+        -:   74:			CERTIFICATEPOLICIES *policies, int crit)
+        -:   75:	{
+        -:   76:	int i;
+        -:   77:	int ret = 0;
+    #####:   78:	X509_POLICY_CACHE *cache = x->policy_cache;
+        -:   79:	X509_POLICY_DATA *data = NULL;
+        -:   80:	POLICYINFO *policy;
+    #####:   81:	if (sk_POLICYINFO_num(policies) == 0)
+        -:   82:		goto bad_policy;
+    #####:   83:	cache->data = sk_X509_POLICY_DATA_new(policy_data_cmp);
+    #####:   84:	if (!cache->data)
+        -:   85:		goto bad_policy;
+    #####:   86:	for (i = 0; i < sk_POLICYINFO_num(policies); i++)
+        -:   87:		{
+    #####:   88:		policy = sk_POLICYINFO_value(policies, i);
+    #####:   89:		data = policy_data_new(policy, NULL, crit);
+    #####:   90:		if (!data)
+        -:   91:			goto bad_policy;
+        -:   92:		/* Duplicate policy OIDs are illegal: reject if matches
+        -:   93:		 * found.
+        -:   94:		 */
+    #####:   95:		if (OBJ_obj2nid(data->valid_policy) == NID_any_policy)
+        -:   96:			{
+    #####:   97:			if (cache->anyPolicy)
+        -:   98:				{
+        -:   99:				ret = -1;
+        -:  100:				goto bad_policy;
+        -:  101:				}
+    #####:  102:			cache->anyPolicy = data;
+        -:  103:			}
+    #####:  104:		else if (sk_X509_POLICY_DATA_find(cache->data, data) != -1)
+        -:  105:			{
+        -:  106:			ret = -1;
+        -:  107:			goto bad_policy;
+        -:  108:			}
+    #####:  109:		else if (!sk_X509_POLICY_DATA_push(cache->data, data))
+        -:  110:			goto bad_policy;
+        -:  111:		data = NULL;
+        -:  112:		}
+        -:  113:	ret = 1;
+        -:  114:	bad_policy:
+    #####:  115:	if (ret == -1)
+    #####:  116:		x->ex_flags |= EXFLAG_INVALID_POLICY;
+    #####:  117:	if (data)
+    #####:  118:		policy_data_free(data);
+    #####:  119:	sk_POLICYINFO_pop_free(policies, POLICYINFO_free);
+    #####:  120:	if (ret <= 0)
+        -:  121:		{
+    #####:  122:		sk_X509_POLICY_DATA_pop_free(cache->data, policy_data_free);
+    #####:  123:		cache->data = NULL;
+        -:  124:		}
+    #####:  125:	return ret;
+        -:  126:	}
+        -:  127:
+        -:  128:	
+    #####:  129:static int policy_cache_new(X509 *x)
+        -:  130:	{
+        -:  131:	X509_POLICY_CACHE *cache;
+        -:  132:	ASN1_INTEGER *ext_any = NULL;
+        -:  133:	POLICY_CONSTRAINTS *ext_pcons = NULL;
+        -:  134:	CERTIFICATEPOLICIES *ext_cpols = NULL;
+        -:  135:	POLICY_MAPPINGS *ext_pmaps = NULL;
+        -:  136:	int i;
+    #####:  137:	cache = OPENSSL_malloc(sizeof(X509_POLICY_CACHE));
+    #####:  138:	if (!cache)
+        -:  139:		return 0;
+    #####:  140:	cache->anyPolicy = NULL;
+    #####:  141:	cache->data = NULL;
+    #####:  142:	cache->any_skip = -1;
+    #####:  143:	cache->explicit_skip = -1;
+    #####:  144:	cache->map_skip = -1;
+        -:  145:
+    #####:  146:	x->policy_cache = cache;
+        -:  147:
+        -:  148:	/* Handle requireExplicitPolicy *first*. Need to process this
+        -:  149:	 * even if we don't have any policies.
+        -:  150:	 */
+    #####:  151:	ext_pcons = X509_get_ext_d2i(x, NID_policy_constraints, &i, NULL);
+        -:  152:
+    #####:  153:	if (!ext_pcons)
+        -:  154:		{
+    #####:  155:		if (i != -1)
+        -:  156:			goto bad_cache;
+        -:  157:		}
+        -:  158:	else
+        -:  159:		{
+    #####:  160:		if (!ext_pcons->requireExplicitPolicy
+    #####:  161:			&& !ext_pcons->inhibitPolicyMapping)
+        -:  162:			goto bad_cache;
+    #####:  163:		if (!policy_cache_set_int(&cache->explicit_skip,
+        -:  164:			ext_pcons->requireExplicitPolicy))
+        -:  165:			goto bad_cache;
+    #####:  166:		if (!policy_cache_set_int(&cache->map_skip,
+        -:  167:			ext_pcons->inhibitPolicyMapping))
+        -:  168:			goto bad_cache;
+        -:  169:		}
+        -:  170:
+        -:  171:	/* Process CertificatePolicies */
+        -:  172:
+    #####:  173:	ext_cpols = X509_get_ext_d2i(x, NID_certificate_policies, &i, NULL);
+        -:  174:	/* If no CertificatePolicies extension or problem decoding then
+        -:  175:	 * there is no point continuing because the valid policies will be
+        -:  176:	 * NULL.
+        -:  177:	 */
+    #####:  178:	if (!ext_cpols)
+        -:  179:		{
+        -:  180:		/* If not absent some problem with extension */
+    #####:  181:		if (i != -1)
+        -:  182:			goto bad_cache;
+        -:  183:		return 1;
+        -:  184:		}
+        -:  185:
+    #####:  186:	i = policy_cache_create(x, ext_cpols, i);
+        -:  187:
+        -:  188:	/* NB: ext_cpols freed by policy_cache_set_policies */
+        -:  189:
+    #####:  190:	if (i <= 0)
+        -:  191:		return i;
+        -:  192:
+    #####:  193:	ext_pmaps = X509_get_ext_d2i(x, NID_policy_mappings, &i, NULL);
+        -:  194:
+    #####:  195:	if (!ext_pmaps)
+        -:  196:		{
+        -:  197:		/* If not absent some problem with extension */
+    #####:  198:		if (i != -1)
+        -:  199:			goto bad_cache;
+        -:  200:		}
+        -:  201:	else
+        -:  202:		{
+    #####:  203:		i = policy_cache_set_mapping(x, ext_pmaps);
+    #####:  204:		if (i <= 0)
+        -:  205:			goto bad_cache;
+        -:  206:		}
+        -:  207:
+    #####:  208:	ext_any = X509_get_ext_d2i(x, NID_inhibit_any_policy, &i, NULL);
+        -:  209:
+    #####:  210:	if (!ext_any)
+        -:  211:		{
+    #####:  212:		if (i != -1)
+        -:  213:			goto bad_cache;
+        -:  214:		}
+    #####:  215:	else if (!policy_cache_set_int(&cache->any_skip, ext_any))
+        -:  216:			goto bad_cache;
+        -:  217:
+        -:  218:	if (0)
+        -:  219:		{
+        -:  220:		bad_cache:
+    #####:  221:		x->ex_flags |= EXFLAG_INVALID_POLICY;
+        -:  222:		}
+        -:  223:
+    #####:  224:	if(ext_pcons)
+    #####:  225:		POLICY_CONSTRAINTS_free(ext_pcons);
+        -:  226:
+    #####:  227:	if (ext_any)
+    #####:  228:		ASN1_INTEGER_free(ext_any);
+        -:  229:
+        -:  230:	return 1;
+        -:  231:
+        -:  232:	
+        -:  233:}
+        -:  234:
+    29975:  235:void policy_cache_free(X509_POLICY_CACHE *cache)
+        -:  236:	{
+    29975:  237:	if (!cache)
+    29975:  238:		return;
+    #####:  239:	if (cache->anyPolicy)
+    #####:  240:		policy_data_free(cache->anyPolicy);
+    #####:  241:	if (cache->data)
+    #####:  242:		sk_X509_POLICY_DATA_pop_free(cache->data, policy_data_free);
+    #####:  243:	OPENSSL_free(cache);
+        -:  244:	}
+        -:  245:
+    #####:  246:const X509_POLICY_CACHE *policy_cache_set(X509 *x)
+        -:  247:	{
+        -:  248:
+    #####:  249:	if (x->policy_cache == NULL)
+        -:  250:		{
+    #####:  251:		CRYPTO_w_lock(CRYPTO_LOCK_X509);
+    #####:  252:			policy_cache_new(x);
+    #####:  253:		CRYPTO_w_unlock(CRYPTO_LOCK_X509);
+        -:  254:		}
+        -:  255:
+    #####:  256:	return x->policy_cache;
+        -:  257:
+        -:  258:	}
+        -:  259:
+    #####:  260:X509_POLICY_DATA *policy_cache_find_data(const X509_POLICY_CACHE *cache,
+        -:  261:						const ASN1_OBJECT *id)
+        -:  262:	{
+        -:  263:	int idx;
+        -:  264:	X509_POLICY_DATA tmp;
+    #####:  265:	tmp.valid_policy = (ASN1_OBJECT *)id;
+    #####:  266:	idx = sk_X509_POLICY_DATA_find(cache->data, &tmp);
+    #####:  267:	if (idx == -1)
+        -:  268:		return NULL;
+    #####:  269:	return sk_X509_POLICY_DATA_value(cache->data, idx);
+        -:  270:	}
+        -:  271:
+    #####:  272:static int policy_data_cmp(const X509_POLICY_DATA * const *a,
+        -:  273:				const X509_POLICY_DATA * const *b)
+        -:  274:	{
+    #####:  275:	return OBJ_cmp((*a)->valid_policy, (*b)->valid_policy);
+        -:  276:	}
+        -:  277:
+        -:  278:static int policy_cache_set_int(long *out, ASN1_INTEGER *value)
+        -:  279:	{
+    #####:  280:	if (value == NULL)
+        -:  281:		return 1;
+    #####:  282:	if (value->type == V_ASN1_NEG_INTEGER)
+        -:  283:		return 0;
+    #####:  284:	*out = ASN1_INTEGER_get(value);
+        -:  285:	return 1;
+        -:  286:	}

@@ -1,0 +1,745 @@
+        -:    0:Source:conf_def.c
+        -:    0:Graph:conf_def.gcno
+        -:    0:Data:conf_def.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* crypto/conf/conf.c */
+        -:    2:/* Copyright (C) 1995-1998 Eric Young (eay@cryptsoft.com)
+        -:    3: * All rights reserved.
+        -:    4: *
+        -:    5: * This package is an SSL implementation written
+        -:    6: * by Eric Young (eay@cryptsoft.com).
+        -:    7: * The implementation was written so as to conform with Netscapes SSL.
+        -:    8: * 
+        -:    9: * This library is free for commercial and non-commercial use as long as
+        -:   10: * the following conditions are aheared to.  The following conditions
+        -:   11: * apply to all code found in this distribution, be it the RC4, RSA,
+        -:   12: * lhash, DES, etc., code; not just the SSL code.  The SSL documentation
+        -:   13: * included with this distribution is covered by the same copyright terms
+        -:   14: * except that the holder is Tim Hudson (tjh@cryptsoft.com).
+        -:   15: * 
+        -:   16: * Copyright remains Eric Young's, and as such any Copyright notices in
+        -:   17: * the code are not to be removed.
+        -:   18: * If this package is used in a product, Eric Young should be given attribution
+        -:   19: * as the author of the parts of the library used.
+        -:   20: * This can be in the form of a textual message at program startup or
+        -:   21: * in documentation (online or textual) provided with the package.
+        -:   22: * 
+        -:   23: * Redistribution and use in source and binary forms, with or without
+        -:   24: * modification, are permitted provided that the following conditions
+        -:   25: * are met:
+        -:   26: * 1. Redistributions of source code must retain the copyright
+        -:   27: *    notice, this list of conditions and the following disclaimer.
+        -:   28: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   29: *    notice, this list of conditions and the following disclaimer in the
+        -:   30: *    documentation and/or other materials provided with the distribution.
+        -:   31: * 3. All advertising materials mentioning features or use of this software
+        -:   32: *    must display the following acknowledgement:
+        -:   33: *    "This product includes cryptographic software written by
+        -:   34: *     Eric Young (eay@cryptsoft.com)"
+        -:   35: *    The word 'cryptographic' can be left out if the rouines from the library
+        -:   36: *    being used are not cryptographic related :-).
+        -:   37: * 4. If you include any Windows specific code (or a derivative thereof) from 
+        -:   38: *    the apps directory (application code) you must include an acknowledgement:
+        -:   39: *    "This product includes software written by Tim Hudson (tjh@cryptsoft.com)"
+        -:   40: * 
+        -:   41: * THIS SOFTWARE IS PROVIDED BY ERIC YOUNG ``AS IS'' AND
+        -:   42: * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   43: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+        -:   44: * ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+        -:   45: * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+        -:   46: * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+        -:   47: * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   48: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+        -:   49: * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+        -:   50: * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+        -:   51: * SUCH DAMAGE.
+        -:   52: * 
+        -:   53: * The licence and distribution terms for any publically available version or
+        -:   54: * derivative of this code cannot be changed.  i.e. this code cannot simply be
+        -:   55: * copied and put under another distribution licence
+        -:   56: * [including the GNU Public Licence.]
+        -:   57: */
+        -:   58:
+        -:   59:/* Part of the code in here was originally in conf.c, which is now removed */
+        -:   60:
+        -:   61:#include <stdio.h>
+        -:   62:#include <string.h>
+        -:   63:#include "cryptlib.h"
+        -:   64:#include <openssl/stack.h>
+        -:   65:#include <openssl/lhash.h>
+        -:   66:#include <openssl/conf.h>
+        -:   67:#include <openssl/conf_api.h>
+        -:   68:#include "conf_def.h"
+        -:   69:#include <openssl/buffer.h>
+        -:   70:#include <openssl/err.h>
+        -:   71:
+        -:   72:static char *eat_ws(CONF *conf, char *p);
+        -:   73:static char *eat_alpha_numeric(CONF *conf, char *p);
+        -:   74:static void clear_comments(CONF *conf, char *p);
+        -:   75:static int str_copy(CONF *conf,char *section,char **to, char *from);
+        -:   76:static char *scan_quote(CONF *conf, char *p);
+        -:   77:static char *scan_dquote(CONF *conf, char *p);
+        -:   78:#define scan_esc(conf,p)	(((IS_EOF((conf),(p)[1]))?((p)+1):((p)+2)))
+        -:   79:
+        -:   80:static CONF *def_create(CONF_METHOD *meth);
+        -:   81:static int def_init_default(CONF *conf);
+        -:   82:static int def_init_WIN32(CONF *conf);
+        -:   83:static int def_destroy(CONF *conf);
+        -:   84:static int def_destroy_data(CONF *conf);
+        -:   85:static int def_load(CONF *conf, const char *name, long *eline);
+        -:   86:static int def_load_bio(CONF *conf, BIO *bp, long *eline);
+        -:   87:static int def_dump(const CONF *conf, BIO *bp);
+        -:   88:static int def_is_number(const CONF *conf, char c);
+        -:   89:static int def_to_int(const CONF *conf, char c);
+        -:   90:
+        -:   91:const char CONF_def_version[]="CONF_def" OPENSSL_VERSION_PTEXT;
+        -:   92:
+        -:   93:static CONF_METHOD default_method = {
+        -:   94:	"OpenSSL default",
+        -:   95:	def_create,
+        -:   96:	def_init_default,
+        -:   97:	def_destroy,
+        -:   98:	def_destroy_data,
+        -:   99:	def_load_bio,
+        -:  100:	def_dump,
+        -:  101:	def_is_number,
+        -:  102:	def_to_int,
+        -:  103:	def_load
+        -:  104:	};
+        -:  105:
+        -:  106:static CONF_METHOD WIN32_method = {
+        -:  107:	"WIN32",
+        -:  108:	def_create,
+        -:  109:	def_init_WIN32,
+        -:  110:	def_destroy,
+        -:  111:	def_destroy_data,
+        -:  112:	def_load_bio,
+        -:  113:	def_dump,
+        -:  114:	def_is_number,
+        -:  115:	def_to_int,
+        -:  116:	def_load
+        -:  117:	};
+        -:  118:
+    10000:  119:CONF_METHOD *NCONF_default()
+        -:  120:	{
+    10000:  121:	return &default_method;
+        -:  122:	}
+    #####:  123:CONF_METHOD *NCONF_WIN32()
+        -:  124:	{
+    #####:  125:	return &WIN32_method;
+        -:  126:	}
+        -:  127:
+    10000:  128:static CONF *def_create(CONF_METHOD *meth)
+        -:  129:	{
+        -:  130:	CONF *ret;
+        -:  131:
+    10000:  132:	ret = OPENSSL_malloc(sizeof(CONF) + sizeof(unsigned short *));
+    10000:  133:	if (ret)
+    10000:  134:		if (meth->init(ret) == 0)
+        -:  135:			{
+    #####:  136:			OPENSSL_free(ret);
+        -:  137:			ret = NULL;
+        -:  138:			}
+    10000:  139:	return ret;
+        -:  140:	}
+        -:  141:	
+    10000:  142:static int def_init_default(CONF *conf)
+        -:  143:	{
+    10000:  144:	if (conf == NULL)
+        -:  145:		return 0;
+        -:  146:
+    10000:  147:	conf->meth = &default_method;
+    10000:  148:	conf->meth_data = CONF_type_default;
+    10000:  149:	conf->data = NULL;
+        -:  150:
+    10000:  151:	return 1;
+        -:  152:	}
+        -:  153:
+    #####:  154:static int def_init_WIN32(CONF *conf)
+        -:  155:	{
+    #####:  156:	if (conf == NULL)
+        -:  157:		return 0;
+        -:  158:
+    #####:  159:	conf->meth = &WIN32_method;
+    #####:  160:	conf->meth_data = (void *)CONF_type_win32;
+    #####:  161:	conf->data = NULL;
+        -:  162:
+    #####:  163:	return 1;
+        -:  164:	}
+        -:  165:
+    10000:  166:static int def_destroy(CONF *conf)
+        -:  167:	{
+    10000:  168:	if (def_destroy_data(conf))
+        -:  169:		{
+    10000:  170:		OPENSSL_free(conf);
+    10000:  171:		return 1;
+        -:  172:		}
+        -:  173:	return 0;
+        -:  174:	}
+        -:  175:
+    #####:  176:static int def_destroy_data(CONF *conf)
+        -:  177:	{
+    10000:  178:	if (conf == NULL)
+        -:  179:		return 0;
+    10000:  180:	_CONF_free_data(conf);
+    #####:  181:	return 1;
+        -:  182:	}
+        -:  183:
+    10000:  184:static int def_load(CONF *conf, const char *name, long *line)
+        -:  185:	{
+        -:  186:	int ret;
+        -:  187:	BIO *in=NULL;
+        -:  188:
+        -:  189:#ifdef OPENSSL_SYS_VMS
+        -:  190:	in=BIO_new_file(name, "r");
+        -:  191:#else
+    10000:  192:	in=BIO_new_file(name, "rb");
+        -:  193:#endif
+    10000:  194:	if (in == NULL)
+        -:  195:		{
+    #####:  196:		if (ERR_GET_REASON(ERR_peek_last_error()) == BIO_R_NO_SUCH_FILE)
+    #####:  197:			CONFerr(CONF_F_DEF_LOAD,CONF_R_NO_SUCH_FILE);
+        -:  198:		else
+    #####:  199:			CONFerr(CONF_F_DEF_LOAD,ERR_R_SYS_LIB);
+        -:  200:		return 0;
+        -:  201:		}
+        -:  202:
+    10000:  203:	ret = def_load_bio(conf, in, line);
+    10000:  204:	BIO_free(in);
+        -:  205:
+    10000:  206:	return ret;
+        -:  207:	}
+        -:  208:
+  8870000:  209:static int def_load_bio(CONF *conf, BIO *in, long *line)
+        -:  210:	{
+        -:  211:/* The macro BUFSIZE conflicts with a system macro in VxWorks */
+        -:  212:#define CONFBUFSIZE	512
+        -:  213:	int bufnum=0,i,ii;
+        -:  214:	BUF_MEM *buff=NULL;
+        -:  215:	char *s,*p,*end;
+        -:  216:	int again;
+        -:  217:	long eline=0;
+        -:  218:	char btmp[DECIMAL_SIZE(eline)+1];
+        -:  219:	CONF_VALUE *v=NULL,*tv;
+        -:  220:	CONF_VALUE *sv=NULL;
+    10000:  221:	char *section=NULL,*buf;
+        -:  222:	char *start,*psection,*pname;
+    10000:  223:	void *h = (void *)(conf->data);
+        -:  224:
+    10000:  225:	if ((buff=BUF_MEM_new()) == NULL)
+        -:  226:		{
+    #####:  227:		CONFerr(CONF_F_DEF_LOAD_BIO,ERR_R_BUF_LIB);
+    #####:  228:		goto err;
+        -:  229:		}
+        -:  230:
+    10000:  231:	section=(char *)OPENSSL_malloc(10);
+    10000:  232:	if (section == NULL)
+        -:  233:		{
+    #####:  234:		CONFerr(CONF_F_DEF_LOAD_BIO,ERR_R_MALLOC_FAILURE);
+    #####:  235:		goto err;
+        -:  236:		}
+    10000:  237:	BUF_strlcpy(section,"default",10);
+        -:  238:
+    10000:  239:	if (_CONF_new_data(conf) == 0)
+        -:  240:		{
+    #####:  241:		CONFerr(CONF_F_DEF_LOAD_BIO,ERR_R_MALLOC_FAILURE);
+    #####:  242:		goto err;
+        -:  243:		}
+        -:  244:
+    10000:  245:	sv=_CONF_new_section(conf,section);
+    10000:  246:	if (sv == NULL)
+        -:  247:		{
+    #####:  248:		CONFerr(CONF_F_DEF_LOAD_BIO,
+        -:  249:					CONF_R_UNABLE_TO_CREATE_NEW_SECTION);
+    #####:  250:		goto err;
+        -:  251:		}
+        -:  252:
+        -:  253:	bufnum=0;
+        -:  254:	again=0;
+        -:  255:	for (;;)
+        -:  256:		{
+  3510000:  257:		if (!BUF_MEM_grow(buff,bufnum+CONFBUFSIZE))
+        -:  258:			{
+    #####:  259:			CONFerr(CONF_F_DEF_LOAD_BIO,ERR_R_BUF_LIB);
+    #####:  260:			goto err;
+        -:  261:			}
+  3510000:  262:		p= &(buff->data[bufnum]);
+  3510000:  263:		*p='\0';
+  3510000:  264:		BIO_gets(in, p, CONFBUFSIZE-1);
+  3510000:  265:		p[CONFBUFSIZE-1]='\0';
+  3510000:  266:		ii=i=strlen(p);
+  3510000:  267:		if (i == 0 && !again) break;
+        -:  268:		again=0;
+  7000000:  269:		while (i > 0)
+        -:  270:			{
+  6130000:  271:			if ((p[i-1] != '\r') && (p[i-1] != '\n'))
+        -:  272:				break;
+        -:  273:			else
+  3500000:  274:				i--;
+        -:  275:			}
+        -:  276:		/* we removed some trailing stuff so there is a new
+        -:  277:		 * line on the end. */
+  3500000:  278:		if (ii && i == ii)
+        -:  279:			again=1; /* long line */
+        -:  280:		else
+        -:  281:			{
+  3500000:  282:			p[i]='\0';
+  3500000:  283:			eline++; /* another input line */
+        -:  284:			}
+        -:  285:
+        -:  286:		/* we now have a line with trailing \r\n removed */
+        -:  287:
+        -:  288:		/* i is the number of bytes */
+  3500000:  289:		bufnum+=i;
+        -:  290:
+        -:  291:		v=NULL;
+        -:  292:		/* check for line continuation */
+  3500000:  293:		if (bufnum >= 1)
+        -:  294:			{
+        -:  295:			/* If we have bytes and the last char '\\' and
+        -:  296:			 * second last char is not '\\' */
+  2630000:  297:			p= &(buff->data[bufnum-1]);
+  2630000:  298:			if (IS_ESC(conf,p[0]) &&
+    #####:  299:				((bufnum <= 1) || !IS_ESC(conf,p[-1])))
+        -:  300:				{
+    #####:  301:				bufnum--;
+        -:  302:				again=1;
+        -:  303:				}
+        -:  304:			}
+  3500000:  305:		if (again) continue;
+        -:  306:		bufnum=0;
+  3500000:  307:		buf=buff->data;
+        -:  308:
+  3500000:  309:		clear_comments(conf, buf);
+        -:  310:		s=eat_ws(conf, buf);
+  3500000:  311:		if (IS_EOF(conf,*s)) continue; /* blank line */
+  1080000:  312:		if (*s == '[')
+        -:  313:			{
+        -:  314:			char *ss;
+        -:  315:
+   150000:  316:			s++;
+        -:  317:			start=eat_ws(conf, s);
+        -:  318:			ss=start;
+        -:  319:again:
+   150000:  320:			end=eat_alpha_numeric(conf, ss);
+        -:  321:			p=eat_ws(conf, end);
+   150000:  322:			if (*p != ']')
+        -:  323:				{
+    #####:  324:				if (*p != '\0')
+        -:  325:					{
+        -:  326:					ss=p;
+        -:  327:					goto again;
+        -:  328:					}
+    #####:  329:				CONFerr(CONF_F_DEF_LOAD_BIO,
+        -:  330:					CONF_R_MISSING_CLOSE_SQUARE_BRACKET);
+    #####:  331:				goto err;
+        -:  332:				}
+   150000:  333:			*end='\0';
+   150000:  334:			if (!str_copy(conf,NULL,&section,start)) goto err;
+   150000:  335:			if ((sv=_CONF_get_section(conf,section)) == NULL)
+   150000:  336:				sv=_CONF_new_section(conf,section);
+   150000:  337:			if (sv == NULL)
+        -:  338:				{
+    #####:  339:				CONFerr(CONF_F_DEF_LOAD_BIO,
+        -:  340:					CONF_R_UNABLE_TO_CREATE_NEW_SECTION);
+    #####:  341:				goto err;
+        -:  342:				}
+   150000:  343:			continue;
+        -:  344:			}
+        -:  345:		else
+        -:  346:			{
+        -:  347:			pname=s;
+        -:  348:			psection=NULL;
+   930000:  349:			end=eat_alpha_numeric(conf, s);
+   930000:  350:			if ((end[0] == ':') && (end[1] == ':'))
+        -:  351:				{
+    #####:  352:				*end='\0';
+    #####:  353:				end+=2;
+        -:  354:				psection=pname;
+        -:  355:				pname=end;
+    #####:  356:				end=eat_alpha_numeric(conf, end);
+        -:  357:				}
+        -:  358:			p=eat_ws(conf, end);
+   930000:  359:			if (*p != '=')
+        -:  360:				{
+    #####:  361:				CONFerr(CONF_F_DEF_LOAD_BIO,
+        -:  362:						CONF_R_MISSING_EQUAL_SIGN);
+    #####:  363:				goto err;
+        -:  364:				}
+   930000:  365:			*end='\0';
+   930000:  366:			p++;
+        -:  367:			start=eat_ws(conf, p);
+ 14070000:  368:			while (!IS_EOF(conf,*p))
+ 13140000:  369:				p++;
+   930000:  370:			p--;
+  2450000:  371:			while ((p != start) && (IS_WS(conf,*p)))
+   590000:  372:				p--;
+        -:  373:			p++;
+   930000:  374:			*p='\0';
+        -:  375:
+   930000:  376:			if (!(v=(CONF_VALUE *)OPENSSL_malloc(sizeof(CONF_VALUE))))
+        -:  377:				{
+    #####:  378:				CONFerr(CONF_F_DEF_LOAD_BIO,
+        -:  379:							ERR_R_MALLOC_FAILURE);
+    #####:  380:				goto err;
+        -:  381:				}
+   930000:  382:			if (psection == NULL) psection=section;
+   930000:  383:			v->name=(char *)OPENSSL_malloc(strlen(pname)+1);
+   930000:  384:			v->value=NULL;
+   930000:  385:			if (v->name == NULL)
+        -:  386:				{
+    #####:  387:				CONFerr(CONF_F_DEF_LOAD_BIO,
+        -:  388:							ERR_R_MALLOC_FAILURE);
+    #####:  389:				goto err;
+        -:  390:				}
+   930000:  391:			BUF_strlcpy(v->name,pname,strlen(pname)+1);
+   930000:  392:			if (!str_copy(conf,psection,&(v->value),start)) goto err;
+        -:  393:
+   930000:  394:			if (strcmp(psection,section) != 0)
+        -:  395:				{
+    #####:  396:				if ((tv=_CONF_get_section(conf,psection))
+        -:  397:					== NULL)
+    #####:  398:					tv=_CONF_new_section(conf,psection);
+    #####:  399:				if (tv == NULL)
+        -:  400:					{
+    #####:  401:					CONFerr(CONF_F_DEF_LOAD_BIO,
+        -:  402:					   CONF_R_UNABLE_TO_CREATE_NEW_SECTION);
+    #####:  403:					goto err;
+        -:  404:					}
+        -:  405:				}
+        -:  406:			else
+        -:  407:				tv=sv;
+        -:  408:#if 1
+   930000:  409:			if (_CONF_add_string(conf, tv, v) == 0)
+        -:  410:				{
+    #####:  411:				CONFerr(CONF_F_DEF_LOAD_BIO,
+        -:  412:							ERR_R_MALLOC_FAILURE);
+    #####:  413:				goto err;
+        -:  414:				}
+        -:  415:#else
+        -:  416:			v->section=tv->section;	
+        -:  417:			if (!sk_CONF_VALUE_push(ts,v))
+        -:  418:				{
+        -:  419:				CONFerr(CONF_F_DEF_LOAD_BIO,
+        -:  420:							ERR_R_MALLOC_FAILURE);
+        -:  421:				goto err;
+        -:  422:				}
+        -:  423:			vv=(CONF_VALUE *)lh_insert(conf->data,v);
+        -:  424:			if (vv != NULL)
+        -:  425:				{
+        -:  426:				sk_CONF_VALUE_delete_ptr(ts,vv);
+        -:  427:				OPENSSL_free(vv->name);
+        -:  428:				OPENSSL_free(vv->value);
+        -:  429:				OPENSSL_free(vv);
+        -:  430:				}
+        -:  431:#endif
+        -:  432:			v=NULL;
+        -:  433:			}
+        -:  434:		}
+    10000:  435:	if (buff != NULL) BUF_MEM_free(buff);
+    10000:  436:	if (section != NULL) OPENSSL_free(section);
+        -:  437:	return(1);
+        -:  438:err:
+    #####:  439:	if (buff != NULL) BUF_MEM_free(buff);
+    #####:  440:	if (section != NULL) OPENSSL_free(section);
+    #####:  441:	if (line != NULL) *line=eline;
+    #####:  442:	BIO_snprintf(btmp,sizeof btmp,"%ld",eline);
+    #####:  443:	ERR_add_error_data(2,"line ",btmp);
+    #####:  444:	if ((h != conf->data) && (conf->data != NULL))
+        -:  445:		{
+    #####:  446:		CONF_free(conf->data);
+    #####:  447:		conf->data=NULL;
+        -:  448:		}
+    #####:  449:	if (v != NULL)
+        -:  450:		{
+    #####:  451:		if (v->name != NULL) OPENSSL_free(v->name);
+    #####:  452:		if (v->value != NULL) OPENSSL_free(v->value);
+    #####:  453:		if (v != NULL) OPENSSL_free(v);
+        -:  454:		}
+        -:  455:	return(0);
+        -:  456:	}
+        -:  457:
+  3500000:  458:static void clear_comments(CONF *conf, char *p)
+        -:  459:	{
+        -:  460:	for (;;)
+        -:  461:		{
+  3870000:  462:		if (IS_FCOMMENT(conf,*p))
+        -:  463:			{
+    #####:  464:			*p='\0';
+        -:  465:			return;
+        -:  466:			}
+  3870000:  467:		if (!IS_WS(conf,*p))
+        -:  468:			{
+        -:  469:			break;
+        -:  470:			}
+   370000:  471:		p++;
+        -:  472:		}
+        -:  473:
+        -:  474:	for (;;)
+        -:  475:		{
+ 32600000:  476:		if (IS_COMMENT(conf,*p))
+        -:  477:			{
+  1900000:  478:			*p='\0';
+        -:  479:			return;
+        -:  480:			}
+ 30700000:  481:		if (IS_DQUOTE(conf,*p))
+        -:  482:			{
+    #####:  483:			p=scan_dquote(conf, p);
+    #####:  484:			continue;
+        -:  485:			}
+ 30700000:  486:		if (IS_QUOTE(conf,*p))
+        -:  487:			{
+    20000:  488:			p=scan_quote(conf, p);
+    20000:  489:			continue;
+        -:  490:			}
+ 30680000:  491:		if (IS_ESC(conf,*p))
+        -:  492:			{
+    #####:  493:			p=scan_esc(conf,p);
+    #####:  494:			continue;
+        -:  495:			}
+ 30680000:  496:		if (IS_EOF(conf,*p))
+        -:  497:			return;
+        -:  498:		else
+ 29080000:  499:			p++;
+        -:  500:		}
+        -:  501:	}
+        -:  502:
+  1080000:  503:static int str_copy(CONF *conf, char *section, char **pto, char *from)
+        -:  504:	{
+        -:  505:	int q,r,rr=0,to=0,len=0;
+        -:  506:	char *s,*e,*rp,*p,*rrp,*np,*cp,v;
+        -:  507:	BUF_MEM *buf;
+        -:  508:
+  1080000:  509:	if ((buf=BUF_MEM_new()) == NULL) return(0);
+        -:  510:
+  1080000:  511:	len=strlen(from)+1;
+  1080000:  512:	if (!BUF_MEM_grow(buf,len)) goto err;
+        -:  513:
+        -:  514:	for (;;)
+        -:  515:		{
+ 13090000:  516:		if (IS_QUOTE(conf,*from))
+        -:  517:			{
+    20000:  518:			q= *from;
+    20000:  519:			from++;
+   620000:  520:			while (!IS_EOF(conf,*from) && (*from != q))
+        -:  521:				{
+   580000:  522:				if (IS_ESC(conf,*from))
+        -:  523:					{
+    #####:  524:					from++;
+    #####:  525:					if (IS_EOF(conf,*from)) break;
+        -:  526:					}
+   580000:  527:				buf->data[to++]= *(from++);
+        -:  528:				}
+    20000:  529:			if (*from == q) from++;
+        -:  530:			}
+ 13070000:  531:		else if (IS_DQUOTE(conf,*from))
+        -:  532:			{
+    #####:  533:			q= *from;
+    #####:  534:			from++;
+    #####:  535:			while (!IS_EOF(conf,*from))
+        -:  536:				{
+    #####:  537:				if (*from == q)
+        -:  538:					{
+    #####:  539:					if (*(from+1) == q)
+        -:  540:						{
+    #####:  541:						from++;
+        -:  542:						}
+        -:  543:					else
+        -:  544:						{
+        -:  545:						break;
+        -:  546:						}
+        -:  547:					}
+    #####:  548:				buf->data[to++]= *(from++);
+        -:  549:				}
+    #####:  550:			if (*from == q) from++;
+        -:  551:			}
+ 13070000:  552:		else if (IS_ESC(conf,*from))
+        -:  553:			{
+        -:  554:			from++;
+    #####:  555:			v= *(from++);
+    #####:  556:			if (IS_EOF(conf,v)) break;
+    #####:  557:			else if (v == 'r') v='\r';
+    #####:  558:			else if (v == 'n') v='\n';
+    #####:  559:			else if (v == 'b') v='\b';
+    #####:  560:			else if (v == 't') v='\t';
+    #####:  561:			buf->data[to++]= v;
+        -:  562:			}
+ 13070000:  563:		else if (IS_EOF(conf,*from))
+        -:  564:			break;
+ 11990000:  565:		else if (*from == '$')
+        -:  566:			{
+        -:  567:			/* try to expand it */
+        -:  568:			rrp=NULL;
+   150000:  569:			s= &(from[1]);
+   150000:  570:			if (*s == '{')
+        -:  571:				q='}';
+   150000:  572:			else if (*s == '(')
+        -:  573:				q=')';
+        -:  574:			else q=0;
+        -:  575:
+   150000:  576:			if (q) s++;
+        -:  577:			cp=section;
+        -:  578:			e=np=s;
+   750000:  579:			while (IS_ALPHA_NUMERIC(conf,*e))
+   450000:  580:				e++;
+   150000:  581:			if ((e[0] == ':') && (e[1] == ':'))
+        -:  582:				{
+        -:  583:				cp=np;
+        -:  584:				rrp=e;
+    10000:  585:				rr= *e;
+    10000:  586:				*rrp='\0';
+    10000:  587:				e+=2;
+        -:  588:				np=e;
+    60000:  589:				while (IS_ALPHA_NUMERIC(conf,*e))
+    40000:  590:					e++;
+        -:  591:				}
+   150000:  592:			r= *e;
+   150000:  593:			*e='\0';
+        -:  594:			rp=e;
+   150000:  595:			if (q)
+        -:  596:				{
+    #####:  597:				if (r != q)
+        -:  598:					{
+    #####:  599:					CONFerr(CONF_F_STR_COPY,CONF_R_NO_CLOSE_BRACE);
+    #####:  600:					goto err;
+        -:  601:					}
+    #####:  602:				e++;
+        -:  603:				}
+        -:  604:			/* So at this point we have
+        -:  605:			 * np which is the start of the name string which is
+        -:  606:			 *   '\0' terminated. 
+        -:  607:			 * cp which is the start of the section string which is
+        -:  608:			 *   '\0' terminated.
+        -:  609:			 * e is the 'next point after'.
+        -:  610:			 * r and rr are the chars replaced by the '\0'
+        -:  611:			 * rp and rrp is where 'r' and 'rr' came from.
+        -:  612:			 */
+   150000:  613:			p=_CONF_get_string(conf,cp,np);
+   150000:  614:			if (rrp != NULL) *rrp=rr;
+   150000:  615:			*rp=r;
+   150000:  616:			if (p == NULL)
+        -:  617:				{
+    #####:  618:				CONFerr(CONF_F_STR_COPY,CONF_R_VARIABLE_HAS_NO_VALUE);
+    #####:  619:				goto err;
+        -:  620:				}
+   150000:  621:			BUF_MEM_grow_clean(buf,(strlen(p)+buf->length-(e-from)));
+  1540000:  622:			while (*p)
+  1240000:  623:				buf->data[to++]= *(p++);
+        -:  624:
+        -:  625:			/* Since we change the pointer 'from', we also have
+        -:  626:			   to change the perceived length of the string it
+        -:  627:			   points at.  /RL */
+        -:  628:			len -= e-from;
+        -:  629:			from=e;
+        -:  630:
+        -:  631:			/* In case there were no braces or parenthesis around
+        -:  632:			   the variable reference, we have to put back the
+        -:  633:			   character that was replaced with a '\0'.  /RL */
+   150000:  634:			*rp = r;
+        -:  635:			}
+        -:  636:		else
+ 11840000:  637:			buf->data[to++]= *(from++);
+        -:  638:		}
+  1080000:  639:	buf->data[to]='\0';
+  1080000:  640:	if (*pto != NULL) OPENSSL_free(*pto);
+  1080000:  641:	*pto=buf->data;
+  1080000:  642:	OPENSSL_free(buf);
+  1080000:  643:	return(1);
+        -:  644:err:
+    #####:  645:	if (buf != NULL) BUF_MEM_free(buf);
+        -:  646:	return(0);
+        -:  647:	}
+        -:  648:
+        -:  649:static char *eat_ws(CONF *conf, char *p)
+        -:  650:	{
+  8540000:  651:	while (IS_WS(conf,*p) && (!IS_EOF(conf,*p)))
+  2880000:  652:		p++;
+        -:  653:	return(p);
+        -:  654:	}
+        -:  655:
+  1080000:  656:static char *eat_alpha_numeric(CONF *conf, char *p)
+        -:  657:	{
+        -:  658:	for (;;)
+        -:  659:		{
+ 14730000:  660:		if (IS_ESC(conf,*p))
+        -:  661:			{
+    #####:  662:			p=scan_esc(conf,p);
+    #####:  663:			continue;
+        -:  664:			}
+ 14730000:  665:		if (!IS_ALPHA_NUMERIC_PUNCT(conf,*p))
+  1080000:  666:			return(p);
+ 13650000:  667:		p++;
+        -:  668:		}
+        -:  669:	}
+        -:  670:
+    20000:  671:static char *scan_quote(CONF *conf, char *p)
+        -:  672:	{
+    20000:  673:	int q= *p;
+        -:  674:
+    20000:  675:	p++;
+   600000:  676:	while (!(IS_EOF(conf,*p)) && (*p != q))
+        -:  677:		{
+   580000:  678:		if (IS_ESC(conf,*p))
+        -:  679:			{
+    #####:  680:			p++;
+    #####:  681:			if (IS_EOF(conf,*p)) return(p);
+        -:  682:			}
+   580000:  683:		p++;
+        -:  684:		}
+    20000:  685:	if (*p == q) p++;
+        -:  686:	return(p);
+        -:  687:	}
+        -:  688:
+        -:  689:
+    #####:  690:static char *scan_dquote(CONF *conf, char *p)
+        -:  691:	{
+    #####:  692:	int q= *p;
+        -:  693:
+    #####:  694:	p++;
+    #####:  695:	while (!(IS_EOF(conf,*p)))
+        -:  696:		{
+    #####:  697:		if (*p == q)
+        -:  698:			{
+    #####:  699:			if (*(p+1) == q)
+        -:  700:				{
+    #####:  701:				p++;
+        -:  702:				}
+        -:  703:			else
+        -:  704:				{
+        -:  705:				break;
+        -:  706:				}
+        -:  707:			}
+    #####:  708:		p++;
+        -:  709:		}
+    #####:  710:	if (*p == q) p++;
+    #####:  711:	return(p);
+        -:  712:	}
+        -:  713:
+    #####:  714:static void dump_value_doall_arg(CONF_VALUE *a, BIO *out)
+        -:  715:	{
+    #####:  716:	if (a->name)
+    #####:  717:		BIO_printf(out, "[%s] %s=%s\n", a->section, a->name, a->value);
+        -:  718:	else
+    #####:  719:		BIO_printf(out, "[[%s]]\n", a->section);
+    #####:  720:	}
+        -:  721:
+    #####:  722:static IMPLEMENT_LHASH_DOALL_ARG_FN(dump_value, CONF_VALUE, BIO)
+        -:  723:
+    #####:  724:static int def_dump(const CONF *conf, BIO *out)
+        -:  725:	{
+    #####:  726:	lh_CONF_VALUE_doall_arg(conf->data, LHASH_DOALL_ARG_FN(dump_value),
+        -:  727:				BIO, out);
+    #####:  728:	return 1;
+        -:  729:	}
+        -:  730:
+    #####:  731:static int def_is_number(const CONF *conf, char c)
+        -:  732:	{
+    #####:  733:	return IS_NUMBER(conf,c);
+        -:  734:	}
+        -:  735:
+    #####:  736:static int def_to_int(const CONF *conf, char c)
+        -:  737:	{
+    #####:  738:	return c - '0';
+        -:  739:	}
+        -:  740:

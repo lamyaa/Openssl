@@ -1,0 +1,1144 @@
+        -:    0:Source:e_aep.c
+        -:    0:Graph:e_aep.gcno
+        -:    0:Data:e_aep.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* ====================================================================
+        -:    2: * Copyright (c) 1999 The OpenSSL Project.  All rights reserved.
+        -:    3: *
+        -:    4: * Redistribution and use in source and binary forms, with or without
+        -:    5: * modification, are permitted provided that the following conditions
+        -:    6: * are met:
+        -:    7: *
+        -:    8: * 1. Redistributions of source code must retain the above copyright
+        -:    9: *    notice, this list of conditions and the following disclaimer. 
+        -:   10: *
+        -:   11: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   12: *    notice, this list of conditions and the following disclaimer in
+        -:   13: *    the documentation and/or other materials provided with the
+        -:   14: *    distribution.
+        -:   15: *
+        -:   16: * 3. All advertising materials mentioning features or use of this
+        -:   17: *    software must display the following acknowledgment:
+        -:   18: *    "This product includes software developed by the OpenSSL Project
+        -:   19: *    for use in the OpenSSL Toolkit. (http://www.OpenSSL.org/)"
+        -:   20: *
+        -:   21: * 4. The names "OpenSSL Toolkit" and "OpenSSL Project" must not be used to
+        -:   22: *    endorse or promote products derived from this software without
+        -:   23: *    prior written permission. For written permission, please contact
+        -:   24: *    licensing@OpenSSL.org.
+        -:   25: *
+        -:   26: * 5. Products derived from this software may not be called "OpenSSL"
+        -:   27: *    nor may "OpenSSL" appear in their names without prior written
+        -:   28: *    permission of the OpenSSL Project.
+        -:   29: *
+        -:   30: * 6. Redistributions of any form whatsoever must retain the following
+        -:   31: *    acknowledgment:
+        -:   32: *    "This product includes software developed by the OpenSSL Project
+        -:   33: *    for use in the OpenSSL Toolkit (http://www.OpenSSL.org/)"
+        -:   34: *
+        -:   35: * THIS SOFTWARE IS PROVIDED BY THE OpenSSL PROJECT ``AS IS'' AND ANY
+        -:   36: * EXPRESSED OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   37: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+        -:   38: * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE OpenSSL PROJECT OR
+        -:   39: * ITS CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+        -:   40: * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+        -:   41: * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+        -:   42: * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   43: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+        -:   44: * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+        -:   45: * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+        -:   46: * OF THE POSSIBILITY OF SUCH DAMAGE.
+        -:   47: * ====================================================================
+        -:   48: *
+        -:   49: * This product includes cryptographic software written by Eric Young
+        -:   50: * (eay@cryptsoft.com).  This product includes software written by Tim
+        -:   51: * Hudson (tjh@cryptsoft.com).
+        -:   52: *
+        -:   53: */
+        -:   54:
+        -:   55:#include <stdio.h>
+        -:   56:#include <openssl/bn.h>
+        -:   57:#include <string.h>
+        -:   58:
+        -:   59:#include <openssl/e_os2.h>
+        -:   60:#if !defined(OPENSSL_SYS_MSDOS) || defined(__DJGPP__) || defined(__MINGW32__)
+        -:   61:#include <sys/types.h>
+        -:   62:#include <unistd.h>
+        -:   63:#else
+        -:   64:#include <process.h>
+        -:   65:typedef int pid_t;
+        -:   66:#endif
+        -:   67:
+        -:   68:#if defined(OPENSSL_SYS_NETWARE) && defined(NETWARE_CLIB)
+        -:   69:#define getpid GetThreadID
+        -:   70:extern int GetThreadID(void);
+        -:   71:#elif defined(_WIN32) && !defined(__WATCOMC__)
+        -:   72:#define getpid _getpid
+        -:   73:#endif
+        -:   74:
+        -:   75:#include <openssl/crypto.h>
+        -:   76:#include <openssl/dso.h>
+        -:   77:#include <openssl/engine.h>
+        -:   78:#include <openssl/buffer.h>
+        -:   79:#ifndef OPENSSL_NO_RSA
+        -:   80:#include <openssl/rsa.h>
+        -:   81:#endif
+        -:   82:#ifndef OPENSSL_NO_DSA
+        -:   83:#include <openssl/dsa.h>
+        -:   84:#endif
+        -:   85:#ifndef OPENSSL_NO_DH
+        -:   86:#include <openssl/dh.h>
+        -:   87:#endif
+        -:   88:
+        -:   89:#ifndef OPENSSL_NO_HW
+        -:   90:#ifndef OPENSSL_NO_HW_AEP
+        -:   91:#ifdef FLAT_INC
+        -:   92:#include "aep.h"
+        -:   93:#else
+        -:   94:#include "vendor_defns/aep.h"
+        -:   95:#endif
+        -:   96:
+        -:   97:#define AEP_LIB_NAME "aep engine"
+        -:   98:#define FAIL_TO_SW 0x10101010
+        -:   99:
+        -:  100:#include "e_aep_err.c"
+        -:  101:
+        -:  102:static int aep_init(ENGINE *e);
+        -:  103:static int aep_finish(ENGINE *e);
+        -:  104:static int aep_ctrl(ENGINE *e, int cmd, long i, void *p, void (*f)(void));
+        -:  105:static int aep_destroy(ENGINE *e);
+        -:  106:
+        -:  107:static AEP_RV aep_get_connection(AEP_CONNECTION_HNDL_PTR hConnection);
+        -:  108:static AEP_RV aep_return_connection(AEP_CONNECTION_HNDL hConnection);
+        -:  109:static AEP_RV aep_close_connection(AEP_CONNECTION_HNDL hConnection);
+        -:  110:static AEP_RV aep_close_all_connections(int use_engine_lock, int *in_use);
+        -:  111:
+        -:  112:/* BIGNUM stuff */
+        -:  113:#ifndef OPENSSL_NO_RSA
+        -:  114:static int aep_mod_exp(BIGNUM *r, const BIGNUM *a, const BIGNUM *p,
+        -:  115:	const BIGNUM *m, BN_CTX *ctx);
+        -:  116:
+        -:  117:static AEP_RV aep_mod_exp_crt(BIGNUM *r,const  BIGNUM *a, const BIGNUM *p,
+        -:  118:	const BIGNUM *q, const BIGNUM *dmp1,const BIGNUM *dmq1,
+        -:  119:	const BIGNUM *iqmp, BN_CTX *ctx);
+        -:  120:#endif
+        -:  121:
+        -:  122:/* RSA stuff */
+        -:  123:#ifndef OPENSSL_NO_RSA
+        -:  124:static int aep_rsa_mod_exp(BIGNUM *r0, const BIGNUM *I, RSA *rsa, BN_CTX *ctx);
+        -:  125:#endif
+        -:  126:
+        -:  127:/* This function is aliased to mod_exp (with the mont stuff dropped). */
+        -:  128:#ifndef OPENSSL_NO_RSA
+        -:  129:static int aep_mod_exp_mont(BIGNUM *r, const BIGNUM *a, const BIGNUM *p,
+        -:  130:	const BIGNUM *m, BN_CTX *ctx, BN_MONT_CTX *m_ctx);
+        -:  131:#endif
+        -:  132:
+        -:  133:/* DSA stuff */
+        -:  134:#ifndef OPENSSL_NO_DSA
+        -:  135:static int aep_dsa_mod_exp(DSA *dsa, BIGNUM *rr, BIGNUM *a1,
+        -:  136:	BIGNUM *p1, BIGNUM *a2, BIGNUM *p2, BIGNUM *m,
+        -:  137:	BN_CTX *ctx, BN_MONT_CTX *in_mont);
+        -:  138:
+        -:  139:static int aep_mod_exp_dsa(DSA *dsa, BIGNUM *r, BIGNUM *a,
+        -:  140:	const BIGNUM *p, const BIGNUM *m, BN_CTX *ctx,
+        -:  141:	BN_MONT_CTX *m_ctx);
+        -:  142:#endif
+        -:  143:
+        -:  144:/* DH stuff */
+        -:  145:/* This function is aliased to mod_exp (with the DH and mont dropped). */
+        -:  146:#ifndef OPENSSL_NO_DH
+        -:  147:static int aep_mod_exp_dh(const DH *dh, BIGNUM *r, const BIGNUM *a,
+        -:  148:	const BIGNUM *p, const BIGNUM *m, BN_CTX *ctx, BN_MONT_CTX *m_ctx);
+        -:  149:#endif
+        -:  150:
+        -:  151:/* rand stuff   */
+        -:  152:#ifdef AEPRAND
+        -:  153:static int aep_rand(unsigned char *buf, int num);
+        -:  154:static int aep_rand_status(void);
+        -:  155:#endif
+        -:  156:
+        -:  157:/* Bignum conversion stuff */
+        -:  158:static AEP_RV GetBigNumSize(AEP_VOID_PTR ArbBigNum, AEP_U32* BigNumSize);
+        -:  159:static AEP_RV MakeAEPBigNum(AEP_VOID_PTR ArbBigNum, AEP_U32 BigNumSize,
+        -:  160:	unsigned char* AEP_BigNum);
+        -:  161:static AEP_RV ConvertAEPBigNum(void* ArbBigNum, AEP_U32 BigNumSize,
+        -:  162:	unsigned char* AEP_BigNum);
+        -:  163:
+        -:  164:/* The definitions for control commands specific to this engine */
+        -:  165:#define AEP_CMD_SO_PATH		ENGINE_CMD_BASE
+        -:  166:static const ENGINE_CMD_DEFN aep_cmd_defns[] =
+        -:  167:	{
+        -:  168:	{ AEP_CMD_SO_PATH,
+        -:  169:	  "SO_PATH",
+        -:  170:	  "Specifies the path to the 'aep' shared library",
+        -:  171:	  ENGINE_CMD_FLAG_STRING
+        -:  172:	},
+        -:  173:	{0, NULL, NULL, 0}
+        -:  174:	};
+        -:  175:
+        -:  176:#ifndef OPENSSL_NO_RSA
+        -:  177:/* Our internal RSA_METHOD that we provide pointers to */
+        -:  178:static RSA_METHOD aep_rsa =
+        -:  179:	{
+        -:  180:	"Aep RSA method",
+        -:  181:	NULL,                /*rsa_pub_encrypt*/
+        -:  182:	NULL,                /*rsa_pub_decrypt*/
+        -:  183:	NULL,                /*rsa_priv_encrypt*/
+        -:  184:	NULL,                /*rsa_priv_encrypt*/
+        -:  185:	aep_rsa_mod_exp,     /*rsa_mod_exp*/
+        -:  186:	aep_mod_exp_mont,    /*bn_mod_exp*/
+        -:  187:	NULL,                /*init*/
+        -:  188:	NULL,                /*finish*/
+        -:  189:	0,                   /*flags*/
+        -:  190:	NULL,                /*app_data*/
+        -:  191:	NULL,                /*rsa_sign*/
+        -:  192:	NULL,                /*rsa_verify*/
+        -:  193:	NULL                 /*rsa_keygen*/
+        -:  194:	};
+        -:  195:#endif
+        -:  196:
+        -:  197:#ifndef OPENSSL_NO_DSA
+        -:  198:/* Our internal DSA_METHOD that we provide pointers to */
+        -:  199:static DSA_METHOD aep_dsa =
+        -:  200:	{
+        -:  201:	"Aep DSA method",
+        -:  202:	NULL,                /* dsa_do_sign */
+        -:  203:	NULL,                /* dsa_sign_setup */
+        -:  204:	NULL,                /* dsa_do_verify */
+        -:  205:	aep_dsa_mod_exp,     /* dsa_mod_exp */
+        -:  206:	aep_mod_exp_dsa,     /* bn_mod_exp */
+        -:  207:	NULL,                /* init */
+        -:  208:	NULL,                /* finish */
+        -:  209:	0,                   /* flags */
+        -:  210:	NULL,                /* app_data */
+        -:  211:	NULL,                /* dsa_paramgen */
+        -:  212:	NULL                 /* dsa_keygen */
+        -:  213:	};
+        -:  214:#endif
+        -:  215:
+        -:  216:#ifndef OPENSSL_NO_DH
+        -:  217:/* Our internal DH_METHOD that we provide pointers to */
+        -:  218:static DH_METHOD aep_dh =
+        -:  219:	{
+        -:  220:	"Aep DH method",
+        -:  221:	NULL,
+        -:  222:	NULL,
+        -:  223:	aep_mod_exp_dh,
+        -:  224:	NULL,
+        -:  225:	NULL,
+        -:  226:	0,
+        -:  227:	NULL,
+        -:  228:	NULL
+        -:  229:	};
+        -:  230:#endif
+        -:  231:
+        -:  232:#ifdef AEPRAND
+        -:  233:/* our internal RAND_method that we provide pointers to  */
+        -:  234:static RAND_METHOD aep_random =
+        -:  235:	{
+        -:  236:	/*"AEP RAND method", */
+        -:  237:	NULL,
+        -:  238:	aep_rand,
+        -:  239:	NULL,
+        -:  240:	NULL,
+        -:  241:	aep_rand,
+        -:  242:	aep_rand_status,
+        -:  243:	};
+        -:  244:#endif
+        -:  245:
+        -:  246:/*Define an array of structures to hold connections*/
+        -:  247:static AEP_CONNECTION_ENTRY aep_app_conn_table[MAX_PROCESS_CONNECTIONS];
+        -:  248:
+        -:  249:/*Used to determine if this is a new process*/
+        -:  250:static pid_t    recorded_pid = 0;
+        -:  251:
+        -:  252:#ifdef AEPRAND
+        -:  253:static AEP_U8   rand_block[RAND_BLK_SIZE];
+        -:  254:static AEP_U32  rand_block_bytes = 0;
+        -:  255:#endif
+        -:  256:
+        -:  257:/* Constants used when creating the ENGINE */
+        -:  258:static const char *engine_aep_id = "aep";
+        -:  259:static const char *engine_aep_name = "Aep hardware engine support";
+        -:  260:
+        -:  261:static int max_key_len = 2176;
+        -:  262:
+        -:  263:
+        -:  264:/* This internal function is used by ENGINE_aep() and possibly by the
+        -:  265: * "dynamic" ENGINE support too */
+    10000:  266:static int bind_aep(ENGINE *e)
+        -:  267:	{
+        -:  268:#ifndef OPENSSL_NO_RSA
+        -:  269:	const RSA_METHOD  *meth1;
+        -:  270:#endif
+        -:  271:#ifndef OPENSSL_NO_DSA
+        -:  272:	const DSA_METHOD  *meth2;
+        -:  273:#endif
+        -:  274:#ifndef OPENSSL_NO_DH
+        -:  275:	const DH_METHOD	  *meth3;
+        -:  276:#endif
+        -:  277:
+    20000:  278:	if(!ENGINE_set_id(e, engine_aep_id) ||
+    20000:  279:		!ENGINE_set_name(e, engine_aep_name) ||
+        -:  280:#ifndef OPENSSL_NO_RSA
+    20000:  281:		!ENGINE_set_RSA(e, &aep_rsa) ||
+        -:  282:#endif
+        -:  283:#ifndef OPENSSL_NO_DSA
+    20000:  284:		!ENGINE_set_DSA(e, &aep_dsa) ||
+        -:  285:#endif
+        -:  286:#ifndef OPENSSL_NO_DH
+    20000:  287:		!ENGINE_set_DH(e, &aep_dh) ||
+        -:  288:#endif
+        -:  289:#ifdef AEPRAND
+        -:  290:		!ENGINE_set_RAND(e, &aep_random) ||
+        -:  291:#endif
+    20000:  292:		!ENGINE_set_init_function(e, aep_init) ||
+    20000:  293:		!ENGINE_set_destroy_function(e, aep_destroy) ||
+    20000:  294:		!ENGINE_set_finish_function(e, aep_finish) ||
+    20000:  295:		!ENGINE_set_ctrl_function(e, aep_ctrl) ||
+    10000:  296:		!ENGINE_set_cmd_defns(e, aep_cmd_defns))
+        -:  297:		return 0;
+        -:  298:
+        -:  299:#ifndef OPENSSL_NO_RSA
+        -:  300:	/* We know that the "PKCS1_SSLeay()" functions hook properly
+        -:  301:	 * to the aep-specific mod_exp and mod_exp_crt so we use
+        -:  302:	 * those functions. NB: We don't use ENGINE_openssl() or
+        -:  303:	 * anything "more generic" because something like the RSAref
+        -:  304:	 * code may not hook properly, and if you own one of these
+        -:  305:	 * cards then you have the right to do RSA operations on it
+        -:  306:	 * anyway! */
+    10000:  307:	meth1 = RSA_PKCS1_SSLeay();
+    10000:  308:	aep_rsa.rsa_pub_enc = meth1->rsa_pub_enc;
+    10000:  309:	aep_rsa.rsa_pub_dec = meth1->rsa_pub_dec;
+    10000:  310:	aep_rsa.rsa_priv_enc = meth1->rsa_priv_enc;
+    10000:  311:	aep_rsa.rsa_priv_dec = meth1->rsa_priv_dec;
+        -:  312:#endif
+        -:  313:
+        -:  314:
+        -:  315:#ifndef OPENSSL_NO_DSA
+        -:  316:	/* Use the DSA_OpenSSL() method and just hook the mod_exp-ish
+        -:  317:	 * bits. */
+    10000:  318:	meth2 = DSA_OpenSSL();
+    10000:  319:	aep_dsa.dsa_do_sign    = meth2->dsa_do_sign;
+    10000:  320:	aep_dsa.dsa_sign_setup = meth2->dsa_sign_setup;
+    10000:  321:	aep_dsa.dsa_do_verify  = meth2->dsa_do_verify;
+        -:  322:
+    10000:  323:	aep_dsa = *DSA_get_default_method(); 
+    10000:  324:	aep_dsa.dsa_mod_exp = aep_dsa_mod_exp; 
+    10000:  325:	aep_dsa.bn_mod_exp = aep_mod_exp_dsa;
+        -:  326:#endif
+        -:  327:
+        -:  328:#ifndef OPENSSL_NO_DH
+        -:  329:	/* Much the same for Diffie-Hellman */
+    10000:  330:	meth3 = DH_OpenSSL();
+    10000:  331:	aep_dh.generate_key = meth3->generate_key;
+    10000:  332:	aep_dh.compute_key  = meth3->compute_key;
+    10000:  333:	aep_dh.bn_mod_exp   = meth3->bn_mod_exp;
+        -:  334:#endif
+        -:  335:
+        -:  336:	/* Ensure the aep error handling is set up */
+    10000:  337:	ERR_load_AEPHK_strings();
+        -:  338:
+    10000:  339:	return 1;
+        -:  340:}
+        -:  341:
+        -:  342:#ifndef OPENSSL_NO_DYNAMIC_ENGINE
+        -:  343:static int bind_helper(ENGINE *e, const char *id)
+        -:  344:	{
+        -:  345:	if(id && (strcmp(id, engine_aep_id) != 0))
+        -:  346:		return 0;
+        -:  347:	if(!bind_aep(e))
+        -:  348:		return 0;
+        -:  349:	return 1;
+        -:  350:	}       
+        -:  351:IMPLEMENT_DYNAMIC_CHECK_FN()
+        -:  352:IMPLEMENT_DYNAMIC_BIND_FN(bind_helper)
+        -:  353:#else
+    10000:  354:static ENGINE *engine_aep(void)
+        -:  355:	{
+    10000:  356:	ENGINE *ret = ENGINE_new();
+    10000:  357:	if(!ret)
+        -:  358:		return NULL;
+    10000:  359:	if(!bind_aep(ret))
+        -:  360:		{
+    #####:  361:		ENGINE_free(ret);
+    #####:  362:		return NULL;
+        -:  363:		}
+        -:  364:	return ret;
+        -:  365:	}
+        -:  366:
+    10000:  367:void ENGINE_load_aep(void)
+        -:  368:	{
+        -:  369:	/* Copied from eng_[openssl|dyn].c */
+    10000:  370:	ENGINE *toadd = engine_aep();
+    20000:  371:	if(!toadd) return;
+    10000:  372:	ENGINE_add(toadd);
+    10000:  373:	ENGINE_free(toadd);
+    10000:  374:	ERR_clear_error();
+        -:  375:	}
+        -:  376:#endif
+        -:  377:
+        -:  378:/* This is a process-global DSO handle used for loading and unloading
+        -:  379: * the Aep library. NB: This is only set (or unset) during an
+        -:  380: * init() or finish() call (reference counts permitting) and they're
+        -:  381: * operating with global locks, so this should be thread-safe
+        -:  382: * implicitly. */
+        -:  383:static DSO *aep_dso = NULL;
+        -:  384:
+        -:  385:/* These are the static string constants for the DSO file name and the function
+        -:  386: * symbol names to bind to. 
+        -:  387:*/
+        -:  388:static const char *AEP_LIBNAME = NULL;
+        -:  389:static const char *get_AEP_LIBNAME(void)
+        -:  390:	{
+    #####:  391:	if(AEP_LIBNAME)
+        -:  392:		return AEP_LIBNAME;
+        -:  393:	return "aep";
+        -:  394:	}
+        -:  395:static void free_AEP_LIBNAME(void)
+        -:  396:	{
+    10000:  397:	if(AEP_LIBNAME)
+    #####:  398:		OPENSSL_free((void*)AEP_LIBNAME);
+    10000:  399:	AEP_LIBNAME = NULL;
+        -:  400:	}
+    #####:  401:static long set_AEP_LIBNAME(const char *name)
+        -:  402:	{
+        -:  403:	free_AEP_LIBNAME();
+    #####:  404:	return ((AEP_LIBNAME = BUF_strdup(name)) != NULL ? 1 : 0);
+        -:  405:	}
+        -:  406:
+        -:  407:static const char *AEP_F1    = "AEP_ModExp";
+        -:  408:static const char *AEP_F2    = "AEP_ModExpCrt";
+        -:  409:#ifdef AEPRAND
+        -:  410:static const char *AEP_F3    = "AEP_GenRandom";
+        -:  411:#endif
+        -:  412:static const char *AEP_F4    = "AEP_Finalize";
+        -:  413:static const char *AEP_F5    = "AEP_Initialize";
+        -:  414:static const char *AEP_F6    = "AEP_OpenConnection";
+        -:  415:static const char *AEP_F7    = "AEP_SetBNCallBacks";
+        -:  416:static const char *AEP_F8    = "AEP_CloseConnection";
+        -:  417:
+        -:  418:/* These are the function pointers that are (un)set when the library has
+        -:  419: * successfully (un)loaded. */
+        -:  420:static t_AEP_OpenConnection    *p_AEP_OpenConnection  = NULL;
+        -:  421:static t_AEP_CloseConnection   *p_AEP_CloseConnection = NULL;
+        -:  422:static t_AEP_ModExp            *p_AEP_ModExp          = NULL;
+        -:  423:static t_AEP_ModExpCrt         *p_AEP_ModExpCrt       = NULL;
+        -:  424:#ifdef AEPRAND
+        -:  425:static t_AEP_GenRandom         *p_AEP_GenRandom       = NULL;
+        -:  426:#endif
+        -:  427:static t_AEP_Initialize        *p_AEP_Initialize      = NULL;
+        -:  428:static t_AEP_Finalize          *p_AEP_Finalize        = NULL;
+        -:  429:static t_AEP_SetBNCallBacks    *p_AEP_SetBNCallBacks  = NULL;
+        -:  430:
+        -:  431:/* (de)initialisation functions. */
+    #####:  432:static int aep_init(ENGINE *e)
+        -:  433:	{
+        -:  434:	t_AEP_ModExp          *p1;
+        -:  435:	t_AEP_ModExpCrt       *p2;
+        -:  436:#ifdef AEPRAND
+        -:  437:	t_AEP_GenRandom       *p3;
+        -:  438:#endif
+        -:  439:	t_AEP_Finalize        *p4;
+        -:  440:	t_AEP_Initialize      *p5;
+        -:  441:	t_AEP_OpenConnection  *p6;
+        -:  442:	t_AEP_SetBNCallBacks  *p7;
+        -:  443:	t_AEP_CloseConnection *p8;
+        -:  444:
+        -:  445:	int to_return = 0;
+        -:  446: 
+    #####:  447:	if(aep_dso != NULL)
+        -:  448:		{
+    #####:  449:		AEPHKerr(AEPHK_F_AEP_INIT,AEPHK_R_ALREADY_LOADED);
+    #####:  450:		goto err;
+        -:  451:		}
+        -:  452:	/* Attempt to load libaep.so. */
+        -:  453:
+    #####:  454:	aep_dso = DSO_load(NULL, get_AEP_LIBNAME(), NULL, 0);
+        -:  455:  
+    #####:  456:	if(aep_dso == NULL)
+        -:  457:		{
+    #####:  458:		AEPHKerr(AEPHK_F_AEP_INIT,AEPHK_R_NOT_LOADED);
+    #####:  459:		goto err;
+        -:  460:		}
+        -:  461:
+    #####:  462:	if(	!(p1 = (t_AEP_ModExp *)     DSO_bind_func( aep_dso,AEP_F1))  ||
+    #####:  463:		!(p2 = (t_AEP_ModExpCrt*)   DSO_bind_func( aep_dso,AEP_F2))  ||
+        -:  464:#ifdef AEPRAND
+        -:  465:		!(p3 = (t_AEP_GenRandom*)   DSO_bind_func( aep_dso,AEP_F3))  ||
+        -:  466:#endif
+    #####:  467:		!(p4 = (t_AEP_Finalize*)    DSO_bind_func( aep_dso,AEP_F4))  ||
+    #####:  468:		!(p5 = (t_AEP_Initialize*)  DSO_bind_func( aep_dso,AEP_F5))  ||
+    #####:  469:		!(p6 = (t_AEP_OpenConnection*) DSO_bind_func( aep_dso,AEP_F6))  ||
+    #####:  470:		!(p7 = (t_AEP_SetBNCallBacks*) DSO_bind_func( aep_dso,AEP_F7))  ||
+    #####:  471:		!(p8 = (t_AEP_CloseConnection*) DSO_bind_func( aep_dso,AEP_F8)))
+        -:  472:		{
+    #####:  473:		AEPHKerr(AEPHK_F_AEP_INIT,AEPHK_R_NOT_LOADED);
+    #####:  474:		goto err;
+        -:  475:		}
+        -:  476:
+        -:  477:	/* Copy the pointers */
+        -:  478:  
+    #####:  479:	p_AEP_ModExp           = p1;
+    #####:  480:	p_AEP_ModExpCrt        = p2;
+        -:  481:#ifdef AEPRAND
+        -:  482:	p_AEP_GenRandom        = p3;
+        -:  483:#endif
+    #####:  484:	p_AEP_Finalize         = p4;
+    #####:  485:	p_AEP_Initialize       = p5;
+    #####:  486:	p_AEP_OpenConnection   = p6;
+    #####:  487:	p_AEP_SetBNCallBacks   = p7;
+    #####:  488:	p_AEP_CloseConnection  = p8;
+        -:  489: 
+        -:  490:	to_return = 1;
+        -:  491: 
+    #####:  492:	return to_return;
+        -:  493:
+        -:  494: err: 
+        -:  495:
+    #####:  496:	if(aep_dso)
+    #####:  497:		DSO_free(aep_dso);
+    #####:  498:	aep_dso = NULL;
+        -:  499:		
+    #####:  500:	p_AEP_OpenConnection    = NULL;
+    #####:  501:	p_AEP_ModExp            = NULL;
+    #####:  502:	p_AEP_ModExpCrt         = NULL;
+        -:  503:#ifdef AEPRAND
+        -:  504:	p_AEP_GenRandom         = NULL;
+        -:  505:#endif
+    #####:  506:	p_AEP_Initialize        = NULL;
+    #####:  507:	p_AEP_Finalize          = NULL;
+    #####:  508:	p_AEP_SetBNCallBacks    = NULL;
+    #####:  509:	p_AEP_CloseConnection   = NULL;
+        -:  510:
+    #####:  511:	return to_return;
+        -:  512:	}
+        -:  513:
+        -:  514:/* Destructor (complements the "ENGINE_aep()" constructor) */
+    10000:  515:static int aep_destroy(ENGINE *e)
+        -:  516:	{
+        -:  517:	free_AEP_LIBNAME();
+    10000:  518:	ERR_unload_AEPHK_strings();
+    10000:  519:	return 1;
+        -:  520:	}
+        -:  521:
+    #####:  522:static int aep_finish(ENGINE *e)
+        -:  523:	{
+        -:  524:	int to_return = 0, in_use;
+        -:  525:	AEP_RV rv;
+        -:  526:
+    #####:  527:	if(aep_dso == NULL)
+        -:  528:		{
+    #####:  529:		AEPHKerr(AEPHK_F_AEP_FINISH,AEPHK_R_NOT_LOADED);
+    #####:  530:		goto err;
+        -:  531:		}
+        -:  532:
+    #####:  533:	rv = aep_close_all_connections(0, &in_use);
+    #####:  534:	if (rv != AEP_R_OK)
+        -:  535:		{
+    #####:  536:		AEPHKerr(AEPHK_F_AEP_FINISH,AEPHK_R_CLOSE_HANDLES_FAILED);
+    #####:  537:		goto err;
+        -:  538:		}
+    #####:  539:	if (in_use)
+        -:  540:		{
+    #####:  541:		AEPHKerr(AEPHK_F_AEP_FINISH,AEPHK_R_CONNECTIONS_IN_USE);
+    #####:  542:		goto err;
+        -:  543:		}
+        -:  544:
+    #####:  545:	rv = p_AEP_Finalize();
+    #####:  546:	if (rv != AEP_R_OK)
+        -:  547:		{
+    #####:  548:		AEPHKerr(AEPHK_F_AEP_FINISH,AEPHK_R_FINALIZE_FAILED);
+    #####:  549:		goto err;
+        -:  550:		}
+        -:  551:
+    #####:  552:	if(!DSO_free(aep_dso))
+        -:  553:		{
+    #####:  554:		AEPHKerr(AEPHK_F_AEP_FINISH,AEPHK_R_UNIT_FAILURE);
+    #####:  555:		goto err;
+        -:  556:		}
+        -:  557:
+    #####:  558:	aep_dso = NULL;
+    #####:  559:	p_AEP_CloseConnection   = NULL;
+    #####:  560:	p_AEP_OpenConnection    = NULL;
+    #####:  561:	p_AEP_ModExp            = NULL;
+    #####:  562:	p_AEP_ModExpCrt         = NULL;
+        -:  563:#ifdef AEPRAND
+        -:  564:	p_AEP_GenRandom         = NULL;
+        -:  565:#endif
+    #####:  566:	p_AEP_Initialize        = NULL;
+    #####:  567:	p_AEP_Finalize          = NULL;
+    #####:  568:	p_AEP_SetBNCallBacks    = NULL;
+        -:  569:
+        -:  570:	to_return = 1;
+        -:  571: err:
+    #####:  572:	return to_return;
+        -:  573:	}
+        -:  574:
+    #####:  575:static int aep_ctrl(ENGINE *e, int cmd, long i, void *p, void (*f)(void))
+        -:  576:	{
+    #####:  577:	int initialised = ((aep_dso == NULL) ? 0 : 1);
+    #####:  578:	switch(cmd)
+        -:  579:		{
+        -:  580:	case AEP_CMD_SO_PATH:
+    #####:  581:		if(p == NULL)
+        -:  582:			{
+    #####:  583:			AEPHKerr(AEPHK_F_AEP_CTRL,
+        -:  584:				ERR_R_PASSED_NULL_PARAMETER);
+    #####:  585:			return 0;
+        -:  586:			}
+    #####:  587:		if(initialised)
+        -:  588:			{
+    #####:  589:			AEPHKerr(AEPHK_F_AEP_CTRL,
+        -:  590:				AEPHK_R_ALREADY_LOADED);
+    #####:  591:			return 0;
+        -:  592:			}
+    #####:  593:		return set_AEP_LIBNAME((const char*)p);
+        -:  594:	default:
+        -:  595:		break;
+        -:  596:		}
+    #####:  597:	AEPHKerr(AEPHK_F_AEP_CTRL,AEPHK_R_CTRL_COMMAND_NOT_IMPLEMENTED);
+    #####:  598:	return 0;
+        -:  599:	}
+        -:  600:
+    #####:  601:static int aep_mod_exp(BIGNUM *r, const BIGNUM *a, const BIGNUM *p,
+        -:  602:	const BIGNUM *m, BN_CTX *ctx)
+        -:  603:	{
+        -:  604:	int to_return = 0;
+        -:  605:	int 	r_len = 0;
+        -:  606:	AEP_CONNECTION_HNDL hConnection;
+        -:  607:	AEP_RV rv;
+        -:  608:	
+    #####:  609:	r_len = BN_num_bits(m);
+        -:  610:
+        -:  611:	/* Perform in software if modulus is too large for hardware. */
+        -:  612:
+    #####:  613:	if (r_len > max_key_len){
+    #####:  614:		AEPHKerr(AEPHK_F_AEP_MOD_EXP, AEPHK_R_SIZE_TOO_LARGE_OR_TOO_SMALL);
+    #####:  615:		return BN_mod_exp(r, a, p, m, ctx);
+        -:  616:	} 
+        -:  617:
+        -:  618:	/*Grab a connection from the pool*/
+    #####:  619:	rv = aep_get_connection(&hConnection);
+    #####:  620:	if (rv != AEP_R_OK)
+        -:  621:		{     
+    #####:  622:		AEPHKerr(AEPHK_F_AEP_MOD_EXP,AEPHK_R_GET_HANDLE_FAILED);
+    #####:  623:		return BN_mod_exp(r, a, p, m, ctx);
+        -:  624:		}
+        -:  625:
+        -:  626:	/*To the card with the mod exp*/
+    #####:  627:	rv = p_AEP_ModExp(hConnection,(void*)a, (void*)p,(void*)m, (void*)r,NULL);
+        -:  628:
+    #####:  629:	if (rv !=  AEP_R_OK)
+        -:  630:		{
+    #####:  631:		AEPHKerr(AEPHK_F_AEP_MOD_EXP,AEPHK_R_MOD_EXP_FAILED);
+    #####:  632:		rv = aep_close_connection(hConnection);
+    #####:  633:		return BN_mod_exp(r, a, p, m, ctx);
+        -:  634:		}
+        -:  635:
+        -:  636:	/*Return the connection to the pool*/
+    #####:  637:	rv = aep_return_connection(hConnection);
+    #####:  638:	if (rv != AEP_R_OK)
+        -:  639:		{
+    #####:  640:		AEPHKerr(AEPHK_F_AEP_MOD_EXP,AEPHK_R_RETURN_CONNECTION_FAILED); 
+    #####:  641:		goto err;
+        -:  642:		}
+        -:  643:
+        -:  644:	to_return = 1;
+        -:  645: err:
+    #####:  646:	return to_return;
+        -:  647:	}
+        -:  648:	
+        -:  649:#ifndef OPENSSL_NO_RSA
+    #####:  650:static AEP_RV aep_mod_exp_crt(BIGNUM *r, const BIGNUM *a, const BIGNUM *p,
+        -:  651:	const BIGNUM *q, const BIGNUM *dmp1,
+        -:  652:	const BIGNUM *dmq1,const BIGNUM *iqmp, BN_CTX *ctx)
+        -:  653:	{
+        -:  654:	AEP_RV rv = AEP_R_OK;
+        -:  655:	AEP_CONNECTION_HNDL hConnection;
+        -:  656:
+        -:  657:	/*Grab a connection from the pool*/
+    #####:  658:	rv = aep_get_connection(&hConnection);
+    #####:  659:	if (rv != AEP_R_OK)
+        -:  660:		{
+    #####:  661:		AEPHKerr(AEPHK_F_AEP_MOD_EXP_CRT,AEPHK_R_GET_HANDLE_FAILED);
+        -:  662:		return FAIL_TO_SW;
+        -:  663:		}
+        -:  664:
+        -:  665:	/*To the card with the mod exp*/
+    #####:  666:	rv = p_AEP_ModExpCrt(hConnection,(void*)a, (void*)p, (void*)q, (void*)dmp1,(void*)dmq1,
+        -:  667:		(void*)iqmp,(void*)r,NULL);
+    #####:  668:	if (rv != AEP_R_OK)
+        -:  669:		{
+    #####:  670:		AEPHKerr(AEPHK_F_AEP_MOD_EXP_CRT,AEPHK_R_MOD_EXP_CRT_FAILED);
+    #####:  671:		rv = aep_close_connection(hConnection);
+        -:  672:		return FAIL_TO_SW;
+        -:  673:		}
+        -:  674:
+        -:  675:	/*Return the connection to the pool*/
+    #####:  676:	rv = aep_return_connection(hConnection);
+    #####:  677:	if (rv != AEP_R_OK)
+        -:  678:		{
+    #####:  679:		AEPHKerr(AEPHK_F_AEP_MOD_EXP_CRT,AEPHK_R_RETURN_CONNECTION_FAILED); 
+        -:  680:		goto err;
+        -:  681:		}
+        -:  682: 
+        -:  683: err:
+        -:  684:	return rv;
+        -:  685:	}
+        -:  686:#endif
+        -:  687:	
+        -:  688:
+        -:  689:#ifdef AEPRAND
+        -:  690:static int aep_rand(unsigned char *buf,int len )
+        -:  691:	{
+        -:  692:	AEP_RV rv = AEP_R_OK;
+        -:  693:	AEP_CONNECTION_HNDL hConnection;
+        -:  694:
+        -:  695:	CRYPTO_w_lock(CRYPTO_LOCK_RAND);
+        -:  696:
+        -:  697:	/*Can the request be serviced with what's already in the buffer?*/
+        -:  698:	if (len <= rand_block_bytes)
+        -:  699:		{
+        -:  700:		memcpy(buf, &rand_block[RAND_BLK_SIZE - rand_block_bytes], len);
+        -:  701:		rand_block_bytes -= len;
+        -:  702:		CRYPTO_w_unlock(CRYPTO_LOCK_RAND);
+        -:  703:		}
+        -:  704:	else
+        -:  705:		/*If not the get another block of random bytes*/
+        -:  706:		{
+        -:  707:		CRYPTO_w_unlock(CRYPTO_LOCK_RAND);
+        -:  708:
+        -:  709:		rv = aep_get_connection(&hConnection);
+        -:  710:		if (rv !=  AEP_R_OK)
+        -:  711:			{ 
+        -:  712:			AEPHKerr(AEPHK_F_AEP_RAND,AEPHK_R_GET_HANDLE_FAILED);             
+        -:  713:			goto err_nounlock;
+        -:  714:			}
+        -:  715:
+        -:  716:		if (len > RAND_BLK_SIZE)
+        -:  717:			{
+        -:  718:			rv = p_AEP_GenRandom(hConnection, len, 2, buf, NULL);
+        -:  719:			if (rv !=  AEP_R_OK)
+        -:  720:				{  
+        -:  721:				AEPHKerr(AEPHK_F_AEP_RAND,AEPHK_R_GET_RANDOM_FAILED); 
+        -:  722:				goto err_nounlock;
+        -:  723:				}
+        -:  724:			}
+        -:  725:		else
+        -:  726:			{
+        -:  727:			CRYPTO_w_lock(CRYPTO_LOCK_RAND);
+        -:  728:
+        -:  729:			rv = p_AEP_GenRandom(hConnection, RAND_BLK_SIZE, 2, &rand_block[0], NULL);
+        -:  730:			if (rv !=  AEP_R_OK)
+        -:  731:				{       
+        -:  732:				AEPHKerr(AEPHK_F_AEP_RAND,AEPHK_R_GET_RANDOM_FAILED); 
+        -:  733:	      
+        -:  734:				goto err;
+        -:  735:				}
+        -:  736:
+        -:  737:			rand_block_bytes = RAND_BLK_SIZE;
+        -:  738:
+        -:  739:			memcpy(buf, &rand_block[RAND_BLK_SIZE - rand_block_bytes], len);
+        -:  740:			rand_block_bytes -= len;
+        -:  741:
+        -:  742:			CRYPTO_w_unlock(CRYPTO_LOCK_RAND);
+        -:  743:			}
+        -:  744:
+        -:  745:		rv = aep_return_connection(hConnection);
+        -:  746:		if (rv != AEP_R_OK)
+        -:  747:			{
+        -:  748:			AEPHKerr(AEPHK_F_AEP_RAND,AEPHK_R_RETURN_CONNECTION_FAILED); 
+        -:  749:	  
+        -:  750:			goto err_nounlock;
+        -:  751:			}
+        -:  752:		}
+        -:  753:  
+        -:  754:	return 1;
+        -:  755: err:
+        -:  756:	CRYPTO_w_unlock(CRYPTO_LOCK_RAND);
+        -:  757: err_nounlock:
+        -:  758:	return 0;
+        -:  759:	}
+        -:  760:	
+        -:  761:static int aep_rand_status(void)
+        -:  762:{
+        -:  763:	return 1;
+        -:  764:}
+        -:  765:#endif
+        -:  766:
+        -:  767:#ifndef OPENSSL_NO_RSA
+    #####:  768:static int aep_rsa_mod_exp(BIGNUM *r0, const BIGNUM *I, RSA *rsa, BN_CTX *ctx)
+        -:  769:	{
+        -:  770:	int to_return = 0;
+        -:  771:	AEP_RV rv = AEP_R_OK;
+        -:  772:
+    #####:  773:	if (!aep_dso)
+        -:  774:		{
+    #####:  775:		AEPHKerr(AEPHK_F_AEP_RSA_MOD_EXP,AEPHK_R_NOT_LOADED);
+    #####:  776:		goto err;
+        -:  777:		}
+        -:  778:
+        -:  779:	/*See if we have all the necessary bits for a crt*/
+    #####:  780:	if (rsa->q && rsa->dmp1 && rsa->dmq1 && rsa->iqmp)
+        -:  781:		{
+    #####:  782:		rv =  aep_mod_exp_crt(r0,I,rsa->p,rsa->q, rsa->dmp1,rsa->dmq1,rsa->iqmp,ctx);
+        -:  783:
+    #####:  784:		if (rv == FAIL_TO_SW){
+    #####:  785:			const RSA_METHOD *meth = RSA_PKCS1_SSLeay();
+    #####:  786:			to_return = (*meth->rsa_mod_exp)(r0, I, rsa, ctx);
+    #####:  787:			goto err;
+        -:  788:		}
+    #####:  789:		else if (rv != AEP_R_OK)
+        -:  790:			goto err;
+        -:  791:		}
+        -:  792:	else
+        -:  793:		{
+    #####:  794:		if (!rsa->d || !rsa->n)
+        -:  795:			{
+    #####:  796:			AEPHKerr(AEPHK_F_AEP_RSA_MOD_EXP,AEPHK_R_MISSING_KEY_COMPONENTS);
+    #####:  797:			goto err;
+        -:  798:			}
+        -:  799: 
+    #####:  800:		rv = aep_mod_exp(r0,I,rsa->d,rsa->n,ctx);
+    #####:  801:		if  (rv != AEP_R_OK)
+        -:  802:			goto err;
+        -:  803:	
+        -:  804:		}
+        -:  805:
+        -:  806:	to_return = 1;
+        -:  807:
+        -:  808: err:
+    #####:  809:	return to_return;
+        -:  810:}
+        -:  811:#endif
+        -:  812:
+        -:  813:#ifndef OPENSSL_NO_DSA
+    #####:  814:static int aep_dsa_mod_exp(DSA *dsa, BIGNUM *rr, BIGNUM *a1,
+        -:  815:	BIGNUM *p1, BIGNUM *a2, BIGNUM *p2, BIGNUM *m,
+        -:  816:	BN_CTX *ctx, BN_MONT_CTX *in_mont)
+        -:  817:	{
+        -:  818:	BIGNUM t;
+        -:  819:	int to_return = 0;
+    #####:  820:	BN_init(&t);
+        -:  821:
+        -:  822:	/* let rr = a1 ^ p1 mod m */
+    #####:  823:	if (!aep_mod_exp(rr,a1,p1,m,ctx)) goto end;
+        -:  824:	/* let t = a2 ^ p2 mod m */
+    #####:  825:	if (!aep_mod_exp(&t,a2,p2,m,ctx)) goto end;
+        -:  826:	/* let rr = rr * t mod m */
+    #####:  827:	if (!BN_mod_mul(rr,rr,&t,m,ctx)) goto end;
+        -:  828:	to_return = 1;
+        -:  829: end: 
+    #####:  830:	BN_free(&t);
+    #####:  831:	return to_return;
+        -:  832:	}
+        -:  833:
+    #####:  834:static int aep_mod_exp_dsa(DSA *dsa, BIGNUM *r, BIGNUM *a,
+        -:  835:	const BIGNUM *p, const BIGNUM *m, BN_CTX *ctx,
+        -:  836:	BN_MONT_CTX *m_ctx)
+        -:  837:	{  
+    #####:  838:	return aep_mod_exp(r, a, p, m, ctx); 
+        -:  839:	}
+        -:  840:#endif
+        -:  841:
+        -:  842:#ifndef OPENSSL_NO_RSA
+        -:  843:/* This function is aliased to mod_exp (with the mont stuff dropped). */
+    #####:  844:static int aep_mod_exp_mont(BIGNUM *r, const BIGNUM *a, const BIGNUM *p,
+        -:  845:	const BIGNUM *m, BN_CTX *ctx, BN_MONT_CTX *m_ctx)
+        -:  846:	{
+    #####:  847:	return aep_mod_exp(r, a, p, m, ctx);
+        -:  848:	}
+        -:  849:#endif
+        -:  850:
+        -:  851:#ifndef OPENSSL_NO_DH
+        -:  852:/* This function is aliased to mod_exp (with the dh and mont dropped). */
+    #####:  853:static int aep_mod_exp_dh(const DH *dh, BIGNUM *r, const BIGNUM *a,
+        -:  854:	const BIGNUM *p, const BIGNUM *m, BN_CTX *ctx,
+        -:  855:	BN_MONT_CTX *m_ctx)
+        -:  856:	{
+    #####:  857:	return aep_mod_exp(r, a, p, m, ctx);
+        -:  858:	}
+        -:  859:#endif
+        -:  860:
+    #####:  861:static AEP_RV aep_get_connection(AEP_CONNECTION_HNDL_PTR phConnection)
+        -:  862:	{
+        -:  863:	int count;
+        -:  864:	AEP_RV rv = AEP_R_OK;
+        -:  865:
+        -:  866:	/*Get the current process id*/
+        -:  867:	pid_t curr_pid;
+        -:  868:
+    #####:  869:	CRYPTO_w_lock(CRYPTO_LOCK_ENGINE);
+        -:  870:
+    #####:  871:	curr_pid = getpid();
+        -:  872:
+        -:  873:	/*Check if this is the first time this is being called from the current
+        -:  874:	  process*/
+    #####:  875:	if (recorded_pid != curr_pid)
+        -:  876:		{
+        -:  877:		/*Remember our pid so we can check if we're in a new process*/
+    #####:  878:		recorded_pid = curr_pid;
+        -:  879:
+        -:  880:		/*Call Finalize to make sure we have not inherited some data
+        -:  881:		  from a parent process*/
+    #####:  882:		p_AEP_Finalize();
+        -:  883:     
+        -:  884:		/*Initialise the AEP API*/
+    #####:  885:		rv = p_AEP_Initialize(NULL);
+        -:  886:
+    #####:  887:		if (rv != AEP_R_OK)
+        -:  888:			{
+    #####:  889:			AEPHKerr(AEPHK_F_AEP_GET_CONNECTION,AEPHK_R_INIT_FAILURE);
+    #####:  890:			recorded_pid = 0;
+    #####:  891:			goto end;
+        -:  892:			}
+        -:  893:
+        -:  894:		/*Set the AEP big num call back functions*/
+    #####:  895:		rv = p_AEP_SetBNCallBacks(&GetBigNumSize, &MakeAEPBigNum,
+        -:  896:			&ConvertAEPBigNum);
+        -:  897:
+    #####:  898:		if (rv != AEP_R_OK)
+        -:  899:			{
+    #####:  900:			AEPHKerr(AEPHK_F_AEP_GET_CONNECTION,AEPHK_R_SETBNCALLBACK_FAILURE);
+    #####:  901:			recorded_pid = 0;
+    #####:  902:			goto end;
+        -:  903:			}
+        -:  904:
+        -:  905:#ifdef AEPRAND
+        -:  906:		/*Reset the rand byte count*/
+        -:  907:		rand_block_bytes = 0;
+        -:  908:#endif
+        -:  909:
+        -:  910:		/*Init the structures*/
+    #####:  911:		for (count = 0;count < MAX_PROCESS_CONNECTIONS;count ++)
+        -:  912:			{
+    #####:  913:			aep_app_conn_table[count].conn_state = NotConnected;
+    #####:  914:			aep_app_conn_table[count].conn_hndl  = 0;
+        -:  915:			}
+        -:  916:
+        -:  917:		/*Open a connection*/
+    #####:  918:		rv = p_AEP_OpenConnection(phConnection);
+        -:  919:
+    #####:  920:		if (rv != AEP_R_OK)
+        -:  921:			{
+    #####:  922:			AEPHKerr(AEPHK_F_AEP_GET_CONNECTION,AEPHK_R_UNIT_FAILURE);
+    #####:  923:			recorded_pid = 0;
+    #####:  924:			goto end;
+        -:  925:			}
+        -:  926:
+    #####:  927:		aep_app_conn_table[0].conn_state = InUse;
+    #####:  928:		aep_app_conn_table[0].conn_hndl = *phConnection;
+    #####:  929:		goto end;
+        -:  930:		}
+        -:  931:	/*Check the existing connections to see if we can find a free one*/
+    #####:  932:	for (count = 0;count < MAX_PROCESS_CONNECTIONS;count ++)
+        -:  933:		{
+    #####:  934:		if (aep_app_conn_table[count].conn_state == Connected)
+        -:  935:			{
+    #####:  936:			aep_app_conn_table[count].conn_state = InUse;
+    #####:  937:			*phConnection = aep_app_conn_table[count].conn_hndl;
+    #####:  938:			goto end;
+        -:  939:			}
+        -:  940:		}
+        -:  941:	/*If no connections available, we're going to have to try
+        -:  942:	  to open a new one*/
+    #####:  943:	for (count = 0;count < MAX_PROCESS_CONNECTIONS;count ++)
+        -:  944:		{
+    #####:  945:		if (aep_app_conn_table[count].conn_state == NotConnected)
+        -:  946:			{
+        -:  947:			/*Open a connection*/
+    #####:  948:			rv = p_AEP_OpenConnection(phConnection);
+        -:  949:
+    #####:  950:			if (rv != AEP_R_OK)
+        -:  951:				{	      
+    #####:  952:				AEPHKerr(AEPHK_F_AEP_GET_CONNECTION,AEPHK_R_UNIT_FAILURE);
+    #####:  953:				goto end;
+        -:  954:				}
+        -:  955:
+    #####:  956:			aep_app_conn_table[count].conn_state = InUse;
+    #####:  957:			aep_app_conn_table[count].conn_hndl = *phConnection;
+    #####:  958:			goto end;
+        -:  959:			}
+        -:  960:		}
+        -:  961:	rv = AEP_R_GENERAL_ERROR;
+        -:  962: end:
+    #####:  963:	CRYPTO_w_unlock(CRYPTO_LOCK_ENGINE);
+    #####:  964:	return rv;
+        -:  965:	}
+        -:  966:
+        -:  967:
+    #####:  968:static AEP_RV aep_return_connection(AEP_CONNECTION_HNDL hConnection)
+        -:  969:	{
+        -:  970:	int count;
+        -:  971:
+    #####:  972:	CRYPTO_w_lock(CRYPTO_LOCK_ENGINE);
+        -:  973:
+        -:  974:	/*Find the connection item that matches this connection handle*/
+    #####:  975:	for(count = 0;count < MAX_PROCESS_CONNECTIONS;count ++)
+        -:  976:		{
+    #####:  977:		if (aep_app_conn_table[count].conn_hndl == hConnection)
+        -:  978:			{
+    #####:  979:			aep_app_conn_table[count].conn_state = Connected;
+    #####:  980:			break;
+        -:  981:			}
+        -:  982:		}
+        -:  983:
+    #####:  984:	CRYPTO_w_unlock(CRYPTO_LOCK_ENGINE);
+        -:  985:
+    #####:  986:	return AEP_R_OK;
+        -:  987:	}
+        -:  988:
+    #####:  989:static AEP_RV aep_close_connection(AEP_CONNECTION_HNDL hConnection)
+        -:  990:	{
+        -:  991:	int count;
+        -:  992:	AEP_RV rv = AEP_R_OK;
+        -:  993:
+    #####:  994:	CRYPTO_w_lock(CRYPTO_LOCK_ENGINE);
+        -:  995:
+        -:  996:	/*Find the connection item that matches this connection handle*/
+    #####:  997:	for(count = 0;count < MAX_PROCESS_CONNECTIONS;count ++)
+        -:  998:		{
+    #####:  999:		if (aep_app_conn_table[count].conn_hndl == hConnection)
+        -: 1000:			{
+    #####: 1001:			rv = p_AEP_CloseConnection(aep_app_conn_table[count].conn_hndl);
+    #####: 1002:			if (rv != AEP_R_OK)
+        -: 1003:				goto end;
+    #####: 1004:			aep_app_conn_table[count].conn_state = NotConnected;
+    #####: 1005:			aep_app_conn_table[count].conn_hndl  = 0;
+    #####: 1006:			break;
+        -: 1007:			}
+        -: 1008:		}
+        -: 1009:
+        -: 1010: end:
+    #####: 1011:	CRYPTO_w_unlock(CRYPTO_LOCK_ENGINE);
+    #####: 1012:	return rv;
+        -: 1013:	}
+        -: 1014:
+    #####: 1015:static AEP_RV aep_close_all_connections(int use_engine_lock, int *in_use)
+        -: 1016:	{
+        -: 1017:	int count;
+        -: 1018:	AEP_RV rv = AEP_R_OK;
+        -: 1019:
+    #####: 1020:	*in_use = 0;
+    #####: 1021:	if (use_engine_lock) CRYPTO_w_lock(CRYPTO_LOCK_ENGINE);
+    #####: 1022:	for (count = 0;count < MAX_PROCESS_CONNECTIONS;count ++)
+        -: 1023:		{
+    #####: 1024:		switch (aep_app_conn_table[count].conn_state)
+        -: 1025:			{
+        -: 1026:		case Connected:
+    #####: 1027:			rv = p_AEP_CloseConnection(aep_app_conn_table[count].conn_hndl);
+    #####: 1028:			if (rv != AEP_R_OK)
+        -: 1029:				goto end;
+    #####: 1030:			aep_app_conn_table[count].conn_state = NotConnected;
+    #####: 1031:			aep_app_conn_table[count].conn_hndl  = 0;
+    #####: 1032:			break;
+        -: 1033:		case InUse:
+    #####: 1034:			(*in_use)++;
+    #####: 1035:			break;
+        -: 1036:		case NotConnected:
+        -: 1037:			break;
+        -: 1038:			}
+        -: 1039:		}
+        -: 1040: end:
+    #####: 1041:	if (use_engine_lock) CRYPTO_w_unlock(CRYPTO_LOCK_ENGINE);
+    #####: 1042:	return rv;
+        -: 1043:	}
+        -: 1044:
+        -: 1045:/*BigNum call back functions, used to convert OpenSSL bignums into AEP bignums.
+        -: 1046:  Note only 32bit Openssl build support*/
+        -: 1047:
+    #####: 1048:static AEP_RV GetBigNumSize(AEP_VOID_PTR ArbBigNum, AEP_U32* BigNumSize)
+        -: 1049:	{
+        -: 1050:	BIGNUM* bn;
+        -: 1051:
+        -: 1052:	/*Cast the ArbBigNum pointer to our BIGNUM struct*/
+        -: 1053:	bn = (BIGNUM*) ArbBigNum;
+        -: 1054:
+        -: 1055:#ifdef SIXTY_FOUR_BIT_LONG
+    #####: 1056:	*BigNumSize = bn->top << 3;
+        -: 1057:#else
+        -: 1058:	/*Size of the bignum in bytes is equal to the bn->top (no of 32 bit
+        -: 1059:	  words) multiplies by 4*/
+        -: 1060:	*BigNumSize = bn->top << 2;
+        -: 1061:#endif
+        -: 1062:
+    #####: 1063:	return AEP_R_OK;
+        -: 1064:	}
+        -: 1065:
+    #####: 1066:static AEP_RV MakeAEPBigNum(AEP_VOID_PTR ArbBigNum, AEP_U32 BigNumSize,
+        -: 1067:	unsigned char* AEP_BigNum)
+        -: 1068:	{
+        -: 1069:	BIGNUM* bn;
+        -: 1070:
+        -: 1071:#ifndef SIXTY_FOUR_BIT_LONG
+        -: 1072:	unsigned char* buf;
+        -: 1073:	int i;
+        -: 1074:#endif
+        -: 1075:
+        -: 1076:	/*Cast the ArbBigNum pointer to our BIGNUM struct*/
+        -: 1077:	bn = (BIGNUM*) ArbBigNum;
+        -: 1078:
+        -: 1079:#ifdef SIXTY_FOUR_BIT_LONG
+    #####: 1080:  	memcpy(AEP_BigNum, bn->d, BigNumSize);
+        -: 1081:#else
+        -: 1082:	/*Must copy data into a (monotone) least significant byte first format
+        -: 1083:	  performing endian conversion if necessary*/
+        -: 1084:	for(i=0;i<bn->top;i++)
+        -: 1085:		{
+        -: 1086:		buf = (unsigned char*)&bn->d[i];
+        -: 1087:
+        -: 1088:		*((AEP_U32*)AEP_BigNum) = (AEP_U32)
+        -: 1089:			((unsigned) buf[1] << 8 | buf[0]) |
+        -: 1090:			((unsigned) buf[3] << 8 | buf[2])  << 16;
+        -: 1091:
+        -: 1092:		AEP_BigNum += 4;
+        -: 1093:		}
+        -: 1094:#endif
+        -: 1095:
+    #####: 1096:	return AEP_R_OK;
+        -: 1097:	}
+        -: 1098:
+        -: 1099:/*Turn an AEP Big Num back to a user big num*/
+    #####: 1100:static AEP_RV ConvertAEPBigNum(void* ArbBigNum, AEP_U32 BigNumSize,
+        -: 1101:	unsigned char* AEP_BigNum)
+        -: 1102:	{
+        -: 1103:	BIGNUM* bn;
+        -: 1104:#ifndef SIXTY_FOUR_BIT_LONG
+        -: 1105:	int i;
+        -: 1106:#endif
+        -: 1107:
+        -: 1108:	bn = (BIGNUM*)ArbBigNum;
+        -: 1109:
+        -: 1110:	/*Expand the result bn so that it can hold our big num.
+        -: 1111:	  Size is in bits*/
+    #####: 1112:	bn_expand(bn, (int)(BigNumSize << 3));
+        -: 1113:
+        -: 1114:#ifdef SIXTY_FOUR_BIT_LONG
+    #####: 1115:	bn->top = BigNumSize >> 3;
+        -: 1116:	
+    #####: 1117:	if((BigNumSize & 7) != 0)
+    #####: 1118:		bn->top++;
+        -: 1119:
+    #####: 1120:	memset(bn->d, 0, bn->top << 3);	
+        -: 1121:
+    #####: 1122:	memcpy(bn->d, AEP_BigNum, BigNumSize);
+        -: 1123:#else
+        -: 1124:	bn->top = BigNumSize >> 2;
+        -: 1125: 
+        -: 1126:	for(i=0;i<bn->top;i++)
+        -: 1127:		{
+        -: 1128:		bn->d[i] = (AEP_U32)
+        -: 1129:			((unsigned) AEP_BigNum[3] << 8 | AEP_BigNum[2]) << 16 |
+        -: 1130:			((unsigned) AEP_BigNum[1] << 8 | AEP_BigNum[0]);
+        -: 1131:		AEP_BigNum += 4;
+        -: 1132:		}
+        -: 1133:#endif
+        -: 1134:
+    #####: 1135:	return AEP_R_OK;
+        -: 1136:}	
+        -: 1137:	
+        -: 1138:#endif /* !OPENSSL_NO_HW_AEP */
+        -: 1139:#endif /* !OPENSSL_NO_HW */

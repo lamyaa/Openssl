@@ -1,0 +1,1152 @@
+        -:    0:Source:ts.c
+        -:    0:Graph:ts.gcno
+        -:    0:Data:ts.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* apps/ts.c */
+        -:    2:/* Written by Zoltan Glozik (zglozik@stones.com) for the OpenSSL
+        -:    3: * project 2002.
+        -:    4: */
+        -:    5:/* ====================================================================
+        -:    6: * Copyright (c) 2001 The OpenSSL Project.  All rights reserved.
+        -:    7: *
+        -:    8: * Redistribution and use in source and binary forms, with or without
+        -:    9: * modification, are permitted provided that the following conditions
+        -:   10: * are met:
+        -:   11: *
+        -:   12: * 1. Redistributions of source code must retain the above copyright
+        -:   13: *    notice, this list of conditions and the following disclaimer. 
+        -:   14: *
+        -:   15: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   16: *    notice, this list of conditions and the following disclaimer in
+        -:   17: *    the documentation and/or other materials provided with the
+        -:   18: *    distribution.
+        -:   19: *
+        -:   20: * 3. All advertising materials mentioning features or use of this
+        -:   21: *    software must display the following acknowledgment:
+        -:   22: *    "This product includes software developed by the OpenSSL Project
+        -:   23: *    for use in the OpenSSL Toolkit. (http://www.OpenSSL.org/)"
+        -:   24: *
+        -:   25: * 4. The names "OpenSSL Toolkit" and "OpenSSL Project" must not be used to
+        -:   26: *    endorse or promote products derived from this software without
+        -:   27: *    prior written permission. For written permission, please contact
+        -:   28: *    licensing@OpenSSL.org.
+        -:   29: *
+        -:   30: * 5. Products derived from this software may not be called "OpenSSL"
+        -:   31: *    nor may "OpenSSL" appear in their names without prior written
+        -:   32: *    permission of the OpenSSL Project.
+        -:   33: *
+        -:   34: * 6. Redistributions of any form whatsoever must retain the following
+        -:   35: *    acknowledgment:
+        -:   36: *    "This product includes software developed by the OpenSSL Project
+        -:   37: *    for use in the OpenSSL Toolkit (http://www.OpenSSL.org/)"
+        -:   38: *
+        -:   39: * THIS SOFTWARE IS PROVIDED BY THE OpenSSL PROJECT ``AS IS'' AND ANY
+        -:   40: * EXPRESSED OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   41: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+        -:   42: * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE OpenSSL PROJECT OR
+        -:   43: * ITS CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+        -:   44: * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+        -:   45: * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+        -:   46: * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   47: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+        -:   48: * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+        -:   49: * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+        -:   50: * OF THE POSSIBILITY OF SUCH DAMAGE.
+        -:   51: * ====================================================================
+        -:   52: *
+        -:   53: * This product includes cryptographic software written by Eric Young
+        -:   54: * (eay@cryptsoft.com).  This product includes software written by Tim
+        -:   55: * Hudson (tjh@cryptsoft.com).
+        -:   56: *
+        -:   57: */
+        -:   58:
+        -:   59:#include <stdio.h>
+        -:   60:#include <stdlib.h>
+        -:   61:#include <string.h>
+        -:   62:#include "apps.h"
+        -:   63:#include <openssl/bio.h>
+        -:   64:#include <openssl/err.h>
+        -:   65:#include <openssl/pem.h>
+        -:   66:#include <openssl/rand.h>
+        -:   67:#include <openssl/ts.h>
+        -:   68:#include <openssl/bn.h>
+        -:   69:
+        -:   70:#undef PROG
+        -:   71:#define PROG	ts_main
+        -:   72:
+        -:   73:/* Length of the nonce of the request in bits (must be a multiple of 8). */
+        -:   74:#define	NONCE_LENGTH		64
+        -:   75:
+        -:   76:/* Macro definitions for the configuration file. */
+        -:   77:#define	ENV_OID_FILE		"oid_file"
+        -:   78:
+        -:   79:/* Local function declarations. */
+        -:   80:
+        -:   81:static ASN1_OBJECT *txt2obj(const char *oid);
+        -:   82:static CONF *load_config_file(const char *configfile);
+        -:   83:
+        -:   84:/* Query related functions. */
+        -:   85:static int query_command(const char *data, char *digest,
+        -:   86:			 const EVP_MD *md, const char *policy, int no_nonce, 
+        -:   87:			 int cert, const char *in, const char *out, int text);
+        -:   88:static BIO *BIO_open_with_default(const char *file, const char *mode, 
+        -:   89:				  FILE *default_fp);
+        -:   90:static TS_REQ *create_query(BIO *data_bio, char *digest, const EVP_MD *md,
+        -:   91:			    const char *policy, int no_nonce, int cert);
+        -:   92:static int create_digest(BIO *input, char *digest,
+        -:   93:			 const EVP_MD *md, unsigned char **md_value);
+        -:   94:static ASN1_INTEGER *create_nonce(int bits);
+        -:   95:
+        -:   96:/* Reply related functions. */
+        -:   97:static int reply_command(CONF *conf, char *section, char *engine, 
+        -:   98:			 char *queryfile, char *passin, char *inkey, 
+        -:   99:			 char *signer, char *chain, const char *policy, 
+        -:  100:			 char *in, int token_in, char *out, int token_out,
+        -:  101:			 int text);
+        -:  102:static TS_RESP *read_PKCS7(BIO *in_bio);
+        -:  103:static TS_RESP *create_response(CONF *conf, const char *section, char *engine,
+        -:  104:				char *queryfile, char *passin, char *inkey,
+        -:  105:				char *signer, char *chain, const char *policy);
+        -:  106:static ASN1_INTEGER * MS_CALLBACK serial_cb(TS_RESP_CTX *ctx, void *data);
+        -:  107:static ASN1_INTEGER *next_serial(const char *serialfile);
+        -:  108:static int save_ts_serial(const char *serialfile, ASN1_INTEGER *serial);
+        -:  109:
+        -:  110:/* Verify related functions. */
+        -:  111:static int verify_command(char *data, char *digest, char *queryfile,
+        -:  112:			  char *in, int token_in,
+        -:  113:			  char *ca_path, char *ca_file, char *untrusted);
+        -:  114:static TS_VERIFY_CTX *create_verify_ctx(char *data, char *digest, 
+        -:  115:					char *queryfile, 
+        -:  116:					char *ca_path, char *ca_file,
+        -:  117:					char *untrusted);
+        -:  118:static X509_STORE *create_cert_store(char *ca_path, char *ca_file);
+        -:  119:static int MS_CALLBACK verify_cb(int ok, X509_STORE_CTX *ctx);
+        -:  120:
+        -:  121:/* Main function definition. */
+        -:  122:int MAIN(int, char **);
+        -:  123:
+    #####:  124:int MAIN(int argc, char **argv)
+        -:  125:	{
+        -:  126:	int ret = 1;
+        -:  127:	char *configfile = NULL;
+        -:  128:	char *section = NULL;
+        -:  129:	CONF *conf = NULL;
+        -:  130:	enum mode {
+        -:  131:	CMD_NONE, CMD_QUERY, CMD_REPLY, CMD_VERIFY 
+        -:  132:	} mode = CMD_NONE;
+        -:  133:	char *data = NULL;
+        -:  134:	char *digest = NULL;
+        -:  135:	const EVP_MD *md = NULL;
+        -:  136:	char *rnd = NULL;
+        -:  137:	char *policy = NULL;
+        -:  138:	int no_nonce = 0;
+        -:  139:	int cert = 0;
+        -:  140:	char *in = NULL;
+        -:  141:	char *out = NULL;
+        -:  142:	int text = 0;
+        -:  143:	char *queryfile = NULL;
+        -:  144:	char *passin = NULL;	/* Password source. */
+    #####:  145:	char *password =NULL;	/* Password itself. */
+        -:  146:	char *inkey = NULL;
+        -:  147:	char *signer = NULL;
+        -:  148:	char *chain = NULL;
+        -:  149:	char *ca_path = NULL;
+        -:  150:	char *ca_file = NULL;
+        -:  151:	char *untrusted = NULL;
+        -:  152:	char *engine = NULL;
+        -:  153:	/* Input is ContentInfo instead of TimeStampResp. */
+        -:  154:	int token_in = 0;	
+        -:  155:	/* Output is ContentInfo instead of TimeStampResp. */
+        -:  156:	int token_out = 0;
+        -:  157:	int free_bio_err = 0;
+        -:  158:
+    #####:  159:	ERR_load_crypto_strings();
+    #####:  160:	apps_startup();
+        -:  161:
+    #####:  162:	if (bio_err == NULL && (bio_err = BIO_new(BIO_s_file())) != NULL)
+        -:  163:		{
+        -:  164:		free_bio_err = 1;
+    #####:  165:		BIO_set_fp(bio_err, stderr, BIO_NOCLOSE | BIO_FP_TEXT);
+        -:  166:		}
+        -:  167:
+    #####:  168:	if (!load_config(bio_err, NULL))
+        -:  169:		goto cleanup;
+        -:  170:
+    #####:  171:	for (argc--, argv++; argc > 0; argc--, argv++)
+        -:  172:		{
+    #####:  173:		if (strcmp(*argv, "-config") == 0)
+        -:  174:			{
+    #####:  175:			if (argc-- < 1) goto usage;
+    #####:  176:			configfile = *++argv;
+        -:  177:			}
+    #####:  178:		else if (strcmp(*argv, "-section") == 0)
+        -:  179:			{
+    #####:  180:			if (argc-- < 1) goto usage;
+    #####:  181:			section = *++argv;
+        -:  182:			}
+    #####:  183:		else if (strcmp(*argv, "-query") == 0)
+        -:  184:			{
+    #####:  185:			if (mode != CMD_NONE) goto usage;
+        -:  186:			mode = CMD_QUERY;
+        -:  187:			}
+    #####:  188:		else if (strcmp(*argv, "-data") == 0)
+        -:  189:			{
+    #####:  190:			if (argc-- < 1) goto usage;
+    #####:  191:			data = *++argv;
+        -:  192:			}
+    #####:  193:		else if (strcmp(*argv, "-digest") == 0)
+        -:  194:			{
+    #####:  195:			if (argc-- < 1) goto usage;
+    #####:  196:			digest = *++argv;
+        -:  197:			}
+    #####:  198:		else if (strcmp(*argv, "-rand") == 0)
+        -:  199:			{
+    #####:  200:			if (argc-- < 1) goto usage;
+    #####:  201:			rnd = *++argv;
+        -:  202:			}
+    #####:  203:		else if (strcmp(*argv, "-policy") == 0)
+        -:  204:			{
+    #####:  205:			if (argc-- < 1) goto usage;
+    #####:  206:			policy = *++argv;
+        -:  207:			}
+    #####:  208:		else if (strcmp(*argv, "-no_nonce") == 0)
+        -:  209:			{
+        -:  210:			no_nonce = 1;
+        -:  211:			}
+    #####:  212:		else if (strcmp(*argv, "-cert") == 0)
+        -:  213:			{
+        -:  214:			cert = 1;
+        -:  215:			}
+    #####:  216:		else if (strcmp(*argv, "-in") == 0)
+        -:  217:			{
+    #####:  218:			if (argc-- < 1) goto usage;
+    #####:  219:			in = *++argv;
+        -:  220:			}
+    #####:  221:		else if (strcmp(*argv, "-token_in") == 0)
+        -:  222:			{
+        -:  223:			token_in = 1;
+        -:  224:			}
+    #####:  225:		else if (strcmp(*argv, "-out") == 0)
+        -:  226:			{
+    #####:  227:			if (argc-- < 1) goto usage;
+    #####:  228:			out = *++argv;
+        -:  229:			}
+    #####:  230:		else if (strcmp(*argv, "-token_out") == 0)
+        -:  231:			{
+        -:  232:			token_out = 1;
+        -:  233:			}
+    #####:  234:		else if (strcmp(*argv, "-text") == 0)
+        -:  235:			{
+        -:  236:			text = 1;
+        -:  237:			}
+    #####:  238:		else if (strcmp(*argv, "-reply") == 0)
+        -:  239:			{
+    #####:  240:			if (mode != CMD_NONE) goto usage;
+        -:  241:			mode = CMD_REPLY;
+        -:  242:			}
+    #####:  243:		else if (strcmp(*argv, "-queryfile") == 0)
+        -:  244:			{
+    #####:  245:			if (argc-- < 1) goto usage;
+    #####:  246:			queryfile = *++argv;
+        -:  247:			}
+    #####:  248:		else if (strcmp(*argv, "-passin") == 0)
+        -:  249:			{
+    #####:  250:			if (argc-- < 1) goto usage;
+    #####:  251:			passin = *++argv;
+        -:  252:			}
+    #####:  253:		else if (strcmp(*argv, "-inkey") == 0)
+        -:  254:			{
+    #####:  255:			if (argc-- < 1) goto usage;
+    #####:  256:			inkey = *++argv;
+        -:  257:			}
+    #####:  258:		else if (strcmp(*argv, "-signer") == 0)
+        -:  259:			{
+    #####:  260:			if (argc-- < 1) goto usage;
+    #####:  261:			signer = *++argv;
+        -:  262:			}
+    #####:  263:		else if (strcmp(*argv, "-chain") == 0)
+        -:  264:			{
+    #####:  265:			if (argc-- < 1) goto usage;
+    #####:  266:			chain = *++argv;
+        -:  267:			}
+    #####:  268:		else if (strcmp(*argv, "-verify") == 0)
+        -:  269:			{
+    #####:  270:			if (mode != CMD_NONE) goto usage;
+        -:  271:			mode = CMD_VERIFY;
+        -:  272:			}
+    #####:  273:		else if (strcmp(*argv, "-CApath") == 0)
+        -:  274:			{
+    #####:  275:			if (argc-- < 1) goto usage;
+    #####:  276:			ca_path = *++argv;
+        -:  277:			}
+    #####:  278:		else if (strcmp(*argv, "-CAfile") == 0)
+        -:  279:			{
+    #####:  280:			if (argc-- < 1) goto usage;
+    #####:  281:			ca_file = *++argv;
+        -:  282:			}
+    #####:  283:		else if (strcmp(*argv, "-untrusted") == 0)
+        -:  284:			{
+    #####:  285:			if (argc-- < 1) goto usage;
+    #####:  286:			untrusted = *++argv;
+        -:  287:			}
+    #####:  288:		else if (strcmp(*argv, "-engine") == 0)
+        -:  289:			{
+    #####:  290:			if (argc-- < 1) goto usage;
+    #####:  291:			engine = *++argv;
+        -:  292:			}
+    #####:  293:		else if ((md = EVP_get_digestbyname(*argv + 1)) != NULL)
+        -:  294:			{
+        -:  295:			/* empty. */
+        -:  296:			}
+        -:  297:		else
+        -:  298:			goto usage;
+        -:  299:		}
+        -:  300:	
+        -:  301:	/* Seed the random number generator if it is going to be used. */
+    #####:  302:	if (mode == CMD_QUERY && !no_nonce)
+        -:  303:		{
+    #####:  304:		if (!app_RAND_load_file(NULL, bio_err, 1) && rnd == NULL)
+    #####:  305:			BIO_printf(bio_err, "warning, not much extra random "
+        -:  306:				   "data, consider using the -rand option\n");
+    #####:  307:		if (rnd != NULL)
+    #####:  308:			BIO_printf(bio_err,"%ld semi-random bytes loaded\n",
+        -:  309:				   app_RAND_load_files(rnd));
+        -:  310:		}
+        -:  311:
+        -:  312:	/* Get the password if required. */
+    #####:  313:	if(mode == CMD_REPLY && passin &&
+    #####:  314:	   !app_passwd(bio_err, passin, NULL, &password, NULL))
+        -:  315:		{
+    #####:  316:		BIO_printf(bio_err,"Error getting password.\n");
+    #####:  317:		goto cleanup;
+        -:  318:		}
+        -:  319:
+        -:  320:	/* Check consistency of parameters and execute 
+        -:  321:	   the appropriate function. */
+    #####:  322:	switch (mode)
+        -:  323:		{
+        -:  324:	case CMD_NONE:
+        -:  325:		goto usage;
+        -:  326:	case CMD_QUERY:
+        -:  327:		/* Data file and message imprint cannot be specified
+        -:  328:		   at the same time. */
+    #####:  329:		ret = data != NULL && digest != NULL;
+    #####:  330:		if (ret) goto usage;
+        -:  331:		/* Load the config file for possible policy OIDs. */
+    #####:  332:		conf = load_config_file(configfile);
+    #####:  333:		ret = !query_command(data, digest, md, policy, no_nonce, cert,
+        -:  334:				     in, out, text);
+    #####:  335:		break;
+        -:  336:	case CMD_REPLY:
+    #####:  337:		conf = load_config_file(configfile);
+    #####:  338:		if (in == NULL)
+        -:  339:			{
+    #####:  340:			ret = !(queryfile != NULL && conf != NULL && !token_in);
+    #####:  341:			if (ret) goto usage;
+        -:  342:			}
+        -:  343:		else
+        -:  344:			{
+        -:  345:			/* 'in' and 'queryfile' are exclusive. */
+    #####:  346:			ret = !(queryfile == NULL);
+    #####:  347:			if (ret) goto usage;
+        -:  348:			}
+        -:  349:
+    #####:  350:		ret = !reply_command(conf, section, engine, queryfile, 
+        -:  351:				     password, inkey, signer, chain, policy, 
+        -:  352:				     in, token_in, out, token_out, text);
+    #####:  353:		break;
+        -:  354:	case CMD_VERIFY:
+    #####:  355:		ret = !(((queryfile && !data && !digest)
+    #####:  356:			 || (!queryfile && data && !digest)
+    #####:  357:			 || (!queryfile && !data && digest))
+        -:  358:			&& in != NULL);
+    #####:  359:		if (ret) goto usage;
+        -:  360:
+    #####:  361:		ret = !verify_command(data, digest, queryfile, in, token_in,
+        -:  362:				      ca_path, ca_file, untrusted);
+        -:  363:		}
+        -:  364:
+        -:  365:	goto cleanup;
+        -:  366:
+        -:  367: usage:
+    #####:  368:	BIO_printf(bio_err, "usage:\n"
+        -:  369:		   "ts -query [-rand file%cfile%c...] [-config configfile] "
+        -:  370:		   "[-data file_to_hash] [-digest digest_bytes]"
+        -:  371:		   "[-md2|-md4|-md5|-sha|-sha1|-mdc2|-ripemd160] "
+        -:  372:		   "[-policy object_id] [-no_nonce] [-cert] "
+        -:  373:		   "[-in request.tsq] [-out request.tsq] [-text]\n",
+        -:  374:		   LIST_SEPARATOR_CHAR, LIST_SEPARATOR_CHAR);
+    #####:  375:	BIO_printf(bio_err, "or\n"
+        -:  376:		   "ts -reply [-config configfile] [-section tsa_section] "
+        -:  377:		   "[-queryfile request.tsq] [-passin password] "
+        -:  378:		   "[-signer tsa_cert.pem] [-inkey private_key.pem] "
+        -:  379:		   "[-chain certs_file.pem] [-policy object_id] "
+        -:  380:		   "[-in response.tsr] [-token_in] "
+        -:  381:		   "[-out response.tsr] [-token_out] [-text] [-engine id]\n");
+    #####:  382:	BIO_printf(bio_err, "or\n"
+        -:  383:		   "ts -verify [-data file_to_hash] [-digest digest_bytes] "
+        -:  384:		   "[-queryfile request.tsq] "
+        -:  385:		   "-in response.tsr [-token_in] "
+        -:  386:		   "-CApath ca_path -CAfile ca_file.pem "
+        -:  387:		   "-untrusted cert_file.pem\n");
+        -:  388: cleanup:
+        -:  389:	/* Clean up. */
+    #####:  390:	app_RAND_write_file(NULL, bio_err);
+    #####:  391:	NCONF_free(conf);
+    #####:  392:	OPENSSL_free(password);
+    #####:  393:	OBJ_cleanup();
+    #####:  394:	if (free_bio_err)
+        -:  395:		{
+    #####:  396:		BIO_free_all(bio_err);
+    #####:  397:		bio_err = NULL;
+        -:  398:		}
+        -:  399:
+    #####:  400:	OPENSSL_EXIT(ret);
+        -:  401:	}
+        -:  402:
+        -:  403:/*
+        -:  404: * Configuration file-related function definitions.
+        -:  405: */
+        -:  406:
+    #####:  407:static ASN1_OBJECT *txt2obj(const char *oid)
+        -:  408:	{
+        -:  409:	ASN1_OBJECT *oid_obj = NULL;
+        -:  410:
+    #####:  411:	if (!(oid_obj = OBJ_txt2obj(oid, 0)))
+    #####:  412:		BIO_printf(bio_err, "cannot convert %s to OID\n", oid);
+        -:  413:
+    #####:  414:	return oid_obj;
+        -:  415:	}
+        -:  416:
+    #####:  417:static CONF *load_config_file(const char *configfile)
+        -:  418:	{
+        -:  419:	CONF *conf = NULL;
+    #####:  420:	long errorline = -1;
+        -:  421:
+    #####:  422:	if (!configfile) configfile = getenv("OPENSSL_CONF");
+    #####:  423:	if (!configfile) configfile = getenv("SSLEAY_CONF");
+        -:  424:
+    #####:  425:	if (configfile &&
+    #####:  426:	    (!(conf = NCONF_new(NULL)) ||
+    #####:  427:	     NCONF_load(conf, configfile, &errorline) <= 0))
+        -:  428:		{
+    #####:  429:		if (errorline <= 0)
+    #####:  430:			BIO_printf(bio_err, "error loading the config file "
+        -:  431:				   "'%s'\n", configfile);
+        -:  432:		else
+    #####:  433:			BIO_printf(bio_err, "error on line %ld of config file "
+        -:  434:				   "'%s'\n", errorline, configfile);
+        -:  435:		}
+        -:  436:
+    #####:  437:	if (conf != NULL)
+        -:  438:		{
+        -:  439:		const char *p;
+        -:  440:
+    #####:  441:		BIO_printf(bio_err,"Using configuration from %s\n", configfile);
+    #####:  442:		p = NCONF_get_string(conf, NULL, ENV_OID_FILE);
+    #####:  443:		if (p != NULL)
+        -:  444:			{
+    #####:  445:			BIO *oid_bio = BIO_new_file(p, "r");
+    #####:  446:			if (!oid_bio) 
+    #####:  447:				ERR_print_errors(bio_err);
+        -:  448:			else
+        -:  449:				{
+    #####:  450:				OBJ_create_objects(oid_bio);
+    #####:  451:				BIO_free_all(oid_bio);
+        -:  452:				}
+        -:  453:			}
+        -:  454:		else
+    #####:  455:			ERR_clear_error();
+    #####:  456:		if(!add_oid_section(bio_err, conf)) 
+    #####:  457:			ERR_print_errors(bio_err);
+        -:  458:		}
+    #####:  459:	return conf;
+        -:  460:	}
+        -:  461:
+        -:  462:/*
+        -:  463: * Query-related method definitions.
+        -:  464: */
+        -:  465:
+    #####:  466:static int query_command(const char *data, char *digest, const EVP_MD *md,
+        -:  467:			 const char *policy, int no_nonce, 
+        -:  468:			 int cert, const char *in, const char *out, int text)
+        -:  469:	{
+        -:  470:	int ret = 0;
+        -:  471:	TS_REQ *query = NULL;
+        -:  472:	BIO *in_bio = NULL;
+        -:  473:	BIO *data_bio = NULL;
+        -:  474:	BIO *out_bio = NULL;
+        -:  475:
+        -:  476:	/* Build query object either from file or from scratch. */
+    #####:  477:	if (in != NULL)
+        -:  478:		{
+    #####:  479:		if ((in_bio = BIO_new_file(in, "rb")) == NULL) goto end;
+    #####:  480:		query = d2i_TS_REQ_bio(in_bio, NULL);
+        -:  481:		}
+        -:  482:	else
+        -:  483:		{
+        -:  484:		/* Open the file if no explicit digest bytes were specified. */
+    #####:  485:		if (!digest 
+    #####:  486:		    && !(data_bio = BIO_open_with_default(data, "rb", stdin)))
+        -:  487:			goto end;
+        -:  488:		/* Creating the query object. */
+    #####:  489:		query = create_query(data_bio, digest, md,
+        -:  490:				     policy, no_nonce, cert);
+        -:  491:		/* Saving the random number generator state. */
+        -:  492:		}
+    #####:  493:	if (query == NULL) goto end;
+        -:  494:
+        -:  495:	/* Write query either in ASN.1 or in text format. */
+    #####:  496:	if ((out_bio = BIO_open_with_default(out, "wb", stdout)) == NULL)
+        -:  497:		goto end;
+    #####:  498:	if (text)
+        -:  499:		{
+        -:  500:		/* Text output. */
+    #####:  501:		if (!TS_REQ_print_bio(out_bio, query))
+        -:  502:			goto end;
+        -:  503:		}
+        -:  504:	else
+        -:  505:		{
+        -:  506:		/* ASN.1 output. */
+    #####:  507:		if (!i2d_TS_REQ_bio(out_bio, query))
+        -:  508:			goto end;
+        -:  509:		}
+        -:  510:
+        -:  511:	ret = 1;
+        -:  512:
+        -:  513: end:
+    #####:  514:	ERR_print_errors(bio_err);
+        -:  515:
+        -:  516:	/* Clean up. */
+    #####:  517:	BIO_free_all(in_bio);
+    #####:  518:	BIO_free_all(data_bio);
+    #####:  519:	BIO_free_all(out_bio);
+    #####:  520:	TS_REQ_free(query);
+        -:  521:
+    #####:  522:	return ret;
+        -:  523:	}
+        -:  524:
+    #####:  525:static BIO *BIO_open_with_default(const char *file, const char *mode, 
+        -:  526:				  FILE *default_fp)
+        -:  527:	{
+    #####:  528:	return file == NULL ? 
+        -:  529:		BIO_new_fp(default_fp, BIO_NOCLOSE) 
+    #####:  530:		: BIO_new_file(file, mode);
+        -:  531:	}
+        -:  532:
+    #####:  533:static TS_REQ *create_query(BIO *data_bio, char *digest, const EVP_MD *md,
+        -:  534:			    const char *policy, int no_nonce, int cert)
+        -:  535:	{
+        -:  536:	int ret = 0;
+        -:  537:	TS_REQ *ts_req = NULL;
+        -:  538:	int len;
+        -:  539:	TS_MSG_IMPRINT *msg_imprint = NULL;
+        -:  540:	X509_ALGOR *algo = NULL;
+    #####:  541:	unsigned char *data = NULL;
+        -:  542:	ASN1_OBJECT *policy_obj = NULL;
+        -:  543:	ASN1_INTEGER *nonce_asn1 = NULL;
+        -:  544:
+        -:  545:	/* Setting default message digest. */
+    #####:  546:	if (!md && !(md = EVP_get_digestbyname("sha1"))) goto err;
+        -:  547:
+        -:  548:	/* Creating request object. */
+    #####:  549:	if (!(ts_req = TS_REQ_new())) goto err;
+        -:  550:
+        -:  551:	/* Setting version. */
+    #####:  552:	if (!TS_REQ_set_version(ts_req, 1)) goto err;
+        -:  553:
+        -:  554:	/* Creating and adding MSG_IMPRINT object. */
+    #####:  555:	if (!(msg_imprint = TS_MSG_IMPRINT_new())) goto err;
+        -:  556:
+        -:  557:	/* Adding algorithm. */
+    #####:  558:	if (!(algo = X509_ALGOR_new())) goto err;
+    #####:  559:	if (!(algo->algorithm = OBJ_nid2obj(EVP_MD_type(md)))) goto err;
+    #####:  560:	if (!(algo->parameter = ASN1_TYPE_new())) goto err;
+    #####:  561:	algo->parameter->type = V_ASN1_NULL;
+    #####:  562:	if (!TS_MSG_IMPRINT_set_algo(msg_imprint, algo)) goto err;
+        -:  563:
+        -:  564:	/* Adding message digest. */
+    #####:  565:	if ((len = create_digest(data_bio, digest, md, &data)) == 0)
+        -:  566:		goto err;
+    #####:  567:	if (!TS_MSG_IMPRINT_set_msg(msg_imprint, data, len)) goto err;
+        -:  568:
+    #####:  569:	if (!TS_REQ_set_msg_imprint(ts_req, msg_imprint)) goto err;
+        -:  570:	
+        -:  571:	/* Setting policy if requested. */
+    #####:  572:	if (policy && !(policy_obj = txt2obj(policy))) goto err;
+    #####:  573:	if (policy_obj && !TS_REQ_set_policy_id(ts_req, policy_obj)) goto err;
+        -:  574:
+        -:  575:	/* Setting nonce if requested. */
+    #####:  576:	if (!no_nonce && !(nonce_asn1 = create_nonce(NONCE_LENGTH))) goto err;
+    #####:  577:	if (nonce_asn1 && !TS_REQ_set_nonce(ts_req, nonce_asn1)) goto err;
+        -:  578:
+        -:  579:	/* Setting certificate request flag if requested. */
+    #####:  580:	if (!TS_REQ_set_cert_req(ts_req, cert)) goto err;
+        -:  581:
+        -:  582:	ret = 1;
+        -:  583: err:
+    #####:  584:	if (!ret)
+        -:  585:		{
+    #####:  586:		TS_REQ_free(ts_req);
+        -:  587:		ts_req = NULL;
+    #####:  588:		BIO_printf(bio_err, "could not create query\n");
+        -:  589:		}
+    #####:  590:	TS_MSG_IMPRINT_free(msg_imprint);
+    #####:  591:	X509_ALGOR_free(algo);
+    #####:  592:	OPENSSL_free(data);
+    #####:  593:	ASN1_OBJECT_free(policy_obj);
+    #####:  594:	ASN1_INTEGER_free(nonce_asn1);
+    #####:  595:	return ts_req;
+        -:  596:	}
+        -:  597:
+    #####:  598:static int create_digest(BIO *input, char *digest, const EVP_MD *md,
+        -:  599:			 unsigned char **md_value)
+        -:  600:	{
+        -:  601:	int md_value_len;
+        -:  602:
+    #####:  603:	md_value_len = EVP_MD_size(md);
+    #####:  604:	if (md_value_len < 0)
+        -:  605:	    goto err;
+    #####:  606:	if (input)
+        -:  607:		{
+        -:  608:		/* Digest must be computed from an input file. */
+        -:  609:		EVP_MD_CTX md_ctx;
+        -:  610:		unsigned char buffer[4096];
+        -:  611:		int length;
+        -:  612:
+    #####:  613:		*md_value = OPENSSL_malloc(md_value_len);
+    #####:  614:		if (*md_value == 0) goto err;
+        -:  615:
+    #####:  616:		EVP_DigestInit(&md_ctx, md);
+    #####:  617:		while ((length = BIO_read(input, buffer, sizeof(buffer))) > 0)
+        -:  618:			{
+    #####:  619:			EVP_DigestUpdate(&md_ctx, buffer, length);
+        -:  620:			}
+    #####:  621:		EVP_DigestFinal(&md_ctx, *md_value, NULL);
+        -:  622:		}
+        -:  623:	else
+        -:  624:		{
+        -:  625:		/* Digest bytes are specified with digest. */
+        -:  626:		long digest_len;
+    #####:  627:		*md_value = string_to_hex(digest, &digest_len);
+    #####:  628:		if (!*md_value || md_value_len != digest_len)
+        -:  629:			{
+    #####:  630:			OPENSSL_free(*md_value);
+    #####:  631:			*md_value = NULL;
+    #####:  632:			BIO_printf(bio_err, "bad digest, %d bytes "
+        -:  633:				   "must be specified\n", md_value_len);
+    #####:  634:			goto err;
+        -:  635:			}
+        -:  636:		}
+        -:  637:
+    #####:  638:	return md_value_len;
+        -:  639: err:
+        -:  640:	return 0;
+        -:  641:	}
+        -:  642:
+    #####:  643:static ASN1_INTEGER *create_nonce(int bits)
+        -:  644:	{
+        -:  645:	unsigned char buf[20];
+        -:  646:	ASN1_INTEGER *nonce = NULL;
+    #####:  647:	int len = (bits - 1) / 8 + 1;
+        -:  648:	int i;
+        -:  649:
+        -:  650:	/* Generating random byte sequence. */
+    #####:  651:	if (len > (int)sizeof(buf)) goto err;
+    #####:  652:	if (RAND_bytes(buf, len) <= 0) goto err;
+        -:  653:
+        -:  654:	/* Find the first non-zero byte and creating ASN1_INTEGER object. */
+    #####:  655:	for (i = 0; i < len && !buf[i]; ++i);
+    #####:  656:	if (!(nonce = ASN1_INTEGER_new())) goto err;
+    #####:  657:	OPENSSL_free(nonce->data);
+        -:  658:	/* Allocate at least one byte. */
+    #####:  659:	nonce->length = len - i;
+    #####:  660:	if (!(nonce->data = OPENSSL_malloc(nonce->length + 1))) goto err;
+    #####:  661:	memcpy(nonce->data, buf + i, nonce->length);
+        -:  662:
+    #####:  663:	return nonce;
+        -:  664: err:
+    #####:  665:	BIO_printf(bio_err, "could not create nonce\n");
+    #####:  666:	ASN1_INTEGER_free(nonce);
+    #####:  667:	return NULL;
+        -:  668:	}
+        -:  669:/*
+        -:  670: * Reply-related method definitions.
+        -:  671: */
+        -:  672:
+    #####:  673:static int reply_command(CONF *conf, char *section, char *engine, 
+        -:  674:			 char *queryfile, char *passin, char *inkey,
+        -:  675:			 char *signer, char *chain, const char *policy, 
+        -:  676:			 char *in, int token_in,
+        -:  677:			 char *out, int token_out, int text)
+        -:  678:	{
+        -:  679:	int ret = 0;
+        -:  680:	TS_RESP *response = NULL;
+        -:  681:	BIO *in_bio = NULL;
+        -:  682:	BIO *query_bio = NULL;
+        -:  683:	BIO *inkey_bio = NULL;
+        -:  684:	BIO *signer_bio = NULL;
+        -:  685:	BIO *out_bio = NULL;
+        -:  686:
+        -:  687:	/* Build response object either from response or query. */
+    #####:  688:	if (in != NULL)
+        -:  689:		{
+    #####:  690:		if ((in_bio = BIO_new_file(in, "rb")) == NULL) goto end;
+    #####:  691:		if (token_in)
+        -:  692:			{
+        -:  693:			/* We have a ContentInfo (PKCS7) object, add
+        -:  694:			   'granted' status info around it. */
+    #####:  695:			response = read_PKCS7(in_bio);
+        -:  696:			}
+        -:  697:		else
+        -:  698:			{
+        -:  699:			/* We have a ready-made TS_RESP object. */
+    #####:  700:			response = d2i_TS_RESP_bio(in_bio, NULL);
+        -:  701:			}
+        -:  702:		}
+        -:  703:	else
+        -:  704:		{
+    #####:  705:		response = create_response(conf, section, engine, queryfile,
+        -:  706:					   passin, inkey, signer, chain,
+        -:  707:					   policy);
+    #####:  708:		if (response)
+    #####:  709:			BIO_printf(bio_err, "Response has been generated.\n");
+        -:  710:		else
+    #####:  711:			BIO_printf(bio_err, "Response is not generated.\n");
+        -:  712:		}
+    #####:  713:	if (response == NULL) goto end;
+        -:  714:
+        -:  715:	/* Write response either in ASN.1 or text format. */
+    #####:  716:	if ((out_bio = BIO_open_with_default(out, "wb", stdout)) == NULL)
+        -:  717:		goto end;
+    #####:  718:	if (text)
+        -:  719:		{
+        -:  720:		/* Text output. */
+    #####:  721:		if (token_out)
+        -:  722:			{
+    #####:  723:			TS_TST_INFO *tst_info = TS_RESP_get_tst_info(response);
+    #####:  724:			if (!TS_TST_INFO_print_bio(out_bio, tst_info)) goto end;
+        -:  725:			}
+        -:  726:		else
+        -:  727:			{
+    #####:  728:			if (!TS_RESP_print_bio(out_bio, response)) goto end;
+        -:  729:			}
+        -:  730:		}
+        -:  731:	else
+        -:  732:		{
+        -:  733:		/* ASN.1 DER output. */
+    #####:  734:		if (token_out)
+        -:  735:			{
+    #####:  736:			PKCS7 *token = TS_RESP_get_token(response);
+    #####:  737:			if (!i2d_PKCS7_bio(out_bio, token)) goto end;
+        -:  738:			}
+        -:  739:		else
+        -:  740:			{
+    #####:  741:			if (!i2d_TS_RESP_bio(out_bio, response)) goto end;
+        -:  742:			}
+        -:  743:		}
+        -:  744:
+        -:  745:	ret = 1;
+        -:  746:
+        -:  747: end:
+    #####:  748:	ERR_print_errors(bio_err);
+        -:  749:
+        -:  750:	/* Clean up. */
+    #####:  751:	BIO_free_all(in_bio);
+    #####:  752:	BIO_free_all(query_bio);
+    #####:  753:	BIO_free_all(inkey_bio);
+    #####:  754:	BIO_free_all(signer_bio);
+    #####:  755:	BIO_free_all(out_bio);
+    #####:  756:	TS_RESP_free(response);
+        -:  757:
+    #####:  758:	return ret;
+        -:  759:	}
+        -:  760:
+        -:  761:/* Reads a PKCS7 token and adds default 'granted' status info to it. */
+    #####:  762:static TS_RESP *read_PKCS7(BIO *in_bio)
+        -:  763:	{
+        -:  764:	int ret = 0;
+        -:  765:	PKCS7 *token = NULL;
+        -:  766:	TS_TST_INFO *tst_info = NULL;
+        -:  767:	TS_RESP *resp = NULL;
+        -:  768:	TS_STATUS_INFO *si = NULL;
+        -:  769:
+        -:  770:	/* Read PKCS7 object and extract the signed time stamp info. */
+    #####:  771:	if (!(token = d2i_PKCS7_bio(in_bio, NULL))) goto end;
+    #####:  772:	if (!(tst_info = PKCS7_to_TS_TST_INFO(token))) goto end;
+        -:  773:
+        -:  774:	/* Creating response object. */
+    #####:  775:	if (!(resp = TS_RESP_new())) goto end;
+        -:  776:
+        -:  777:	/* Create granted status info. */
+    #####:  778:	if (!(si = TS_STATUS_INFO_new())) goto end;
+    #####:  779:	if (!(ASN1_INTEGER_set(si->status, TS_STATUS_GRANTED))) goto end;
+    #####:  780:	if (!TS_RESP_set_status_info(resp, si)) goto end;
+        -:  781:
+        -:  782:	/* Setting encapsulated token. */
+    #####:  783:	TS_RESP_set_tst_info(resp, token, tst_info);
+        -:  784:	token = NULL;		/* Ownership is lost. */
+        -:  785:	tst_info = NULL;	/* Ownership is lost. */
+        -:  786:
+        -:  787:	ret = 1;
+        -:  788: end:
+    #####:  789:	PKCS7_free(token);
+    #####:  790:	TS_TST_INFO_free(tst_info);
+    #####:  791:	if (!ret)
+        -:  792:		{
+    #####:  793:		TS_RESP_free(resp);
+        -:  794:		resp = NULL;
+        -:  795:		}
+    #####:  796:	TS_STATUS_INFO_free(si);
+    #####:  797:	return resp;
+        -:  798:	}
+        -:  799:
+    #####:  800:static TS_RESP *create_response(CONF *conf, const char *section, char *engine, 
+        -:  801:				char *queryfile, char *passin, char *inkey,
+        -:  802:				char *signer, char *chain, const char *policy)
+        -:  803:	{
+        -:  804:	int ret = 0;
+        -:  805:	TS_RESP *response = NULL;
+        -:  806:	BIO *query_bio = NULL;
+        -:  807:	TS_RESP_CTX *resp_ctx = NULL;
+        -:  808:
+    #####:  809:	if (!(query_bio = BIO_new_file(queryfile, "rb")))
+        -:  810:		goto end;
+        -:  811:
+        -:  812:	/* Getting TSA configuration section. */
+    #####:  813:	if (!(section = TS_CONF_get_tsa_section(conf, section)))
+        -:  814:		goto end;
+        -:  815:
+        -:  816:	/* Setting up response generation context. */
+    #####:  817:	if (!(resp_ctx = TS_RESP_CTX_new())) goto end;
+        -:  818:
+        -:  819:	/* Setting serial number provider callback. */
+    #####:  820:	if (!TS_CONF_set_serial(conf, section, serial_cb, resp_ctx)) goto end;
+        -:  821:#ifndef OPENSSL_NO_ENGINE
+        -:  822:	/* Setting default OpenSSL engine. */
+    #####:  823:	if (!TS_CONF_set_crypto_device(conf, section, engine)) goto end;
+        -:  824:#endif
+        -:  825:
+        -:  826:	/* Setting TSA signer certificate. */
+    #####:  827:	if (!TS_CONF_set_signer_cert(conf, section, signer, resp_ctx)) goto end;
+        -:  828:
+        -:  829:	/* Setting TSA signer certificate chain. */
+    #####:  830:	if (!TS_CONF_set_certs(conf, section, chain, resp_ctx)) goto end;
+        -:  831:
+        -:  832:	/* Setting TSA signer private key. */
+    #####:  833:	if (!TS_CONF_set_signer_key(conf, section, inkey, passin, resp_ctx))
+        -:  834:		goto end;
+        -:  835:
+        -:  836:	/* Setting default policy OID. */
+    #####:  837:	if (!TS_CONF_set_def_policy(conf, section, policy, resp_ctx)) goto end;
+        -:  838:
+        -:  839:	/* Setting acceptable policy OIDs. */
+    #####:  840:	if (!TS_CONF_set_policies(conf, section, resp_ctx)) goto end;
+        -:  841:
+        -:  842:	/* Setting the acceptable one-way hash algorithms. */
+    #####:  843:	if (!TS_CONF_set_digests(conf, section, resp_ctx)) goto end;
+        -:  844:
+        -:  845:	/* Setting guaranteed time stamp accuracy. */
+    #####:  846:	if (!TS_CONF_set_accuracy(conf, section, resp_ctx)) goto end;
+        -:  847:
+        -:  848:	/* Setting the precision of the time. */
+    #####:  849:	if (!TS_CONF_set_clock_precision_digits(conf, section, resp_ctx))
+        -:  850:		goto end;
+        -:  851:
+        -:  852:	/* Setting the ordering flaf if requested. */
+    #####:  853:	if (!TS_CONF_set_ordering(conf, section, resp_ctx)) goto end;
+        -:  854:
+        -:  855:	/* Setting the TSA name required flag if requested. */
+    #####:  856:	if (!TS_CONF_set_tsa_name(conf, section, resp_ctx)) goto end;
+        -:  857:
+        -:  858:	/* Setting the ESS cert id chain flag if requested. */
+    #####:  859:	if (!TS_CONF_set_ess_cert_id_chain(conf, section, resp_ctx)) goto end;
+        -:  860:
+        -:  861:	/* Creating the response. */
+    #####:  862:	if (!(response = TS_RESP_create_response(resp_ctx, query_bio)))
+        -:  863:		goto end;
+        -:  864:
+        -:  865:	ret = 1;
+        -:  866: end:
+    #####:  867:	if (!ret) 
+        -:  868:		{
+    #####:  869:		TS_RESP_free(response);
+        -:  870:		response = NULL;
+        -:  871:		}
+    #####:  872:	TS_RESP_CTX_free(resp_ctx);
+    #####:  873:	BIO_free_all(query_bio);
+        -:  874:
+    #####:  875:	return response;
+        -:  876:	}
+        -:  877:
+    #####:  878:static ASN1_INTEGER * MS_CALLBACK serial_cb(TS_RESP_CTX *ctx, void *data)
+        -:  879:	{
+        -:  880:	const char *serial_file = (const char *) data;
+    #####:  881:	ASN1_INTEGER *serial = next_serial(serial_file);
+        -:  882:
+    #####:  883:	if (!serial)
+        -:  884:		{
+    #####:  885:		TS_RESP_CTX_set_status_info(ctx, TS_STATUS_REJECTION,
+        -:  886:					    "Error during serial number "
+        -:  887:					    "generation.");
+    #####:  888:		TS_RESP_CTX_add_failure_info(ctx,
+        -:  889:					     TS_INFO_ADD_INFO_NOT_AVAILABLE);
+        -:  890:		}
+        -:  891:	else
+    #####:  892:		save_ts_serial(serial_file, serial);
+        -:  893:
+    #####:  894:	return serial;
+        -:  895:	}
+        -:  896:
+    #####:  897:static ASN1_INTEGER *next_serial(const char *serialfile)
+        -:  898:	{
+        -:  899:	int ret = 0;
+        -:  900:	BIO *in = NULL;
+        -:  901:	ASN1_INTEGER *serial = NULL;
+        -:  902:	BIGNUM *bn = NULL;
+        -:  903:
+    #####:  904:	if (!(serial = ASN1_INTEGER_new())) goto err;
+        -:  905:
+    #####:  906:	if (!(in = BIO_new_file(serialfile, "r"))) 
+        -:  907:		{
+    #####:  908:		ERR_clear_error();
+    #####:  909:		BIO_printf(bio_err, "Warning: could not open file %s for "
+        -:  910:			   "reading, using serial number: 1\n", serialfile);
+    #####:  911:		if (!ASN1_INTEGER_set(serial, 1)) goto err;
+        -:  912:		}
+        -:  913:	else
+        -:  914:		{
+        -:  915:		char buf[1024];
+    #####:  916:		if (!a2i_ASN1_INTEGER(in, serial, buf, sizeof(buf)))
+        -:  917:			{
+    #####:  918:			BIO_printf(bio_err, "unable to load number from %s\n",
+        -:  919:				   serialfile);
+    #####:  920:			goto err;
+        -:  921:			}
+    #####:  922:		if (!(bn = ASN1_INTEGER_to_BN(serial, NULL))) goto err;
+    #####:  923:		ASN1_INTEGER_free(serial);
+        -:  924:		serial = NULL;
+    #####:  925:		if (!BN_add_word(bn, 1)) goto err;
+    #####:  926:		if (!(serial = BN_to_ASN1_INTEGER(bn, NULL))) goto err;
+        -:  927:		}
+        -:  928:	ret = 1;
+        -:  929: err:
+    #####:  930:	if (!ret)
+        -:  931:		{
+    #####:  932:		ASN1_INTEGER_free(serial);
+        -:  933:		serial = NULL;
+        -:  934:		}
+    #####:  935:	BIO_free_all(in);
+    #####:  936:	BN_free(bn);
+    #####:  937:	return serial;
+        -:  938:	}
+        -:  939:
+    #####:  940:static int save_ts_serial(const char *serialfile, ASN1_INTEGER *serial)
+        -:  941:	{
+        -:  942:	int ret = 0;
+        -:  943:	BIO *out = NULL;
+        -:  944:
+    #####:  945:	if (!(out = BIO_new_file(serialfile, "w"))) goto err;
+    #####:  946:	if (i2a_ASN1_INTEGER(out, serial) <= 0) goto err;
+    #####:  947:	if (BIO_puts(out, "\n") <= 0) goto err;
+        -:  948:	ret = 1;
+        -:  949: err:
+    #####:  950:	if (!ret)
+    #####:  951:		BIO_printf(bio_err, "could not save serial number to %s\n",
+        -:  952:			   serialfile);
+    #####:  953:	BIO_free_all(out);
+    #####:  954:	return ret;
+        -:  955:	}
+        -:  956:
+        -:  957:/*
+        -:  958: * Verify-related method definitions.
+        -:  959: */
+        -:  960:
+    #####:  961:static int verify_command(char *data, char *digest, char *queryfile,
+        -:  962:			  char *in, int token_in,
+        -:  963:			  char *ca_path, char *ca_file, char *untrusted)
+        -:  964:	{
+        -:  965:	BIO *in_bio = NULL;
+        -:  966:	PKCS7 *token = NULL;
+        -:  967:	TS_RESP *response = NULL;
+        -:  968:	TS_VERIFY_CTX *verify_ctx = NULL;
+        -:  969:	int ret = 0;
+        -:  970:
+        -:  971:	/* Decode the token (PKCS7) or response (TS_RESP) files. */
+    #####:  972:	if (!(in_bio = BIO_new_file(in, "rb"))) goto end;
+    #####:  973:	if (token_in)
+        -:  974:		{
+    #####:  975:		if (!(token = d2i_PKCS7_bio(in_bio, NULL))) goto end;
+        -:  976:		}
+        -:  977:	else
+        -:  978:		{
+    #####:  979:		if (!(response = d2i_TS_RESP_bio(in_bio, NULL))) goto end;
+        -:  980:		}
+        -:  981:
+    #####:  982:	if (!(verify_ctx = create_verify_ctx(data, digest, queryfile, 
+        -:  983:					     ca_path, ca_file, untrusted)))
+        -:  984:		goto end;
+        -:  985:
+        -:  986:	/* Checking the token or response against the request. */
+        -:  987:	ret = token_in ?
+    #####:  988:		TS_RESP_verify_token(verify_ctx, token) :
+        -:  989:		TS_RESP_verify_response(verify_ctx, response);
+        -:  990:
+        -:  991: end:
+        -:  992:	printf("Verification: ");
+    #####:  993:	if (ret)
+        -:  994:		printf("OK\n");
+        -:  995:	else
+        -:  996:		{
+        -:  997:		printf("FAILED\n");
+        -:  998:		/* Print errors, if there are any. */
+    #####:  999:		ERR_print_errors(bio_err);
+        -: 1000:		}
+        -: 1001:	
+        -: 1002:	/* Clean up. */
+    #####: 1003:	BIO_free_all(in_bio);
+    #####: 1004:	PKCS7_free(token);
+    #####: 1005:	TS_RESP_free(response);
+    #####: 1006:	TS_VERIFY_CTX_free(verify_ctx);
+    #####: 1007:	return ret;
+        -: 1008:	}
+        -: 1009:
+    #####: 1010:static TS_VERIFY_CTX *create_verify_ctx(char *data, char *digest, 
+        -: 1011:					char *queryfile, 
+        -: 1012:					char *ca_path, char *ca_file,
+        -: 1013:					char *untrusted)
+        -: 1014:	{
+        -: 1015:	TS_VERIFY_CTX *ctx = NULL;
+        -: 1016:	BIO *input = NULL;
+        -: 1017:	TS_REQ *request = NULL;
+        -: 1018:	int ret = 0;
+        -: 1019:
+    #####: 1020:	if (data != NULL || digest != NULL)
+        -: 1021:		{
+    #####: 1022:		if (!(ctx = TS_VERIFY_CTX_new())) goto err;
+    #####: 1023:		ctx->flags = TS_VFY_VERSION | TS_VFY_SIGNER;
+    #####: 1024:		if (data != NULL)
+        -: 1025:			{
+    #####: 1026:			ctx->flags |= TS_VFY_DATA;
+    #####: 1027:			if (!(ctx->data = BIO_new_file(data, "rb"))) goto err;
+        -: 1028:			}
+    #####: 1029:		else if (digest != NULL)
+        -: 1030:			{
+        -: 1031:			long imprint_len;
+    #####: 1032:			ctx->flags |= TS_VFY_IMPRINT;
+    #####: 1033:			if (!(ctx->imprint = string_to_hex(digest,
+        -: 1034:							   &imprint_len)))
+        -: 1035:				{
+    #####: 1036:				BIO_printf(bio_err, "invalid digest string\n");
+    #####: 1037:				goto err;
+        -: 1038:				}
+    #####: 1039:			ctx->imprint_len = imprint_len;
+        -: 1040:			}
+        -: 1041:		
+        -: 1042:		}
+    #####: 1043:	else if (queryfile != NULL)
+        -: 1044:		{
+        -: 1045:		/* The request has just to be read, decoded and converted to
+        -: 1046:		   a verify context object. */
+    #####: 1047:		if (!(input = BIO_new_file(queryfile, "rb"))) goto err;
+    #####: 1048:		if (!(request = d2i_TS_REQ_bio(input, NULL))) goto err;
+    #####: 1049:		if (!(ctx = TS_REQ_to_TS_VERIFY_CTX(request, NULL))) goto err;
+        -: 1050:		}
+        -: 1051:	else
+        -: 1052:		return NULL;
+        -: 1053:
+        -: 1054:	/* Add the signature verification flag and arguments. */
+    #####: 1055:	ctx->flags |= TS_VFY_SIGNATURE;
+        -: 1056:
+        -: 1057:	/* Initialising the X509_STORE object. */
+    #####: 1058:	if (!(ctx->store = create_cert_store(ca_path, ca_file))) goto err;
+        -: 1059:
+        -: 1060:	/* Loading untrusted certificates. */
+    #####: 1061:	if (untrusted && !(ctx->certs = TS_CONF_load_certs(untrusted))) 
+        -: 1062:		goto err;
+        -: 1063:
+        -: 1064:	ret = 1;
+        -: 1065: err:
+    #####: 1066:	if (!ret)
+        -: 1067:		{
+    #####: 1068:		TS_VERIFY_CTX_free(ctx);
+        -: 1069:		ctx = NULL;
+        -: 1070:		}
+    #####: 1071:	BIO_free_all(input);
+    #####: 1072:	TS_REQ_free(request);
+    #####: 1073:	return ctx;
+        -: 1074:	}
+        -: 1075:
+    #####: 1076:static X509_STORE *create_cert_store(char *ca_path, char *ca_file)
+        -: 1077:	{
+        -: 1078:	X509_STORE *cert_ctx = NULL;
+        -: 1079:	X509_LOOKUP *lookup = NULL;
+        -: 1080:	int i;
+        -: 1081:
+        -: 1082:	/* Creating the X509_STORE object. */
+    #####: 1083:	cert_ctx = X509_STORE_new();
+        -: 1084:
+        -: 1085:	/* Setting the callback for certificate chain verification. */
+    #####: 1086:	X509_STORE_set_verify_cb(cert_ctx, verify_cb);
+        -: 1087:
+        -: 1088:	/* Adding a trusted certificate directory source. */
+    #####: 1089:	if (ca_path)
+        -: 1090:		{
+    #####: 1091:		lookup = X509_STORE_add_lookup(cert_ctx,
+        -: 1092:					       X509_LOOKUP_hash_dir());
+    #####: 1093:		if (lookup == NULL)
+        -: 1094:			{
+    #####: 1095:			BIO_printf(bio_err, "memory allocation failure\n");
+    #####: 1096:			goto err;
+        -: 1097:			}
+    #####: 1098:		i = X509_LOOKUP_add_dir(lookup, ca_path, X509_FILETYPE_PEM);
+    #####: 1099:		if (!i)
+        -: 1100:			{
+    #####: 1101:			BIO_printf(bio_err, "Error loading directory %s\n",
+        -: 1102:				   ca_path);
+    #####: 1103:			goto err;
+        -: 1104:			}
+        -: 1105:		}
+        -: 1106:
+        -: 1107:	/* Adding a trusted certificate file source. */
+    #####: 1108:	if (ca_file)
+        -: 1109:		{
+    #####: 1110:		lookup = X509_STORE_add_lookup(cert_ctx, X509_LOOKUP_file());
+    #####: 1111:		if (lookup == NULL)
+        -: 1112:			{
+    #####: 1113:			BIO_printf(bio_err, "memory allocation failure\n");
+    #####: 1114:			goto err;
+        -: 1115:			}
+    #####: 1116:		i = X509_LOOKUP_load_file(lookup, ca_file, X509_FILETYPE_PEM);
+    #####: 1117:		if (!i)
+        -: 1118:			{
+    #####: 1119:			BIO_printf(bio_err, "Error loading file %s\n", ca_file);
+    #####: 1120:			goto err;
+        -: 1121:			}
+        -: 1122:		}
+        -: 1123:
+    #####: 1124:	return cert_ctx;
+        -: 1125: err:
+    #####: 1126:	X509_STORE_free(cert_ctx);
+    #####: 1127:	return NULL;
+        -: 1128:	}
+        -: 1129:
+    #####: 1130:static int MS_CALLBACK verify_cb(int ok, X509_STORE_CTX *ctx)
+        -: 1131:	{
+        -: 1132:	/*
+        -: 1133:	char buf[256];
+        -: 1134:
+        -: 1135:	if (!ok)
+        -: 1136:		{
+        -: 1137:		X509_NAME_oneline(X509_get_subject_name(ctx->current_cert),
+        -: 1138:				  buf, sizeof(buf));
+        -: 1139:		printf("%s\n", buf);
+        -: 1140:		printf("error %d at %d depth lookup: %s\n",
+        -: 1141:		       ctx->error, ctx->error_depth,
+        -: 1142:			X509_verify_cert_error_string(ctx->error));
+        -: 1143:		}
+        -: 1144:	*/
+        -: 1145:
+    #####: 1146:	return ok;
+        -: 1147:	}

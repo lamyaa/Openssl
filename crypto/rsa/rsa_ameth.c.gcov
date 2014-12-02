@@ -1,0 +1,703 @@
+        -:    0:Source:rsa_ameth.c
+        -:    0:Graph:rsa_ameth.gcno
+        -:    0:Data:rsa_ameth.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* crypto/rsa/rsa_ameth.c */
+        -:    2:/* Written by Dr Stephen N Henson (steve@openssl.org) for the OpenSSL
+        -:    3: * project 2006.
+        -:    4: */
+        -:    5:/* ====================================================================
+        -:    6: * Copyright (c) 2006 The OpenSSL Project.  All rights reserved.
+        -:    7: *
+        -:    8: * Redistribution and use in source and binary forms, with or without
+        -:    9: * modification, are permitted provided that the following conditions
+        -:   10: * are met:
+        -:   11: *
+        -:   12: * 1. Redistributions of source code must retain the above copyright
+        -:   13: *    notice, this list of conditions and the following disclaimer. 
+        -:   14: *
+        -:   15: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   16: *    notice, this list of conditions and the following disclaimer in
+        -:   17: *    the documentation and/or other materials provided with the
+        -:   18: *    distribution.
+        -:   19: *
+        -:   20: * 3. All advertising materials mentioning features or use of this
+        -:   21: *    software must display the following acknowledgment:
+        -:   22: *    "This product includes software developed by the OpenSSL Project
+        -:   23: *    for use in the OpenSSL Toolkit. (http://www.OpenSSL.org/)"
+        -:   24: *
+        -:   25: * 4. The names "OpenSSL Toolkit" and "OpenSSL Project" must not be used to
+        -:   26: *    endorse or promote products derived from this software without
+        -:   27: *    prior written permission. For written permission, please contact
+        -:   28: *    licensing@OpenSSL.org.
+        -:   29: *
+        -:   30: * 5. Products derived from this software may not be called "OpenSSL"
+        -:   31: *    nor may "OpenSSL" appear in their names without prior written
+        -:   32: *    permission of the OpenSSL Project.
+        -:   33: *
+        -:   34: * 6. Redistributions of any form whatsoever must retain the following
+        -:   35: *    acknowledgment:
+        -:   36: *    "This product includes software developed by the OpenSSL Project
+        -:   37: *    for use in the OpenSSL Toolkit (http://www.OpenSSL.org/)"
+        -:   38: *
+        -:   39: * THIS SOFTWARE IS PROVIDED BY THE OpenSSL PROJECT ``AS IS'' AND ANY
+        -:   40: * EXPRESSED OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   41: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+        -:   42: * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE OpenSSL PROJECT OR
+        -:   43: * ITS CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+        -:   44: * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+        -:   45: * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+        -:   46: * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   47: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+        -:   48: * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+        -:   49: * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+        -:   50: * OF THE POSSIBILITY OF SUCH DAMAGE.
+        -:   51: * ====================================================================
+        -:   52: *
+        -:   53: * This product includes cryptographic software written by Eric Young
+        -:   54: * (eay@cryptsoft.com).  This product includes software written by Tim
+        -:   55: * Hudson (tjh@cryptsoft.com).
+        -:   56: *
+        -:   57: */
+        -:   58:
+        -:   59:#include <stdio.h>
+        -:   60:#include "cryptlib.h"
+        -:   61:#include <openssl/asn1t.h>
+        -:   62:#include <openssl/x509.h>
+        -:   63:#include <openssl/rsa.h>
+        -:   64:#include <openssl/bn.h>
+        -:   65:#ifndef OPENSSL_NO_CMS
+        -:   66:#include <openssl/cms.h>
+        -:   67:#endif
+        -:   68:#include "asn1_locl.h"
+        -:   69:
+    #####:   70:static int rsa_pub_encode(X509_PUBKEY *pk, const EVP_PKEY *pkey)
+        -:   71:	{
+    #####:   72:	unsigned char *penc = NULL;
+        -:   73:	int penclen;
+    #####:   74:	penclen = i2d_RSAPublicKey(pkey->pkey.rsa, &penc);
+    #####:   75:	if (penclen <= 0)
+        -:   76:		return 0;
+    #####:   77:	if (X509_PUBKEY_set0_param(pk, OBJ_nid2obj(EVP_PKEY_RSA),
+        -:   78:				V_ASN1_NULL, NULL, penc, penclen))
+        -:   79:		return 1;
+        -:   80:
+    #####:   81:	OPENSSL_free(penc);
+    #####:   82:	return 0;
+        -:   83:	}
+        -:   84:
+    11942:   85:static int rsa_pub_decode(EVP_PKEY *pkey, X509_PUBKEY *pubkey)
+        -:   86:	{
+        -:   87:	const unsigned char *p;
+        -:   88:	int pklen;
+        -:   89:	RSA *rsa = NULL;
+    11942:   90:	if (!X509_PUBKEY_get0_param(NULL, &p, &pklen, NULL, pubkey))
+        -:   91:		return 0;
+    11942:   92:	if (!(rsa = d2i_RSAPublicKey(NULL, &p, pklen)))
+        -:   93:		{
+    #####:   94:		RSAerr(RSA_F_RSA_PUB_DECODE, ERR_R_RSA_LIB);
+    #####:   95:		return 0;
+        -:   96:		}
+    11942:   97:	EVP_PKEY_assign_RSA (pkey, rsa);
+    11942:   98:	return 1;
+        -:   99:	}
+        -:  100:
+    #####:  101:static int rsa_pub_cmp(const EVP_PKEY *a, const EVP_PKEY *b)
+        -:  102:	{
+    #####:  103:	if (BN_cmp(b->pkey.rsa->n,a->pkey.rsa->n) != 0
+    #####:  104:		|| BN_cmp(b->pkey.rsa->e,a->pkey.rsa->e) != 0)
+        -:  105:			return 0;
+        -:  106:	return 1;
+        -:  107:	}
+        -:  108:
+    #####:  109:static int old_rsa_priv_decode(EVP_PKEY *pkey,
+        -:  110:					const unsigned char **pder, int derlen)
+        -:  111:	{
+        -:  112:	RSA *rsa;
+    #####:  113:	if (!(rsa = d2i_RSAPrivateKey (NULL, pder, derlen)))
+        -:  114:		{
+    #####:  115:		RSAerr(RSA_F_OLD_RSA_PRIV_DECODE, ERR_R_RSA_LIB);
+    #####:  116:		return 0;
+        -:  117:		}
+    #####:  118:	EVP_PKEY_assign_RSA(pkey, rsa);
+    #####:  119:	return 1;
+        -:  120:	}
+        -:  121:
+    #####:  122:static int old_rsa_priv_encode(const EVP_PKEY *pkey, unsigned char **pder)
+        -:  123:	{
+    #####:  124:	return i2d_RSAPrivateKey(pkey->pkey.rsa, pder);
+        -:  125:	}
+        -:  126:
+    #####:  127:static int rsa_priv_encode(PKCS8_PRIV_KEY_INFO *p8, const EVP_PKEY *pkey)
+        -:  128:	{
+    #####:  129:	unsigned char *rk = NULL;
+        -:  130:	int rklen;
+    #####:  131:	rklen = i2d_RSAPrivateKey(pkey->pkey.rsa, &rk);
+        -:  132:
+    #####:  133:	if (rklen <= 0)
+        -:  134:		{
+    #####:  135:		RSAerr(RSA_F_RSA_PRIV_ENCODE,ERR_R_MALLOC_FAILURE);
+    #####:  136:		return 0;
+        -:  137:		}
+        -:  138:
+    #####:  139:	if (!PKCS8_pkey_set0(p8, OBJ_nid2obj(NID_rsaEncryption), 0,
+        -:  140:				V_ASN1_NULL, NULL, rk, rklen))
+        -:  141:		{
+    #####:  142:		RSAerr(RSA_F_RSA_PRIV_ENCODE,ERR_R_MALLOC_FAILURE);
+    #####:  143:		return 0;
+        -:  144:		}
+        -:  145:
+        -:  146:	return 1;
+        -:  147:	}
+        -:  148:
+    #####:  149:static int rsa_priv_decode(EVP_PKEY *pkey, PKCS8_PRIV_KEY_INFO *p8)
+        -:  150:	{
+        -:  151:	const unsigned char *p;
+        -:  152:	int pklen;
+    #####:  153:	if (!PKCS8_pkey_get0(NULL, &p, &pklen, NULL, p8))
+        -:  154:		return 0;
+    #####:  155:	return old_rsa_priv_decode(pkey, &p, pklen);
+        -:  156:	}
+        -:  157:
+    10000:  158:static int int_rsa_size(const EVP_PKEY *pkey)
+        -:  159:	{
+    10000:  160:	return RSA_size(pkey->pkey.rsa);
+        -:  161:	}
+        -:  162:
+    10000:  163:static int rsa_bits(const EVP_PKEY *pkey)
+        -:  164:	{
+    10000:  165:	return BN_num_bits(pkey->pkey.rsa->n);
+        -:  166:	}
+        -:  167:
+    11942:  168:static void int_rsa_free(EVP_PKEY *pkey)
+        -:  169:	{
+    11942:  170:	RSA_free(pkey->pkey.rsa);
+    11942:  171:	}
+        -:  172:
+        -:  173:
+    #####:  174:static void update_buflen(const BIGNUM *b, size_t *pbuflen)
+        -:  175:	{
+        -:  176:	size_t i;
+    #####:  177:	if (!b)
+    #####:  178:		return;
+    #####:  179:	if (*pbuflen < (i = (size_t)BN_num_bytes(b)))
+    #####:  180:			*pbuflen = i;
+        -:  181:	}
+        -:  182:
+    #####:  183:static int do_rsa_print(BIO *bp, const RSA *x, int off, int priv)
+        -:  184:	{
+        -:  185:	char *str;
+        -:  186:	const char *s;
+        -:  187:	unsigned char *m=NULL;
+        -:  188:	int ret=0, mod_len = 0;
+    #####:  189:	size_t buf_len=0;
+        -:  190:
+    #####:  191:	update_buflen(x->n, &buf_len);
+    #####:  192:	update_buflen(x->e, &buf_len);
+        -:  193:
+    #####:  194:	if (priv)
+        -:  195:		{
+    #####:  196:		update_buflen(x->d, &buf_len);
+    #####:  197:		update_buflen(x->p, &buf_len);
+    #####:  198:		update_buflen(x->q, &buf_len);
+    #####:  199:		update_buflen(x->dmp1, &buf_len);
+    #####:  200:		update_buflen(x->dmq1, &buf_len);
+    #####:  201:		update_buflen(x->iqmp, &buf_len);
+        -:  202:		}
+        -:  203:
+    #####:  204:	m=(unsigned char *)OPENSSL_malloc(buf_len+10);
+    #####:  205:	if (m == NULL)
+        -:  206:		{
+    #####:  207:		RSAerr(RSA_F_DO_RSA_PRINT,ERR_R_MALLOC_FAILURE);
+    #####:  208:		goto err;
+        -:  209:		}
+        -:  210:
+    #####:  211:	if (x->n != NULL)
+    #####:  212:		mod_len = BN_num_bits(x->n);
+        -:  213:
+    #####:  214:	if(!BIO_indent(bp,off,128))
+        -:  215:		goto err;
+        -:  216:
+    #####:  217:	if (priv && x->d)
+        -:  218:		{
+    #####:  219:		if (BIO_printf(bp,"Private-Key: (%d bit)\n", mod_len)
+        -:  220:			<= 0) goto err;
+        -:  221:		str = "modulus:";
+        -:  222:		s = "publicExponent:";
+        -:  223:		}
+        -:  224:	else
+        -:  225:		{
+    #####:  226:		if (BIO_printf(bp,"Public-Key: (%d bit)\n", mod_len)
+        -:  227:			<= 0) goto err;
+        -:  228:		str = "Modulus:";
+        -:  229:		s= "Exponent:";
+        -:  230:		}
+    #####:  231:	if (!ASN1_bn_print(bp,str,x->n,m,off)) goto err;
+    #####:  232:	if (!ASN1_bn_print(bp,s,x->e,m,off))
+        -:  233:		goto err;
+    #####:  234:	if (priv)
+        -:  235:		{
+    #####:  236:		if (!ASN1_bn_print(bp,"privateExponent:",x->d,m,off))
+        -:  237:			goto err;
+    #####:  238:		if (!ASN1_bn_print(bp,"prime1:",x->p,m,off))
+        -:  239:			goto err;
+    #####:  240:		if (!ASN1_bn_print(bp,"prime2:",x->q,m,off))
+        -:  241:			goto err;
+    #####:  242:		if (!ASN1_bn_print(bp,"exponent1:",x->dmp1,m,off))
+        -:  243:			goto err;
+    #####:  244:		if (!ASN1_bn_print(bp,"exponent2:",x->dmq1,m,off))
+        -:  245:			goto err;
+    #####:  246:		if (!ASN1_bn_print(bp,"coefficient:",x->iqmp,m,off))
+        -:  247:			goto err;
+        -:  248:		}
+        -:  249:	ret=1;
+        -:  250:err:
+    #####:  251:	if (m != NULL) OPENSSL_free(m);
+    #####:  252:	return(ret);
+        -:  253:	}
+        -:  254:
+    #####:  255:static int rsa_pub_print(BIO *bp, const EVP_PKEY *pkey, int indent,
+        -:  256:							ASN1_PCTX *ctx)
+        -:  257:	{
+    #####:  258:	return do_rsa_print(bp, pkey->pkey.rsa, indent, 0);
+        -:  259:	}
+        -:  260:
+        -:  261:
+    #####:  262:static int rsa_priv_print(BIO *bp, const EVP_PKEY *pkey, int indent,
+        -:  263:							ASN1_PCTX *ctx)
+        -:  264:	{
+    #####:  265:	return do_rsa_print(bp, pkey->pkey.rsa, indent, 1);
+        -:  266:	}
+        -:  267:
+    #####:  268:static RSA_PSS_PARAMS *rsa_pss_decode(const X509_ALGOR *alg,
+        -:  269:					X509_ALGOR **pmaskHash)
+        -:  270:	{
+        -:  271:	const unsigned char *p;
+        -:  272:	int plen;
+        -:  273:	RSA_PSS_PARAMS *pss;
+        -:  274:
+    #####:  275:	*pmaskHash = NULL;
+        -:  276:
+    #####:  277:	if (!alg->parameter || alg->parameter->type != V_ASN1_SEQUENCE)
+        -:  278:		return NULL;
+    #####:  279:	p = alg->parameter->value.sequence->data;
+    #####:  280:	plen = alg->parameter->value.sequence->length;
+    #####:  281:	pss = d2i_RSA_PSS_PARAMS(NULL, &p, plen);
+        -:  282:
+    #####:  283:	if (!pss)
+        -:  284:		return NULL;
+        -:  285:	
+    #####:  286:	if (pss->maskGenAlgorithm)
+        -:  287:		{
+    #####:  288:		ASN1_TYPE *param = pss->maskGenAlgorithm->parameter;
+    #####:  289:		if (OBJ_obj2nid(pss->maskGenAlgorithm->algorithm) == NID_mgf1
+    #####:  290:			&& param->type == V_ASN1_SEQUENCE)
+        -:  291:			{
+    #####:  292:			p = param->value.sequence->data;
+    #####:  293:			plen = param->value.sequence->length;
+    #####:  294:			*pmaskHash = d2i_X509_ALGOR(NULL, &p, plen);
+        -:  295:			}
+        -:  296:		}
+        -:  297:
+        -:  298:	return pss;
+        -:  299:	}
+        -:  300:
+    #####:  301:static int rsa_pss_param_print(BIO *bp, RSA_PSS_PARAMS *pss, 
+        -:  302:				X509_ALGOR *maskHash, int indent)
+        -:  303:	{
+        -:  304:	int rv = 0;
+    #####:  305:	if (!pss)
+        -:  306:		{
+    #####:  307:		if (BIO_puts(bp, " (INVALID PSS PARAMETERS)\n") <= 0)
+        -:  308:			return 0;
+    #####:  309:		return 1;
+        -:  310:		}
+    #####:  311:	if (BIO_puts(bp, "\n") <= 0)
+        -:  312:		goto err;
+    #####:  313:	if (!BIO_indent(bp, indent, 128))
+        -:  314:		goto err;
+    #####:  315:	if (BIO_puts(bp, "Hash Algorithm: ") <= 0)
+        -:  316:		goto err;
+        -:  317:
+    #####:  318:	if (pss->hashAlgorithm)
+        -:  319:		{
+    #####:  320:		if (i2a_ASN1_OBJECT(bp, pss->hashAlgorithm->algorithm) <= 0)
+        -:  321:			goto err;
+        -:  322:		}
+    #####:  323:	else if (BIO_puts(bp, "sha1 (default)") <= 0)
+        -:  324:		goto err;
+        -:  325:
+    #####:  326:	if (BIO_puts(bp, "\n") <= 0)
+        -:  327:		goto err;
+        -:  328:
+    #####:  329:	if (!BIO_indent(bp, indent, 128))
+        -:  330:		goto err;
+        -:  331:
+    #####:  332:	if (BIO_puts(bp, "Mask Algorithm: ") <= 0)
+        -:  333:			goto err;
+    #####:  334:	if (pss->maskGenAlgorithm)
+        -:  335:		{
+    #####:  336:		if (i2a_ASN1_OBJECT(bp, pss->maskGenAlgorithm->algorithm) <= 0)
+        -:  337:			goto err;
+    #####:  338:		if (BIO_puts(bp, " with ") <= 0)
+        -:  339:			goto err;
+    #####:  340:		if (maskHash)
+        -:  341:			{
+    #####:  342:			if (i2a_ASN1_OBJECT(bp, maskHash->algorithm) <= 0)
+        -:  343:			goto err;
+        -:  344:			}
+    #####:  345:		else if (BIO_puts(bp, "INVALID") <= 0)
+        -:  346:			goto err;
+        -:  347:		}
+    #####:  348:	else if (BIO_puts(bp, "mgf1 with sha1 (default)") <= 0)
+        -:  349:		goto err;
+    #####:  350:	BIO_puts(bp, "\n");
+        -:  351:
+    #####:  352:	if (!BIO_indent(bp, indent, 128))
+        -:  353:		goto err;
+    #####:  354:	if (BIO_puts(bp, "Salt Length: ") <= 0)
+        -:  355:			goto err;
+    #####:  356:	if (pss->saltLength)
+        -:  357:		{
+    #####:  358:		if (i2a_ASN1_INTEGER(bp, pss->saltLength) <= 0)
+        -:  359:			goto err;
+        -:  360:		}
+    #####:  361:	else if (BIO_puts(bp, "20 (default)") <= 0)
+        -:  362:		goto err;
+    #####:  363:	BIO_puts(bp, "\n");
+        -:  364:
+    #####:  365:	if (!BIO_indent(bp, indent, 128))
+        -:  366:		goto err;
+    #####:  367:	if (BIO_puts(bp, "Trailer Field: ") <= 0)
+        -:  368:			goto err;
+    #####:  369:	if (pss->trailerField)
+        -:  370:		{
+    #####:  371:		if (i2a_ASN1_INTEGER(bp, pss->trailerField) <= 0)
+        -:  372:			goto err;
+        -:  373:		}
+    #####:  374:	else if (BIO_puts(bp, "0xbc (default)") <= 0)
+        -:  375:		goto err;
+    #####:  376:	BIO_puts(bp, "\n");
+        -:  377:	
+        -:  378:	rv = 1;
+        -:  379:
+        -:  380:	err:
+    #####:  381:	return rv;
+        -:  382:
+        -:  383:	}
+        -:  384:
+    #####:  385:static int rsa_sig_print(BIO *bp, const X509_ALGOR *sigalg,
+        -:  386:					const ASN1_STRING *sig,
+        -:  387:					int indent, ASN1_PCTX *pctx)
+        -:  388:	{
+    #####:  389:	if (OBJ_obj2nid(sigalg->algorithm) == NID_rsassaPss)
+        -:  390:		{
+        -:  391:		int rv;
+        -:  392:		RSA_PSS_PARAMS *pss;
+        -:  393:		X509_ALGOR *maskHash;
+    #####:  394:		pss = rsa_pss_decode(sigalg, &maskHash);
+    #####:  395:		rv = rsa_pss_param_print(bp, pss, maskHash, indent);
+    #####:  396:		if (pss)
+    #####:  397:			RSA_PSS_PARAMS_free(pss);
+    #####:  398:		if (maskHash)
+    #####:  399:			X509_ALGOR_free(maskHash);
+    #####:  400:		if (!rv)
+    #####:  401:			return 0;
+        -:  402:		}
+    #####:  403:	else if (!sig && BIO_puts(bp, "\n") <= 0)
+        -:  404:		return 0;
+    #####:  405:	if (sig)
+    #####:  406:		return X509_signature_dump(bp, sig, indent);
+        -:  407:	return 1;
+        -:  408:	}
+        -:  409:
+    #####:  410:static int rsa_pkey_ctrl(EVP_PKEY *pkey, int op, long arg1, void *arg2)
+        -:  411:	{
+    #####:  412:	X509_ALGOR *alg = NULL;
+    #####:  413:	switch (op)
+        -:  414:		{
+        -:  415:
+        -:  416:		case ASN1_PKEY_CTRL_PKCS7_SIGN:
+    #####:  417:		if (arg1 == 0)
+    #####:  418:			PKCS7_SIGNER_INFO_get0_algs(arg2, NULL, NULL, &alg);
+        -:  419:		break;
+        -:  420:
+        -:  421:		case ASN1_PKEY_CTRL_PKCS7_ENCRYPT:
+    #####:  422:		if (arg1 == 0)
+    #####:  423:			PKCS7_RECIP_INFO_get0_alg(arg2, &alg);
+        -:  424:		break;
+        -:  425:#ifndef OPENSSL_NO_CMS
+        -:  426:		case ASN1_PKEY_CTRL_CMS_SIGN:
+    #####:  427:		if (arg1 == 0)
+    #####:  428:			CMS_SignerInfo_get0_algs(arg2, NULL, NULL, NULL, &alg);
+        -:  429:		break;
+        -:  430:
+        -:  431:		case ASN1_PKEY_CTRL_CMS_ENVELOPE:
+    #####:  432:		if (arg1 == 0)
+    #####:  433:			CMS_RecipientInfo_ktri_get0_algs(arg2, NULL, NULL, &alg);
+        -:  434:		break;
+        -:  435:#endif
+        -:  436:
+        -:  437:		case ASN1_PKEY_CTRL_DEFAULT_MD_NID:
+    #####:  438:		*(int *)arg2 = NID_sha1;
+    #####:  439:		return 1;
+        -:  440:
+        -:  441:		default:
+        -:  442:		return -2;
+        -:  443:
+        -:  444:		}
+        -:  445:
+    #####:  446:	if (alg)
+    #####:  447:		X509_ALGOR_set0(alg, OBJ_nid2obj(NID_rsaEncryption),
+        -:  448:							V_ASN1_NULL, 0);
+        -:  449:
+        -:  450:	return 1;
+        -:  451:
+        -:  452:	}
+        -:  453:
+        -:  454:/* Customised RSA item verification routine. This is called 
+        -:  455: * when a signature is encountered requiring special handling. We 
+        -:  456: * currently only handle PSS.
+        -:  457: */
+        -:  458:
+        -:  459:
+    #####:  460:static int rsa_item_verify(EVP_MD_CTX *ctx, const ASN1_ITEM *it, void *asn,
+        -:  461:			X509_ALGOR *sigalg, ASN1_BIT_STRING *sig,
+        -:  462:			EVP_PKEY *pkey)
+        -:  463:	{
+        -:  464:	int rv = -1;
+        -:  465:	int saltlen;
+        -:  466:	const EVP_MD *mgf1md = NULL, *md = NULL;
+        -:  467:	RSA_PSS_PARAMS *pss;
+        -:  468:	X509_ALGOR *maskHash;
+        -:  469:	EVP_PKEY_CTX *pkctx;
+        -:  470:	/* Sanity check: make sure it is PSS */
+    #####:  471:	if (OBJ_obj2nid(sigalg->algorithm) != NID_rsassaPss)
+        -:  472:		{
+    #####:  473:		RSAerr(RSA_F_RSA_ITEM_VERIFY, RSA_R_UNSUPPORTED_SIGNATURE_TYPE);
+    #####:  474:		return -1;
+        -:  475:		}
+        -:  476:	/* Decode PSS parameters */
+    #####:  477:	pss = rsa_pss_decode(sigalg, &maskHash);
+        -:  478:
+    #####:  479:	if (pss == NULL)
+        -:  480:		{
+    #####:  481:		RSAerr(RSA_F_RSA_ITEM_VERIFY, RSA_R_INVALID_PSS_PARAMETERS);
+    #####:  482:		goto err;
+        -:  483:		}
+        -:  484:	/* Check mask and lookup mask hash algorithm */
+    #####:  485:	if (pss->maskGenAlgorithm)
+        -:  486:		{
+    #####:  487:		if (OBJ_obj2nid(pss->maskGenAlgorithm->algorithm) != NID_mgf1)
+        -:  488:			{
+    #####:  489:			RSAerr(RSA_F_RSA_ITEM_VERIFY, RSA_R_UNSUPPORTED_MASK_ALGORITHM);
+    #####:  490:			goto err;
+        -:  491:			}
+    #####:  492:		if (!maskHash)
+        -:  493:			{
+    #####:  494:			RSAerr(RSA_F_RSA_ITEM_VERIFY, RSA_R_UNSUPPORTED_MASK_PARAMETER);
+    #####:  495:			goto err;
+        -:  496:			}
+    #####:  497:		mgf1md = EVP_get_digestbyobj(maskHash->algorithm);
+    #####:  498:		if (mgf1md == NULL)
+        -:  499:			{
+    #####:  500:			RSAerr(RSA_F_RSA_ITEM_VERIFY, RSA_R_UNKNOWN_MASK_DIGEST);
+    #####:  501:			goto err;
+        -:  502:			}
+        -:  503:		}
+        -:  504:	else
+    #####:  505:		mgf1md = EVP_sha1();
+        -:  506:
+    #####:  507:	if (pss->hashAlgorithm)
+        -:  508:		{
+    #####:  509:		md = EVP_get_digestbyobj(pss->hashAlgorithm->algorithm);
+    #####:  510:		if (md == NULL)
+        -:  511:			{
+    #####:  512:			RSAerr(RSA_F_RSA_ITEM_VERIFY, RSA_R_UNKNOWN_PSS_DIGEST);
+    #####:  513:			goto err;
+        -:  514:			}
+        -:  515:		}
+        -:  516:	else
+    #####:  517:		md = EVP_sha1();
+        -:  518:
+    #####:  519:	if (pss->saltLength)
+        -:  520:		{
+    #####:  521:		saltlen = ASN1_INTEGER_get(pss->saltLength);
+        -:  522:
+        -:  523:		/* Could perform more salt length sanity checks but the main
+        -:  524:		 * RSA routines will trap other invalid values anyway.
+        -:  525:		 */
+    #####:  526:		if (saltlen < 0)
+        -:  527:			{
+    #####:  528:			RSAerr(RSA_F_RSA_ITEM_VERIFY, RSA_R_INVALID_SALT_LENGTH);
+    #####:  529:			goto err;
+        -:  530:			}
+        -:  531:		}
+        -:  532:	else
+        -:  533:		saltlen = 20;
+        -:  534:
+        -:  535:	/* low-level routines support only trailer field 0xbc (value 1)
+        -:  536:	 * and PKCS#1 says we should reject any other value anyway.
+        -:  537:	 */
+    #####:  538:	if (pss->trailerField && ASN1_INTEGER_get(pss->trailerField) != 1)
+        -:  539:		{
+    #####:  540:		RSAerr(RSA_F_RSA_ITEM_VERIFY, RSA_R_INVALID_TRAILER);
+    #####:  541:		goto err;
+        -:  542:		}
+        -:  543:
+        -:  544:	/* We have all parameters now set up context */
+        -:  545:
+    #####:  546:	if (!EVP_DigestVerifyInit(ctx, &pkctx, md, NULL, pkey))
+        -:  547:		goto err;
+        -:  548:
+    #####:  549:	if (EVP_PKEY_CTX_set_rsa_padding(pkctx, RSA_PKCS1_PSS_PADDING) <= 0)
+        -:  550:		goto err;
+        -:  551:
+    #####:  552:	if (EVP_PKEY_CTX_set_rsa_pss_saltlen(pkctx, saltlen) <= 0)
+        -:  553:		goto err;
+        -:  554:
+    #####:  555:	if (EVP_PKEY_CTX_set_rsa_mgf1_md(pkctx, mgf1md) <= 0)
+        -:  556:		goto err;
+        -:  557:	/* Carry on */
+        -:  558:	rv = 2;
+        -:  559:
+        -:  560:	err:
+    #####:  561:	RSA_PSS_PARAMS_free(pss);
+    #####:  562:	if (maskHash)
+    #####:  563:		X509_ALGOR_free(maskHash);
+    #####:  564:	return rv;
+        -:  565:	}
+        -:  566:
+    #####:  567:static int rsa_item_sign(EVP_MD_CTX *ctx, const ASN1_ITEM *it, void *asn,
+        -:  568:				X509_ALGOR *alg1, X509_ALGOR *alg2, 
+        -:  569:				ASN1_BIT_STRING *sig)
+        -:  570:	{
+        -:  571:	int pad_mode;
+    #####:  572:	EVP_PKEY_CTX *pkctx = ctx->pctx;
+    #####:  573:	if (EVP_PKEY_CTX_get_rsa_padding(pkctx, &pad_mode) <= 0)
+        -:  574:		return 0;
+    #####:  575:	if (pad_mode == RSA_PKCS1_PADDING)
+        -:  576:		return 2;
+    #####:  577:	if (pad_mode == RSA_PKCS1_PSS_PADDING)
+        -:  578:		{
+        -:  579:		const EVP_MD *sigmd, *mgf1md;
+        -:  580:		RSA_PSS_PARAMS *pss = NULL;
+        -:  581:		X509_ALGOR *mgf1alg = NULL;
+    #####:  582:		ASN1_STRING *os1 = NULL, *os2 = NULL;
+    #####:  583:		EVP_PKEY *pk = EVP_PKEY_CTX_get0_pkey(pkctx);
+        -:  584:		int saltlen, rv = 0;
+    #####:  585:		sigmd = EVP_MD_CTX_md(ctx);
+    #####:  586:		if (EVP_PKEY_CTX_get_rsa_mgf1_md(pkctx, &mgf1md) <= 0)
+        -:  587:			goto err;
+    #####:  588:		if (!EVP_PKEY_CTX_get_rsa_pss_saltlen(pkctx, &saltlen))
+        -:  589:			goto err;
+    #####:  590:		if (saltlen == -1)
+    #####:  591:			saltlen = EVP_MD_size(sigmd);
+    #####:  592:		else if (saltlen == -2)
+        -:  593:			{
+    #####:  594:			saltlen = EVP_PKEY_size(pk) - EVP_MD_size(sigmd) - 2;
+    #####:  595:			if (((EVP_PKEY_bits(pk) - 1) & 0x7) == 0)
+    #####:  596:				saltlen--;
+        -:  597:			}
+    #####:  598:		pss = RSA_PSS_PARAMS_new();
+    #####:  599:		if (!pss)
+        -:  600:			goto err;
+    #####:  601:		if (saltlen != 20)
+        -:  602:			{
+    #####:  603:			pss->saltLength = ASN1_INTEGER_new();
+    #####:  604:			if (!pss->saltLength)
+        -:  605:				goto err;
+    #####:  606:			if (!ASN1_INTEGER_set(pss->saltLength, saltlen))
+        -:  607:				goto err;
+        -:  608:			}
+    #####:  609:		if (EVP_MD_type(sigmd) != NID_sha1)
+        -:  610:			{
+    #####:  611:			pss->hashAlgorithm = X509_ALGOR_new();
+    #####:  612:			if (!pss->hashAlgorithm)
+        -:  613:				goto err;
+    #####:  614:			X509_ALGOR_set_md(pss->hashAlgorithm, sigmd);
+        -:  615:			}
+    #####:  616:		if (EVP_MD_type(mgf1md) != NID_sha1)
+        -:  617:			{
+    #####:  618:			ASN1_STRING *stmp = NULL;
+        -:  619:			/* need to embed algorithm ID inside another */
+    #####:  620:			mgf1alg = X509_ALGOR_new();
+    #####:  621:			X509_ALGOR_set_md(mgf1alg, mgf1md);
+    #####:  622:			if (!ASN1_item_pack(mgf1alg, ASN1_ITEM_rptr(X509_ALGOR),
+        -:  623:									&stmp))
+        -:  624:					goto err;
+    #####:  625:			pss->maskGenAlgorithm = X509_ALGOR_new();
+    #####:  626:			if (!pss->maskGenAlgorithm)
+        -:  627:				goto err;
+    #####:  628:			X509_ALGOR_set0(pss->maskGenAlgorithm,
+        -:  629:					OBJ_nid2obj(NID_mgf1),
+        -:  630:					V_ASN1_SEQUENCE, stmp);
+        -:  631:			}
+        -:  632:		/* Finally create string with pss parameter encoding. */
+    #####:  633:		if (!ASN1_item_pack(pss, ASN1_ITEM_rptr(RSA_PSS_PARAMS), &os1))
+        -:  634:			goto err;
+    #####:  635:		if (alg2)
+        -:  636:			{
+    #####:  637:			os2 = ASN1_STRING_dup(os1);
+    #####:  638:			if (!os2)
+        -:  639:				goto err;
+    #####:  640:			X509_ALGOR_set0(alg2, OBJ_nid2obj(NID_rsassaPss),
+        -:  641:						V_ASN1_SEQUENCE, os2);
+        -:  642:			}
+    #####:  643:		X509_ALGOR_set0(alg1, OBJ_nid2obj(NID_rsassaPss),
+        -:  644:					V_ASN1_SEQUENCE, os1);
+    #####:  645:		os1 = os2 = NULL;
+        -:  646:		rv = 3;
+        -:  647:		err:
+    #####:  648:		if (mgf1alg)
+    #####:  649:			X509_ALGOR_free(mgf1alg);
+    #####:  650:		if (pss)
+    #####:  651:			RSA_PSS_PARAMS_free(pss);
+    #####:  652:		if (os1)
+    #####:  653:			ASN1_STRING_free(os1);
+        -:  654:		return rv;
+        -:  655:		
+        -:  656:		}
+        -:  657:	return 2;
+        -:  658:	}
+        -:  659:
+        -:  660:const EVP_PKEY_ASN1_METHOD rsa_asn1_meths[] = 
+        -:  661:	{
+        -:  662:		{
+        -:  663:		EVP_PKEY_RSA,
+        -:  664:		EVP_PKEY_RSA,
+        -:  665:		ASN1_PKEY_SIGPARAM_NULL,
+        -:  666:
+        -:  667:		"RSA",
+        -:  668:		"OpenSSL RSA method",
+        -:  669:
+        -:  670:		rsa_pub_decode,
+        -:  671:		rsa_pub_encode,
+        -:  672:		rsa_pub_cmp,
+        -:  673:		rsa_pub_print,
+        -:  674:
+        -:  675:		rsa_priv_decode,
+        -:  676:		rsa_priv_encode,
+        -:  677:		rsa_priv_print,
+        -:  678:
+        -:  679:		int_rsa_size,
+        -:  680:		rsa_bits,
+        -:  681:
+        -:  682:		0,0,0,0,0,0,
+        -:  683:
+        -:  684:		rsa_sig_print,
+        -:  685:		int_rsa_free,
+        -:  686:		rsa_pkey_ctrl,
+        -:  687:		old_rsa_priv_decode,
+        -:  688:		old_rsa_priv_encode,
+        -:  689:		rsa_item_verify,
+        -:  690:		rsa_item_sign
+        -:  691:		},
+        -:  692:
+        -:  693:		{
+        -:  694:		EVP_PKEY_RSA2,
+        -:  695:		EVP_PKEY_RSA,
+        -:  696:		ASN1_PKEY_ALIAS
+        -:  697:		}
+        -:  698:	};

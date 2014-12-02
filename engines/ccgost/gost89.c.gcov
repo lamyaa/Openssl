@@ -1,0 +1,426 @@
+        -:    0:Source:gost89.c
+        -:    0:Graph:gost89.gcno
+        -:    0:Data:gost89.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/**********************************************************************
+        -:    2: *                        gost89.c                                    *
+        -:    3: *             Copyright (c) 2005-2006 Cryptocom LTD                  *
+        -:    4: *         This file is distributed under the same license as OpenSSL *
+        -:    5: *                                                                    *
+        -:    6: *          Implementation of GOST 28147-89 encryption algorithm      *
+        -:    7: *            No OpenSSL libraries required to compile and use        *
+        -:    8: *                              this code                             *
+        -:    9: **********************************************************************/ 
+        -:   10:#include <string.h>
+        -:   11:#include "gost89.h"
+        -:   12:/* Substitution blocks from RFC 4357 
+        -:   13:   
+        -:   14:   Note: our implementation of gost 28147-89 algorithm 
+        -:   15:   uses S-box matrix rotated 90 degrees counterclockwise, relative to 
+        -:   16:   examples given in RFC.
+        -:   17:  
+        -:   18:
+        -:   19:*/
+        -:   20:
+        -:   21:/* Substitution blocks from test examples for GOST R 34.11-94*/
+        -:   22:gost_subst_block GostR3411_94_TestParamSet = {
+        -:   23:	{0X1,0XF,0XD,0X0,0X5,0X7,0XA,0X4,0X9,0X2,0X3,0XE,0X6,0XB,0X8,0XC},
+        -:   24:	{0XD,0XB,0X4,0X1,0X3,0XF,0X5,0X9,0X0,0XA,0XE,0X7,0X6,0X8,0X2,0XC},
+        -:   25:	{0X4,0XB,0XA,0X0,0X7,0X2,0X1,0XD,0X3,0X6,0X8,0X5,0X9,0XC,0XF,0XE},
+        -:   26:	{0X6,0XC,0X7,0X1,0X5,0XF,0XD,0X8,0X4,0XA,0X9,0XE,0X0,0X3,0XB,0X2},
+        -:   27:	{0X7,0XD,0XA,0X1,0X0,0X8,0X9,0XF,0XE,0X4,0X6,0XC,0XB,0X2,0X5,0X3},
+        -:   28:	{0X5,0X8,0X1,0XD,0XA,0X3,0X4,0X2,0XE,0XF,0XC,0X7,0X6,0X0,0X9,0XB},
+        -:   29:	{0XE,0XB,0X4,0XC,0X6,0XD,0XF,0XA,0X2,0X3,0X8,0X1,0X0,0X7,0X5,0X9},
+        -:   30:	{0X4,0XA,0X9,0X2,0XD,0X8,0X0,0XE,0X6,0XB,0X1,0XC,0X7,0XF,0X5,0X3}
+        -:   31:	};  
+        -:   32:/* Substitution blocks for hash function 1.2.643.2.9.1.6.1  */
+        -:   33:gost_subst_block GostR3411_94_CryptoProParamSet= {
+        -:   34:	{0x1,0x3,0xA,0x9,0x5,0xB,0x4,0xF,0x8,0x6,0x7,0xE,0xD,0x0,0x2,0xC},
+        -:   35:	{0xD,0xE,0x4,0x1,0x7,0x0,0x5,0xA,0x3,0xC,0x8,0xF,0x6,0x2,0x9,0xB},
+        -:   36:	{0x7,0x6,0x2,0x4,0xD,0x9,0xF,0x0,0xA,0x1,0x5,0xB,0x8,0xE,0xC,0x3},
+        -:   37:	{0x7,0x6,0x4,0xB,0x9,0xC,0x2,0xA,0x1,0x8,0x0,0xE,0xF,0xD,0x3,0x5},
+        -:   38:	{0x4,0xA,0x7,0xC,0x0,0xF,0x2,0x8,0xE,0x1,0x6,0x5,0xD,0xB,0x9,0x3},
+        -:   39:	{0x7,0xF,0xC,0xE,0x9,0x4,0x1,0x0,0x3,0xB,0x5,0x2,0x6,0xA,0x8,0xD},
+        -:   40:	{0x5,0xF,0x4,0x0,0x2,0xD,0xB,0x9,0x1,0x7,0x6,0x3,0xC,0xE,0xA,0x8},
+        -:   41:	{0xA,0x4,0x5,0x6,0x8,0x1,0x3,0x7,0xD,0xC,0xE,0x0,0x9,0x2,0xB,0xF}
+        -:   42:	} ;
+        -:   43:
+        -:   44:/* Test paramset from GOST 28147 */
+        -:   45:gost_subst_block Gost28147_TestParamSet =
+        -:   46:	{
+        -:   47:	{0xC,0x6,0x5,0x2,0xB,0x0,0x9,0xD,0x3,0xE,0x7,0xA,0xF,0x4,0x1,0x8},
+        -:   48:	{0x9,0xB,0xC,0x0,0x3,0x6,0x7,0x5,0x4,0x8,0xE,0xF,0x1,0xA,0x2,0xD},
+        -:   49:	{0x8,0xF,0x6,0xB,0x1,0x9,0xC,0x5,0xD,0x3,0x7,0xA,0x0,0xE,0x2,0x4},
+        -:   50:	{0x3,0xE,0x5,0x9,0x6,0x8,0x0,0xD,0xA,0xB,0x7,0xC,0x2,0x1,0xF,0x4},
+        -:   51:	{0xE,0x9,0xB,0x2,0x5,0xF,0x7,0x1,0x0,0xD,0xC,0x6,0xA,0x4,0x3,0x8},
+        -:   52:	{0xD,0x8,0xE,0xC,0x7,0x3,0x9,0xA,0x1,0x5,0x2,0x4,0x6,0xF,0x0,0xB},
+        -:   53:	{0xC,0x9,0xF,0xE,0x8,0x1,0x3,0xA,0x2,0x7,0x4,0xD,0x6,0x0,0xB,0x5},
+        -:   54:	{0x4,0x2,0xF,0x5,0x9,0x1,0x0,0x8,0xE,0x3,0xB,0xC,0xD,0x7,0xA,0x6}
+        -:   55:	};
+        -:   56:
+        -:   57:
+        -:   58:
+        -:   59:
+        -:   60:/* 1.2.643.2.2.31.1 */
+        -:   61:gost_subst_block Gost28147_CryptoProParamSetA= {
+        -:   62:	{0xB,0xA,0xF,0x5,0x0,0xC,0xE,0x8,0x6,0x2,0x3,0x9,0x1,0x7,0xD,0x4},
+        -:   63:	{0x1,0xD,0x2,0x9,0x7,0xA,0x6,0x0,0x8,0xC,0x4,0x5,0xF,0x3,0xB,0xE},
+        -:   64:	{0x3,0xA,0xD,0xC,0x1,0x2,0x0,0xB,0x7,0x5,0x9,0x4,0x8,0xF,0xE,0x6},
+        -:   65:	{0xB,0x5,0x1,0x9,0x8,0xD,0xF,0x0,0xE,0x4,0x2,0x3,0xC,0x7,0xA,0x6},
+        -:   66:	{0xE,0x7,0xA,0xC,0xD,0x1,0x3,0x9,0x0,0x2,0xB,0x4,0xF,0x8,0x5,0x6},
+        -:   67:	{0xE,0x4,0x6,0x2,0xB,0x3,0xD,0x8,0xC,0xF,0x5,0xA,0x0,0x7,0x1,0x9},
+        -:   68:	{0x3,0x7,0xE,0x9,0x8,0xA,0xF,0x0,0x5,0x2,0x6,0xC,0xB,0x4,0xD,0x1},
+        -:   69:	{0x9,0x6,0x3,0x2,0x8,0xB,0x1,0x7,0xA,0x4,0xE,0xF,0xC,0x0,0xD,0x5}
+        -:   70:	};
+        -:   71:/* 1.2.643.2.2.31.2 */
+        -:   72:gost_subst_block Gost28147_CryptoProParamSetB= 
+        -:   73:	{
+        -:   74:	{0x0,0x4,0xB,0xE,0x8,0x3,0x7,0x1,0xA,0x2,0x9,0x6,0xF,0xD,0x5,0xC},
+        -:   75:	{0x5,0x2,0xA,0xB,0x9,0x1,0xC,0x3,0x7,0x4,0xD,0x0,0x6,0xF,0x8,0xE},
+        -:   76:	{0x8,0x3,0x2,0x6,0x4,0xD,0xE,0xB,0xC,0x1,0x7,0xF,0xA,0x0,0x9,0x5},
+        -:   77:	{0x2,0x7,0xC,0xF,0x9,0x5,0xA,0xB,0x1,0x4,0x0,0xD,0x6,0x8,0xE,0x3},
+        -:   78:	{0x7,0x5,0x0,0xD,0xB,0x6,0x1,0x2,0x3,0xA,0xC,0xF,0x4,0xE,0x9,0x8},
+        -:   79:	{0xE,0xC,0x0,0xA,0x9,0x2,0xD,0xB,0x7,0x5,0x8,0xF,0x3,0x6,0x1,0x4},
+        -:   80:	{0x0,0x1,0x2,0xA,0x4,0xD,0x5,0xC,0x9,0x7,0x3,0xF,0xB,0x8,0x6,0xE},
+        -:   81:	{0x8,0x4,0xB,0x1,0x3,0x5,0x0,0x9,0x2,0xE,0xA,0xC,0xD,0x6,0x7,0xF}
+        -:   82:	};
+        -:   83:/* 1.2.643.2.2.31.3 */
+        -:   84:gost_subst_block Gost28147_CryptoProParamSetC= 
+        -:   85:	{
+        -:   86:	{0x7,0x4,0x0,0x5,0xA,0x2,0xF,0xE,0xC,0x6,0x1,0xB,0xD,0x9,0x3,0x8},
+        -:   87:	{0xA,0x9,0x6,0x8,0xD,0xE,0x2,0x0,0xF,0x3,0x5,0xB,0x4,0x1,0xC,0x7},
+        -:   88:	{0xC,0x9,0xB,0x1,0x8,0xE,0x2,0x4,0x7,0x3,0x6,0x5,0xA,0x0,0xF,0xD},
+        -:   89:	{0x8,0xD,0xB,0x0,0x4,0x5,0x1,0x2,0x9,0x3,0xC,0xE,0x6,0xF,0xA,0x7},
+        -:   90:	{0x3,0x6,0x0,0x1,0x5,0xD,0xA,0x8,0xB,0x2,0x9,0x7,0xE,0xF,0xC,0x4},
+        -:   91:	{0x8,0x2,0x5,0x0,0x4,0x9,0xF,0xA,0x3,0x7,0xC,0xD,0x6,0xE,0x1,0xB},
+        -:   92:	{0x0,0x1,0x7,0xD,0xB,0x4,0x5,0x2,0x8,0xE,0xF,0xC,0x9,0xA,0x6,0x3},
+        -:   93:	{0x1,0xB,0xC,0x2,0x9,0xD,0x0,0xF,0x4,0x5,0x8,0xE,0xA,0x7,0x6,0x3}
+        -:   94:	};
+        -:   95:
+        -:   96:/* 1.2.643.2.2.31.4 */ 
+        -:   97:gost_subst_block Gost28147_CryptoProParamSetD=
+        -:   98:	{
+        -:   99:	{0x1,0xA,0x6,0x8,0xF,0xB,0x0,0x4,0xC,0x3,0x5,0x9,0x7,0xD,0x2,0xE},
+        -:  100:	{0x3,0x0,0x6,0xF,0x1,0xE,0x9,0x2,0xD,0x8,0xC,0x4,0xB,0xA,0x5,0x7},
+        -:  101:	{0x8,0x0,0xF,0x3,0x2,0x5,0xE,0xB,0x1,0xA,0x4,0x7,0xC,0x9,0xD,0x6},
+        -:  102:	{0x0,0xC,0x8,0x9,0xD,0x2,0xA,0xB,0x7,0x3,0x6,0x5,0x4,0xE,0xF,0x1},
+        -:  103:	{0x1,0x5,0xE,0xC,0xA,0x7,0x0,0xD,0x6,0x2,0xB,0x4,0x9,0x3,0xF,0x8},
+        -:  104:	{0x1,0xC,0xB,0x0,0xF,0xE,0x6,0x5,0xA,0xD,0x4,0x8,0x9,0x3,0x7,0x2},
+        -:  105:	{0xB,0x6,0x3,0x4,0xC,0xF,0xE,0x2,0x7,0xD,0x8,0x0,0x5,0xA,0x9,0x1},
+        -:  106:	{0xF,0xC,0x2,0xA,0x6,0x4,0x5,0x0,0x7,0x9,0xE,0xD,0x1,0xB,0x8,0x3}
+        -:  107:	};
+        -:  108:
+        -:  109:
+        -:  110:const byte CryptoProKeyMeshingKey[]={
+        -:  111:	0x69, 0x00, 0x72, 0x22,   0x64, 0xC9, 0x04, 0x23,
+        -:  112:    0x8D, 0x3A, 0xDB, 0x96,   0x46, 0xE9, 0x2A, 0xC4,
+        -:  113:    0x18, 0xFE, 0xAC, 0x94,   0x00, 0xED, 0x07, 0x12,
+        -:  114:    0xC0, 0x86, 0xDC, 0xC2,   0xEF, 0x4C, 0xA9, 0x2B
+        -:  115:	};	
+        -:  116:/* Initialization of gost_ctx subst blocks*/
+    #####:  117:static void kboxinit(gost_ctx *c, const gost_subst_block *b)
+        -:  118:	{ 
+        -:  119:	int i; 
+        -:  120:	
+    #####:  121:	for (i = 0; i < 256; i++)
+        -:  122:		{
+    #####:  123:		c->k87[i] = (b->k8[i>>4] <<4 | b->k7 [i &15])<<24;
+    #####:  124:		c->k65[i] = (b->k6[i>>4] << 4 | b->k5 [i &15])<<16;
+    #####:  125:		c->k43[i] = (b->k4[i>>4] <<4  | b->k3 [i &15])<<8;
+    #####:  126:		c->k21[i] = b->k2[i>>4] <<4  | b->k1 [i &15];
+        -:  127:
+        -:  128:		}
+    #####:  129:	}
+        -:  130:
+        -:  131:/* Part of GOST 28147 algorithm moved into separate function */
+        -:  132:static word32 f(gost_ctx *c,word32 x) 
+        -:  133:	{
+    #####:  134:	x = c->k87[x>>24 & 255] | c->k65[x>>16 & 255]| 
+    #####:  135:		c->k43[x>> 8 & 255] | c->k21[x & 255]; 
+        -:  136:	/* Rotate left 11 bits */ 
+    #####:  137:	return x<<11 | x>>(32-11);
+        -:  138:	}
+        -:  139:/* Low-level encryption routine - encrypts one 64 bit block*/
+    #####:  140:void gostcrypt(gost_ctx *c, const byte *in, byte *out)
+        -:  141:	{ 
+        -:  142:	register word32 n1, n2; /* As named in the GOST */ 
+    #####:  143:	n1 = in[0]|(in[1]<<8)|(in[2]<<16)|(in[3]<<24); 
+    #####:  144:	n2 = in[4]|(in[5]<<8)|(in[6]<<16)|(in[7]<<24); 
+        -:  145:	/* Instead of swapping halves, swap names each round */ 
+        -:  146: 	 
+    #####:  147:	n2 ^= f(c,n1+c->k[0]); n1 ^= f(c,n2+c->k[1]); 
+    #####:  148:	n2 ^= f(c,n1+c->k[2]); n1 ^= f(c,n2+c->k[3]); 
+    #####:  149:	n2 ^= f(c,n1+c->k[4]); n1 ^= f(c,n2+c->k[5]); 
+    #####:  150:	n2 ^= f(c,n1+c->k[6]); n1 ^= f(c,n2+c->k[7]); 
+        -:  151:  
+    #####:  152:	n2 ^= f(c,n1+c->k[0]); n1 ^= f(c,n2+c->k[1]);
+    #####:  153:	n2 ^= f(c,n1+c->k[2]); n1 ^= f(c,n2+c->k[3]);
+    #####:  154:	n2 ^= f(c,n1+c->k[4]); n1 ^= f(c,n2+c->k[5]);
+    #####:  155:	n2 ^= f(c,n1+c->k[6]); n1 ^= f(c,n2+c->k[7]);
+        -:  156:                               
+    #####:  157:	n2 ^= f(c,n1+c->k[0]); n1 ^= f(c,n2+c->k[1]);
+    #####:  158:	n2 ^= f(c,n1+c->k[2]); n1 ^= f(c,n2+c->k[3]);
+    #####:  159:	n2 ^= f(c,n1+c->k[4]); n1 ^= f(c,n2+c->k[5]);
+    #####:  160:	n2 ^= f(c,n1+c->k[6]); n1 ^= f(c,n2+c->k[7]);
+        -:  161:                               
+    #####:  162:	n2 ^= f(c,n1+c->k[7]); n1 ^= f(c,n2+c->k[6]);
+    #####:  163:	n2 ^= f(c,n1+c->k[5]); n1 ^= f(c,n2+c->k[4]);
+    #####:  164:	n2 ^= f(c,n1+c->k[3]); n1 ^= f(c,n2+c->k[2]);
+    #####:  165:	n2 ^= f(c,n1+c->k[1]); n1 ^= f(c,n2+c->k[0]);
+        -:  166: 
+    #####:  167:	out[0] = (byte)(n2&0xff);  out[1] = (byte)((n2>>8)&0xff);
+    #####:  168:	out[2] = (byte)((n2>>16)&0xff); out[3]=(byte)(n2>>24); 
+    #####:  169:	out[4] = (byte)(n1&0xff);  out[5] = (byte)((n1>>8)&0xff);
+    #####:  170:	out[6] = (byte)((n1>>16)&0xff); out[7] = (byte)(n1>>24);
+    #####:  171:	} 
+        -:  172:/* Low-level decryption routine. Decrypts one 64-bit block */
+    #####:  173:void gostdecrypt(gost_ctx *c, const byte *in,byte *out)
+        -:  174:	{ 
+        -:  175:	register word32 n1, n2; /* As named in the GOST */ 
+    #####:  176:	n1 = in[0]|(in[1]<<8)|(in[2]<<16)|(in[3]<<24); 
+    #####:  177:	n2 = in[4]|(in[5]<<8)|(in[6]<<16)|(in[7]<<24); 
+        -:  178:	
+    #####:  179:	n2 ^= f(c,n1+c->k[0]); n1 ^= f(c,n2+c->k[1]); 
+    #####:  180:	n2 ^= f(c,n1+c->k[2]); n1 ^= f(c,n2+c->k[3]); 
+    #####:  181:	n2 ^= f(c,n1+c->k[4]); n1 ^= f(c,n2+c->k[5]);
+    #####:  182:	n2 ^= f(c,n1+c->k[6]); n1 ^= f(c,n2+c->k[7]); 
+        -:  183:	
+    #####:  184:	n2 ^= f(c,n1+c->k[7]); n1 ^= f(c,n2+c->k[6]);
+    #####:  185:	n2 ^= f(c,n1+c->k[5]); n1 ^= f(c,n2+c->k[4]);
+    #####:  186:	n2 ^= f(c,n1+c->k[3]); n1 ^= f(c,n2+c->k[2]);
+    #####:  187:	n2 ^= f(c,n1+c->k[1]); n1 ^= f(c,n2+c->k[0]);
+        -:  188:	
+    #####:  189:	n2 ^= f(c,n1+c->k[7]); n1 ^= f(c,n2+c->k[6]);
+    #####:  190:	n2 ^= f(c,n1+c->k[5]); n1 ^= f(c,n2+c->k[4]);
+    #####:  191:	n2 ^= f(c,n1+c->k[3]); n1 ^= f(c,n2+c->k[2]);
+    #####:  192:	n2 ^= f(c,n1+c->k[1]); n1 ^= f(c,n2+c->k[0]);
+        -:  193:	
+    #####:  194:	n2 ^= f(c,n1+c->k[7]); n1 ^= f(c,n2+c->k[6]);
+    #####:  195:	n2 ^= f(c,n1+c->k[5]); n1 ^= f(c,n2+c->k[4]);
+    #####:  196:	n2 ^= f(c,n1+c->k[3]); n1 ^= f(c,n2+c->k[2]);
+    #####:  197:	n2 ^= f(c,n1+c->k[1]); n1 ^= f(c,n2+c->k[0]);
+        -:  198:
+    #####:  199:	out[0] = (byte)(n2&0xff);  out[1] = (byte)((n2>>8)&0xff);
+    #####:  200:	out[2] = (byte)((n2>>16)&0xff); out[3]=(byte)(n2>>24);
+    #####:  201:	out[4] = (byte)(n1&0xff);  out[5] = (byte)((n1>>8)&0xff);
+    #####:  202:	out[6] = (byte)((n1>>16)&0xff); out[7] = (byte)(n1>>24);
+    #####:  203:	} 
+        -:  204:
+        -:  205:/* Encrypts several blocks in ECB mode */
+    #####:  206:void gost_enc(gost_ctx *c,const byte *clear,byte *cipher, int blocks)
+        -:  207:	{ 
+        -:  208:	int i; 
+    #####:  209:	for(i=0;i<blocks;i++)
+        -:  210:		{ 
+    #####:  211:		gostcrypt(c,clear,cipher); 
+    #####:  212:		clear+=8;
+    #####:  213:		cipher+=8;
+        -:  214:		}
+    #####:  215:	}
+        -:  216:/* Decrypts several blocks in ECB mode */
+    #####:  217:void gost_dec(gost_ctx *c, const byte *cipher,byte *clear, int blocks)
+        -:  218:	{ 
+        -:  219:	int i; 
+    #####:  220:	for(i=0;i<blocks;i++)
+        -:  221:		{ 
+    #####:  222:		gostdecrypt(c,cipher,clear); 
+    #####:  223:		clear+=8; 
+    #####:  224:		cipher+=8;
+        -:  225:		}
+    #####:  226:	}
+        -:  227:
+        -:  228:/* Encrypts several full blocks in CFB mode using 8byte IV */
+    #####:  229:void gost_enc_cfb(gost_ctx *ctx,const byte *iv,const byte *clear,byte *cipher, int blocks)
+        -:  230:	{
+        -:  231:	byte cur_iv[8];
+        -:  232:	byte gamma[8];
+        -:  233:	int i,j;
+        -:  234:	const byte *in;
+        -:  235:	byte *out;
+        -:  236:	memcpy(cur_iv,iv,8);
+    #####:  237:	for(i=0,in=clear,out=cipher;i<blocks;i++,in+=8,out+=8)
+        -:  238:		{
+    #####:  239:		gostcrypt(ctx,cur_iv,gamma);
+    #####:  240:		for (j=0;j<8;j++)
+        -:  241:			{
+    #####:  242:			cur_iv[j]=out[j]=in[j]^gamma[j];
+        -:  243:			}
+        -:  244:		}	
+    #####:  245:	}	
+        -:  246:/* Decrypts several full blocks in CFB mode using 8byte IV */
+    #####:  247:void gost_dec_cfb(gost_ctx *ctx,const byte *iv,const byte *cipher,byte *clear,  int blocks)
+        -:  248:	{
+        -:  249:	byte cur_iv[8];
+        -:  250:	byte gamma[8];
+        -:  251:	int i,j;
+        -:  252:	const byte *in;
+        -:  253:	byte *out;
+        -:  254:	memcpy(cur_iv,iv,8);
+    #####:  255:	for(i=0,in=cipher,out=clear;i<blocks;i++,in+=8,out+=8)
+        -:  256:		{
+    #####:  257:		gostcrypt(ctx,cur_iv,gamma);
+    #####:  258:		for (j=0;j<8;j++)
+        -:  259:			{
+    #####:  260:			out[j]=(cur_iv[j]=in[j])^gamma[j];
+        -:  261:			}
+        -:  262:		}	
+    #####:  263:	}	
+        -:  264:
+        -:  265:/* Encrypts one block using specified key */
+    #####:  266:void gost_enc_with_key(gost_ctx *c,byte *key,byte *inblock,byte *outblock) 
+        -:  267:	{
+    #####:  268:	gost_key(c,key);
+    #####:  269:	gostcrypt(c,inblock,outblock);
+    #####:  270:	}
+        -:  271:
+        -:  272:/* Set 256 bit  key into context */
+    #####:  273:void gost_key(gost_ctx *c, const byte *k) 
+        -:  274:	{ 
+        -:  275:	int i,j; 
+    #####:  276:	for(i=0,j=0;i<8;i++,j+=4)
+        -:  277:		{
+    #####:  278:		c->k[i]=k[j]|(k[j+1]<<8)|(k[j+2]<<16)|(k[j+3]<<24);
+        -:  279:		}		
+    #####:  280:	} 
+        -:  281:
+        -:  282:/* Retrieve 256-bit key from context */
+    #####:  283:void gost_get_key(gost_ctx *c, byte *k) 
+        -:  284:	{
+        -:  285:	int i,j; 
+    #####:  286:	for(i=0,j=0;i<8;i++,j+=4)
+        -:  287:		{
+    #####:  288:		k[j]=(byte)(c->k[i]& 0xFF);
+    #####:  289:		k[j+1]=(byte)((c->k[i]>>8 )&0xFF);
+    #####:  290:		k[j+2]=(byte)((c->k[i]>>16) &0xFF);
+    #####:  291:		k[j+3]=(byte)((c->k[i]>>24) &0xFF);
+        -:  292:		}		
+    #####:  293:	}
+        -:  294:
+        -:  295:/* Initalize context. Provides default value for subst_block */
+    #####:  296:void gost_init(gost_ctx *c, const gost_subst_block *b)
+        -:  297:	{ 	
+    #####:  298:	if(!b)
+        -:  299:		{
+        -:  300:		b=&GostR3411_94_TestParamSet;
+        -:  301:		}	
+    #####:  302:	kboxinit(c,b); 
+    #####:  303:	}
+        -:  304:
+        -:  305:/* Cleans up key from context */
+    #####:  306:void gost_destroy(gost_ctx *c)
+        -:  307:	{ 
+    #####:  308:	int i; for(i=0;i<8;i++) c->k[i]=0; 
+    #####:  309:	} 
+        -:  310:
+        -:  311:/* Compute GOST 28147 mac block 
+        -:  312: * 
+        -:  313: * Parameters
+        -:  314: *   gost_ctx *c - context initalized with substitution blocks and key
+        -:  315: *   buffer - 8-byte mac state buffer
+        -:  316: *   block 8-byte block to process.
+        -:  317: * */
+    #####:  318:void mac_block(gost_ctx *c,byte *buffer,const  byte *block)
+        -:  319:	{
+        -:  320:	register word32 n1, n2; /* As named in the GOST */ 
+        -:  321:	int i;
+    #####:  322:	for (i=0; i<8; i++)
+        -:  323:		{
+    #####:  324:		buffer[i]^=block[i];
+        -:  325:		}	  
+    #####:  326:	n1 = buffer[0]|(buffer[1]<<8)|(buffer[2]<<16)|(buffer[3]<<24); 
+    #####:  327:	n2 = buffer[4]|(buffer[5]<<8)|(buffer[6]<<16)|(buffer[7]<<24); 
+        -:  328:	/* Instead of swapping halves, swap names each round */ 
+        -:  329: 	 
+    #####:  330:	n2 ^= f(c,n1+c->k[0]); n1 ^= f(c,n2+c->k[1]); 
+    #####:  331:	n2 ^= f(c,n1+c->k[2]); n1 ^= f(c,n2+c->k[3]); 
+    #####:  332:	n2 ^= f(c,n1+c->k[4]); n1 ^= f(c,n2+c->k[5]); 
+    #####:  333:	n2 ^= f(c,n1+c->k[6]); n1 ^= f(c,n2+c->k[7]); 
+        -:  334:  
+    #####:  335:	n2 ^= f(c,n1+c->k[0]); n1 ^= f(c,n2+c->k[1]);
+    #####:  336:	n2 ^= f(c,n1+c->k[2]); n1 ^= f(c,n2+c->k[3]);
+    #####:  337:	n2 ^= f(c,n1+c->k[4]); n1 ^= f(c,n2+c->k[5]);
+    #####:  338:	n2 ^= f(c,n1+c->k[6]); n1 ^= f(c,n2+c->k[7]);
+        -:  339:
+    #####:  340:	buffer[0] = (byte)(n1&0xff);  buffer[1] = (byte)((n1>>8)&0xff);
+    #####:  341:	buffer[2] = (byte)((n1>>16)&0xff); buffer[3] = (byte)(n1>>24);
+    #####:  342:	buffer[4] = (byte)(n2&0xff);  buffer[5] = (byte)((n2>>8)&0xff);
+    #####:  343:	buffer[6] = (byte)((n2>>16)&0xff); buffer[7] = (byte)(n2>>24);
+    #####:  344:	}
+        -:  345:
+        -:  346:/* Get mac with specified number of bits from MAC state buffer */
+    #####:  347:void get_mac(byte *buffer,int nbits,byte *out)
+        -:  348:	{
+    #####:  349:	int nbytes= nbits >> 3;
+    #####:  350:	int rembits = nbits & 7;
+    #####:  351:	int mask =rembits?((1<rembits)-1):0;
+        -:  352:	int i;
+    #####:  353:	for (i=0;i<nbytes;i++) out[i]=buffer[i];
+    #####:  354:	if (rembits) out[i]=buffer[i]&mask;
+    #####:  355:	}	
+        -:  356:
+        -:  357:/* Compute mac of specified length (in bits) from data. 
+        -:  358: * Context should be initialized with key and subst blocks */
+    #####:  359:int gost_mac(gost_ctx *ctx,int mac_len,const unsigned char *data,
+        -:  360:	unsigned int data_len,unsigned char *mac) 
+        -:  361:	{
+    #####:  362:	byte buffer[8]={0,0,0,0,0,0,0,0};
+        -:  363:	byte buf2[8];
+        -:  364:	unsigned int i;
+    #####:  365:	for (i=0;i+8<=data_len;i+=8) 
+    #####:  366:		mac_block(ctx,buffer,data+i);
+    #####:  367:	if (i<data_len)
+        -:  368:		{
+        -:  369:		memset(buf2,0,8);
+    #####:  370:		memcpy(buf2,data+i,data_len-i);
+    #####:  371:		mac_block(ctx,buffer,buf2);
+        -:  372:		i+=8;
+        -:  373:		}
+    #####:  374:	if (i==8)
+        -:  375:		{
+        -:  376:		memset(buf2,0,8);
+    #####:  377:		mac_block(ctx,buffer,buf2);
+        -:  378:		}
+    #####:  379:	get_mac(buffer,mac_len,mac);
+    #####:  380:	return 1;
+        -:  381:	}
+        -:  382:
+        -:  383:/* Compute MAC with non-zero IV. Used in some RFC 4357 algorithms */
+    #####:  384:int gost_mac_iv(gost_ctx *ctx,int mac_len,const unsigned char *iv,const unsigned char *data,
+        -:  385:	unsigned int data_len,unsigned char *mac) 
+        -:  386:	{
+        -:  387:	byte buffer[8];
+        -:  388:	byte buf2[8];
+        -:  389:	unsigned int i;
+        -:  390:	memcpy (buffer,iv,8);
+    #####:  391:	for (i=0;i+8<=data_len;i+=8) 
+    #####:  392:		mac_block(ctx,buffer,data+i);
+    #####:  393:	if (i<data_len)
+        -:  394:		{
+        -:  395:		memset(buf2,0,8);
+    #####:  396:		memcpy(buf2,data+i,data_len-i);
+    #####:  397:		mac_block(ctx,buffer,buf2);
+        -:  398:		i+=8;
+        -:  399:		}	
+    #####:  400:	if (i==8)
+        -:  401:		{
+        -:  402:		memset(buf2,0,8);
+    #####:  403:		mac_block(ctx,buffer,buf2);
+        -:  404:		}
+    #####:  405:	get_mac(buffer,mac_len,mac);
+    #####:  406:	return 1;
+        -:  407:	}
+        -:  408:
+        -:  409:/* Implements key meshing algorithm by modifing ctx and IV in place */
+    #####:  410:void cryptopro_key_meshing(gost_ctx *ctx, unsigned char *iv)
+        -:  411:	{
+        -:  412:	unsigned char newkey[32],newiv[8];
+        -:  413:	/* Set static keymeshing key */
+        -:  414:	/* "Decrypt" key with keymeshing key */
+        -:  415:	gost_dec(ctx,CryptoProKeyMeshingKey,newkey,4);
+        -:  416:	/* set new key */
+    #####:  417:	gost_key(ctx,newkey);
+        -:  418:	/* Encrypt iv with new key */
+    #####:  419:	gostcrypt(ctx,iv,newiv);
+        -:  420:	memcpy(iv,newiv,8);
+    #####:  421:	}

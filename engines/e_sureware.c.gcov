@@ -1,0 +1,1060 @@
+        -:    0:Source:e_sureware.c
+        -:    0:Graph:e_sureware.gcno
+        -:    0:Data:e_sureware.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* Written by Corinne Dive-Reclus(cdive@baltimore.com)
+        -:    2:* 
+        -:    3:*
+        -:    4:* Redistribution and use in source and binary forms, with or without
+        -:    5:* modification, are permitted provided that the following conditions
+        -:    6:* are met:
+        -:    7:*
+        -:    8:* 1. Redistributions of source code must retain the above copyright
+        -:    9:*    notice, this list of conditions and the following disclaimer. 
+        -:   10:*
+        -:   11:* 2. Redistributions in binary form must reproduce the above copyright
+        -:   12:*    notice, this list of conditions and the following disclaimer in
+        -:   13:*    the documentation and/or other materials provided with the
+        -:   14:*    distribution.
+        -:   15:*
+        -:   16:* 3. All advertising materials mentioning features or use of this
+        -:   17:*    software must display the following acknowledgment:
+        -:   18:*    "This product includes software developed by the OpenSSL Project
+        -:   19:*    for use in the OpenSSL Toolkit. (http://www.OpenSSL.org/)"
+        -:   20:*
+        -:   21:* 4. The names "OpenSSL Toolkit" and "OpenSSL Project" must not be used to
+        -:   22:*    endorse or promote products derived from this software without
+        -:   23:*    prior written permission. For written permission, please contact
+        -:   24:*    licensing@OpenSSL.org.
+        -:   25:*
+        -:   26:* 5. Products derived from this software may not be called "OpenSSL"
+        -:   27:*    nor may "OpenSSL" appear in their names without prior written
+        -:   28:*    permission of the OpenSSL Project.
+        -:   29:*
+        -:   30:* 6. Redistributions of any form whatsoever must retain the following
+        -:   31:*    acknowledgment:
+        -:   32:*    "This product includes software developed by the OpenSSL Project
+        -:   33:*    for use in the OpenSSL Toolkit (http://www.OpenSSL.org/)"
+        -:   34:*
+        -:   35:* Written by Corinne Dive-Reclus(cdive@baltimore.com)
+        -:   36:*
+        -:   37:* Copyright@2001 Baltimore Technologies Ltd.
+        -:   38:* All right Reserved.
+        -:   39:*																								*	
+        -:   40:*		THIS FILE IS PROVIDED BY BALTIMORE TECHNOLOGIES ``AS IS'' AND																			*
+        -:   41:*		ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE					* 
+        -:   42:*		IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE				*
+        -:   43:*		ARE DISCLAIMED.  IN NO EVENT SHALL BALTIMORE TECHNOLOGIES BE LIABLE						*
+        -:   44:*		FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL				*
+        -:   45:*		DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS					*
+        -:   46:*		OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)					*
+        -:   47:*		HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT				*
+        -:   48:*		LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY				*
+        -:   49:*		OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF					*
+        -:   50:*		SUCH DAMAGE.																			*
+        -:   51:====================================================================*/
+        -:   52:
+        -:   53:#include <stdio.h>
+        -:   54:#include <string.h>
+        -:   55:#include <openssl/crypto.h>
+        -:   56:#include <openssl/pem.h>
+        -:   57:#include <openssl/dso.h>
+        -:   58:#include <openssl/engine.h>
+        -:   59:#include <openssl/rand.h>
+        -:   60:#ifndef OPENSSL_NO_RSA
+        -:   61:#include <openssl/rsa.h>
+        -:   62:#endif
+        -:   63:#ifndef OPENSSL_NO_DSA
+        -:   64:#include <openssl/dsa.h>
+        -:   65:#endif
+        -:   66:#ifndef OPENSSL_NO_DH
+        -:   67:#include <openssl/dh.h>
+        -:   68:#endif
+        -:   69:#include <openssl/bn.h>
+        -:   70:
+        -:   71:#ifndef OPENSSL_NO_HW
+        -:   72:#ifndef OPENSSL_NO_HW_SUREWARE
+        -:   73:
+        -:   74:#ifdef FLAT_INC
+        -:   75:#include "sureware.h"
+        -:   76:#else
+        -:   77:#include "vendor_defns/sureware.h"
+        -:   78:#endif
+        -:   79:
+        -:   80:#define SUREWARE_LIB_NAME "sureware engine"
+        -:   81:#include "e_sureware_err.c"
+        -:   82:
+        -:   83:static int surewarehk_ctrl(ENGINE *e, int cmd, long i, void *p, void (*f)(void));
+        -:   84:static int surewarehk_destroy(ENGINE *e);
+        -:   85:static int surewarehk_init(ENGINE *e);
+        -:   86:static int surewarehk_finish(ENGINE *e);
+        -:   87:static int surewarehk_modexp(BIGNUM *r, const BIGNUM *a, const BIGNUM *p,
+        -:   88:	const BIGNUM *m, BN_CTX *ctx);
+        -:   89:
+        -:   90:/* RSA stuff */
+        -:   91:#ifndef OPENSSL_NO_RSA
+        -:   92:static int surewarehk_rsa_priv_dec(int flen,const unsigned char *from,unsigned char *to,
+        -:   93:			RSA *rsa,int padding);
+        -:   94:static int surewarehk_rsa_sign(int flen,const unsigned char *from,unsigned char *to,
+        -:   95:			    RSA *rsa,int padding);
+        -:   96:#endif
+        -:   97:
+        -:   98:/* RAND stuff */
+        -:   99:static int surewarehk_rand_bytes(unsigned char *buf, int num);
+        -:  100:static void surewarehk_rand_seed(const void *buf, int num);
+        -:  101:static void surewarehk_rand_add(const void *buf, int num, double entropy);
+        -:  102:
+        -:  103:/* KM stuff */
+        -:  104:static EVP_PKEY *surewarehk_load_privkey(ENGINE *e, const char *key_id,
+        -:  105:	UI_METHOD *ui_method, void *callback_data);
+        -:  106:static EVP_PKEY *surewarehk_load_pubkey(ENGINE *e, const char *key_id,
+        -:  107:	UI_METHOD *ui_method, void *callback_data);
+        -:  108:static void surewarehk_ex_free(void *obj, void *item, CRYPTO_EX_DATA *ad,
+        -:  109:	int idx,long argl, void *argp);
+        -:  110:#if 0
+        -:  111:static void surewarehk_dh_ex_free(void *obj, void *item, CRYPTO_EX_DATA *ad,
+        -:  112:	int idx,long argl, void *argp);
+        -:  113:#endif
+        -:  114:
+        -:  115:#ifndef OPENSSL_NO_RSA
+        -:  116:/* This function is aliased to mod_exp (with the mont stuff dropped). */
+    #####:  117:static int surewarehk_mod_exp_mont(BIGNUM *r, const BIGNUM *a, const BIGNUM *p,
+        -:  118:		const BIGNUM *m, BN_CTX *ctx, BN_MONT_CTX *m_ctx)
+        -:  119:{
+    #####:  120:	return surewarehk_modexp(r, a, p, m, ctx);
+        -:  121:}
+        -:  122:
+        -:  123:/* Our internal RSA_METHOD that we provide pointers to */
+        -:  124:static RSA_METHOD surewarehk_rsa =
+        -:  125:	{
+        -:  126:	"SureWare RSA method",
+        -:  127:	NULL, /* pub_enc*/
+        -:  128:	NULL, /* pub_dec*/
+        -:  129:	surewarehk_rsa_sign, /* our rsa_sign is OpenSSL priv_enc*/
+        -:  130:	surewarehk_rsa_priv_dec, /* priv_dec*/
+        -:  131:	NULL, /*mod_exp*/
+        -:  132:	surewarehk_mod_exp_mont, /*mod_exp_mongomery*/
+        -:  133:	NULL, /* init*/
+        -:  134:	NULL, /* finish*/
+        -:  135:	0,	/* RSA flag*/
+        -:  136:	NULL, 
+        -:  137:	NULL, /* OpenSSL sign*/
+        -:  138:	NULL, /* OpenSSL verify*/
+        -:  139:	NULL  /* keygen */
+        -:  140:	};
+        -:  141:#endif
+        -:  142:
+        -:  143:#ifndef OPENSSL_NO_DH
+        -:  144:/* Our internal DH_METHOD that we provide pointers to */
+        -:  145:/* This function is aliased to mod_exp (with the dh and mont dropped). */
+    #####:  146:static int surewarehk_modexp_dh(const DH *dh, BIGNUM *r, const BIGNUM *a,
+        -:  147:	const BIGNUM *p, const BIGNUM *m, BN_CTX *ctx, BN_MONT_CTX *m_ctx)
+        -:  148:{
+    #####:  149:	return surewarehk_modexp(r, a, p, m, ctx);
+        -:  150:}
+        -:  151:
+        -:  152:static DH_METHOD surewarehk_dh =
+        -:  153:	{
+        -:  154:	"SureWare DH method",
+        -:  155:	NULL,/*gen_key*/
+        -:  156:	NULL,/*agree,*/
+        -:  157:	surewarehk_modexp_dh, /*dh mod exp*/
+        -:  158:	NULL, /* init*/
+        -:  159:	NULL, /* finish*/
+        -:  160:	0,    /* flags*/
+        -:  161:	NULL,
+        -:  162:	NULL
+        -:  163:	};
+        -:  164:#endif
+        -:  165:
+        -:  166:static RAND_METHOD surewarehk_rand =
+        -:  167:	{
+        -:  168:	/* "SureWare RAND method", */
+        -:  169:	surewarehk_rand_seed,
+        -:  170:	surewarehk_rand_bytes,
+        -:  171:	NULL,/*cleanup*/
+        -:  172:	surewarehk_rand_add,
+        -:  173:	surewarehk_rand_bytes,
+        -:  174:	NULL,/*rand_status*/
+        -:  175:	};
+        -:  176:
+        -:  177:#ifndef OPENSSL_NO_DSA
+        -:  178:/* DSA stuff */
+        -:  179:static	DSA_SIG * surewarehk_dsa_do_sign(const unsigned char *dgst, int dlen, DSA *dsa);
+    #####:  180:static int surewarehk_dsa_mod_exp(DSA *dsa, BIGNUM *rr, BIGNUM *a1,
+        -:  181:		BIGNUM *p1, BIGNUM *a2, BIGNUM *p2, BIGNUM *m,
+        -:  182:		BN_CTX *ctx, BN_MONT_CTX *in_mont)
+        -:  183:{
+        -:  184:	BIGNUM t;
+        -:  185:	int to_return = 0;
+    #####:  186:	BN_init(&t);
+        -:  187:	/* let rr = a1 ^ p1 mod m */
+    #####:  188:	if (!surewarehk_modexp(rr,a1,p1,m,ctx)) goto end;
+        -:  189:	/* let t = a2 ^ p2 mod m */
+    #####:  190:	if (!surewarehk_modexp(&t,a2,p2,m,ctx)) goto end;
+        -:  191:	/* let rr = rr * t mod m */
+    #####:  192:	if (!BN_mod_mul(rr,rr,&t,m,ctx)) goto end;
+        -:  193:	to_return = 1;
+        -:  194:end:
+    #####:  195:	BN_free(&t);
+    #####:  196:	return to_return;
+        -:  197:}
+        -:  198:
+        -:  199:static DSA_METHOD surewarehk_dsa =
+        -:  200:	{
+        -:  201:	 "SureWare DSA method", 
+        -:  202:	surewarehk_dsa_do_sign,
+        -:  203:	NULL,/*sign setup*/
+        -:  204:	NULL,/*verify,*/
+        -:  205:	surewarehk_dsa_mod_exp,/*mod exp*/
+        -:  206:	NULL,/*bn mod exp*/
+        -:  207:	NULL, /*init*/
+        -:  208:	NULL,/*finish*/
+        -:  209:	0,
+        -:  210:	NULL,
+        -:  211:	NULL,
+        -:  212:	NULL
+        -:  213:	};
+        -:  214:#endif
+        -:  215:
+        -:  216:static const char *engine_sureware_id = "sureware";
+        -:  217:static const char *engine_sureware_name = "SureWare hardware engine support";
+        -:  218:
+        -:  219:/* Now, to our own code */
+        -:  220:
+        -:  221:/* As this is only ever called once, there's no need for locking
+        -:  222: * (indeed - the lock will already be held by our caller!!!) */
+    10000:  223:static int bind_sureware(ENGINE *e)
+        -:  224:{
+        -:  225:#ifndef OPENSSL_NO_RSA
+        -:  226:	const RSA_METHOD *meth1;
+        -:  227:#endif
+        -:  228:#ifndef OPENSSL_NO_DSA
+        -:  229:	const DSA_METHOD *meth2;
+        -:  230:#endif
+        -:  231:#ifndef OPENSSL_NO_DH
+        -:  232:	const DH_METHOD *meth3;
+        -:  233:#endif
+        -:  234:
+    20000:  235:	if(!ENGINE_set_id(e, engine_sureware_id) ||
+    20000:  236:	   !ENGINE_set_name(e, engine_sureware_name) ||
+        -:  237:#ifndef OPENSSL_NO_RSA
+    20000:  238:	   !ENGINE_set_RSA(e, &surewarehk_rsa) ||
+        -:  239:#endif
+        -:  240:#ifndef OPENSSL_NO_DSA
+    20000:  241:	   !ENGINE_set_DSA(e, &surewarehk_dsa) ||
+        -:  242:#endif
+        -:  243:#ifndef OPENSSL_NO_DH
+    20000:  244:	   !ENGINE_set_DH(e, &surewarehk_dh) ||
+        -:  245:#endif
+    20000:  246:	   !ENGINE_set_RAND(e, &surewarehk_rand) ||
+    20000:  247:	   !ENGINE_set_destroy_function(e, surewarehk_destroy) ||
+    20000:  248:	   !ENGINE_set_init_function(e, surewarehk_init) ||
+    20000:  249:	   !ENGINE_set_finish_function(e, surewarehk_finish) ||
+    20000:  250:	   !ENGINE_set_ctrl_function(e, surewarehk_ctrl) ||
+    20000:  251:	   !ENGINE_set_load_privkey_function(e, surewarehk_load_privkey) ||
+    10000:  252:	   !ENGINE_set_load_pubkey_function(e, surewarehk_load_pubkey))
+        -:  253:	  return 0;
+        -:  254:
+        -:  255:#ifndef OPENSSL_NO_RSA
+        -:  256:	/* We know that the "PKCS1_SSLeay()" functions hook properly
+        -:  257:	 * to the cswift-specific mod_exp and mod_exp_crt so we use
+        -:  258:	 * those functions. NB: We don't use ENGINE_openssl() or
+        -:  259:	 * anything "more generic" because something like the RSAref
+        -:  260:	 * code may not hook properly, and if you own one of these
+        -:  261:	 * cards then you have the right to do RSA operations on it
+        -:  262:	 * anyway! */ 
+    10000:  263:	meth1 = RSA_PKCS1_SSLeay();
+    10000:  264:	if (meth1)
+        -:  265:	{
+    10000:  266:		surewarehk_rsa.rsa_pub_enc = meth1->rsa_pub_enc;
+    10000:  267:		surewarehk_rsa.rsa_pub_dec = meth1->rsa_pub_dec;
+        -:  268:	}
+        -:  269:#endif
+        -:  270:
+        -:  271:#ifndef OPENSSL_NO_DSA
+        -:  272:	/* Use the DSA_OpenSSL() method and just hook the mod_exp-ish
+        -:  273:	 * bits. */
+    10000:  274:	meth2 = DSA_OpenSSL();
+    10000:  275:	if (meth2)
+        -:  276:	{
+    10000:  277:		surewarehk_dsa.dsa_do_verify = meth2->dsa_do_verify;
+        -:  278:	}
+        -:  279:#endif
+        -:  280:
+        -:  281:#ifndef OPENSSL_NO_DH
+        -:  282:	/* Much the same for Diffie-Hellman */
+    10000:  283:	meth3 = DH_OpenSSL();
+    10000:  284:	if (meth3)
+        -:  285:	{
+    10000:  286:		surewarehk_dh.generate_key = meth3->generate_key;
+    10000:  287:		surewarehk_dh.compute_key = meth3->compute_key;
+        -:  288:	}
+        -:  289:#endif
+        -:  290:
+        -:  291:	/* Ensure the sureware error handling is set up */
+    10000:  292:	ERR_load_SUREWARE_strings();
+    10000:  293:	return 1;
+        -:  294:}
+        -:  295:
+        -:  296:#ifndef OPENSSL_NO_DYNAMIC_ENGINE
+        -:  297:static int bind_helper(ENGINE *e, const char *id)
+        -:  298:	{
+        -:  299:	if(id && (strcmp(id, engine_sureware_id) != 0))
+        -:  300:		return 0;
+        -:  301:	if(!bind_sureware(e))
+        -:  302:		return 0;
+        -:  303:	return 1;
+        -:  304:	}       
+        -:  305:IMPLEMENT_DYNAMIC_CHECK_FN()
+        -:  306:IMPLEMENT_DYNAMIC_BIND_FN(bind_helper)
+        -:  307:#else
+    10000:  308:static ENGINE *engine_sureware(void)
+        -:  309:	{
+    10000:  310:	ENGINE *ret = ENGINE_new();
+    10000:  311:	if(!ret)
+        -:  312:		return NULL;
+    10000:  313:	if(!bind_sureware(ret))
+        -:  314:		{
+    #####:  315:		ENGINE_free(ret);
+    #####:  316:		return NULL;
+        -:  317:		}
+        -:  318:	return ret;
+        -:  319:	}
+        -:  320:
+    10000:  321:void ENGINE_load_sureware(void)
+        -:  322:	{
+        -:  323:	/* Copied from eng_[openssl|dyn].c */
+    10000:  324:	ENGINE *toadd = engine_sureware();
+    20000:  325:	if(!toadd) return;
+    10000:  326:	ENGINE_add(toadd);
+    10000:  327:	ENGINE_free(toadd);
+    10000:  328:	ERR_clear_error();
+        -:  329:	}
+        -:  330:#endif
+        -:  331:
+        -:  332:/* This is a process-global DSO handle used for loading and unloading
+        -:  333: * the SureWareHook library. NB: This is only set (or unset) during an
+        -:  334: * init() or finish() call (reference counts permitting) and they're
+        -:  335: * operating with global locks, so this should be thread-safe
+        -:  336: * implicitly. */
+        -:  337:static DSO *surewarehk_dso = NULL;
+        -:  338:#ifndef OPENSSL_NO_RSA
+        -:  339:static int rsaHndidx = -1;	/* Index for KM handle.  Not really used yet. */
+        -:  340:#endif
+        -:  341:#ifndef OPENSSL_NO_DSA
+        -:  342:static int dsaHndidx = -1;	/* Index for KM handle.  Not really used yet. */
+        -:  343:#endif
+        -:  344:
+        -:  345:/* These are the function pointers that are (un)set when the library has
+        -:  346: * successfully (un)loaded. */
+        -:  347:static SureWareHook_Init_t *p_surewarehk_Init = NULL;
+        -:  348:static SureWareHook_Finish_t *p_surewarehk_Finish = NULL;
+        -:  349:static SureWareHook_Rand_Bytes_t *p_surewarehk_Rand_Bytes = NULL;
+        -:  350:static SureWareHook_Rand_Seed_t *p_surewarehk_Rand_Seed = NULL;
+        -:  351:static SureWareHook_Load_Privkey_t *p_surewarehk_Load_Privkey = NULL;
+        -:  352:static SureWareHook_Info_Pubkey_t *p_surewarehk_Info_Pubkey = NULL;
+        -:  353:static SureWareHook_Load_Rsa_Pubkey_t *p_surewarehk_Load_Rsa_Pubkey = NULL;
+        -:  354:static SureWareHook_Load_Dsa_Pubkey_t *p_surewarehk_Load_Dsa_Pubkey = NULL;
+        -:  355:static SureWareHook_Free_t *p_surewarehk_Free=NULL;
+        -:  356:static SureWareHook_Rsa_Priv_Dec_t *p_surewarehk_Rsa_Priv_Dec=NULL;
+        -:  357:static SureWareHook_Rsa_Sign_t *p_surewarehk_Rsa_Sign=NULL;
+        -:  358:static SureWareHook_Dsa_Sign_t *p_surewarehk_Dsa_Sign=NULL;
+        -:  359:static SureWareHook_Mod_Exp_t *p_surewarehk_Mod_Exp=NULL;
+        -:  360:
+        -:  361:/* Used in the DSO operations. */
+        -:  362:static const char *surewarehk_LIBNAME = "SureWareHook";
+        -:  363:static const char *n_surewarehk_Init = "SureWareHook_Init";
+        -:  364:static const char *n_surewarehk_Finish = "SureWareHook_Finish";
+        -:  365:static const char *n_surewarehk_Rand_Bytes="SureWareHook_Rand_Bytes";
+        -:  366:static const char *n_surewarehk_Rand_Seed="SureWareHook_Rand_Seed";
+        -:  367:static const char *n_surewarehk_Load_Privkey="SureWareHook_Load_Privkey";
+        -:  368:static const char *n_surewarehk_Info_Pubkey="SureWareHook_Info_Pubkey";
+        -:  369:static const char *n_surewarehk_Load_Rsa_Pubkey="SureWareHook_Load_Rsa_Pubkey";
+        -:  370:static const char *n_surewarehk_Load_Dsa_Pubkey="SureWareHook_Load_Dsa_Pubkey";
+        -:  371:static const char *n_surewarehk_Free="SureWareHook_Free";
+        -:  372:static const char *n_surewarehk_Rsa_Priv_Dec="SureWareHook_Rsa_Priv_Dec";
+        -:  373:static const char *n_surewarehk_Rsa_Sign="SureWareHook_Rsa_Sign";
+        -:  374:static const char *n_surewarehk_Dsa_Sign="SureWareHook_Dsa_Sign";
+        -:  375:static const char *n_surewarehk_Mod_Exp="SureWareHook_Mod_Exp";
+        -:  376:static BIO *logstream = NULL;
+        -:  377:
+        -:  378:/* SureWareHook library functions and mechanics - these are used by the
+        -:  379: * higher-level functions further down. NB: As and where there's no
+        -:  380: * error checking, take a look lower down where these functions are
+        -:  381: * called, the checking and error handling is probably down there. 
+        -:  382:*/
+        -:  383:static int threadsafe=1;
+    #####:  384:static int surewarehk_ctrl(ENGINE *e, int cmd, long i, void *p, void (*f)(void))
+        -:  385:{
+        -:  386:	int to_return = 1;
+        -:  387:
+    #####:  388:	switch(cmd)
+        -:  389:	{
+        -:  390:		case ENGINE_CTRL_SET_LOGSTREAM:
+        -:  391:		{
+        -:  392:			BIO *bio = (BIO *)p;
+    #####:  393:			CRYPTO_w_lock(CRYPTO_LOCK_ENGINE);
+    #####:  394:			if (logstream)
+        -:  395:			{
+    #####:  396:				BIO_free(logstream);
+    #####:  397:				logstream = NULL;
+        -:  398:			}
+    #####:  399:			if (CRYPTO_add(&bio->references,1,CRYPTO_LOCK_BIO) > 1)
+    #####:  400:				logstream = bio;
+        -:  401:			else
+    #####:  402:				SUREWAREerr(SUREWARE_F_SUREWAREHK_CTRL,SUREWARE_R_BIO_WAS_FREED);
+        -:  403:		}
+    #####:  404:		CRYPTO_w_unlock(CRYPTO_LOCK_ENGINE);
+    #####:  405:		break;
+        -:  406:	/* This will prevent the initialisation function from "installing"
+        -:  407:	 * the mutex-handling callbacks, even if they are available from
+        -:  408:	 * within the library (or were provided to the library from the
+        -:  409:	 * calling application). This is to remove any baggage for
+        -:  410:	 * applications not using multithreading. */
+        -:  411:	case ENGINE_CTRL_CHIL_NO_LOCKING:
+    #####:  412:		CRYPTO_w_lock(CRYPTO_LOCK_ENGINE);
+    #####:  413:		threadsafe = 0;
+    #####:  414:		CRYPTO_w_unlock(CRYPTO_LOCK_ENGINE);
+    #####:  415:		break;
+        -:  416:
+        -:  417:	/* The command isn't understood by this engine */
+        -:  418:	default:
+    #####:  419:		SUREWAREerr(SUREWARE_F_SUREWAREHK_CTRL,
+        -:  420:			ENGINE_R_CTRL_COMMAND_NOT_IMPLEMENTED);
+        -:  421:		to_return = 0;
+    #####:  422:		break;
+        -:  423:		}
+        -:  424:
+    #####:  425:	return to_return;
+        -:  426:}
+        -:  427:
+        -:  428:/* Destructor (complements the "ENGINE_surewarehk()" constructor) */
+    10000:  429:static int surewarehk_destroy(ENGINE *e)
+        -:  430:{
+    10000:  431:	ERR_unload_SUREWARE_strings();
+    10000:  432:	return 1;
+        -:  433:}
+        -:  434:
+        -:  435:/* (de)initialisation functions. */
+    #####:  436:static int surewarehk_init(ENGINE *e)
+        -:  437:{
+    #####:  438:	char msg[64]="ENGINE_init";
+        -:  439:	SureWareHook_Init_t *p1=NULL;
+        -:  440:	SureWareHook_Finish_t *p2=NULL;
+        -:  441:	SureWareHook_Rand_Bytes_t *p3=NULL;
+        -:  442:	SureWareHook_Rand_Seed_t *p4=NULL;
+        -:  443:	SureWareHook_Load_Privkey_t *p5=NULL;
+        -:  444:	SureWareHook_Load_Rsa_Pubkey_t *p6=NULL;
+        -:  445:	SureWareHook_Free_t *p7=NULL;
+        -:  446:	SureWareHook_Rsa_Priv_Dec_t *p8=NULL;
+        -:  447:	SureWareHook_Rsa_Sign_t *p9=NULL;
+        -:  448:	SureWareHook_Dsa_Sign_t *p12=NULL;
+        -:  449:	SureWareHook_Info_Pubkey_t *p13=NULL;
+        -:  450:	SureWareHook_Load_Dsa_Pubkey_t *p14=NULL;
+        -:  451:	SureWareHook_Mod_Exp_t *p15=NULL;
+        -:  452:
+    #####:  453:	if(surewarehk_dso != NULL)
+        -:  454:	{
+    #####:  455:		SUREWAREerr(SUREWARE_F_SUREWAREHK_INIT,ENGINE_R_ALREADY_LOADED);
+    #####:  456:		goto err;
+        -:  457:	}
+        -:  458:	/* Attempt to load libsurewarehk.so/surewarehk.dll/whatever. */
+    #####:  459:	surewarehk_dso = DSO_load(NULL, surewarehk_LIBNAME, NULL, 0);
+    #####:  460:	if(surewarehk_dso == NULL)
+        -:  461:	{
+    #####:  462:		SUREWAREerr(SUREWARE_F_SUREWAREHK_INIT,ENGINE_R_DSO_FAILURE);
+    #####:  463:		goto err;
+        -:  464:	}
+    #####:  465:	if(!(p1=(SureWareHook_Init_t*)DSO_bind_func(surewarehk_dso, n_surewarehk_Init)) ||
+    #####:  466:	   !(p2=(SureWareHook_Finish_t*)DSO_bind_func(surewarehk_dso, n_surewarehk_Finish)) ||
+    #####:  467:	   !(p3=(SureWareHook_Rand_Bytes_t*)DSO_bind_func(surewarehk_dso, n_surewarehk_Rand_Bytes)) ||
+    #####:  468:	   !(p4=(SureWareHook_Rand_Seed_t*)DSO_bind_func(surewarehk_dso, n_surewarehk_Rand_Seed)) ||
+    #####:  469:	   !(p5=(SureWareHook_Load_Privkey_t*)DSO_bind_func(surewarehk_dso, n_surewarehk_Load_Privkey)) ||
+    #####:  470:	   !(p6=(SureWareHook_Load_Rsa_Pubkey_t*)DSO_bind_func(surewarehk_dso, n_surewarehk_Load_Rsa_Pubkey)) ||
+    #####:  471:	   !(p7=(SureWareHook_Free_t*)DSO_bind_func(surewarehk_dso, n_surewarehk_Free)) ||
+    #####:  472:	   !(p8=(SureWareHook_Rsa_Priv_Dec_t*)DSO_bind_func(surewarehk_dso, n_surewarehk_Rsa_Priv_Dec)) ||
+    #####:  473:	   !(p9=(SureWareHook_Rsa_Sign_t*)DSO_bind_func(surewarehk_dso, n_surewarehk_Rsa_Sign)) ||
+    #####:  474:	   !(p12=(SureWareHook_Dsa_Sign_t*)DSO_bind_func(surewarehk_dso, n_surewarehk_Dsa_Sign)) ||
+    #####:  475:	   !(p13=(SureWareHook_Info_Pubkey_t*)DSO_bind_func(surewarehk_dso, n_surewarehk_Info_Pubkey)) ||
+    #####:  476:	   !(p14=(SureWareHook_Load_Dsa_Pubkey_t*)DSO_bind_func(surewarehk_dso, n_surewarehk_Load_Dsa_Pubkey)) ||
+    #####:  477:	   !(p15=(SureWareHook_Mod_Exp_t*)DSO_bind_func(surewarehk_dso, n_surewarehk_Mod_Exp)))
+        -:  478:	{
+    #####:  479:		SUREWAREerr(SUREWARE_F_SUREWAREHK_INIT,ENGINE_R_DSO_FAILURE);
+    #####:  480:		goto err;
+        -:  481:	}
+        -:  482:	/* Copy the pointers */
+    #####:  483:	p_surewarehk_Init = p1;
+    #####:  484:	p_surewarehk_Finish = p2;
+    #####:  485:	p_surewarehk_Rand_Bytes = p3;
+    #####:  486:	p_surewarehk_Rand_Seed = p4;
+    #####:  487:	p_surewarehk_Load_Privkey = p5;
+    #####:  488:	p_surewarehk_Load_Rsa_Pubkey = p6;
+    #####:  489:	p_surewarehk_Free = p7;
+    #####:  490:	p_surewarehk_Rsa_Priv_Dec = p8;
+    #####:  491:	p_surewarehk_Rsa_Sign = p9;
+    #####:  492:	p_surewarehk_Dsa_Sign = p12;
+    #####:  493:	p_surewarehk_Info_Pubkey = p13;
+    #####:  494:	p_surewarehk_Load_Dsa_Pubkey = p14;
+    #####:  495:	p_surewarehk_Mod_Exp = p15;
+        -:  496:	/* Contact the hardware and initialises it. */
+    #####:  497:	if(p_surewarehk_Init(msg,threadsafe)==SUREWAREHOOK_ERROR_UNIT_FAILURE)
+        -:  498:	{
+    #####:  499:		SUREWAREerr(SUREWARE_F_SUREWAREHK_INIT,SUREWARE_R_UNIT_FAILURE);
+    #####:  500:		goto err;
+        -:  501:	}
+    #####:  502:	if(p_surewarehk_Init(msg,threadsafe)==SUREWAREHOOK_ERROR_UNIT_FAILURE)
+        -:  503:	{
+    #####:  504:		SUREWAREerr(SUREWARE_F_SUREWAREHK_INIT,SUREWARE_R_UNIT_FAILURE);
+    #####:  505:		goto err;
+        -:  506:	}
+        -:  507:	/* try to load the default private key, if failed does not return a failure but
+        -:  508:           wait for an explicit ENGINE_load_privakey */
+    #####:  509:	surewarehk_load_privkey(e,NULL,NULL,NULL);
+        -:  510:
+        -:  511:	/* Everything's fine. */
+        -:  512:#ifndef OPENSSL_NO_RSA
+    #####:  513:	if (rsaHndidx == -1)
+    #####:  514:		rsaHndidx = RSA_get_ex_new_index(0,
+        -:  515:						"SureWareHook RSA key handle",
+        -:  516:						NULL, NULL, surewarehk_ex_free);
+        -:  517:#endif
+        -:  518:#ifndef OPENSSL_NO_DSA
+    #####:  519:	if (dsaHndidx == -1)
+    #####:  520:		dsaHndidx = DSA_get_ex_new_index(0,
+        -:  521:						"SureWareHook DSA key handle",
+        -:  522:						NULL, NULL, surewarehk_ex_free);
+        -:  523:#endif
+        -:  524:
+        -:  525:	return 1;
+        -:  526:err:
+    #####:  527:	if(surewarehk_dso)
+    #####:  528:		DSO_free(surewarehk_dso);
+    #####:  529:	surewarehk_dso = NULL;
+    #####:  530:	p_surewarehk_Init = NULL;
+    #####:  531:	p_surewarehk_Finish = NULL;
+    #####:  532:	p_surewarehk_Rand_Bytes = NULL;
+    #####:  533:	p_surewarehk_Rand_Seed = NULL;
+    #####:  534:	p_surewarehk_Load_Privkey = NULL;
+    #####:  535:	p_surewarehk_Load_Rsa_Pubkey = NULL;
+    #####:  536:	p_surewarehk_Free = NULL;
+    #####:  537:	p_surewarehk_Rsa_Priv_Dec = NULL;
+    #####:  538:	p_surewarehk_Rsa_Sign = NULL;
+    #####:  539:	p_surewarehk_Dsa_Sign = NULL;
+    #####:  540:	p_surewarehk_Info_Pubkey = NULL;
+    #####:  541:	p_surewarehk_Load_Dsa_Pubkey = NULL;
+    #####:  542:	p_surewarehk_Mod_Exp = NULL;
+    #####:  543:	return 0;
+        -:  544:}
+        -:  545:
+    #####:  546:static int surewarehk_finish(ENGINE *e)
+        -:  547:{
+        -:  548:	int to_return = 1;
+    #####:  549:	if(surewarehk_dso == NULL)
+        -:  550:		{
+    #####:  551:		SUREWAREerr(SUREWARE_F_SUREWAREHK_FINISH,ENGINE_R_NOT_LOADED);
+        -:  552:		to_return = 0;
+    #####:  553:		goto err;
+        -:  554:		}
+    #####:  555:	p_surewarehk_Finish();
+    #####:  556:	if(!DSO_free(surewarehk_dso))
+        -:  557:		{
+    #####:  558:		SUREWAREerr(SUREWARE_F_SUREWAREHK_FINISH,ENGINE_R_DSO_FAILURE);
+        -:  559:		to_return = 0;
+    #####:  560:		goto err;
+        -:  561:		}
+        -:  562: err:
+    #####:  563:	if (logstream)
+    #####:  564:		BIO_free(logstream);
+    #####:  565:	surewarehk_dso = NULL;
+    #####:  566:	p_surewarehk_Init = NULL;
+    #####:  567:	p_surewarehk_Finish = NULL;
+    #####:  568:	p_surewarehk_Rand_Bytes = NULL;
+    #####:  569:	p_surewarehk_Rand_Seed = NULL;
+    #####:  570:	p_surewarehk_Load_Privkey = NULL;
+    #####:  571:	p_surewarehk_Load_Rsa_Pubkey = NULL;
+    #####:  572:	p_surewarehk_Free = NULL;
+    #####:  573:	p_surewarehk_Rsa_Priv_Dec = NULL;
+    #####:  574:	p_surewarehk_Rsa_Sign = NULL;
+    #####:  575:	p_surewarehk_Dsa_Sign = NULL;
+    #####:  576:	p_surewarehk_Info_Pubkey = NULL;
+    #####:  577:	p_surewarehk_Load_Dsa_Pubkey = NULL;
+    #####:  578:	p_surewarehk_Mod_Exp = NULL;
+    #####:  579:	return to_return;
+        -:  580:}
+        -:  581:
+    #####:  582:static void surewarehk_error_handling(char *const msg,int func,int ret)
+        -:  583:{
+    #####:  584:	switch (ret)
+        -:  585:	{
+        -:  586:		case SUREWAREHOOK_ERROR_UNIT_FAILURE:
+    #####:  587:			ENGINEerr(func,SUREWARE_R_UNIT_FAILURE);
+    #####:  588:			break;
+        -:  589:		case SUREWAREHOOK_ERROR_FALLBACK:
+    #####:  590:			ENGINEerr(func,SUREWARE_R_REQUEST_FALLBACK);
+    #####:  591:			break;
+        -:  592:		case SUREWAREHOOK_ERROR_DATA_SIZE:
+    #####:  593:			ENGINEerr(func,SUREWARE_R_SIZE_TOO_LARGE_OR_TOO_SMALL);
+    #####:  594:			break;
+        -:  595:		case SUREWAREHOOK_ERROR_INVALID_PAD:
+    #####:  596:			ENGINEerr(func,SUREWARE_R_PADDING_CHECK_FAILED);
+    #####:  597:			break;
+        -:  598:		default:
+    #####:  599:			ENGINEerr(func,SUREWARE_R_REQUEST_FAILED);
+    #####:  600:			break;
+        -:  601:		case 1:/*nothing*/
+    #####:  602:			msg[0]='\0';
+        -:  603:	}
+    #####:  604:	if (*msg)
+        -:  605:	{
+    #####:  606:		ERR_add_error_data(1,msg);
+    #####:  607:		if (logstream)
+        -:  608:		{
+    #####:  609:			CRYPTO_w_lock(CRYPTO_LOCK_BIO);
+    #####:  610:			BIO_write(logstream, msg, strlen(msg));
+    #####:  611:			CRYPTO_w_unlock(CRYPTO_LOCK_BIO);
+        -:  612:		}
+        -:  613:	}
+    #####:  614:}
+        -:  615:
+    #####:  616:static int surewarehk_rand_bytes(unsigned char *buf, int num)
+        -:  617:{
+        -:  618:	int ret=0;
+    #####:  619:	char msg[64]="ENGINE_rand_bytes";
+    #####:  620:	if(!p_surewarehk_Rand_Bytes)
+        -:  621:	{
+    #####:  622:		SUREWAREerr(SUREWARE_F_SUREWAREHK_RAND_BYTES,ENGINE_R_NOT_INITIALISED);
+        -:  623:	}
+        -:  624:	else
+        -:  625:	{
+    #####:  626:		ret = p_surewarehk_Rand_Bytes(msg,buf, num);
+    #####:  627:		surewarehk_error_handling(msg,SUREWARE_F_SUREWAREHK_RAND_BYTES,ret);
+        -:  628:	}
+    #####:  629:	return ret==1 ? 1 : 0;
+        -:  630:}
+        -:  631:
+    #####:  632:static void surewarehk_rand_seed(const void *buf, int num)
+        -:  633:{
+        -:  634:	int ret=0;
+    #####:  635:	char msg[64]="ENGINE_rand_seed";
+    #####:  636:	if(!p_surewarehk_Rand_Seed)
+        -:  637:	{
+    #####:  638:		SUREWAREerr(SUREWARE_F_SUREWAREHK_RAND_SEED,ENGINE_R_NOT_INITIALISED);
+        -:  639:	}
+        -:  640:	else
+        -:  641:	{
+    #####:  642:		ret = p_surewarehk_Rand_Seed(msg,buf, num);
+    #####:  643:		surewarehk_error_handling(msg,SUREWARE_F_SUREWAREHK_RAND_SEED,ret);
+        -:  644:	}
+    #####:  645:}
+        -:  646:
+    #####:  647:static void surewarehk_rand_add(const void *buf, int num, double entropy)
+        -:  648:{
+    #####:  649:	surewarehk_rand_seed(buf,num);
+    #####:  650:}
+        -:  651:
+    #####:  652:static EVP_PKEY* sureware_load_public(ENGINE *e,const char *key_id,char *hptr,unsigned long el,char keytype)
+        -:  653:{
+        -:  654:	EVP_PKEY *res = NULL;
+        -:  655:#ifndef OPENSSL_NO_RSA
+        -:  656:	RSA *rsatmp = NULL;
+        -:  657:#endif
+        -:  658:#ifndef OPENSSL_NO_DSA
+        -:  659:	DSA *dsatmp=NULL;
+        -:  660:#endif
+    #####:  661:	char msg[64]="sureware_load_public";
+        -:  662:	int ret=0;
+    #####:  663:	if(!p_surewarehk_Load_Rsa_Pubkey || !p_surewarehk_Load_Dsa_Pubkey)
+        -:  664:	{
+    #####:  665:		SUREWAREerr(SUREWARE_F_SUREWARE_LOAD_PUBLIC,ENGINE_R_NOT_INITIALISED);
+    #####:  666:		goto err;
+        -:  667:	}
+    #####:  668:	switch (keytype)
+        -:  669:	{
+        -:  670:#ifndef OPENSSL_NO_RSA
+        -:  671:	case 1: /*RSA*/
+        -:  672:		/* set private external reference */
+    #####:  673:		rsatmp = RSA_new_method(e);
+    #####:  674:		RSA_set_ex_data(rsatmp,rsaHndidx,hptr);
+    #####:  675:		rsatmp->flags |= RSA_FLAG_EXT_PKEY;
+        -:  676:
+        -:  677:		/* set public big nums*/
+    #####:  678:		rsatmp->e = BN_new();
+    #####:  679:		rsatmp->n = BN_new();
+    #####:  680:		bn_expand2(rsatmp->e, el/sizeof(BN_ULONG));
+    #####:  681:		bn_expand2(rsatmp->n, el/sizeof(BN_ULONG));
+    #####:  682:		if (!rsatmp->e || rsatmp->e->dmax!=(int)(el/sizeof(BN_ULONG))|| 
+    #####:  683:			!rsatmp->n || rsatmp->n->dmax!=(int)(el/sizeof(BN_ULONG)))
+        -:  684:			goto err;
+    #####:  685:		ret=p_surewarehk_Load_Rsa_Pubkey(msg,key_id,el,
+        -:  686:						 (unsigned long *)rsatmp->n->d,
+        -:  687:						 (unsigned long *)rsatmp->e->d);
+    #####:  688:		surewarehk_error_handling(msg,SUREWARE_F_SUREWARE_LOAD_PUBLIC,ret);
+    #####:  689:		if (ret!=1)
+        -:  690:		{
+    #####:  691:			SUREWAREerr(SUREWARE_F_SUREWARE_LOAD_PUBLIC,ENGINE_R_FAILED_LOADING_PUBLIC_KEY);
+    #####:  692:			goto err;
+        -:  693:		}
+        -:  694:		/* normalise pub e and pub n */
+    #####:  695:		rsatmp->e->top=el/sizeof(BN_ULONG);
+    #####:  696:		bn_fix_top(rsatmp->e);
+    #####:  697:		rsatmp->n->top=el/sizeof(BN_ULONG);
+    #####:  698:		bn_fix_top(rsatmp->n);
+        -:  699:		/* create an EVP object: engine + rsa key */
+    #####:  700:		res = EVP_PKEY_new();
+    #####:  701:		EVP_PKEY_assign_RSA(res, rsatmp);
+    #####:  702:		break;
+        -:  703:#endif
+        -:  704:
+        -:  705:#ifndef OPENSSL_NO_DSA
+        -:  706:	case 2:/*DSA*/
+        -:  707:		/* set private/public external reference */
+    #####:  708:		dsatmp = DSA_new_method(e);
+    #####:  709:		DSA_set_ex_data(dsatmp,dsaHndidx,hptr);
+        -:  710:		/*dsatmp->flags |= DSA_FLAG_EXT_PKEY;*/
+        -:  711:
+        -:  712:		/* set public key*/
+    #####:  713:		dsatmp->pub_key = BN_new();
+    #####:  714:		dsatmp->p = BN_new();
+    #####:  715:		dsatmp->q = BN_new();
+    #####:  716:		dsatmp->g = BN_new();
+    #####:  717:		bn_expand2(dsatmp->pub_key, el/sizeof(BN_ULONG));
+    #####:  718:		bn_expand2(dsatmp->p, el/sizeof(BN_ULONG));
+    #####:  719:		bn_expand2(dsatmp->q, 20/sizeof(BN_ULONG));
+    #####:  720:		bn_expand2(dsatmp->g, el/sizeof(BN_ULONG));
+    #####:  721:		if (!dsatmp->pub_key || dsatmp->pub_key->dmax!=(int)(el/sizeof(BN_ULONG))|| 
+    #####:  722:			!dsatmp->p || dsatmp->p->dmax!=(int)(el/sizeof(BN_ULONG)) ||
+    #####:  723:			!dsatmp->q || dsatmp->q->dmax!=20/sizeof(BN_ULONG) ||
+    #####:  724:			!dsatmp->g || dsatmp->g->dmax!=(int)(el/sizeof(BN_ULONG)))
+        -:  725:			goto err;
+        -:  726:
+    #####:  727:		ret=p_surewarehk_Load_Dsa_Pubkey(msg,key_id,el,
+        -:  728:						 (unsigned long *)dsatmp->pub_key->d, 
+        -:  729:						 (unsigned long *)dsatmp->p->d,
+        -:  730:						 (unsigned long *)dsatmp->q->d,
+        -:  731:						 (unsigned long *)dsatmp->g->d);
+    #####:  732:		surewarehk_error_handling(msg,SUREWARE_F_SUREWARE_LOAD_PUBLIC,ret);
+    #####:  733:		if (ret!=1)
+        -:  734:		{
+    #####:  735:			SUREWAREerr(SUREWARE_F_SUREWARE_LOAD_PUBLIC,ENGINE_R_FAILED_LOADING_PUBLIC_KEY);
+    #####:  736:			goto err;
+        -:  737:		}
+        -:  738:		/* set parameters */
+        -:  739:		/* normalise pubkey and parameters in case of */
+    #####:  740:		dsatmp->pub_key->top=el/sizeof(BN_ULONG);
+    #####:  741:		bn_fix_top(dsatmp->pub_key);
+    #####:  742:		dsatmp->p->top=el/sizeof(BN_ULONG);
+    #####:  743:		bn_fix_top(dsatmp->p);
+    #####:  744:		dsatmp->q->top=20/sizeof(BN_ULONG);
+    #####:  745:		bn_fix_top(dsatmp->q);
+    #####:  746:		dsatmp->g->top=el/sizeof(BN_ULONG);
+    #####:  747:		bn_fix_top(dsatmp->g);
+        -:  748:
+        -:  749:		/* create an EVP object: engine + rsa key */
+    #####:  750:		res = EVP_PKEY_new();
+    #####:  751:		EVP_PKEY_assign_DSA(res, dsatmp);
+    #####:  752:		break;
+        -:  753:#endif
+        -:  754:
+        -:  755:	default:
+    #####:  756:		SUREWAREerr(SUREWARE_F_SUREWARE_LOAD_PUBLIC,ENGINE_R_FAILED_LOADING_PRIVATE_KEY);
+    #####:  757:		goto err;
+        -:  758:	}
+    #####:  759:	return res;
+        -:  760: err:
+        -:  761:#ifndef OPENSSL_NO_RSA
+    #####:  762:	if (rsatmp)
+    #####:  763:		RSA_free(rsatmp);
+        -:  764:#endif
+        -:  765:#ifndef OPENSSL_NO_DSA
+    #####:  766:	if (dsatmp)
+    #####:  767:		DSA_free(dsatmp);
+        -:  768:#endif
+        -:  769:	return NULL;
+        -:  770:}
+        -:  771:
+    #####:  772:static EVP_PKEY *surewarehk_load_privkey(ENGINE *e, const char *key_id,
+        -:  773:					 UI_METHOD *ui_method, void *callback_data)
+        -:  774:{
+        -:  775:	EVP_PKEY *res = NULL;
+        -:  776:	int ret=0;
+    #####:  777:	unsigned long el=0;
+    #####:  778:	char *hptr=NULL;
+    #####:  779:	char keytype=0;
+    #####:  780:	char msg[64]="ENGINE_load_privkey";
+        -:  781:
+    #####:  782:	if(!p_surewarehk_Load_Privkey)
+        -:  783:	{
+    #####:  784:		SUREWAREerr(SUREWARE_F_SUREWAREHK_LOAD_PRIVKEY,ENGINE_R_NOT_INITIALISED);
+        -:  785:	}
+        -:  786:	else
+        -:  787:	{
+    #####:  788:		ret=p_surewarehk_Load_Privkey(msg,key_id,&hptr,&el,&keytype);
+    #####:  789:		if (ret!=1)
+        -:  790:		{
+    #####:  791:			SUREWAREerr(SUREWARE_F_SUREWAREHK_LOAD_PRIVKEY,ENGINE_R_FAILED_LOADING_PRIVATE_KEY);
+    #####:  792:			ERR_add_error_data(1,msg);		
+        -:  793:		}
+        -:  794:		else
+    #####:  795:			res=sureware_load_public(e,key_id,hptr,el,keytype);
+        -:  796:	}
+    #####:  797:	return res;
+        -:  798:}
+        -:  799:
+    #####:  800:static EVP_PKEY *surewarehk_load_pubkey(ENGINE *e, const char *key_id,
+        -:  801:					 UI_METHOD *ui_method, void *callback_data)
+        -:  802:{
+        -:  803:	EVP_PKEY *res = NULL;
+        -:  804:	int ret=0;
+    #####:  805:	unsigned long el=0;
+        -:  806:	char *hptr=NULL;
+    #####:  807:	char keytype=0;
+    #####:  808:	char msg[64]="ENGINE_load_pubkey";
+        -:  809:
+    #####:  810:	if(!p_surewarehk_Info_Pubkey)
+        -:  811:	{
+    #####:  812:		SUREWAREerr(SUREWARE_F_SUREWAREHK_LOAD_PUBKEY,ENGINE_R_NOT_INITIALISED);
+        -:  813:	}
+        -:  814:	else
+        -:  815:	{
+        -:  816:		/* call once to identify if DSA or RSA */
+    #####:  817:		ret=p_surewarehk_Info_Pubkey(msg,key_id,&el,&keytype);
+    #####:  818:		if (ret!=1)
+        -:  819:		{
+    #####:  820:			SUREWAREerr(SUREWARE_F_SUREWAREHK_LOAD_PUBKEY,ENGINE_R_FAILED_LOADING_PUBLIC_KEY);
+    #####:  821:			ERR_add_error_data(1,msg);
+        -:  822:		}
+        -:  823:		else
+    #####:  824:			res=sureware_load_public(e,key_id,hptr,el,keytype);
+        -:  825:	}
+    #####:  826:	return res;
+        -:  827:}
+        -:  828:
+        -:  829:/* This cleans up an RSA/DSA KM key(do not destroy the key into the hardware)
+        -:  830:, called when ex_data is freed */
+    #####:  831:static void surewarehk_ex_free(void *obj, void *item, CRYPTO_EX_DATA *ad,
+        -:  832:	int idx,long argl, void *argp)
+        -:  833:{
+    #####:  834:	if(!p_surewarehk_Free)
+        -:  835:	{
+    #####:  836:		SUREWAREerr(SUREWARE_F_SUREWAREHK_EX_FREE,ENGINE_R_NOT_INITIALISED);
+        -:  837:	}
+        -:  838:	else
+    #####:  839:		p_surewarehk_Free((char *)item,0);
+    #####:  840:}
+        -:  841:
+        -:  842:#if 0
+        -:  843:/* not currently used (bug?) */
+        -:  844:/* This cleans up an DH KM key (destroys the key into hardware), 
+        -:  845:called when ex_data is freed */
+        -:  846:static void surewarehk_dh_ex_free(void *obj, void *item, CRYPTO_EX_DATA *ad,
+        -:  847:	int idx,long argl, void *argp)
+        -:  848:{
+        -:  849:	if(!p_surewarehk_Free)
+        -:  850:	{
+        -:  851:		SUREWAREerr(SUREWARE_F_SUREWAREHK_DH_EX_FREE,ENGINE_R_NOT_INITIALISED);
+        -:  852:	}
+        -:  853:	else
+        -:  854:		p_surewarehk_Free((char *)item,1);
+        -:  855:}
+        -:  856:#endif
+        -:  857:
+        -:  858:/*
+        -:  859:* return number of decrypted bytes
+        -:  860:*/
+        -:  861:#ifndef OPENSSL_NO_RSA
+    #####:  862:static int surewarehk_rsa_priv_dec(int flen,const unsigned char *from,unsigned char *to,
+        -:  863:			RSA *rsa,int padding)
+        -:  864:{
+        -:  865:	int ret=0,tlen;
+        -:  866:	char *buf=NULL,*hptr=NULL;
+    #####:  867:	char msg[64]="ENGINE_rsa_priv_dec";
+    #####:  868:	if (!p_surewarehk_Rsa_Priv_Dec)
+        -:  869:	{
+    #####:  870:		SUREWAREerr(SUREWARE_F_SUREWAREHK_RSA_PRIV_DEC,ENGINE_R_NOT_INITIALISED);
+        -:  871:	}
+        -:  872:	/* extract ref to private key */
+    #####:  873:	else if (!(hptr=RSA_get_ex_data(rsa, rsaHndidx)))
+        -:  874:	{
+    #####:  875:		SUREWAREerr(SUREWARE_F_SUREWAREHK_RSA_PRIV_DEC,SUREWARE_R_MISSING_KEY_COMPONENTS);
+    #####:  876:		goto err;
+        -:  877:	}
+        -:  878:	/* analyse what padding we can do into the hardware */
+    #####:  879:	if (padding==RSA_PKCS1_PADDING)
+        -:  880:	{
+        -:  881:		/* do it one shot */
+    #####:  882:		ret=p_surewarehk_Rsa_Priv_Dec(msg,flen,(unsigned char *)from,&tlen,to,hptr,SUREWARE_PKCS1_PAD);
+    #####:  883:		surewarehk_error_handling(msg,SUREWARE_F_SUREWAREHK_RSA_PRIV_DEC,ret);
+    #####:  884:		if (ret!=1)
+        -:  885:			goto err;
+    #####:  886:		ret=tlen;
+        -:  887:	}
+        -:  888:	else /* do with no padding into hardware */
+        -:  889:	{
+    #####:  890:		ret=p_surewarehk_Rsa_Priv_Dec(msg,flen,(unsigned char *)from,&tlen,to,hptr,SUREWARE_NO_PAD);
+    #####:  891:		surewarehk_error_handling(msg,SUREWARE_F_SUREWAREHK_RSA_PRIV_DEC,ret);
+    #####:  892:		if (ret!=1)
+        -:  893:			goto err;
+        -:  894:		/* intermediate buffer for padding */
+    #####:  895:		if ((buf=OPENSSL_malloc(tlen)) == NULL)
+        -:  896:		{
+    #####:  897:			SUREWAREerr(SUREWARE_F_SUREWAREHK_RSA_PRIV_DEC,ERR_R_MALLOC_FAILURE);
+    #####:  898:			goto err;
+        -:  899:		}
+    #####:  900:		memcpy(buf,to,tlen);/* transfert to into buf */
+    #####:  901:		switch (padding) /* check padding in software */
+        -:  902:		{
+        -:  903:#ifndef OPENSSL_NO_SHA
+        -:  904:		case RSA_PKCS1_OAEP_PADDING:
+    #####:  905:			ret=RSA_padding_check_PKCS1_OAEP(to,tlen,(unsigned char *)buf,tlen,tlen,NULL,0);
+    #####:  906:			break;
+        -:  907:#endif
+        -:  908: 		case RSA_SSLV23_PADDING:
+    #####:  909:			ret=RSA_padding_check_SSLv23(to,tlen,(unsigned char *)buf,flen,tlen);
+    #####:  910:			break;
+        -:  911:		case RSA_NO_PADDING:
+    #####:  912:			ret=RSA_padding_check_none(to,tlen,(unsigned char *)buf,flen,tlen);
+    #####:  913:			break;
+        -:  914:		default:
+    #####:  915:			SUREWAREerr(SUREWARE_F_SUREWAREHK_RSA_PRIV_DEC,SUREWARE_R_UNKNOWN_PADDING_TYPE);
+    #####:  916:			goto err;
+        -:  917:		}
+    #####:  918:		if (ret < 0)
+    #####:  919:			SUREWAREerr(SUREWARE_F_SUREWAREHK_RSA_PRIV_DEC,SUREWARE_R_PADDING_CHECK_FAILED);
+        -:  920:	}
+        -:  921:err:
+    #####:  922:	if (buf)
+        -:  923:	{
+    #####:  924:		OPENSSL_cleanse(buf,tlen);
+    #####:  925:		OPENSSL_free(buf);
+        -:  926:	}
+    #####:  927:	return ret;
+        -:  928:}
+        -:  929:
+        -:  930:/*
+        -:  931:* Does what OpenSSL rsa_priv_enc does.
+        -:  932:*/
+    #####:  933:static int surewarehk_rsa_sign(int flen,const unsigned char *from,unsigned char *to,
+        -:  934:			    RSA *rsa,int padding)
+        -:  935:{
+        -:  936:	int ret=0,tlen;
+        -:  937:	char *hptr=NULL;
+    #####:  938:	char msg[64]="ENGINE_rsa_sign";
+    #####:  939:	if (!p_surewarehk_Rsa_Sign)
+        -:  940:	{
+    #####:  941:		SUREWAREerr(SUREWARE_F_SUREWAREHK_RSA_SIGN,ENGINE_R_NOT_INITIALISED);
+        -:  942:	}
+        -:  943:	/* extract ref to private key */
+    #####:  944:	else if (!(hptr=RSA_get_ex_data(rsa, rsaHndidx)))
+        -:  945:	{
+    #####:  946:		SUREWAREerr(SUREWARE_F_SUREWAREHK_RSA_SIGN,SUREWARE_R_MISSING_KEY_COMPONENTS);
+        -:  947:	}
+        -:  948:	else
+        -:  949:	{
+    #####:  950:		switch (padding)
+        -:  951:		{
+        -:  952:		case RSA_PKCS1_PADDING: /* do it in one shot */
+    #####:  953:			ret=p_surewarehk_Rsa_Sign(msg,flen,(unsigned char *)from,&tlen,to,hptr,SUREWARE_PKCS1_PAD);
+    #####:  954:			surewarehk_error_handling(msg,SUREWARE_F_SUREWAREHK_RSA_SIGN,ret);
+    #####:  955:			break;
+        -:  956:		case RSA_NO_PADDING:
+        -:  957:		default:
+    #####:  958:			SUREWAREerr(SUREWARE_F_SUREWAREHK_RSA_SIGN,SUREWARE_R_UNKNOWN_PADDING_TYPE);
+        -:  959:		}
+        -:  960:	}
+    #####:  961:	return ret==1 ? tlen : ret;
+        -:  962:}
+        -:  963:
+        -:  964:#endif
+        -:  965:
+        -:  966:#ifndef OPENSSL_NO_DSA
+        -:  967:/* DSA sign and verify */
+    #####:  968:static	DSA_SIG * surewarehk_dsa_do_sign(const unsigned char *from, int flen, DSA *dsa)
+        -:  969:{
+        -:  970:	int ret=0;
+        -:  971:	char *hptr=NULL;
+        -:  972:	DSA_SIG *psign=NULL;
+    #####:  973:	char msg[64]="ENGINE_dsa_do_sign";
+    #####:  974:	if (!p_surewarehk_Dsa_Sign)
+        -:  975:	{
+    #####:  976:		SUREWAREerr(SUREWARE_F_SUREWAREHK_DSA_DO_SIGN,ENGINE_R_NOT_INITIALISED);
+    #####:  977:		goto err;
+        -:  978:	}
+        -:  979:	/* extract ref to private key */
+    #####:  980:	else if (!(hptr=DSA_get_ex_data(dsa, dsaHndidx)))
+        -:  981:	{
+    #####:  982:		SUREWAREerr(SUREWARE_F_SUREWAREHK_DSA_DO_SIGN,SUREWARE_R_MISSING_KEY_COMPONENTS);
+    #####:  983:		goto err;
+        -:  984:	}
+        -:  985:	else
+        -:  986:	{
+    #####:  987:		if((psign = DSA_SIG_new()) == NULL)
+        -:  988:		{
+    #####:  989:			SUREWAREerr(SUREWARE_F_SUREWAREHK_DSA_DO_SIGN,ERR_R_MALLOC_FAILURE);
+    #####:  990:			goto err;
+        -:  991:		}
+    #####:  992:		psign->r=BN_new();
+    #####:  993:		psign->s=BN_new();
+    #####:  994:		bn_expand2(psign->r, 20/sizeof(BN_ULONG));
+    #####:  995:		bn_expand2(psign->s, 20/sizeof(BN_ULONG));
+    #####:  996:		if (!psign->r || psign->r->dmax!=20/sizeof(BN_ULONG) ||
+    #####:  997:			!psign->s || psign->s->dmax!=20/sizeof(BN_ULONG))
+        -:  998:			goto err;
+    #####:  999:		ret=p_surewarehk_Dsa_Sign(msg,flen,from,
+        -: 1000:					  (unsigned long *)psign->r->d,
+        -: 1001:					  (unsigned long *)psign->s->d,
+        -: 1002:					  hptr);
+    #####: 1003:		surewarehk_error_handling(msg,SUREWARE_F_SUREWAREHK_DSA_DO_SIGN,ret);
+        -: 1004:	}
+    #####: 1005:	psign->r->top=20/sizeof(BN_ULONG);
+    #####: 1006:	bn_fix_top(psign->r);
+    #####: 1007:	psign->s->top=20/sizeof(BN_ULONG);
+    #####: 1008:	bn_fix_top(psign->s);
+        -: 1009:
+        -: 1010:err:	
+    #####: 1011:	if (psign)
+        -: 1012:	{
+    #####: 1013:		DSA_SIG_free(psign);
+        -: 1014:		psign=NULL;
+        -: 1015:	}
+    #####: 1016:	return psign;
+        -: 1017:}
+        -: 1018:#endif
+        -: 1019:
+    #####: 1020:static int surewarehk_modexp(BIGNUM *r, const BIGNUM *a, const BIGNUM *p,
+        -: 1021:			     const BIGNUM *m, BN_CTX *ctx)
+        -: 1022:{
+        -: 1023:	int ret=0;
+    #####: 1024:	char msg[64]="ENGINE_modexp";
+    #####: 1025:	if (!p_surewarehk_Mod_Exp)
+        -: 1026:	{
+    #####: 1027:		SUREWAREerr(SUREWARE_F_SUREWAREHK_MODEXP,ENGINE_R_NOT_INITIALISED);
+        -: 1028:	}
+        -: 1029:	else
+        -: 1030:	{
+    #####: 1031:		bn_expand2(r,m->top);
+    #####: 1032:		if (r && r->dmax==m->top)
+        -: 1033:		{
+        -: 1034:			/* do it*/
+    #####: 1035:			ret=p_surewarehk_Mod_Exp(msg,
+        -: 1036:						 m->top*sizeof(BN_ULONG),
+    #####: 1037:						 (unsigned long *)m->d,
+    #####: 1038:						 p->top*sizeof(BN_ULONG),
+    #####: 1039:						 (unsigned long *)p->d,
+    #####: 1040:						 a->top*sizeof(BN_ULONG),
+        -: 1041:						 (unsigned long *)a->d,
+        -: 1042:						 (unsigned long *)r->d);
+    #####: 1043:			surewarehk_error_handling(msg,SUREWARE_F_SUREWAREHK_MODEXP,ret);
+    #####: 1044:			if (ret==1)
+        -: 1045:			{
+        -: 1046:				/* normalise result */
+    #####: 1047:				r->top=m->top;
+    #####: 1048:				bn_fix_top(r);
+        -: 1049:			}
+        -: 1050:		}
+        -: 1051:	}
+    #####: 1052:	return ret;
+        -: 1053:}
+        -: 1054:#endif /* !OPENSSL_NO_HW_SureWare */
+        -: 1055:#endif /* !OPENSSL_NO_HW */

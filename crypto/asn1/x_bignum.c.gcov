@@ -1,0 +1,144 @@
+        -:    0:Source:x_bignum.c
+        -:    0:Graph:x_bignum.gcno
+        -:    0:Data:x_bignum.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* x_bignum.c */
+        -:    2:/* Written by Dr Stephen N Henson (steve@openssl.org) for the OpenSSL
+        -:    3: * project 2000.
+        -:    4: */
+        -:    5:/* ====================================================================
+        -:    6: * Copyright (c) 2000 The OpenSSL Project.  All rights reserved.
+        -:    7: *
+        -:    8: * Redistribution and use in source and binary forms, with or without
+        -:    9: * modification, are permitted provided that the following conditions
+        -:   10: * are met:
+        -:   11: *
+        -:   12: * 1. Redistributions of source code must retain the above copyright
+        -:   13: *    notice, this list of conditions and the following disclaimer. 
+        -:   14: *
+        -:   15: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   16: *    notice, this list of conditions and the following disclaimer in
+        -:   17: *    the documentation and/or other materials provided with the
+        -:   18: *    distribution.
+        -:   19: *
+        -:   20: * 3. All advertising materials mentioning features or use of this
+        -:   21: *    software must display the following acknowledgment:
+        -:   22: *    "This product includes software developed by the OpenSSL Project
+        -:   23: *    for use in the OpenSSL Toolkit. (http://www.OpenSSL.org/)"
+        -:   24: *
+        -:   25: * 4. The names "OpenSSL Toolkit" and "OpenSSL Project" must not be used to
+        -:   26: *    endorse or promote products derived from this software without
+        -:   27: *    prior written permission. For written permission, please contact
+        -:   28: *    licensing@OpenSSL.org.
+        -:   29: *
+        -:   30: * 5. Products derived from this software may not be called "OpenSSL"
+        -:   31: *    nor may "OpenSSL" appear in their names without prior written
+        -:   32: *    permission of the OpenSSL Project.
+        -:   33: *
+        -:   34: * 6. Redistributions of any form whatsoever must retain the following
+        -:   35: *    acknowledgment:
+        -:   36: *    "This product includes software developed by the OpenSSL Project
+        -:   37: *    for use in the OpenSSL Toolkit (http://www.OpenSSL.org/)"
+        -:   38: *
+        -:   39: * THIS SOFTWARE IS PROVIDED BY THE OpenSSL PROJECT ``AS IS'' AND ANY
+        -:   40: * EXPRESSED OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   41: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+        -:   42: * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE OpenSSL PROJECT OR
+        -:   43: * ITS CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+        -:   44: * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+        -:   45: * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+        -:   46: * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   47: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+        -:   48: * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+        -:   49: * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+        -:   50: * OF THE POSSIBILITY OF SUCH DAMAGE.
+        -:   51: * ====================================================================
+        -:   52: *
+        -:   53: * This product includes cryptographic software written by Eric Young
+        -:   54: * (eay@cryptsoft.com).  This product includes software written by Tim
+        -:   55: * Hudson (tjh@cryptsoft.com).
+        -:   56: *
+        -:   57: */
+        -:   58:
+        -:   59:#include <stdio.h>
+        -:   60:#include "cryptlib.h"
+        -:   61:#include <openssl/asn1t.h>
+        -:   62:#include <openssl/bn.h>
+        -:   63:
+        -:   64:/* Custom primitive type for BIGNUM handling. This reads in an ASN1_INTEGER as a
+        -:   65: * BIGNUM directly. Currently it ignores the sign which isn't a problem since all
+        -:   66: * BIGNUMs used are non negative and anything that looks negative is normally due
+        -:   67: * to an encoding error.
+        -:   68: */
+        -:   69:
+        -:   70:#define BN_SENSITIVE	1
+        -:   71:
+        -:   72:static int bn_new(ASN1_VALUE **pval, const ASN1_ITEM *it);
+        -:   73:static void bn_free(ASN1_VALUE **pval, const ASN1_ITEM *it);
+        -:   74:
+        -:   75:static int bn_i2c(ASN1_VALUE **pval, unsigned char *cont, int *putype, const ASN1_ITEM *it);
+        -:   76:static int bn_c2i(ASN1_VALUE **pval, const unsigned char *cont, int len, int utype, char *free_cont, const ASN1_ITEM *it);
+        -:   77:
+        -:   78:static ASN1_PRIMITIVE_FUNCS bignum_pf = {
+        -:   79:	NULL, 0,
+        -:   80:	bn_new,
+        -:   81:	bn_free,
+        -:   82:	0,
+        -:   83:	bn_c2i,
+        -:   84:	bn_i2c
+        -:   85:};
+        -:   86:
+        -:   87:ASN1_ITEM_start(BIGNUM)
+        -:   88:	ASN1_ITYPE_PRIMITIVE, V_ASN1_INTEGER, NULL, 0, &bignum_pf, 0, "BIGNUM"
+        -:   89:ASN1_ITEM_end(BIGNUM)
+        -:   90:
+        -:   91:ASN1_ITEM_start(CBIGNUM)
+        -:   92:	ASN1_ITYPE_PRIMITIVE, V_ASN1_INTEGER, NULL, 0, &bignum_pf, BN_SENSITIVE, "BIGNUM"
+        -:   93:ASN1_ITEM_end(CBIGNUM)
+        -:   94:
+    #####:   95:static int bn_new(ASN1_VALUE **pval, const ASN1_ITEM *it)
+        -:   96:{
+    23884:   97:	*pval = (ASN1_VALUE *)BN_new();
+    #####:   98:	if(*pval) return 1;
+    #####:   99:	else return 0;
+        -:  100:}
+        -:  101:
+    #####:  102:static void bn_free(ASN1_VALUE **pval, const ASN1_ITEM *it)
+        -:  103:{
+    #####:  104:	if(!*pval) return;
+    #####:  105:	if(it->size & BN_SENSITIVE) BN_clear_free((BIGNUM *)*pval);
+    #####:  106:	else BN_free((BIGNUM *)*pval);
+    #####:  107:	*pval = NULL;
+        -:  108:}
+        -:  109:
+    #####:  110:static int bn_i2c(ASN1_VALUE **pval, unsigned char *cont, int *putype, const ASN1_ITEM *it)
+        -:  111:{
+        -:  112:	BIGNUM *bn;
+        -:  113:	int pad;
+    #####:  114:	if(!*pval) return -1;
+        -:  115:	bn = (BIGNUM *)*pval;
+        -:  116:	/* If MSB set in an octet we need a padding byte */
+    #####:  117:	if(BN_num_bits(bn) & 0x7) pad = 0;
+        -:  118:	else pad = 1;
+    #####:  119:	if(cont) {
+    #####:  120:		if(pad) *cont++ = 0;
+    #####:  121:		BN_bn2bin(bn, cont);
+        -:  122:	}
+    #####:  123:	return pad + BN_num_bytes(bn);
+        -:  124:}
+        -:  125:
+    23884:  126:static int bn_c2i(ASN1_VALUE **pval, const unsigned char *cont, int len,
+        -:  127:		  int utype, char *free_cont, const ASN1_ITEM *it)
+        -:  128:{
+        -:  129:	BIGNUM *bn;
+    23884:  130:	if(!*pval) bn_new(pval, it);
+    23884:  131:	bn  = (BIGNUM *)*pval;
+    23884:  132:	if(!BN_bin2bn(cont, len, bn)) {
+    #####:  133:		bn_free(pval, it);
+    #####:  134:		return 0;
+        -:  135:	}
+        -:  136:	return 1;
+        -:  137:}
+        -:  138:
+        -:  139:

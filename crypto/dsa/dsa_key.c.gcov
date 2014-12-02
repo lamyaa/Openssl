@@ -1,0 +1,149 @@
+        -:    0:Source:dsa_key.c
+        -:    0:Graph:dsa_key.gcno
+        -:    0:Data:dsa_key.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* crypto/dsa/dsa_key.c */
+        -:    2:/* Copyright (C) 1995-1998 Eric Young (eay@cryptsoft.com)
+        -:    3: * All rights reserved.
+        -:    4: *
+        -:    5: * This package is an SSL implementation written
+        -:    6: * by Eric Young (eay@cryptsoft.com).
+        -:    7: * The implementation was written so as to conform with Netscapes SSL.
+        -:    8: * 
+        -:    9: * This library is free for commercial and non-commercial use as long as
+        -:   10: * the following conditions are aheared to.  The following conditions
+        -:   11: * apply to all code found in this distribution, be it the RC4, RSA,
+        -:   12: * lhash, DES, etc., code; not just the SSL code.  The SSL documentation
+        -:   13: * included with this distribution is covered by the same copyright terms
+        -:   14: * except that the holder is Tim Hudson (tjh@cryptsoft.com).
+        -:   15: * 
+        -:   16: * Copyright remains Eric Young's, and as such any Copyright notices in
+        -:   17: * the code are not to be removed.
+        -:   18: * If this package is used in a product, Eric Young should be given attribution
+        -:   19: * as the author of the parts of the library used.
+        -:   20: * This can be in the form of a textual message at program startup or
+        -:   21: * in documentation (online or textual) provided with the package.
+        -:   22: * 
+        -:   23: * Redistribution and use in source and binary forms, with or without
+        -:   24: * modification, are permitted provided that the following conditions
+        -:   25: * are met:
+        -:   26: * 1. Redistributions of source code must retain the copyright
+        -:   27: *    notice, this list of conditions and the following disclaimer.
+        -:   28: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   29: *    notice, this list of conditions and the following disclaimer in the
+        -:   30: *    documentation and/or other materials provided with the distribution.
+        -:   31: * 3. All advertising materials mentioning features or use of this software
+        -:   32: *    must display the following acknowledgement:
+        -:   33: *    "This product includes cryptographic software written by
+        -:   34: *     Eric Young (eay@cryptsoft.com)"
+        -:   35: *    The word 'cryptographic' can be left out if the rouines from the library
+        -:   36: *    being used are not cryptographic related :-).
+        -:   37: * 4. If you include any Windows specific code (or a derivative thereof) from 
+        -:   38: *    the apps directory (application code) you must include an acknowledgement:
+        -:   39: *    "This product includes software written by Tim Hudson (tjh@cryptsoft.com)"
+        -:   40: * 
+        -:   41: * THIS SOFTWARE IS PROVIDED BY ERIC YOUNG ``AS IS'' AND
+        -:   42: * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   43: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+        -:   44: * ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+        -:   45: * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+        -:   46: * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+        -:   47: * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   48: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+        -:   49: * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+        -:   50: * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+        -:   51: * SUCH DAMAGE.
+        -:   52: * 
+        -:   53: * The licence and distribution terms for any publically available version or
+        -:   54: * derivative of this code cannot be changed.  i.e. this code cannot simply be
+        -:   55: * copied and put under another distribution licence
+        -:   56: * [including the GNU Public Licence.]
+        -:   57: */
+        -:   58:
+        -:   59:#include <stdio.h>
+        -:   60:#include <time.h>
+        -:   61:#include "cryptlib.h"
+        -:   62:#ifndef OPENSSL_NO_SHA
+        -:   63:#include <openssl/bn.h>
+        -:   64:#include <openssl/dsa.h>
+        -:   65:#include <openssl/rand.h>
+        -:   66:
+        -:   67:#ifdef OPENSSL_FIPS
+        -:   68:#include <openssl/fips.h>
+        -:   69:#endif
+        -:   70:
+        -:   71:static int dsa_builtin_keygen(DSA *dsa);
+        -:   72:
+    #####:   73:int DSA_generate_key(DSA *dsa)
+        -:   74:	{
+        -:   75:#ifdef OPENSSL_FIPS
+        -:   76:	if (FIPS_mode() && !(dsa->meth->flags & DSA_FLAG_FIPS_METHOD)
+        -:   77:			&& !(dsa->flags & DSA_FLAG_NON_FIPS_ALLOW))
+        -:   78:		{
+        -:   79:		DSAerr(DSA_F_DSA_GENERATE_KEY, DSA_R_NON_FIPS_DSA_METHOD);
+        -:   80:		return 0;
+        -:   81:		}
+        -:   82:#endif
+    #####:   83:	if(dsa->meth->dsa_keygen)
+    #####:   84:		return dsa->meth->dsa_keygen(dsa);
+        -:   85:#ifdef OPENSSL_FIPS
+        -:   86:	if (FIPS_mode())
+        -:   87:		return FIPS_dsa_generate_key(dsa);
+        -:   88:#endif
+    #####:   89:	return dsa_builtin_keygen(dsa);
+        -:   90:	}
+        -:   91:
+    #####:   92:static int dsa_builtin_keygen(DSA *dsa)
+        -:   93:	{
+        -:   94:	int ok=0;
+        -:   95:	BN_CTX *ctx=NULL;
+        -:   96:	BIGNUM *pub_key=NULL,*priv_key=NULL;
+        -:   97:
+    #####:   98:	if ((ctx=BN_CTX_new()) == NULL) goto err;
+        -:   99:
+    #####:  100:	if (dsa->priv_key == NULL)
+        -:  101:		{
+    #####:  102:		if ((priv_key=BN_new()) == NULL) goto err;
+        -:  103:		}
+        -:  104:	else
+        -:  105:		priv_key=dsa->priv_key;
+        -:  106:
+        -:  107:	do
+    #####:  108:		if (!BN_rand_range(priv_key,dsa->q)) goto err;
+    #####:  109:	while (BN_is_zero(priv_key));
+        -:  110:
+    #####:  111:	if (dsa->pub_key == NULL)
+        -:  112:		{
+    #####:  113:		if ((pub_key=BN_new()) == NULL) goto err;
+        -:  114:		}
+        -:  115:	else
+        -:  116:		pub_key=dsa->pub_key;
+        -:  117:	
+        -:  118:	{
+        -:  119:		BIGNUM local_prk;
+        -:  120:		BIGNUM *prk;
+        -:  121:
+    #####:  122:		if ((dsa->flags & DSA_FLAG_NO_EXP_CONSTTIME) == 0)
+        -:  123:			{
+    #####:  124:			BN_init(&local_prk);
+        -:  125:			prk = &local_prk;
+    #####:  126:			BN_with_flags(prk, priv_key, BN_FLG_CONSTTIME);
+        -:  127:			}
+        -:  128:		else
+        -:  129:			prk = priv_key;
+        -:  130:
+    #####:  131:		if (!BN_mod_exp(pub_key,dsa->g,prk,dsa->p,ctx)) goto err;
+        -:  132:	}
+        -:  133:
+    #####:  134:	dsa->priv_key=priv_key;
+    #####:  135:	dsa->pub_key=pub_key;
+        -:  136:	ok=1;
+        -:  137:
+        -:  138:err:
+    #####:  139:	if ((pub_key != NULL) && (dsa->pub_key == NULL)) BN_free(pub_key);
+    #####:  140:	if ((priv_key != NULL) && (dsa->priv_key == NULL)) BN_free(priv_key);
+    #####:  141:	if (ctx != NULL) BN_CTX_free(ctx);
+    #####:  142:	return(ok);
+        -:  143:	}
+        -:  144:#endif

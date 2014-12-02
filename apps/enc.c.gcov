@@ -1,0 +1,737 @@
+        -:    0:Source:enc.c
+        -:    0:Graph:enc.gcno
+        -:    0:Data:enc.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* apps/enc.c */
+        -:    2:/* Copyright (C) 1995-1998 Eric Young (eay@cryptsoft.com)
+        -:    3: * All rights reserved.
+        -:    4: *
+        -:    5: * This package is an SSL implementation written
+        -:    6: * by Eric Young (eay@cryptsoft.com).
+        -:    7: * The implementation was written so as to conform with Netscapes SSL.
+        -:    8: * 
+        -:    9: * This library is free for commercial and non-commercial use as long as
+        -:   10: * the following conditions are aheared to.  The following conditions
+        -:   11: * apply to all code found in this distribution, be it the RC4, RSA,
+        -:   12: * lhash, DES, etc., code; not just the SSL code.  The SSL documentation
+        -:   13: * included with this distribution is covered by the same copyright terms
+        -:   14: * except that the holder is Tim Hudson (tjh@cryptsoft.com).
+        -:   15: * 
+        -:   16: * Copyright remains Eric Young's, and as such any Copyright notices in
+        -:   17: * the code are not to be removed.
+        -:   18: * If this package is used in a product, Eric Young should be given attribution
+        -:   19: * as the author of the parts of the library used.
+        -:   20: * This can be in the form of a textual message at program startup or
+        -:   21: * in documentation (online or textual) provided with the package.
+        -:   22: * 
+        -:   23: * Redistribution and use in source and binary forms, with or without
+        -:   24: * modification, are permitted provided that the following conditions
+        -:   25: * are met:
+        -:   26: * 1. Redistributions of source code must retain the copyright
+        -:   27: *    notice, this list of conditions and the following disclaimer.
+        -:   28: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   29: *    notice, this list of conditions and the following disclaimer in the
+        -:   30: *    documentation and/or other materials provided with the distribution.
+        -:   31: * 3. All advertising materials mentioning features or use of this software
+        -:   32: *    must display the following acknowledgement:
+        -:   33: *    "This product includes cryptographic software written by
+        -:   34: *     Eric Young (eay@cryptsoft.com)"
+        -:   35: *    The word 'cryptographic' can be left out if the rouines from the library
+        -:   36: *    being used are not cryptographic related :-).
+        -:   37: * 4. If you include any Windows specific code (or a derivative thereof) from 
+        -:   38: *    the apps directory (application code) you must include an acknowledgement:
+        -:   39: *    "This product includes software written by Tim Hudson (tjh@cryptsoft.com)"
+        -:   40: * 
+        -:   41: * THIS SOFTWARE IS PROVIDED BY ERIC YOUNG ``AS IS'' AND
+        -:   42: * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   43: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+        -:   44: * ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+        -:   45: * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+        -:   46: * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+        -:   47: * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   48: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+        -:   49: * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+        -:   50: * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+        -:   51: * SUCH DAMAGE.
+        -:   52: * 
+        -:   53: * The licence and distribution terms for any publically available version or
+        -:   54: * derivative of this code cannot be changed.  i.e. this code cannot simply be
+        -:   55: * copied and put under another distribution licence
+        -:   56: * [including the GNU Public Licence.]
+        -:   57: */
+        -:   58:
+        -:   59:#include <stdio.h>
+        -:   60:#include <stdlib.h>
+        -:   61:#include <string.h>
+        -:   62:#include "apps.h"
+        -:   63:#include <openssl/bio.h>
+        -:   64:#include <openssl/err.h>
+        -:   65:#include <openssl/evp.h>
+        -:   66:#include <openssl/objects.h>
+        -:   67:#include <openssl/x509.h>
+        -:   68:#include <openssl/rand.h>
+        -:   69:#include <openssl/pem.h>
+        -:   70:#include <openssl/comp.h>
+        -:   71:#include <ctype.h>
+        -:   72:
+        -:   73:int set_hex(char *in,unsigned char *out,int size);
+        -:   74:#undef SIZE
+        -:   75:#undef BSIZE
+        -:   76:#undef PROG
+        -:   77:
+        -:   78:#define SIZE	(512)
+        -:   79:#define BSIZE	(8*1024)
+        -:   80:#define	PROG	enc_main
+        -:   81:
+    #####:   82:static void show_ciphers(const OBJ_NAME *name,void *bio_)
+        -:   83:	{
+        -:   84:	BIO *bio=bio_;
+        -:   85:	static int n;
+        -:   86:
+    #####:   87:	if(!islower((unsigned char)*name->name))
+    #####:   88:		return;
+        -:   89:
+    #####:   90:	BIO_printf(bio,"-%-25s",name->name);
+    #####:   91:	if(++n == 3)
+        -:   92:		{
+    #####:   93:		BIO_printf(bio,"\n");
+    #####:   94:		n=0;
+        -:   95:		}
+        -:   96:	else
+    #####:   97:		BIO_printf(bio," ");
+        -:   98:	}
+        -:   99:
+        -:  100:int MAIN(int, char **);
+        -:  101:
+    #####:  102:int MAIN(int argc, char **argv)
+        -:  103:	{
+        -:  104:	static const char magic[]="Salted__";
+        -:  105:	char mbuf[sizeof magic-1];
+        -:  106:	char *strbuf=NULL;
+        -:  107:	unsigned char *buff=NULL,*bufsize=NULL;
+        -:  108:	int bsize=BSIZE,verbose=0;
+        -:  109:	int ret=1,inl;
+        -:  110:	int nopad = 0;
+        -:  111:	unsigned char key[EVP_MAX_KEY_LENGTH],iv[EVP_MAX_IV_LENGTH];
+        -:  112:	unsigned char salt[PKCS5_SALT_LEN];
+    #####:  113:	char *str=NULL, *passarg = NULL, *pass = NULL;
+        -:  114:	char *hkey=NULL,*hiv=NULL,*hsalt = NULL;
+        -:  115:	char *md=NULL;
+        -:  116:	int enc=1,printkey=0,i,base64=0;
+        -:  117:#ifdef ZLIB
+        -:  118:	int do_zlib=0;
+        -:  119:	BIO *bzl = NULL;
+        -:  120:#endif
+        -:  121:	int debug=0,olb64=0,nosalt=0;
+        -:  122:	const EVP_CIPHER *cipher=NULL,*c;
+    #####:  123:	EVP_CIPHER_CTX *ctx = NULL;
+        -:  124:	char *inf=NULL,*outf=NULL;
+        -:  125:	BIO *in=NULL,*out=NULL,*b64=NULL,*benc=NULL,*rbio=NULL,*wbio=NULL;
+        -:  126:#define PROG_NAME_SIZE  39
+        -:  127:	char pname[PROG_NAME_SIZE+1];
+        -:  128:#ifndef OPENSSL_NO_ENGINE
+        -:  129:	char *engine = NULL;
+        -:  130:#endif
+        -:  131:	const EVP_MD *dgst=NULL;
+        -:  132:	int non_fips_allow = 0;
+        -:  133:
+    #####:  134:	apps_startup();
+        -:  135:
+    #####:  136:	if (bio_err == NULL)
+    #####:  137:		if ((bio_err=BIO_new(BIO_s_file())) != NULL)
+    #####:  138:			BIO_set_fp(bio_err,stderr,BIO_NOCLOSE|BIO_FP_TEXT);
+        -:  139:
+    #####:  140:	if (!load_config(bio_err, NULL))
+        -:  141:		goto end;
+        -:  142:
+        -:  143:	/* first check the program name */
+    #####:  144:	program_name(argv[0],pname,sizeof pname);
+    #####:  145:	if (strcmp(pname,"base64") == 0)
+        -:  146:		base64=1;
+        -:  147:#ifdef ZLIB
+        -:  148:	if (strcmp(pname,"zlib") == 0)
+        -:  149:		do_zlib=1;
+        -:  150:#endif
+        -:  151:
+    #####:  152:	cipher=EVP_get_cipherbyname(pname);
+        -:  153:#ifdef ZLIB
+        -:  154:	if (!do_zlib && !base64 && (cipher == NULL)
+        -:  155:				&& (strcmp(pname,"enc") != 0))
+        -:  156:#else
+    #####:  157:	if (!base64 && (cipher == NULL) && (strcmp(pname,"enc") != 0))
+        -:  158:#endif
+        -:  159:		{
+    #####:  160:		BIO_printf(bio_err,"%s is an unknown cipher\n",pname);
+    #####:  161:		goto bad;
+        -:  162:		}
+        -:  163:
+    #####:  164:	argc--;
+    #####:  165:	argv++;
+    #####:  166:	while (argc >= 1)
+        -:  167:		{
+    #####:  168:		if	(strcmp(*argv,"-e") == 0)
+        -:  169:			enc=1;
+    #####:  170:		else if (strcmp(*argv,"-in") == 0)
+        -:  171:			{
+    #####:  172:			if (--argc < 1) goto bad;
+    #####:  173:			inf= *(++argv);
+        -:  174:			}
+    #####:  175:		else if (strcmp(*argv,"-out") == 0)
+        -:  176:			{
+    #####:  177:			if (--argc < 1) goto bad;
+    #####:  178:			outf= *(++argv);
+        -:  179:			}
+    #####:  180:		else if (strcmp(*argv,"-pass") == 0)
+        -:  181:			{
+    #####:  182:			if (--argc < 1) goto bad;
+    #####:  183:			passarg= *(++argv);
+        -:  184:			}
+        -:  185:#ifndef OPENSSL_NO_ENGINE
+    #####:  186:		else if (strcmp(*argv,"-engine") == 0)
+        -:  187:			{
+    #####:  188:			if (--argc < 1) goto bad;
+    #####:  189:			engine= *(++argv);
+        -:  190:			}
+        -:  191:#endif
+    #####:  192:		else if	(strcmp(*argv,"-d") == 0)
+        -:  193:			enc=0;
+    #####:  194:		else if	(strcmp(*argv,"-p") == 0)
+        -:  195:			printkey=1;
+    #####:  196:		else if	(strcmp(*argv,"-v") == 0)
+        -:  197:			verbose=1;
+    #####:  198:		else if	(strcmp(*argv,"-nopad") == 0)
+        -:  199:			nopad=1;
+    #####:  200:		else if	(strcmp(*argv,"-salt") == 0)
+        -:  201:			nosalt=0;
+    #####:  202:		else if	(strcmp(*argv,"-nosalt") == 0)
+        -:  203:			nosalt=1;
+    #####:  204:		else if	(strcmp(*argv,"-debug") == 0)
+        -:  205:			debug=1;
+    #####:  206:		else if	(strcmp(*argv,"-P") == 0)
+        -:  207:			printkey=2;
+    #####:  208:		else if	(strcmp(*argv,"-A") == 0)
+        -:  209:			olb64=1;
+    #####:  210:		else if	(strcmp(*argv,"-a") == 0)
+        -:  211:			base64=1;
+    #####:  212:		else if	(strcmp(*argv,"-base64") == 0)
+        -:  213:			base64=1;
+        -:  214:#ifdef ZLIB
+        -:  215:		else if	(strcmp(*argv,"-z") == 0)
+        -:  216:			do_zlib=1;
+        -:  217:#endif
+    #####:  218:		else if (strcmp(*argv,"-bufsize") == 0)
+        -:  219:			{
+    #####:  220:			if (--argc < 1) goto bad;
+    #####:  221:			bufsize=(unsigned char *)*(++argv);
+        -:  222:			}
+    #####:  223:		else if (strcmp(*argv,"-k") == 0)
+        -:  224:			{
+    #####:  225:			if (--argc < 1) goto bad;
+    #####:  226:			str= *(++argv);
+        -:  227:			}
+    #####:  228:		else if (strcmp(*argv,"-kfile") == 0)
+        -:  229:			{
+        -:  230:			static char buf[128];
+        -:  231:			FILE *infile;
+        -:  232:			char *file;
+        -:  233:
+    #####:  234:			if (--argc < 1) goto bad;
+    #####:  235:			file= *(++argv);
+    #####:  236:			infile=fopen(file,"r");
+    #####:  237:			if (infile == NULL)
+        -:  238:				{
+    #####:  239:				BIO_printf(bio_err,"unable to read key from '%s'\n",
+        -:  240:					file);
+    #####:  241:				goto bad;
+        -:  242:				}
+    #####:  243:			buf[0]='\0';
+    #####:  244:			if (!fgets(buf,sizeof buf,infile))
+        -:  245:				{
+    #####:  246:				BIO_printf(bio_err,"unable to read key from '%s'\n",
+        -:  247:					file);
+    #####:  248:				goto bad;
+        -:  249:				}
+    #####:  250:			fclose(infile);
+    #####:  251:			i=strlen(buf);
+    #####:  252:			if ((i > 0) &&
+    #####:  253:				((buf[i-1] == '\n') || (buf[i-1] == '\r')))
+    #####:  254:				buf[--i]='\0';
+    #####:  255:			if ((i > 0) &&
+    #####:  256:				((buf[i-1] == '\n') || (buf[i-1] == '\r')))
+    #####:  257:				buf[--i]='\0';
+    #####:  258:			if (i < 1)
+        -:  259:				{
+    #####:  260:				BIO_printf(bio_err,"zero length password\n");
+    #####:  261:				goto bad;
+        -:  262:				}
+        -:  263:			str=buf;
+        -:  264:			}
+    #####:  265:		else if (strcmp(*argv,"-K") == 0)
+        -:  266:			{
+    #####:  267:			if (--argc < 1) goto bad;
+    #####:  268:			hkey= *(++argv);
+        -:  269:			}
+    #####:  270:		else if (strcmp(*argv,"-S") == 0)
+        -:  271:			{
+    #####:  272:			if (--argc < 1) goto bad;
+    #####:  273:			hsalt= *(++argv);
+        -:  274:			}
+    #####:  275:		else if (strcmp(*argv,"-iv") == 0)
+        -:  276:			{
+    #####:  277:			if (--argc < 1) goto bad;
+    #####:  278:			hiv= *(++argv);
+        -:  279:			}
+    #####:  280:		else if (strcmp(*argv,"-md") == 0)
+        -:  281:			{
+    #####:  282:			if (--argc < 1) goto bad;
+    #####:  283:			md= *(++argv);
+        -:  284:			}
+    #####:  285:		else if (strcmp(*argv,"-non-fips-allow") == 0)
+        -:  286:			non_fips_allow = 1;
+    #####:  287:		else if	((argv[0][0] == '-') &&
+    #####:  288:			((c=EVP_get_cipherbyname(&(argv[0][1]))) != NULL))
+        -:  289:			{
+        -:  290:			cipher=c;
+        -:  291:			}
+    #####:  292:		else if (strcmp(*argv,"-none") == 0)
+        -:  293:			cipher=NULL;
+        -:  294:		else
+        -:  295:			{
+    #####:  296:			BIO_printf(bio_err,"unknown option '%s'\n",*argv);
+        -:  297:bad:
+    #####:  298:			BIO_printf(bio_err,"options are\n");
+    #####:  299:			BIO_printf(bio_err,"%-14s input file\n","-in <file>");
+    #####:  300:			BIO_printf(bio_err,"%-14s output file\n","-out <file>");
+    #####:  301:			BIO_printf(bio_err,"%-14s pass phrase source\n","-pass <arg>");
+    #####:  302:			BIO_printf(bio_err,"%-14s encrypt\n","-e");
+    #####:  303:			BIO_printf(bio_err,"%-14s decrypt\n","-d");
+    #####:  304:			BIO_printf(bio_err,"%-14s base64 encode/decode, depending on encryption flag\n","-a/-base64");
+    #####:  305:			BIO_printf(bio_err,"%-14s passphrase is the next argument\n","-k");
+    #####:  306:			BIO_printf(bio_err,"%-14s passphrase is the first line of the file argument\n","-kfile");
+    #####:  307:			BIO_printf(bio_err,"%-14s the next argument is the md to use to create a key\n","-md");
+    #####:  308:			BIO_printf(bio_err,"%-14s   from a passphrase.  One of md2, md5, sha or sha1\n","");
+    #####:  309:			BIO_printf(bio_err,"%-14s salt in hex is the next argument\n","-S");
+    #####:  310:			BIO_printf(bio_err,"%-14s key/iv in hex is the next argument\n","-K/-iv");
+    #####:  311:			BIO_printf(bio_err,"%-14s print the iv/key (then exit if -P)\n","-[pP]");
+    #####:  312:			BIO_printf(bio_err,"%-14s buffer size\n","-bufsize <n>");
+    #####:  313:			BIO_printf(bio_err,"%-14s disable standard block padding\n","-nopad");
+        -:  314:#ifndef OPENSSL_NO_ENGINE
+    #####:  315:			BIO_printf(bio_err,"%-14s use engine e, possibly a hardware device.\n","-engine e");
+        -:  316:#endif
+        -:  317:
+    #####:  318:			BIO_printf(bio_err,"Cipher Types\n");
+    #####:  319:			OBJ_NAME_do_all_sorted(OBJ_NAME_TYPE_CIPHER_METH,
+        -:  320:					       show_ciphers,
+        -:  321:					       bio_err);
+    #####:  322:			BIO_printf(bio_err,"\n");
+        -:  323:
+    #####:  324:			goto end;
+        -:  325:			}
+    #####:  326:		argc--;
+    #####:  327:		argv++;
+        -:  328:		}
+        -:  329:
+        -:  330:#ifndef OPENSSL_NO_ENGINE
+    #####:  331:        setup_engine(bio_err, engine, 0);
+        -:  332:#endif
+        -:  333:
+    #####:  334:	if (md && (dgst=EVP_get_digestbyname(md)) == NULL)
+        -:  335:		{
+    #####:  336:		BIO_printf(bio_err,"%s is an unsupported message digest type\n",md);
+    #####:  337:		goto end;
+        -:  338:		}
+        -:  339:
+    #####:  340:	if (dgst == NULL)
+        -:  341:		{
+    #####:  342:		dgst = EVP_md5();
+        -:  343:		}
+        -:  344:
+    #####:  345:	if (bufsize != NULL)
+        -:  346:		{
+        -:  347:		unsigned long n;
+        -:  348:
+    #####:  349:		for (n=0; *bufsize; bufsize++)
+        -:  350:			{
+        -:  351:			i= *bufsize;
+    #####:  352:			if ((i <= '9') && (i >= '0'))
+    #####:  353:				n=n*10+i-'0';
+    #####:  354:			else if (i == 'k')
+        -:  355:				{
+    #####:  356:				n*=1024;
+    #####:  357:				bufsize++;
+    #####:  358:				break;
+        -:  359:				}
+        -:  360:			}
+    #####:  361:		if (*bufsize != '\0')
+        -:  362:			{
+    #####:  363:			BIO_printf(bio_err,"invalid 'bufsize' specified.\n");
+    #####:  364:			goto end;
+        -:  365:			}
+        -:  366:
+        -:  367:		/* It must be large enough for a base64 encoded line */
+    #####:  368:		if (base64 && n < 80) n=80;
+        -:  369:
+    #####:  370:		bsize=(int)n;
+    #####:  371:		if (verbose) BIO_printf(bio_err,"bufsize=%d\n",bsize);
+        -:  372:		}
+        -:  373:
+    #####:  374:	strbuf=OPENSSL_malloc(SIZE);
+    #####:  375:	buff=(unsigned char *)OPENSSL_malloc(EVP_ENCODE_LENGTH(bsize));
+    #####:  376:	if ((buff == NULL) || (strbuf == NULL))
+        -:  377:		{
+    #####:  378:		BIO_printf(bio_err,"OPENSSL_malloc failure %ld\n",(long)EVP_ENCODE_LENGTH(bsize));
+    #####:  379:		goto end;
+        -:  380:		}
+        -:  381:
+    #####:  382:	in=BIO_new(BIO_s_file());
+    #####:  383:	out=BIO_new(BIO_s_file());
+    #####:  384:	if ((in == NULL) || (out == NULL))
+        -:  385:		{
+    #####:  386:		ERR_print_errors(bio_err);
+    #####:  387:		goto end;
+        -:  388:		}
+    #####:  389:	if (debug)
+        -:  390:		{
+    #####:  391:		BIO_set_callback(in,BIO_debug_callback);
+    #####:  392:		BIO_set_callback(out,BIO_debug_callback);
+    #####:  393:		BIO_set_callback_arg(in,(char *)bio_err);
+    #####:  394:		BIO_set_callback_arg(out,(char *)bio_err);
+        -:  395:		}
+        -:  396:
+    #####:  397:	if (inf == NULL)
+        -:  398:	        {
+        -:  399:#ifndef OPENSSL_NO_SETVBUF_IONBF
+    #####:  400:		if (bufsize != NULL)
+    #####:  401:			setvbuf(stdin, (char *)NULL, _IONBF, 0);
+        -:  402:#endif /* ndef OPENSSL_NO_SETVBUF_IONBF */
+    #####:  403:		BIO_set_fp(in,stdin,BIO_NOCLOSE);
+        -:  404:	        }
+        -:  405:	else
+        -:  406:		{
+    #####:  407:		if (BIO_read_filename(in,inf) <= 0)
+        -:  408:			{
+    #####:  409:			perror(inf);
+    #####:  410:			goto end;
+        -:  411:			}
+        -:  412:		}
+        -:  413:
+    #####:  414:	if(!str && passarg) {
+    #####:  415:		if(!app_passwd(bio_err, passarg, NULL, &pass, NULL)) {
+    #####:  416:			BIO_printf(bio_err, "Error getting password\n");
+    #####:  417:			goto end;
+        -:  418:		}
+    #####:  419:		str = pass;
+        -:  420:	}
+        -:  421:
+    #####:  422:	if ((str == NULL) && (cipher != NULL) && (hkey == NULL))
+        -:  423:		{
+        -:  424:		for (;;)
+        -:  425:			{
+        -:  426:			char buf[200];
+        -:  427:
+    #####:  428:			BIO_snprintf(buf,sizeof buf,"enter %s %s password:",
+        -:  429:				     OBJ_nid2ln(EVP_CIPHER_nid(cipher)),
+        -:  430:				     (enc)?"encryption":"decryption");
+    #####:  431:			strbuf[0]='\0';
+    #####:  432:			i=EVP_read_pw_string((char *)strbuf,SIZE,buf,enc);
+    #####:  433:			if (i == 0)
+        -:  434:				{
+    #####:  435:				if (strbuf[0] == '\0')
+        -:  436:					{
+        -:  437:					ret=1;
+    #####:  438:					goto end;
+        -:  439:					}
+        -:  440:				str=strbuf;
+    #####:  441:				break;
+        -:  442:				}
+    #####:  443:			if (i < 0)
+        -:  444:				{
+    #####:  445:				BIO_printf(bio_err,"bad password read\n");
+    #####:  446:				goto end;
+        -:  447:				}
+    #####:  448:			}
+        -:  449:		}
+        -:  450:
+        -:  451:
+    #####:  452:	if (outf == NULL)
+        -:  453:		{
+    #####:  454:		BIO_set_fp(out,stdout,BIO_NOCLOSE);
+        -:  455:#ifndef OPENSSL_NO_SETVBUF_IONBF
+    #####:  456:		if (bufsize != NULL)
+    #####:  457:			setvbuf(stdout, (char *)NULL, _IONBF, 0);
+        -:  458:#endif /* ndef OPENSSL_NO_SETVBUF_IONBF */
+        -:  459:#ifdef OPENSSL_SYS_VMS
+        -:  460:		{
+        -:  461:		BIO *tmpbio = BIO_new(BIO_f_linebuffer());
+        -:  462:		out = BIO_push(tmpbio, out);
+        -:  463:		}
+        -:  464:#endif
+        -:  465:		}
+        -:  466:	else
+        -:  467:		{
+    #####:  468:		if (BIO_write_filename(out,outf) <= 0)
+        -:  469:			{
+    #####:  470:			perror(outf);
+    #####:  471:			goto end;
+        -:  472:			}
+        -:  473:		}
+        -:  474:
+        -:  475:	rbio=in;
+        -:  476:	wbio=out;
+        -:  477:
+        -:  478:#ifdef ZLIB
+        -:  479:
+        -:  480:	if (do_zlib)
+        -:  481:		{
+        -:  482:		if ((bzl=BIO_new(BIO_f_zlib())) == NULL)
+        -:  483:			goto end;
+        -:  484:		if (enc)
+        -:  485:			wbio=BIO_push(bzl,wbio);
+        -:  486:		else
+        -:  487:			rbio=BIO_push(bzl,rbio);
+        -:  488:		}
+        -:  489:#endif
+        -:  490:
+    #####:  491:	if (base64)
+        -:  492:		{
+    #####:  493:		if ((b64=BIO_new(BIO_f_base64())) == NULL)
+        -:  494:			goto end;
+    #####:  495:		if (debug)
+        -:  496:			{
+    #####:  497:			BIO_set_callback(b64,BIO_debug_callback);
+    #####:  498:			BIO_set_callback_arg(b64,(char *)bio_err);
+        -:  499:			}
+    #####:  500:		if (olb64)
+    #####:  501:			BIO_set_flags(b64,BIO_FLAGS_BASE64_NO_NL);
+    #####:  502:		if (enc)
+    #####:  503:			wbio=BIO_push(b64,wbio);
+        -:  504:		else
+    #####:  505:			rbio=BIO_push(b64,rbio);
+        -:  506:		}
+        -:  507:
+    #####:  508:	if (cipher != NULL)
+        -:  509:		{
+        -:  510:		/* Note that str is NULL if a key was passed on the command
+        -:  511:		 * line, so we get no salt in that case. Is this a bug?
+        -:  512:		 */
+    #####:  513:		if (str != NULL)
+        -:  514:			{
+        -:  515:			/* Salt handling: if encrypting generate a salt and
+        -:  516:			 * write to output BIO. If decrypting read salt from
+        -:  517:			 * input BIO.
+        -:  518:			 */
+        -:  519:			unsigned char *sptr;
+    #####:  520:			if(nosalt) sptr = NULL;
+        -:  521:			else {
+    #####:  522:				if(enc) {
+    #####:  523:					if(hsalt) {
+    #####:  524:						if(!set_hex(hsalt,salt,sizeof salt)) {
+    #####:  525:							BIO_printf(bio_err,
+        -:  526:								"invalid hex salt value\n");
+    #####:  527:							goto end;
+        -:  528:						}
+    #####:  529:					} else if (RAND_pseudo_bytes(salt, sizeof salt) < 0)
+        -:  530:						goto end;
+        -:  531:					/* If -P option then don't bother writing */
+    #####:  532:					if((printkey != 2)
+    #####:  533:					   && (BIO_write(wbio,magic,
+        -:  534:							 sizeof magic-1) != sizeof magic-1
+    #####:  535:					       || BIO_write(wbio,
+        -:  536:							    (char *)salt,
+        -:  537:							    sizeof salt) != sizeof salt)) {
+    #####:  538:						BIO_printf(bio_err,"error writing output file\n");
+    #####:  539:						goto end;
+        -:  540:					}
+    #####:  541:				} else if(BIO_read(rbio,mbuf,sizeof mbuf) != sizeof mbuf
+    #####:  542:					  || BIO_read(rbio,
+        -:  543:						      (unsigned char *)salt,
+        -:  544:				    sizeof salt) != sizeof salt) {
+    #####:  545:					BIO_printf(bio_err,"error reading input file\n");
+    #####:  546:					goto end;
+    #####:  547:				} else if(memcmp(mbuf,magic,sizeof magic-1)) {
+    #####:  548:				    BIO_printf(bio_err,"bad magic number\n");
+    #####:  549:				    goto end;
+        -:  550:				}
+        -:  551:
+        -:  552:				sptr = salt;
+        -:  553:			}
+        -:  554:
+    #####:  555:			EVP_BytesToKey(cipher,dgst,sptr,
+        -:  556:				(unsigned char *)str,
+    #####:  557:				strlen(str),1,key,iv);
+        -:  558:			/* zero the complete buffer or the string
+        -:  559:			 * passed from the command line
+        -:  560:			 * bug picked up by
+        -:  561:			 * Larry J. Hughes Jr. <hughes@indiana.edu> */
+    #####:  562:			if (str == strbuf)
+    #####:  563:				OPENSSL_cleanse(str,SIZE);
+        -:  564:			else
+    #####:  565:				OPENSSL_cleanse(str,strlen(str));
+        -:  566:			}
+    #####:  567:		if ((hiv != NULL) && !set_hex(hiv,iv,sizeof iv))
+        -:  568:			{
+    #####:  569:			BIO_printf(bio_err,"invalid hex iv value\n");
+    #####:  570:			goto end;
+        -:  571:			}
+    #####:  572:		if ((hiv == NULL) && (str == NULL)
+    #####:  573:		    && EVP_CIPHER_iv_length(cipher) != 0)
+        -:  574:			{
+        -:  575:			/* No IV was explicitly set and no IV was generated
+        -:  576:			 * during EVP_BytesToKey. Hence the IV is undefined,
+        -:  577:			 * making correct decryption impossible. */
+    #####:  578:			BIO_printf(bio_err, "iv undefined\n");
+    #####:  579:			goto end;
+        -:  580:			}
+    #####:  581:		if ((hkey != NULL) && !set_hex(hkey,key,sizeof key))
+        -:  582:			{
+    #####:  583:			BIO_printf(bio_err,"invalid hex key value\n");
+    #####:  584:			goto end;
+        -:  585:			}
+        -:  586:
+    #####:  587:		if ((benc=BIO_new(BIO_f_cipher())) == NULL)
+        -:  588:			goto end;
+        -:  589:
+        -:  590:		/* Since we may be changing parameters work on the encryption
+        -:  591:		 * context rather than calling BIO_set_cipher().
+        -:  592:		 */
+        -:  593:
+    #####:  594:		BIO_get_cipher_ctx(benc, &ctx);
+        -:  595:
+    #####:  596:		if (non_fips_allow)
+    #####:  597:			EVP_CIPHER_CTX_set_flags(ctx,
+        -:  598:				EVP_CIPH_FLAG_NON_FIPS_ALLOW);
+        -:  599:
+    #####:  600:		if (!EVP_CipherInit_ex(ctx, cipher, NULL, NULL, NULL, enc))
+        -:  601:			{
+    #####:  602:			BIO_printf(bio_err, "Error setting cipher %s\n",
+        -:  603:				EVP_CIPHER_name(cipher));
+    #####:  604:			ERR_print_errors(bio_err);
+    #####:  605:			goto end;
+        -:  606:			}
+        -:  607:
+    #####:  608:		if (nopad)
+    #####:  609:			EVP_CIPHER_CTX_set_padding(ctx, 0);
+        -:  610:
+    #####:  611:		if (!EVP_CipherInit_ex(ctx, NULL, NULL, key, iv, enc))
+        -:  612:			{
+    #####:  613:			BIO_printf(bio_err, "Error setting cipher %s\n",
+        -:  614:				EVP_CIPHER_name(cipher));
+    #####:  615:			ERR_print_errors(bio_err);
+    #####:  616:			goto end;
+        -:  617:			}
+        -:  618:
+    #####:  619:		if (debug)
+        -:  620:			{
+    #####:  621:			BIO_set_callback(benc,BIO_debug_callback);
+    #####:  622:			BIO_set_callback_arg(benc,(char *)bio_err);
+        -:  623:			}
+        -:  624:
+    #####:  625:		if (printkey)
+        -:  626:			{
+    #####:  627:			if (!nosalt)
+        -:  628:				{
+        -:  629:				printf("salt=");
+    #####:  630:				for (i=0; i<(int)sizeof(salt); i++)
+    #####:  631:					printf("%02X",salt[i]);
+        -:  632:				printf("\n");
+        -:  633:				}
+    #####:  634:			if (cipher->key_len > 0)
+        -:  635:				{
+        -:  636:				printf("key=");
+    #####:  637:				for (i=0; i<cipher->key_len; i++)
+    #####:  638:					printf("%02X",key[i]);
+        -:  639:				printf("\n");
+        -:  640:				}
+    #####:  641:			if (cipher->iv_len > 0)
+        -:  642:				{
+        -:  643:				printf("iv =");
+    #####:  644:				for (i=0; i<cipher->iv_len; i++)
+    #####:  645:					printf("%02X",iv[i]);
+        -:  646:				printf("\n");
+        -:  647:				}
+    #####:  648:			if (printkey == 2)
+        -:  649:				{
+        -:  650:				ret=0;
+        -:  651:				goto end;
+        -:  652:				}
+        -:  653:			}
+        -:  654:		}
+        -:  655:
+        -:  656:	/* Only encrypt/decrypt as we write the file */
+    #####:  657:	if (benc != NULL)
+    #####:  658:		wbio=BIO_push(benc,wbio);
+        -:  659:
+        -:  660:	for (;;)
+        -:  661:		{
+    #####:  662:		inl=BIO_read(rbio,(char *)buff,bsize);
+    #####:  663:		if (inl <= 0) break;
+    #####:  664:		if (BIO_write(wbio,(char *)buff,inl) != inl)
+        -:  665:			{
+    #####:  666:			BIO_printf(bio_err,"error writing output file\n");
+    #####:  667:			goto end;
+        -:  668:			}
+        -:  669:		}
+    #####:  670:	if (!BIO_flush(wbio))
+        -:  671:		{
+    #####:  672:		BIO_printf(bio_err,"bad decrypt\n");
+    #####:  673:		goto end;
+        -:  674:		}
+        -:  675:
+        -:  676:	ret=0;
+    #####:  677:	if (verbose)
+        -:  678:		{
+    #####:  679:		BIO_printf(bio_err,"bytes read   :%8ld\n",BIO_number_read(in));
+    #####:  680:		BIO_printf(bio_err,"bytes written:%8ld\n",BIO_number_written(out));
+        -:  681:		}
+        -:  682:end:
+    #####:  683:	ERR_print_errors(bio_err);
+    #####:  684:	if (strbuf != NULL) OPENSSL_free(strbuf);
+    #####:  685:	if (buff != NULL) OPENSSL_free(buff);
+    #####:  686:	if (in != NULL) BIO_free(in);
+    #####:  687:	if (out != NULL) BIO_free_all(out);
+    #####:  688:	if (benc != NULL) BIO_free(benc);
+    #####:  689:	if (b64 != NULL) BIO_free(b64);
+        -:  690:#ifdef ZLIB
+        -:  691:	if (bzl != NULL) BIO_free(bzl);
+        -:  692:#endif
+    #####:  693:	if(pass) OPENSSL_free(pass);
+        -:  694:	apps_shutdown();
+    #####:  695:	OPENSSL_EXIT(ret);
+        -:  696:	}
+        -:  697:
+    #####:  698:int set_hex(char *in, unsigned char *out, int size)
+        -:  699:	{
+        -:  700:	int i,n;
+        -:  701:	unsigned char j;
+        -:  702:
+    #####:  703:	n=strlen(in);
+    #####:  704:	if (n > (size*2))
+        -:  705:		{
+    #####:  706:		BIO_printf(bio_err,"hex string is too long\n");
+    #####:  707:		return(0);
+        -:  708:		}
+    #####:  709:	memset(out,0,size);
+    #####:  710:	for (i=0; i<n; i++)
+        -:  711:		{
+    #####:  712:		j=(unsigned char)*in;
+    #####:  713:		*(in++)='\0';
+    #####:  714:		if (j == 0) break;
+    #####:  715:		if ((j >= '0') && (j <= '9'))
+        -:  716:			j-='0';
+    #####:  717:		else if ((j >= 'A') && (j <= 'F'))
+    #####:  718:			j=j-'A'+10;
+    #####:  719:		else if ((j >= 'a') && (j <= 'f'))
+    #####:  720:			j=j-'a'+10;
+        -:  721:		else
+        -:  722:			{
+    #####:  723:			BIO_printf(bio_err,"non-hex digit\n");
+    #####:  724:			return(0);
+        -:  725:			}
+    #####:  726:		if (i&1)
+    #####:  727:			out[i/2]|=j;
+        -:  728:		else
+    #####:  729:			out[i/2]=(j<<4);
+        -:  730:		}
+        -:  731:	return(1);
+        -:  732:	}

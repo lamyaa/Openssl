@@ -1,0 +1,446 @@
+        -:    0:Source:ccm128.c
+        -:    0:Graph:ccm128.gcno
+        -:    0:Data:ccm128.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* ====================================================================
+        -:    2: * Copyright (c) 2011 The OpenSSL Project.  All rights reserved.
+        -:    3: *
+        -:    4: * Redistribution and use in source and binary forms, with or without
+        -:    5: * modification, are permitted provided that the following conditions
+        -:    6: * are met:
+        -:    7: *
+        -:    8: * 1. Redistributions of source code must retain the above copyright
+        -:    9: *    notice, this list of conditions and the following disclaimer. 
+        -:   10: *
+        -:   11: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   12: *    notice, this list of conditions and the following disclaimer in
+        -:   13: *    the documentation and/or other materials provided with the
+        -:   14: *    distribution.
+        -:   15: *
+        -:   16: * 3. All advertising materials mentioning features or use of this
+        -:   17: *    software must display the following acknowledgment:
+        -:   18: *    "This product includes software developed by the OpenSSL Project
+        -:   19: *    for use in the OpenSSL Toolkit. (http://www.openssl.org/)"
+        -:   20: *
+        -:   21: * 4. The names "OpenSSL Toolkit" and "OpenSSL Project" must not be used to
+        -:   22: *    endorse or promote products derived from this software without
+        -:   23: *    prior written permission. For written permission, please contact
+        -:   24: *    openssl-core@openssl.org.
+        -:   25: *
+        -:   26: * 5. Products derived from this software may not be called "OpenSSL"
+        -:   27: *    nor may "OpenSSL" appear in their names without prior written
+        -:   28: *    permission of the OpenSSL Project.
+        -:   29: *
+        -:   30: * 6. Redistributions of any form whatsoever must retain the following
+        -:   31: *    acknowledgment:
+        -:   32: *    "This product includes software developed by the OpenSSL Project
+        -:   33: *    for use in the OpenSSL Toolkit (http://www.openssl.org/)"
+        -:   34: *
+        -:   35: * THIS SOFTWARE IS PROVIDED BY THE OpenSSL PROJECT ``AS IS'' AND ANY
+        -:   36: * EXPRESSED OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   37: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+        -:   38: * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE OpenSSL PROJECT OR
+        -:   39: * ITS CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+        -:   40: * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+        -:   41: * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+        -:   42: * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   43: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+        -:   44: * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+        -:   45: * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+        -:   46: * OF THE POSSIBILITY OF SUCH DAMAGE.
+        -:   47: * ====================================================================
+        -:   48: */
+        -:   49:
+        -:   50:#include <openssl/crypto.h>
+        -:   51:#include "modes_lcl.h"
+        -:   52:#include <string.h>
+        -:   53:
+        -:   54:#ifndef MODES_DEBUG
+        -:   55:# ifndef NDEBUG
+        -:   56:#  define NDEBUG
+        -:   57:# endif
+        -:   58:#endif
+        -:   59:#include <assert.h>
+        -:   60:
+        -:   61:/* First you setup M and L parameters and pass the key schedule.
+        -:   62: * This is called once per session setup... */
+    #####:   63:void CRYPTO_ccm128_init(CCM128_CONTEXT *ctx,
+        -:   64:	unsigned int M,unsigned int L,void *key,block128_f block)
+        -:   65:{
+    #####:   66:	memset(ctx->nonce.c,0,sizeof(ctx->nonce.c));
+    #####:   67:	ctx->nonce.c[0] = ((u8)(L-1)&7) | (u8)(((M-2)/2)&7)<<3;
+    #####:   68:	ctx->blocks = 0;
+    #####:   69:	ctx->block = block;
+    #####:   70:	ctx->key = key;
+    #####:   71:}
+        -:   72:
+        -:   73:/* !!! Following interfaces are to be called *once* per packet !!! */
+        -:   74:
+        -:   75:/* Then you setup per-message nonce and pass the length of the message */
+    #####:   76:int CRYPTO_ccm128_setiv(CCM128_CONTEXT *ctx,
+        -:   77:	const unsigned char *nonce,size_t nlen,size_t mlen)
+        -:   78:{
+    #####:   79:	unsigned int L = ctx->nonce.c[0]&7;	/* the L parameter */
+        -:   80:
+    #####:   81:	if (nlen<(14-L)) return -1;		/* nonce is too short */
+        -:   82:
+    #####:   83:	if (sizeof(mlen)==8 && L>=3) {
+    #####:   84:		ctx->nonce.c[8]  = (u8)(mlen>>(56%(sizeof(mlen)*8)));
+    #####:   85:		ctx->nonce.c[9]  = (u8)(mlen>>(48%(sizeof(mlen)*8)));
+    #####:   86:		ctx->nonce.c[10] = (u8)(mlen>>(40%(sizeof(mlen)*8)));
+    #####:   87:		ctx->nonce.c[11] = (u8)(mlen>>(32%(sizeof(mlen)*8)));
+        -:   88:	}
+        -:   89:	else
+    #####:   90:		*(u32*)(&ctx->nonce.c[8]) = 0;
+        -:   91:
+    #####:   92:	ctx->nonce.c[12] = (u8)(mlen>>24);
+    #####:   93:	ctx->nonce.c[13] = (u8)(mlen>>16);
+    #####:   94:	ctx->nonce.c[14] = (u8)(mlen>>8);
+    #####:   95:	ctx->nonce.c[15] = (u8)mlen;
+        -:   96:
+    #####:   97:	ctx->nonce.c[0] &= ~0x40;	/* clear Adata flag */
+    #####:   98:	memcpy(&ctx->nonce.c[1],nonce,14-L);
+        -:   99:
+    #####:  100:	return 0;
+        -:  101:}
+        -:  102:
+        -:  103:/* Then you pass additional authentication data, this is optional */
+    #####:  104:void CRYPTO_ccm128_aad(CCM128_CONTEXT *ctx,
+        -:  105:	const unsigned char *aad,size_t alen)
+        -:  106:{	unsigned int i;
+    #####:  107:	block128_f block = ctx->block;
+        -:  108:
+    #####:  109:	if (alen==0) return;
+        -:  110:
+    #####:  111:	ctx->nonce.c[0] |= 0x40;	/* set Adata flag */
+    #####:  112:	(*block)(ctx->nonce.c,ctx->cmac.c,ctx->key),
+    #####:  113:	ctx->blocks++;
+        -:  114:
+    #####:  115:	if (alen<(0x10000-0x100)) {
+    #####:  116:		ctx->cmac.c[0] ^= (u8)(alen>>8);
+    #####:  117:		ctx->cmac.c[1] ^= (u8)alen;
+        -:  118:		i=2;
+        -:  119:	}
+    #####:  120:	else if (sizeof(alen)==8 && alen>=(size_t)1<<(32%(sizeof(alen)*8))) {
+    #####:  121:		ctx->cmac.c[0] ^= 0xFF;
+    #####:  122:		ctx->cmac.c[1] ^= 0xFF;
+    #####:  123:		ctx->cmac.c[2] ^= (u8)(alen>>(56%(sizeof(alen)*8)));
+    #####:  124:		ctx->cmac.c[3] ^= (u8)(alen>>(48%(sizeof(alen)*8)));
+    #####:  125:		ctx->cmac.c[4] ^= (u8)(alen>>(40%(sizeof(alen)*8)));
+    #####:  126:		ctx->cmac.c[5] ^= (u8)(alen>>(32%(sizeof(alen)*8)));
+    #####:  127:		ctx->cmac.c[6] ^= (u8)(alen>>24);
+    #####:  128:		ctx->cmac.c[7] ^= (u8)(alen>>16);
+    #####:  129:		ctx->cmac.c[8] ^= (u8)(alen>>8);
+    #####:  130:		ctx->cmac.c[9] ^= (u8)alen;
+        -:  131:		i=10;
+        -:  132:	}
+        -:  133:	else {
+    #####:  134:		ctx->cmac.c[0] ^= 0xFF;
+    #####:  135:		ctx->cmac.c[1] ^= 0xFE;
+    #####:  136:		ctx->cmac.c[2] ^= (u8)(alen>>24);
+    #####:  137:		ctx->cmac.c[3] ^= (u8)(alen>>16);
+    #####:  138:		ctx->cmac.c[4] ^= (u8)(alen>>8);
+    #####:  139:		ctx->cmac.c[5] ^= (u8)alen;
+        -:  140:		i=6;
+        -:  141:	}
+        -:  142:
+        -:  143:	do {
+    #####:  144:		for(;i<16 && alen;++i,++aad,--alen)
+    #####:  145:			ctx->cmac.c[i] ^= *aad;
+    #####:  146:		(*block)(ctx->cmac.c,ctx->cmac.c,ctx->key),
+    #####:  147:		ctx->blocks++;
+        -:  148:		i=0;
+    #####:  149:	} while (alen);
+        -:  150:}
+        -:  151:
+        -:  152:/* Finally you encrypt or decrypt the message */
+        -:  153:
+        -:  154:/* counter part of nonce may not be larger than L*8 bits,
+        -:  155: * L is not larger than 8, therefore 64-bit counter... */
+        -:  156:static void ctr64_inc(unsigned char *counter) {
+        -:  157:	unsigned int n=8;
+        -:  158:	u8  c;
+        -:  159:
+    #####:  160:	counter += 8;
+        -:  161:	do {
+    #####:  162:		--n;
+    #####:  163:		c = counter[n];
+    #####:  164:		++c;
+    #####:  165:		counter[n] = c;
+    #####:  166:		if (c) return;
+    #####:  167:	} while (n);
+        -:  168:}
+        -:  169:
+    #####:  170:int CRYPTO_ccm128_encrypt(CCM128_CONTEXT *ctx,
+        -:  171:	const unsigned char *inp, unsigned char *out,
+        -:  172:	size_t len)
+        -:  173:{
+        -:  174:	size_t		n;
+        -:  175:	unsigned int	i,L;
+    #####:  176:	unsigned char	flags0	= ctx->nonce.c[0];
+    #####:  177:	block128_f	block	= ctx->block;
+    #####:  178:	void *		key	= ctx->key;
+        -:  179:	union { u64 u[2]; u8 c[16]; } scratch;
+        -:  180:
+    #####:  181:	if (!(flags0&0x40))
+    #####:  182:		(*block)(ctx->nonce.c,ctx->cmac.c,key),
+    #####:  183:		ctx->blocks++;
+        -:  184:
+    #####:  185:	ctx->nonce.c[0] = L = flags0&7;
+    #####:  186:	for (n=0,i=15-L;i<15;++i) {
+    #####:  187:		n |= ctx->nonce.c[i];
+    #####:  188:		ctx->nonce.c[i]=0;
+    #####:  189:		n <<= 8;
+        -:  190:	}
+    #####:  191:	n |= ctx->nonce.c[15];	/* reconstructed length */
+    #####:  192:	ctx->nonce.c[15]=1;
+        -:  193:
+    #####:  194:	if (n!=len) return -1;	/* length mismatch */
+        -:  195:
+    #####:  196:	ctx->blocks += ((len+15)>>3)|1;
+    #####:  197:	if (ctx->blocks > (U64(1)<<61))	return -2; /* too much data */
+        -:  198:
+    #####:  199:	while (len>=16) {
+        -:  200:#if defined(STRICT_ALIGNMENT)
+        -:  201:		union { u64 u[2]; u8 c[16]; } temp;
+        -:  202:
+        -:  203:		memcpy (temp.c,inp,16);
+        -:  204:		ctx->cmac.u[0] ^= temp.u[0];
+        -:  205:		ctx->cmac.u[1] ^= temp.u[1];
+        -:  206:#else
+    #####:  207:		ctx->cmac.u[0] ^= ((u64*)inp)[0];
+    #####:  208:		ctx->cmac.u[1] ^= ((u64*)inp)[1];
+        -:  209:#endif
+    #####:  210:		(*block)(ctx->cmac.c,ctx->cmac.c,key);
+    #####:  211:		(*block)(ctx->nonce.c,scratch.c,key);
+        -:  212:		ctr64_inc(ctx->nonce.c);
+        -:  213:#if defined(STRICT_ALIGNMENT)
+        -:  214:		temp.u[0] ^= scratch.u[0];
+        -:  215:		temp.u[1] ^= scratch.u[1];
+        -:  216:		memcpy(out,temp.c,16);
+        -:  217:#else
+    #####:  218:		((u64*)out)[0] = scratch.u[0]^((u64*)inp)[0];
+    #####:  219:		((u64*)out)[1] = scratch.u[1]^((u64*)inp)[1];
+        -:  220:#endif
+    #####:  221:		inp += 16;
+    #####:  222:		out += 16;
+    #####:  223:		len -= 16;
+        -:  224:	}
+        -:  225:
+    #####:  226:	if (len) {
+    #####:  227:		for (i=0; i<len; ++i) ctx->cmac.c[i] ^= inp[i];
+    #####:  228:		(*block)(ctx->cmac.c,ctx->cmac.c,key);
+    #####:  229:		(*block)(ctx->nonce.c,scratch.c,key);
+    #####:  230:		for (i=0; i<len; ++i) out[i] = scratch.c[i]^inp[i];
+        -:  231:	}
+        -:  232:
+    #####:  233:	for (i=15-L;i<16;++i)
+    #####:  234:		ctx->nonce.c[i]=0;
+        -:  235:
+    #####:  236:	(*block)(ctx->nonce.c,scratch.c,key);
+    #####:  237:	ctx->cmac.u[0] ^= scratch.u[0];
+    #####:  238:	ctx->cmac.u[1] ^= scratch.u[1];
+        -:  239:
+    #####:  240:	ctx->nonce.c[0] = flags0;
+        -:  241:
+    #####:  242:	return 0;
+        -:  243:}
+        -:  244:
+    #####:  245:int CRYPTO_ccm128_decrypt(CCM128_CONTEXT *ctx,
+        -:  246:	const unsigned char *inp, unsigned char *out,
+        -:  247:	size_t len)
+        -:  248:{
+        -:  249:	size_t		n;
+        -:  250:	unsigned int	i,L;
+    #####:  251:	unsigned char	flags0	= ctx->nonce.c[0];
+    #####:  252:	block128_f	block	= ctx->block;
+    #####:  253:	void *		key	= ctx->key;
+        -:  254:	union { u64 u[2]; u8 c[16]; } scratch;
+        -:  255:
+    #####:  256:	if (!(flags0&0x40))
+    #####:  257:		(*block)(ctx->nonce.c,ctx->cmac.c,key);
+        -:  258:
+    #####:  259:	ctx->nonce.c[0] = L = flags0&7;
+    #####:  260:	for (n=0,i=15-L;i<15;++i) {
+    #####:  261:		n |= ctx->nonce.c[i];
+    #####:  262:		ctx->nonce.c[i]=0;
+    #####:  263:		n <<= 8;
+        -:  264:	}
+    #####:  265:	n |= ctx->nonce.c[15];	/* reconstructed length */
+    #####:  266:	ctx->nonce.c[15]=1;
+        -:  267:
+    #####:  268:	if (n!=len) return -1;
+        -:  269:
+    #####:  270:	while (len>=16) {
+        -:  271:#if defined(STRICT_ALIGNMENT)
+        -:  272:		union { u64 u[2]; u8 c[16]; } temp;
+        -:  273:#endif
+    #####:  274:		(*block)(ctx->nonce.c,scratch.c,key);
+        -:  275:		ctr64_inc(ctx->nonce.c);
+        -:  276:#if defined(STRICT_ALIGNMENT)
+        -:  277:		memcpy (temp.c,inp,16);
+        -:  278:		ctx->cmac.u[0] ^= (scratch.u[0] ^= temp.u[0]);
+        -:  279:		ctx->cmac.u[1] ^= (scratch.u[1] ^= temp.u[1]);
+        -:  280:		memcpy (out,scratch.c,16);
+        -:  281:#else
+    #####:  282:		ctx->cmac.u[0] ^= (((u64*)out)[0] = scratch.u[0]^((u64*)inp)[0]);
+    #####:  283:		ctx->cmac.u[1] ^= (((u64*)out)[1] = scratch.u[1]^((u64*)inp)[1]);
+        -:  284:#endif
+    #####:  285:		(*block)(ctx->cmac.c,ctx->cmac.c,key);
+        -:  286:
+    #####:  287:		inp += 16;
+    #####:  288:		out += 16;
+    #####:  289:		len -= 16;
+        -:  290:	}
+        -:  291:
+    #####:  292:	if (len) {
+    #####:  293:		(*block)(ctx->nonce.c,scratch.c,key);
+    #####:  294:		for (i=0; i<len; ++i)
+    #####:  295:			ctx->cmac.c[i] ^= (out[i] = scratch.c[i]^inp[i]);
+    #####:  296:		(*block)(ctx->cmac.c,ctx->cmac.c,key);
+        -:  297:	}
+        -:  298:
+    #####:  299:	for (i=15-L;i<16;++i)
+    #####:  300:		ctx->nonce.c[i]=0;
+        -:  301:
+    #####:  302:	(*block)(ctx->nonce.c,scratch.c,key);
+    #####:  303:	ctx->cmac.u[0] ^= scratch.u[0];
+    #####:  304:	ctx->cmac.u[1] ^= scratch.u[1];
+        -:  305:
+    #####:  306:	ctx->nonce.c[0] = flags0;
+        -:  307:
+    #####:  308:	return 0;
+        -:  309:}
+        -:  310:
+    #####:  311:static void ctr64_add (unsigned char *counter,size_t inc)
+        -:  312:{	size_t n=8, val=0;
+        -:  313:
+    #####:  314:	counter += 8;
+        -:  315:	do {
+    #####:  316:		--n;
+    #####:  317:		val += counter[n] + (inc&0xff);
+    #####:  318:		counter[n] = (unsigned char)val;
+    #####:  319:		val >>= 8;	/* carry bit */
+    #####:  320:		inc >>= 8;
+    #####:  321:	} while(n && (inc || val));
+    #####:  322:}
+        -:  323:
+    #####:  324:int CRYPTO_ccm128_encrypt_ccm64(CCM128_CONTEXT *ctx,
+        -:  325:	const unsigned char *inp, unsigned char *out,
+        -:  326:	size_t len,ccm128_f stream)
+        -:  327:{
+        -:  328:	size_t		n;
+        -:  329:	unsigned int	i,L;
+    #####:  330:	unsigned char	flags0	= ctx->nonce.c[0];
+    #####:  331:	block128_f	block	= ctx->block;
+    #####:  332:	void *		key	= ctx->key;
+        -:  333:	union { u64 u[2]; u8 c[16]; } scratch;
+        -:  334:
+    #####:  335:	if (!(flags0&0x40))
+    #####:  336:		(*block)(ctx->nonce.c,ctx->cmac.c,key),
+    #####:  337:		ctx->blocks++;
+        -:  338:
+    #####:  339:	ctx->nonce.c[0] = L = flags0&7;
+    #####:  340:	for (n=0,i=15-L;i<15;++i) {
+    #####:  341:		n |= ctx->nonce.c[i];
+    #####:  342:		ctx->nonce.c[i]=0;
+    #####:  343:		n <<= 8;
+        -:  344:	}
+    #####:  345:	n |= ctx->nonce.c[15];	/* reconstructed length */
+    #####:  346:	ctx->nonce.c[15]=1;
+        -:  347:
+    #####:  348:	if (n!=len) return -1;	/* length mismatch */
+        -:  349:
+    #####:  350:	ctx->blocks += ((len+15)>>3)|1;
+    #####:  351:	if (ctx->blocks > (U64(1)<<61))	return -2; /* too much data */
+        -:  352:
+    #####:  353:	if ((n=len/16)) {
+    #####:  354:		(*stream)(inp,out,n,key,ctx->nonce.c,ctx->cmac.c);
+    #####:  355:		n   *= 16;
+    #####:  356:		inp += n;
+    #####:  357:		out += n;
+    #####:  358:		len -= n;
+    #####:  359:		if (len) ctr64_add(ctx->nonce.c,n/16);
+        -:  360:	}
+        -:  361:
+    #####:  362:	if (len) {
+    #####:  363:		for (i=0; i<len; ++i) ctx->cmac.c[i] ^= inp[i];
+    #####:  364:		(*block)(ctx->cmac.c,ctx->cmac.c,key);
+    #####:  365:		(*block)(ctx->nonce.c,scratch.c,key);
+    #####:  366:		for (i=0; i<len; ++i) out[i] = scratch.c[i]^inp[i];
+        -:  367:	}
+        -:  368:
+    #####:  369:	for (i=15-L;i<16;++i)
+    #####:  370:		ctx->nonce.c[i]=0;
+        -:  371:
+    #####:  372:	(*block)(ctx->nonce.c,scratch.c,key);
+    #####:  373:	ctx->cmac.u[0] ^= scratch.u[0];
+    #####:  374:	ctx->cmac.u[1] ^= scratch.u[1];
+        -:  375:
+    #####:  376:	ctx->nonce.c[0] = flags0;
+        -:  377:
+    #####:  378:	return 0;
+        -:  379:}
+        -:  380:
+    #####:  381:int CRYPTO_ccm128_decrypt_ccm64(CCM128_CONTEXT *ctx,
+        -:  382:	const unsigned char *inp, unsigned char *out,
+        -:  383:	size_t len,ccm128_f stream)
+        -:  384:{
+        -:  385:	size_t		n;
+        -:  386:	unsigned int	i,L;
+    #####:  387:	unsigned char	flags0	= ctx->nonce.c[0];
+    #####:  388:	block128_f	block	= ctx->block;
+    #####:  389:	void *		key	= ctx->key;
+        -:  390:	union { u64 u[2]; u8 c[16]; } scratch;
+        -:  391:
+    #####:  392:	if (!(flags0&0x40))
+    #####:  393:		(*block)(ctx->nonce.c,ctx->cmac.c,key);
+        -:  394:
+    #####:  395:	ctx->nonce.c[0] = L = flags0&7;
+    #####:  396:	for (n=0,i=15-L;i<15;++i) {
+    #####:  397:		n |= ctx->nonce.c[i];
+    #####:  398:		ctx->nonce.c[i]=0;
+    #####:  399:		n <<= 8;
+        -:  400:	}
+    #####:  401:	n |= ctx->nonce.c[15];	/* reconstructed length */
+    #####:  402:	ctx->nonce.c[15]=1;
+        -:  403:
+    #####:  404:	if (n!=len) return -1;
+        -:  405:
+    #####:  406:	if ((n=len/16)) {
+    #####:  407:		(*stream)(inp,out,n,key,ctx->nonce.c,ctx->cmac.c);
+    #####:  408:		n   *= 16;
+    #####:  409:		inp += n;
+    #####:  410:		out += n;
+    #####:  411:		len -= n;
+    #####:  412:		if (len) ctr64_add(ctx->nonce.c,n/16);
+        -:  413:	}
+        -:  414:
+    #####:  415:	if (len) {
+    #####:  416:		(*block)(ctx->nonce.c,scratch.c,key);
+    #####:  417:		for (i=0; i<len; ++i)
+    #####:  418:			ctx->cmac.c[i] ^= (out[i] = scratch.c[i]^inp[i]);
+    #####:  419:		(*block)(ctx->cmac.c,ctx->cmac.c,key);
+        -:  420:	}
+        -:  421:
+    #####:  422:	for (i=15-L;i<16;++i)
+    #####:  423:		ctx->nonce.c[i]=0;
+        -:  424:
+    #####:  425:	(*block)(ctx->nonce.c,scratch.c,key);
+    #####:  426:	ctx->cmac.u[0] ^= scratch.u[0];
+    #####:  427:	ctx->cmac.u[1] ^= scratch.u[1];
+        -:  428:
+    #####:  429:	ctx->nonce.c[0] = flags0;
+        -:  430:
+    #####:  431:	return 0;
+        -:  432:}
+        -:  433:
+    #####:  434:size_t CRYPTO_ccm128_tag(CCM128_CONTEXT *ctx,unsigned char *tag,size_t len)
+    #####:  435:{	unsigned int M = (ctx->nonce.c[0]>>3)&7;	/* the M parameter */
+        -:  436:
+    #####:  437:	M *= 2; M += 2;
+    #####:  438:	if (len<M)	return 0;
+    #####:  439:	memcpy(tag,ctx->cmac.c,M);
+    #####:  440:	return M;
+        -:  441:}

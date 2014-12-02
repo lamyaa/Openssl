@@ -1,0 +1,197 @@
+        -:    0:Source:dh_gen.c
+        -:    0:Graph:dh_gen.gcno
+        -:    0:Data:dh_gen.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* crypto/dh/dh_gen.c */
+        -:    2:/* Copyright (C) 1995-1998 Eric Young (eay@cryptsoft.com)
+        -:    3: * All rights reserved.
+        -:    4: *
+        -:    5: * This package is an SSL implementation written
+        -:    6: * by Eric Young (eay@cryptsoft.com).
+        -:    7: * The implementation was written so as to conform with Netscapes SSL.
+        -:    8: * 
+        -:    9: * This library is free for commercial and non-commercial use as long as
+        -:   10: * the following conditions are aheared to.  The following conditions
+        -:   11: * apply to all code found in this distribution, be it the RC4, RSA,
+        -:   12: * lhash, DES, etc., code; not just the SSL code.  The SSL documentation
+        -:   13: * included with this distribution is covered by the same copyright terms
+        -:   14: * except that the holder is Tim Hudson (tjh@cryptsoft.com).
+        -:   15: * 
+        -:   16: * Copyright remains Eric Young's, and as such any Copyright notices in
+        -:   17: * the code are not to be removed.
+        -:   18: * If this package is used in a product, Eric Young should be given attribution
+        -:   19: * as the author of the parts of the library used.
+        -:   20: * This can be in the form of a textual message at program startup or
+        -:   21: * in documentation (online or textual) provided with the package.
+        -:   22: * 
+        -:   23: * Redistribution and use in source and binary forms, with or without
+        -:   24: * modification, are permitted provided that the following conditions
+        -:   25: * are met:
+        -:   26: * 1. Redistributions of source code must retain the copyright
+        -:   27: *    notice, this list of conditions and the following disclaimer.
+        -:   28: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   29: *    notice, this list of conditions and the following disclaimer in the
+        -:   30: *    documentation and/or other materials provided with the distribution.
+        -:   31: * 3. All advertising materials mentioning features or use of this software
+        -:   32: *    must display the following acknowledgement:
+        -:   33: *    "This product includes cryptographic software written by
+        -:   34: *     Eric Young (eay@cryptsoft.com)"
+        -:   35: *    The word 'cryptographic' can be left out if the rouines from the library
+        -:   36: *    being used are not cryptographic related :-).
+        -:   37: * 4. If you include any Windows specific code (or a derivative thereof) from 
+        -:   38: *    the apps directory (application code) you must include an acknowledgement:
+        -:   39: *    "This product includes software written by Tim Hudson (tjh@cryptsoft.com)"
+        -:   40: * 
+        -:   41: * THIS SOFTWARE IS PROVIDED BY ERIC YOUNG ``AS IS'' AND
+        -:   42: * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   43: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+        -:   44: * ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+        -:   45: * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+        -:   46: * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+        -:   47: * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   48: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+        -:   49: * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+        -:   50: * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+        -:   51: * SUCH DAMAGE.
+        -:   52: * 
+        -:   53: * The licence and distribution terms for any publically available version or
+        -:   54: * derivative of this code cannot be changed.  i.e. this code cannot simply be
+        -:   55: * copied and put under another distribution licence
+        -:   56: * [including the GNU Public Licence.]
+        -:   57: */
+        -:   58:
+        -:   59:/* NB: These functions have been upgraded - the previous prototypes are in
+        -:   60: * dh_depr.c as wrappers to these ones.
+        -:   61: *  - Geoff
+        -:   62: */
+        -:   63:
+        -:   64:#include <stdio.h>
+        -:   65:#include "cryptlib.h"
+        -:   66:#include <openssl/bn.h>
+        -:   67:#include <openssl/dh.h>
+        -:   68:
+        -:   69:#ifdef OPENSSL_FIPS
+        -:   70:#include <openssl/fips.h>
+        -:   71:#endif
+        -:   72:
+        -:   73:static int dh_builtin_genparams(DH *ret, int prime_len, int generator, BN_GENCB *cb);
+        -:   74:
+    #####:   75:int DH_generate_parameters_ex(DH *ret, int prime_len, int generator, BN_GENCB *cb)
+        -:   76:	{
+        -:   77:#ifdef OPENSSL_FIPS
+        -:   78:	if (FIPS_mode() && !(ret->meth->flags & DH_FLAG_FIPS_METHOD)
+        -:   79:			&& !(ret->flags & DH_FLAG_NON_FIPS_ALLOW))
+        -:   80:		{
+        -:   81:		DHerr(DH_F_DH_GENERATE_PARAMETERS_EX, DH_R_NON_FIPS_METHOD);
+        -:   82:		return 0;
+        -:   83:		}
+        -:   84:#endif
+    #####:   85:	if(ret->meth->generate_params)
+    #####:   86:		return ret->meth->generate_params(ret, prime_len, generator, cb);
+        -:   87:#ifdef OPENSSL_FIPS
+        -:   88:	if (FIPS_mode())
+        -:   89:		return FIPS_dh_generate_parameters_ex(ret, prime_len,
+        -:   90:							generator, cb);
+        -:   91:#endif
+    #####:   92:	return dh_builtin_genparams(ret, prime_len, generator, cb);
+        -:   93:	}
+        -:   94:
+        -:   95:/* We generate DH parameters as follows
+        -:   96: * find a prime q which is prime_len/2 bits long.
+        -:   97: * p=(2*q)+1 or (p-1)/2 = q
+        -:   98: * For this case, g is a generator if
+        -:   99: * g^((p-1)/q) mod p != 1 for values of q which are the factors of p-1.
+        -:  100: * Since the factors of p-1 are q and 2, we just need to check
+        -:  101: * g^2 mod p != 1 and g^q mod p != 1.
+        -:  102: *
+        -:  103: * Having said all that,
+        -:  104: * there is another special case method for the generators 2, 3 and 5.
+        -:  105: * for 2, p mod 24 == 11
+        -:  106: * for 3, p mod 12 == 5  <<<<< does not work for safe primes.
+        -:  107: * for 5, p mod 10 == 3 or 7
+        -:  108: *
+        -:  109: * Thanks to Phil Karn <karn@qualcomm.com> for the pointers about the
+        -:  110: * special generators and for answering some of my questions.
+        -:  111: *
+        -:  112: * I've implemented the second simple method :-).
+        -:  113: * Since DH should be using a safe prime (both p and q are prime),
+        -:  114: * this generator function can take a very very long time to run.
+        -:  115: */
+        -:  116:/* Actually there is no reason to insist that 'generator' be a generator.
+        -:  117: * It's just as OK (and in some sense better) to use a generator of the
+        -:  118: * order-q subgroup.
+        -:  119: */
+    #####:  120:static int dh_builtin_genparams(DH *ret, int prime_len, int generator, BN_GENCB *cb)
+        -:  121:	{
+        -:  122:	BIGNUM *t1,*t2;
+        -:  123:	int g,ok= -1;
+        -:  124:	BN_CTX *ctx=NULL;
+        -:  125:
+    #####:  126:	ctx=BN_CTX_new();
+    #####:  127:	if (ctx == NULL) goto err;
+    #####:  128:	BN_CTX_start(ctx);
+    #####:  129:	t1 = BN_CTX_get(ctx);
+    #####:  130:	t2 = BN_CTX_get(ctx);
+    #####:  131:	if (t1 == NULL || t2 == NULL) goto err;
+        -:  132:
+        -:  133:	/* Make sure 'ret' has the necessary elements */
+    #####:  134:	if(!ret->p && ((ret->p = BN_new()) == NULL)) goto err;
+    #####:  135:	if(!ret->g && ((ret->g = BN_new()) == NULL)) goto err;
+        -:  136:	
+    #####:  137:	if (generator <= 1)
+        -:  138:		{
+    #####:  139:		DHerr(DH_F_DH_BUILTIN_GENPARAMS, DH_R_BAD_GENERATOR);
+        -:  140:		goto err;
+        -:  141:		}
+    #####:  142:	if (generator == DH_GENERATOR_2)
+        -:  143:		{
+    #####:  144:		if (!BN_set_word(t1,24)) goto err;
+    #####:  145:		if (!BN_set_word(t2,11)) goto err;
+        -:  146:		g=2;
+        -:  147:		}
+        -:  148:#if 0 /* does not work for safe primes */
+        -:  149:	else if (generator == DH_GENERATOR_3)
+        -:  150:		{
+        -:  151:		if (!BN_set_word(t1,12)) goto err;
+        -:  152:		if (!BN_set_word(t2,5)) goto err;
+        -:  153:		g=3;
+        -:  154:		}
+        -:  155:#endif
+    #####:  156:	else if (generator == DH_GENERATOR_5)
+        -:  157:		{
+    #####:  158:		if (!BN_set_word(t1,10)) goto err;
+    #####:  159:		if (!BN_set_word(t2,3)) goto err;
+        -:  160:		/* BN_set_word(t3,7); just have to miss
+        -:  161:		 * out on these ones :-( */
+        -:  162:		g=5;
+        -:  163:		}
+        -:  164:	else
+        -:  165:		{
+        -:  166:		/* in the general case, don't worry if 'generator' is a
+        -:  167:		 * generator or not: since we are using safe primes,
+        -:  168:		 * it will generate either an order-q or an order-2q group,
+        -:  169:		 * which both is OK */
+    #####:  170:		if (!BN_set_word(t1,2)) goto err;
+    #####:  171:		if (!BN_set_word(t2,1)) goto err;
+        -:  172:		g=generator;
+        -:  173:		}
+        -:  174:	
+    #####:  175:	if(!BN_generate_prime_ex(ret->p,prime_len,1,t1,t2,cb)) goto err;
+    #####:  176:	if(!BN_GENCB_call(cb, 3, 0)) goto err;
+    #####:  177:	if (!BN_set_word(ret->g,g)) goto err;
+        -:  178:	ok=1;
+        -:  179:err:
+    #####:  180:	if (ok == -1)
+        -:  181:		{
+    #####:  182:		DHerr(DH_F_DH_BUILTIN_GENPARAMS,ERR_R_BN_LIB);
+        -:  183:		ok=0;
+        -:  184:		}
+        -:  185:
+    #####:  186:	if (ctx != NULL)
+        -:  187:		{
+    #####:  188:		BN_CTX_end(ctx);
+    #####:  189:		BN_CTX_free(ctx);
+        -:  190:		}
+    #####:  191:	return ok;
+        -:  192:	}

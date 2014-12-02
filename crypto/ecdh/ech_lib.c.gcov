@@ -1,0 +1,278 @@
+        -:    0:Source:ech_lib.c
+        -:    0:Graph:ech_lib.gcno
+        -:    0:Data:ech_lib.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* crypto/ecdh/ech_lib.c */
+        -:    2:/* ====================================================================
+        -:    3: * Copyright 2002 Sun Microsystems, Inc. ALL RIGHTS RESERVED.
+        -:    4: *
+        -:    5: * The Elliptic Curve Public-Key Crypto Library (ECC Code) included
+        -:    6: * herein is developed by SUN MICROSYSTEMS, INC., and is contributed
+        -:    7: * to the OpenSSL project.
+        -:    8: *
+        -:    9: * The ECC Code is licensed pursuant to the OpenSSL open source
+        -:   10: * license provided below.
+        -:   11: *
+        -:   12: * The ECDH software is originally written by Douglas Stebila of
+        -:   13: * Sun Microsystems Laboratories.
+        -:   14: *
+        -:   15: */
+        -:   16:/* ====================================================================
+        -:   17: * Copyright (c) 1998-2003 The OpenSSL Project.  All rights reserved.
+        -:   18: *
+        -:   19: * Redistribution and use in source and binary forms, with or without
+        -:   20: * modification, are permitted provided that the following conditions
+        -:   21: * are met:
+        -:   22: *
+        -:   23: * 1. Redistributions of source code must retain the above copyright
+        -:   24: *    notice, this list of conditions and the following disclaimer. 
+        -:   25: *
+        -:   26: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   27: *    notice, this list of conditions and the following disclaimer in
+        -:   28: *    the documentation and/or other materials provided with the
+        -:   29: *    distribution.
+        -:   30: *
+        -:   31: * 3. All advertising materials mentioning features or use of this
+        -:   32: *    software must display the following acknowledgment:
+        -:   33: *    "This product includes software developed by the OpenSSL Project
+        -:   34: *    for use in the OpenSSL Toolkit. (http://www.OpenSSL.org/)"
+        -:   35: *
+        -:   36: * 4. The names "OpenSSL Toolkit" and "OpenSSL Project" must not be used to
+        -:   37: *    endorse or promote products derived from this software without
+        -:   38: *    prior written permission. For written permission, please contact
+        -:   39: *    openssl-core@OpenSSL.org.
+        -:   40: *
+        -:   41: * 5. Products derived from this software may not be called "OpenSSL"
+        -:   42: *    nor may "OpenSSL" appear in their names without prior written
+        -:   43: *    permission of the OpenSSL Project.
+        -:   44: *
+        -:   45: * 6. Redistributions of any form whatsoever must retain the following
+        -:   46: *    acknowledgment:
+        -:   47: *    "This product includes software developed by the OpenSSL Project
+        -:   48: *    for use in the OpenSSL Toolkit (http://www.OpenSSL.org/)"
+        -:   49: *
+        -:   50: * THIS SOFTWARE IS PROVIDED BY THE OpenSSL PROJECT ``AS IS'' AND ANY
+        -:   51: * EXPRESSED OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   52: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+        -:   53: * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE OpenSSL PROJECT OR
+        -:   54: * ITS CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+        -:   55: * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+        -:   56: * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+        -:   57: * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   58: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+        -:   59: * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+        -:   60: * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+        -:   61: * OF THE POSSIBILITY OF SUCH DAMAGE.
+        -:   62: * ====================================================================
+        -:   63: *
+        -:   64: * This product includes cryptographic software written by Eric Young
+        -:   65: * (eay@cryptsoft.com).  This product includes software written by Tim
+        -:   66: * Hudson (tjh@cryptsoft.com).
+        -:   67: *
+        -:   68: */
+        -:   69:
+        -:   70:#include "ech_locl.h"
+        -:   71:#include <string.h>
+        -:   72:#ifndef OPENSSL_NO_ENGINE
+        -:   73:#include <openssl/engine.h>
+        -:   74:#endif
+        -:   75:#include <openssl/err.h>
+        -:   76:#ifdef OPENSSL_FIPS
+        -:   77:#include <openssl/fips.h>
+        -:   78:#endif
+        -:   79:
+        -:   80:const char ECDH_version[]="ECDH" OPENSSL_VERSION_PTEXT;
+        -:   81:
+        -:   82:static const ECDH_METHOD *default_ECDH_method = NULL;
+        -:   83:
+        -:   84:static void *ecdh_data_new(void);
+        -:   85:static void *ecdh_data_dup(void *);
+        -:   86:static void  ecdh_data_free(void *);
+        -:   87:
+    #####:   88:void ECDH_set_default_method(const ECDH_METHOD *meth)
+        -:   89:	{
+    #####:   90:	default_ECDH_method = meth;
+    #####:   91:	}
+        -:   92:
+    #####:   93:const ECDH_METHOD *ECDH_get_default_method(void)
+        -:   94:	{
+    #####:   95:	if(!default_ECDH_method) 
+        -:   96:		{
+        -:   97:#ifdef OPENSSL_FIPS
+        -:   98:		if (FIPS_mode())
+        -:   99:			return FIPS_ecdh_openssl();
+        -:  100:		else
+        -:  101:			return ECDH_OpenSSL();
+        -:  102:#else
+    #####:  103:		default_ECDH_method = ECDH_OpenSSL();
+        -:  104:#endif
+        -:  105:		}
+    #####:  106:	return default_ECDH_method;
+        -:  107:	}
+        -:  108:
+    #####:  109:int ECDH_set_method(EC_KEY *eckey, const ECDH_METHOD *meth)
+        -:  110:	{
+        -:  111:	ECDH_DATA *ecdh;
+        -:  112:
+    #####:  113:	ecdh = ecdh_check(eckey);
+        -:  114:
+    #####:  115:	if (ecdh == NULL)
+        -:  116:		return 0;
+        -:  117:
+        -:  118:#if 0
+        -:  119:        mtmp = ecdh->meth;
+        -:  120:        if (mtmp->finish)
+        -:  121:		mtmp->finish(eckey);
+        -:  122:#endif
+        -:  123:#ifndef OPENSSL_NO_ENGINE
+    #####:  124:	if (ecdh->engine)
+        -:  125:		{
+    #####:  126:		ENGINE_finish(ecdh->engine);
+    #####:  127:		ecdh->engine = NULL;
+        -:  128:		}
+        -:  129:#endif
+    #####:  130:        ecdh->meth = meth;
+        -:  131:#if 0
+        -:  132:        if (meth->init) 
+        -:  133:		meth->init(eckey);
+        -:  134:#endif
+    #####:  135:        return 1;
+        -:  136:	}
+        -:  137:
+    #####:  138:static ECDH_DATA *ECDH_DATA_new_method(ENGINE *engine)
+        -:  139:	{
+        -:  140:	ECDH_DATA *ret;
+        -:  141:
+    #####:  142:	ret=(ECDH_DATA *)OPENSSL_malloc(sizeof(ECDH_DATA));
+    #####:  143:	if (ret == NULL)
+        -:  144:		{
+    #####:  145:		ECDHerr(ECDH_F_ECDH_DATA_NEW_METHOD, ERR_R_MALLOC_FAILURE);
+    #####:  146:		return(NULL);
+        -:  147:		}
+        -:  148:
+    #####:  149:	ret->init = NULL;
+        -:  150:
+    #####:  151:	ret->meth = ECDH_get_default_method();
+    #####:  152:	ret->engine = engine;
+        -:  153:#ifndef OPENSSL_NO_ENGINE
+    #####:  154:	if (!ret->engine)
+    #####:  155:		ret->engine = ENGINE_get_default_ECDH();
+    #####:  156:	if (ret->engine)
+        -:  157:		{
+    #####:  158:		ret->meth = ENGINE_get_ECDH(ret->engine);
+    #####:  159:		if (!ret->meth)
+        -:  160:			{
+    #####:  161:			ECDHerr(ECDH_F_ECDH_DATA_NEW_METHOD, ERR_R_ENGINE_LIB);
+    #####:  162:			ENGINE_finish(ret->engine);
+    #####:  163:			OPENSSL_free(ret);
+    #####:  164:			return NULL;
+        -:  165:			}
+        -:  166:		}
+        -:  167:#endif
+        -:  168:
+    #####:  169:	ret->flags = ret->meth->flags;
+    #####:  170:	CRYPTO_new_ex_data(CRYPTO_EX_INDEX_ECDH, ret, &ret->ex_data);
+        -:  171:#if 0
+        -:  172:	if ((ret->meth->init != NULL) && !ret->meth->init(ret))
+        -:  173:		{
+        -:  174:		CRYPTO_free_ex_data(CRYPTO_EX_INDEX_ECDH, ret, &ret->ex_data);
+        -:  175:		OPENSSL_free(ret);
+        -:  176:		ret=NULL;
+        -:  177:		}
+        -:  178:#endif	
+    #####:  179:	return(ret);
+        -:  180:	}
+        -:  181:
+        -:  182:static void *ecdh_data_new(void)
+        -:  183:	{
+    #####:  184:	return (void *)ECDH_DATA_new_method(NULL);
+        -:  185:	}
+        -:  186:
+    #####:  187:static void *ecdh_data_dup(void *data)
+        -:  188:{
+        -:  189:	ECDH_DATA *r = (ECDH_DATA *)data;
+        -:  190:
+        -:  191:	/* XXX: dummy operation */
+    #####:  192:	if (r == NULL)
+        -:  193:		return NULL;
+        -:  194:
+    #####:  195:	return (void *)ecdh_data_new();
+        -:  196:}
+        -:  197:
+    #####:  198:void ecdh_data_free(void *data)
+        -:  199:	{
+        -:  200:	ECDH_DATA *r = (ECDH_DATA *)data;
+        -:  201:
+        -:  202:#ifndef OPENSSL_NO_ENGINE
+    #####:  203:	if (r->engine)
+    #####:  204:		ENGINE_finish(r->engine);
+        -:  205:#endif
+        -:  206:
+    #####:  207:	CRYPTO_free_ex_data(CRYPTO_EX_INDEX_ECDH, r, &r->ex_data);
+        -:  208:
+    #####:  209:	OPENSSL_cleanse((void *)r, sizeof(ECDH_DATA));
+        -:  210:
+    #####:  211:	OPENSSL_free(r);
+    #####:  212:	}
+        -:  213:
+    #####:  214:ECDH_DATA *ecdh_check(EC_KEY *key)
+        -:  215:	{
+        -:  216:	ECDH_DATA *ecdh_data;
+        -:  217: 
+    #####:  218:	void *data = EC_KEY_get_key_method_data(key, ecdh_data_dup,
+        -:  219:					ecdh_data_free, ecdh_data_free);
+    #####:  220:	if (data == NULL)
+        -:  221:	{
+        -:  222:		ecdh_data = (ECDH_DATA *)ecdh_data_new();
+    #####:  223:		if (ecdh_data == NULL)
+        -:  224:			return NULL;
+    #####:  225:		data = EC_KEY_insert_key_method_data(key, (void *)ecdh_data,
+        -:  226:			   ecdh_data_dup, ecdh_data_free, ecdh_data_free);
+    #####:  227:		if (data != NULL)
+        -:  228:			{
+        -:  229:			/* Another thread raced us to install the key_method
+        -:  230:			 * data and won. */
+    #####:  231:			ecdh_data_free(ecdh_data);
+        -:  232:			ecdh_data = (ECDH_DATA *)data;
+        -:  233:			}
+        -:  234:	}
+        -:  235:	else
+        -:  236:		ecdh_data = (ECDH_DATA *)data;
+        -:  237:#ifdef OPENSSL_FIPS
+        -:  238:	if (FIPS_mode() && !(ecdh_data->flags & ECDH_FLAG_FIPS_METHOD)
+        -:  239:			&& !(EC_KEY_get_flags(key) & EC_FLAG_NON_FIPS_ALLOW))
+        -:  240:		{
+        -:  241:		ECDHerr(ECDH_F_ECDH_CHECK, ECDH_R_NON_FIPS_METHOD);
+        -:  242:		return NULL;
+        -:  243:		}
+        -:  244:#endif
+        -:  245:	
+        -:  246:
+    #####:  247:	return ecdh_data;
+        -:  248:	}
+        -:  249:
+    #####:  250:int ECDH_get_ex_new_index(long argl, void *argp, CRYPTO_EX_new *new_func,
+        -:  251:	     CRYPTO_EX_dup *dup_func, CRYPTO_EX_free *free_func)
+        -:  252:	{
+    #####:  253:	return CRYPTO_get_ex_new_index(CRYPTO_EX_INDEX_ECDH, argl, argp,
+        -:  254:				new_func, dup_func, free_func);
+        -:  255:	}
+        -:  256:
+    #####:  257:int ECDH_set_ex_data(EC_KEY *d, int idx, void *arg)
+        -:  258:	{
+        -:  259:	ECDH_DATA *ecdh;
+    #####:  260:	ecdh = ecdh_check(d);
+    #####:  261:	if (ecdh == NULL)
+        -:  262:		return 0;
+    #####:  263:	return(CRYPTO_set_ex_data(&ecdh->ex_data,idx,arg));
+        -:  264:	}
+        -:  265:
+    #####:  266:void *ECDH_get_ex_data(EC_KEY *d, int idx)
+        -:  267:	{
+        -:  268:	ECDH_DATA *ecdh;
+    #####:  269:	ecdh = ecdh_check(d);
+    #####:  270:	if (ecdh == NULL)
+        -:  271:		return NULL;
+    #####:  272:	return(CRYPTO_get_ex_data(&ecdh->ex_data,idx));
+        -:  273:	}

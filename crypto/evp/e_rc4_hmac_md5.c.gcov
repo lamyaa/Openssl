@@ -1,0 +1,303 @@
+        -:    0:Source:e_rc4_hmac_md5.c
+        -:    0:Graph:e_rc4_hmac_md5.gcno
+        -:    0:Data:e_rc4_hmac_md5.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* ====================================================================
+        -:    2: * Copyright (c) 2011 The OpenSSL Project.  All rights reserved.
+        -:    3: *
+        -:    4: * Redistribution and use in source and binary forms, with or without
+        -:    5: * modification, are permitted provided that the following conditions
+        -:    6: * are met:
+        -:    7: *
+        -:    8: * 1. Redistributions of source code must retain the above copyright
+        -:    9: *    notice, this list of conditions and the following disclaimer.
+        -:   10: *
+        -:   11: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   12: *    notice, this list of conditions and the following disclaimer in
+        -:   13: *    the documentation and/or other materials provided with the
+        -:   14: *    distribution.
+        -:   15: *
+        -:   16: * 3. All advertising materials mentioning features or use of this
+        -:   17: *    software must display the following acknowledgment:
+        -:   18: *    "This product includes software developed by the OpenSSL Project
+        -:   19: *    for use in the OpenSSL Toolkit. (http://www.OpenSSL.org/)"
+        -:   20: *
+        -:   21: * 4. The names "OpenSSL Toolkit" and "OpenSSL Project" must not be used to
+        -:   22: *    endorse or promote products derived from this software without
+        -:   23: *    prior written permission. For written permission, please contact
+        -:   24: *    licensing@OpenSSL.org.
+        -:   25: *
+        -:   26: * 5. Products derived from this software may not be called "OpenSSL"
+        -:   27: *    nor may "OpenSSL" appear in their names without prior written
+        -:   28: *    permission of the OpenSSL Project.
+        -:   29: *
+        -:   30: * 6. Redistributions of any form whatsoever must retain the following
+        -:   31: *    acknowledgment:
+        -:   32: *    "This product includes software developed by the OpenSSL Project
+        -:   33: *    for use in the OpenSSL Toolkit (http://www.OpenSSL.org/)"
+        -:   34: *
+        -:   35: * THIS SOFTWARE IS PROVIDED BY THE OpenSSL PROJECT ``AS IS'' AND ANY
+        -:   36: * EXPRESSED OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   37: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+        -:   38: * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE OpenSSL PROJECT OR
+        -:   39: * ITS CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+        -:   40: * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+        -:   41: * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+        -:   42: * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   43: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+        -:   44: * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+        -:   45: * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+        -:   46: * OF THE POSSIBILITY OF SUCH DAMAGE.
+        -:   47: * ====================================================================
+        -:   48: */
+        -:   49:
+        -:   50:#include <openssl/opensslconf.h>
+        -:   51:
+        -:   52:#include <stdio.h>
+        -:   53:#include <string.h>
+        -:   54:
+        -:   55:#if !defined(OPENSSL_NO_RC4) && !defined(OPENSSL_NO_MD5)
+        -:   56:
+        -:   57:#include <openssl/evp.h>
+        -:   58:#include <openssl/objects.h>
+        -:   59:#include <openssl/rc4.h>
+        -:   60:#include <openssl/md5.h>
+        -:   61:
+        -:   62:#ifndef EVP_CIPH_FLAG_AEAD_CIPHER
+        -:   63:#define EVP_CIPH_FLAG_AEAD_CIPHER	0x200000
+        -:   64:#define EVP_CTRL_AEAD_TLS1_AAD		0x16
+        -:   65:#define EVP_CTRL_AEAD_SET_MAC_KEY	0x17
+        -:   66:#endif
+        -:   67:
+        -:   68:/* FIXME: surely this is available elsewhere? */
+        -:   69:#define EVP_RC4_KEY_SIZE		16
+        -:   70:
+        -:   71:typedef struct
+        -:   72:    {
+        -:   73:    RC4_KEY		ks;
+        -:   74:    MD5_CTX		head,tail,md;
+        -:   75:    size_t		payload_length;
+        -:   76:    } EVP_RC4_HMAC_MD5;
+        -:   77:
+        -:   78:#define NO_PAYLOAD_LENGTH	((size_t)-1)
+        -:   79:
+        -:   80:void rc4_md5_enc (RC4_KEY *key, const void *in0, void *out,
+        -:   81:		MD5_CTX *ctx,const void *inp,size_t blocks);
+        -:   82:
+        -:   83:#define data(ctx) ((EVP_RC4_HMAC_MD5 *)(ctx)->cipher_data)
+        -:   84:
+    #####:   85:static int rc4_hmac_md5_init_key(EVP_CIPHER_CTX *ctx,
+        -:   86:			const unsigned char *inkey,
+        -:   87:			const unsigned char *iv, int enc)
+        -:   88:	{
+    #####:   89:	EVP_RC4_HMAC_MD5 *key = data(ctx);
+        -:   90:
+    #####:   91:	RC4_set_key(&key->ks,EVP_CIPHER_CTX_key_length(ctx),
+        -:   92:		    inkey);
+        -:   93:
+    #####:   94:	MD5_Init(&key->head);	/* handy when benchmarking */
+    #####:   95:	key->tail = key->head;
+    #####:   96:	key->md   = key->head;
+        -:   97:
+    #####:   98:	key->payload_length = NO_PAYLOAD_LENGTH;
+        -:   99:
+    #####:  100:	return 1;
+        -:  101:	}
+        -:  102:
+        -:  103:#if	!defined(OPENSSL_NO_ASM) &&	( \
+        -:  104:	defined(__x86_64)	|| defined(__x86_64__)	|| \
+        -:  105:	defined(_M_AMD64)	|| defined(_M_X64)	|| \
+        -:  106:	defined(__INTEL__)		) && \
+        -:  107:	!(defined(__APPLE__) && defined(__MACH__))
+        -:  108:#define	STITCHED_CALL
+        -:  109:#endif
+        -:  110:
+        -:  111:#if !defined(STITCHED_CALL)
+        -:  112:#define	rc4_off 0
+        -:  113:#define	md5_off 0
+        -:  114:#endif
+        -:  115:
+    #####:  116:static int rc4_hmac_md5_cipher(EVP_CIPHER_CTX *ctx, unsigned char *out,
+        -:  117:		      const unsigned char *in, size_t len)
+        -:  118:	{
+    #####:  119:	EVP_RC4_HMAC_MD5 *key = data(ctx);
+        -:  120:#if defined(STITCHED_CALL)
+    #####:  121:	size_t	rc4_off = 32-1-(key->ks.x&(32-1)),	/* 32 is $MOD from rc4_md5-x86_64.pl */
+    #####:  122:		md5_off = MD5_CBLOCK-key->md.num,
+        -:  123:		blocks;
+        -:  124:	unsigned int l;
+        -:  125:	extern unsigned int OPENSSL_ia32cap_P[];
+        -:  126:#endif
+    #####:  127:	size_t	plen = key->payload_length;
+        -:  128:
+    #####:  129:	if (plen!=NO_PAYLOAD_LENGTH && len!=(plen+MD5_DIGEST_LENGTH)) return 0;
+        -:  130:
+    #####:  131:	if (ctx->encrypt) {
+    #####:  132:		if (plen==NO_PAYLOAD_LENGTH) plen = len;
+        -:  133:#if defined(STITCHED_CALL)
+        -:  134:		/* cipher has to "fall behind" */
+    #####:  135:		if (rc4_off>md5_off) md5_off+=MD5_CBLOCK;
+        -:  136:
+    #####:  137:		if (plen>md5_off && (blocks=(plen-md5_off)/MD5_CBLOCK) &&
+    #####:  138:		    (OPENSSL_ia32cap_P[0]&(1<<20))==0) {
+    #####:  139:			MD5_Update(&key->md,in,md5_off);
+    #####:  140:			RC4(&key->ks,rc4_off,in,out);
+        -:  141:
+    #####:  142:			rc4_md5_enc(&key->ks,in+rc4_off,out+rc4_off,
+        -:  143:				&key->md,in+md5_off,blocks);
+    #####:  144:			blocks *= MD5_CBLOCK;
+    #####:  145:			rc4_off += blocks;
+    #####:  146:			md5_off += blocks;
+    #####:  147:			key->md.Nh += blocks>>29;
+    #####:  148:			key->md.Nl += blocks<<=3;
+    #####:  149:			if (key->md.Nl<(unsigned int)blocks) key->md.Nh++;
+        -:  150:		} else {
+        -:  151:			rc4_off = 0;
+        -:  152:			md5_off = 0;
+        -:  153:		}
+        -:  154:#endif
+    #####:  155:		MD5_Update(&key->md,in+md5_off,plen-md5_off);
+        -:  156:
+    #####:  157:		if (plen!=len) {	/* "TLS" mode of operation */
+    #####:  158:			if (in!=out)
+    #####:  159:				memcpy(out+rc4_off,in+rc4_off,plen-rc4_off);
+        -:  160:
+        -:  161:			/* calculate HMAC and append it to payload */
+    #####:  162:			MD5_Final(out+plen,&key->md);
+    #####:  163:			key->md = key->tail;
+    #####:  164:			MD5_Update(&key->md,out+plen,MD5_DIGEST_LENGTH);
+    #####:  165:			MD5_Final(out+plen,&key->md);
+        -:  166:			/* encrypt HMAC at once */
+    #####:  167:			RC4(&key->ks,len-rc4_off,out+rc4_off,out+rc4_off);
+        -:  168:		} else {
+    #####:  169:			RC4(&key->ks,len-rc4_off,in+rc4_off,out+rc4_off);
+        -:  170:		}
+        -:  171:	} else {
+        -:  172:		unsigned char mac[MD5_DIGEST_LENGTH];
+        -:  173:#if defined(STITCHED_CALL)
+        -:  174:		/* digest has to "fall behind" */
+    #####:  175:		if (md5_off>rc4_off)	rc4_off += 2*MD5_CBLOCK;
+    #####:  176:		else			rc4_off += MD5_CBLOCK;
+        -:  177:
+    #####:  178:		if (len>rc4_off && (blocks=(len-rc4_off)/MD5_CBLOCK) &&
+    #####:  179:		    (OPENSSL_ia32cap_P[0]&(1<<20))==0) {
+    #####:  180:			RC4(&key->ks,rc4_off,in,out);
+    #####:  181:			MD5_Update(&key->md,out,md5_off);
+        -:  182:
+    #####:  183:			rc4_md5_enc(&key->ks,in+rc4_off,out+rc4_off,
+        -:  184:				&key->md,out+md5_off,blocks);
+    #####:  185:			blocks *= MD5_CBLOCK;
+    #####:  186:			rc4_off += blocks;
+    #####:  187:			md5_off += blocks;
+    #####:  188:			l = (key->md.Nl+(blocks<<3))&0xffffffffU;
+    #####:  189:			if (l<key->md.Nl) key->md.Nh++;
+    #####:  190:			key->md.Nl  = l;
+    #####:  191:			key->md.Nh += blocks>>29;
+        -:  192:		} else {
+        -:  193:			md5_off=0;
+        -:  194:			rc4_off=0;
+        -:  195:		}
+        -:  196:#endif
+        -:  197:		/* decrypt HMAC at once */
+    #####:  198:		RC4(&key->ks,len-rc4_off,in+rc4_off,out+rc4_off);
+    #####:  199:		if (plen!=NO_PAYLOAD_LENGTH) {	/* "TLS" mode of operation */
+    #####:  200:			MD5_Update(&key->md,out+md5_off,plen-md5_off);
+        -:  201:
+        -:  202:			/* calculate HMAC and verify it */
+    #####:  203:			MD5_Final(mac,&key->md);
+    #####:  204:			key->md = key->tail;
+    #####:  205:			MD5_Update(&key->md,mac,MD5_DIGEST_LENGTH);
+    #####:  206:			MD5_Final(mac,&key->md);
+        -:  207:
+    #####:  208:			if (memcmp(out+plen,mac,MD5_DIGEST_LENGTH))
+    #####:  209:				return 0;
+        -:  210:		} else {
+    #####:  211:			MD5_Update(&key->md,out+md5_off,len-md5_off);
+        -:  212:		}
+        -:  213:	}
+        -:  214:
+    #####:  215:	key->payload_length = NO_PAYLOAD_LENGTH;
+        -:  216:
+    #####:  217:	return 1;
+        -:  218:	}
+        -:  219:
+    #####:  220:static int rc4_hmac_md5_ctrl(EVP_CIPHER_CTX *ctx, int type, int arg, void *ptr)
+        -:  221:	{
+    #####:  222:	EVP_RC4_HMAC_MD5 *key = data(ctx);
+        -:  223:
+    #####:  224:	switch (type)
+        -:  225:		{
+        -:  226:	case EVP_CTRL_AEAD_SET_MAC_KEY:
+        -:  227:		{
+        -:  228:		unsigned int  i;
+        -:  229:		unsigned char hmac_key[64];
+        -:  230:
+        -:  231:		memset (hmac_key,0,sizeof(hmac_key));
+        -:  232:
+    #####:  233:		if (arg > (int)sizeof(hmac_key)) {
+    #####:  234:			MD5_Init(&key->head);
+    #####:  235:			MD5_Update(&key->head,ptr,arg);
+    #####:  236:			MD5_Final(hmac_key,&key->head);
+        -:  237:		} else {
+    #####:  238:			memcpy(hmac_key,ptr,arg);
+        -:  239:		}
+        -:  240:
+    #####:  241:		for (i=0;i<sizeof(hmac_key);i++)
+    #####:  242:			hmac_key[i] ^= 0x36;		/* ipad */
+    #####:  243:		MD5_Init(&key->head);
+    #####:  244:		MD5_Update(&key->head,hmac_key,sizeof(hmac_key));
+        -:  245:
+    #####:  246:		for (i=0;i<sizeof(hmac_key);i++)
+    #####:  247:			hmac_key[i] ^= 0x36^0x5c;	/* opad */
+    #####:  248:		MD5_Init(&key->tail);
+    #####:  249:		MD5_Update(&key->tail,hmac_key,sizeof(hmac_key));
+        -:  250:
+        -:  251:		return 1;
+        -:  252:		}
+        -:  253:	case EVP_CTRL_AEAD_TLS1_AAD:
+        -:  254:		{
+        -:  255:		unsigned char *p=ptr;
+    #####:  256:		unsigned int   len=p[arg-2]<<8|p[arg-1];
+        -:  257:
+    #####:  258:		if (!ctx->encrypt)
+        -:  259:			{
+    #####:  260:			len -= MD5_DIGEST_LENGTH;
+    #####:  261:			p[arg-2] = len>>8;
+    #####:  262:			p[arg-1] = len;
+        -:  263:			}
+    #####:  264:		key->payload_length=len;
+    #####:  265:		key->md = key->head;
+    #####:  266:		MD5_Update(&key->md,p,arg);
+        -:  267:
+    #####:  268:		return MD5_DIGEST_LENGTH;
+        -:  269:		}
+        -:  270:	default:
+        -:  271:		return -1;
+        -:  272:		}
+        -:  273:	}
+        -:  274:
+        -:  275:static EVP_CIPHER r4_hmac_md5_cipher=
+        -:  276:	{
+        -:  277:#ifdef NID_rc4_hmac_md5
+        -:  278:	NID_rc4_hmac_md5,
+        -:  279:#else
+        -:  280:	NID_undef,
+        -:  281:#endif
+        -:  282:	1,EVP_RC4_KEY_SIZE,0,
+        -:  283:	EVP_CIPH_STREAM_CIPHER|EVP_CIPH_VARIABLE_LENGTH|EVP_CIPH_FLAG_AEAD_CIPHER,
+        -:  284:	rc4_hmac_md5_init_key,
+        -:  285:	rc4_hmac_md5_cipher,
+        -:  286:	NULL,
+        -:  287:	sizeof(EVP_RC4_HMAC_MD5),
+        -:  288:	NULL,
+        -:  289:	NULL,
+        -:  290:	rc4_hmac_md5_ctrl,
+        -:  291:	NULL
+        -:  292:	};
+        -:  293:
+    20000:  294:const EVP_CIPHER *EVP_rc4_hmac_md5(void)
+        -:  295:	{
+    20000:  296:	return(&r4_hmac_md5_cipher);
+        -:  297:	}
+        -:  298:#endif

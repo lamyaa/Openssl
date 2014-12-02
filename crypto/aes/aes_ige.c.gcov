@@ -1,0 +1,328 @@
+        -:    0:Source:aes_ige.c
+        -:    0:Graph:aes_ige.gcno
+        -:    0:Data:aes_ige.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* crypto/aes/aes_ige.c -*- mode:C; c-file-style: "eay" -*- */
+        -:    2:/* ====================================================================
+        -:    3: * Copyright (c) 2006 The OpenSSL Project.  All rights reserved.
+        -:    4: *
+        -:    5: * Redistribution and use in source and binary forms, with or without
+        -:    6: * modification, are permitted provided that the following conditions
+        -:    7: * are met:
+        -:    8: *
+        -:    9: * 1. Redistributions of source code must retain the above copyright
+        -:   10: *    notice, this list of conditions and the following disclaimer. 
+        -:   11: *
+        -:   12: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   13: *    notice, this list of conditions and the following disclaimer in
+        -:   14: *    the documentation and/or other materials provided with the
+        -:   15: *    distribution.
+        -:   16: *
+        -:   17: * 3. All advertising materials mentioning features or use of this
+        -:   18: *    software must display the following acknowledgment:
+        -:   19: *    "This product includes software developed by the OpenSSL Project
+        -:   20: *    for use in the OpenSSL Toolkit. (http://www.openssl.org/)"
+        -:   21: *
+        -:   22: * 4. The names "OpenSSL Toolkit" and "OpenSSL Project" must not be used to
+        -:   23: *    endorse or promote products derived from this software without
+        -:   24: *    prior written permission. For written permission, please contact
+        -:   25: *    openssl-core@openssl.org.
+        -:   26: *
+        -:   27: * 5. Products derived from this software may not be called "OpenSSL"
+        -:   28: *    nor may "OpenSSL" appear in their names without prior written
+        -:   29: *    permission of the OpenSSL Project.
+        -:   30: *
+        -:   31: * 6. Redistributions of any form whatsoever must retain the following
+        -:   32: *    acknowledgment:
+        -:   33: *    "This product includes software developed by the OpenSSL Project
+        -:   34: *    for use in the OpenSSL Toolkit (http://www.openssl.org/)"
+        -:   35: *
+        -:   36: * THIS SOFTWARE IS PROVIDED BY THE OpenSSL PROJECT ``AS IS'' AND ANY
+        -:   37: * EXPRESSED OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   38: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+        -:   39: * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE OpenSSL PROJECT OR
+        -:   40: * ITS CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+        -:   41: * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+        -:   42: * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+        -:   43: * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   44: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+        -:   45: * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+        -:   46: * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+        -:   47: * OF THE POSSIBILITY OF SUCH DAMAGE.
+        -:   48: * ====================================================================
+        -:   49: *
+        -:   50: */
+        -:   51:
+        -:   52:#include "cryptlib.h"
+        -:   53:
+        -:   54:#include <openssl/aes.h>
+        -:   55:#include "aes_locl.h"
+        -:   56:
+        -:   57:#define N_WORDS (AES_BLOCK_SIZE / sizeof(unsigned long))
+        -:   58:typedef struct {
+        -:   59:        unsigned long data[N_WORDS];
+        -:   60:} aes_block_t;
+        -:   61:
+        -:   62:/* XXX: probably some better way to do this */
+        -:   63:#if defined(__i386__) || defined(__x86_64__)
+        -:   64:#define UNALIGNED_MEMOPS_ARE_FAST 1
+        -:   65:#else
+        -:   66:#define UNALIGNED_MEMOPS_ARE_FAST 0
+        -:   67:#endif
+        -:   68:
+        -:   69:#if UNALIGNED_MEMOPS_ARE_FAST
+        -:   70:#define load_block(d, s)        (d) = *(const aes_block_t *)(s)
+        -:   71:#define store_block(d, s)       *(aes_block_t *)(d) = (s)
+        -:   72:#else
+        -:   73:#define load_block(d, s)        memcpy((d).data, (s), AES_BLOCK_SIZE)
+        -:   74:#define store_block(d, s)       memcpy((d), (s).data, AES_BLOCK_SIZE)
+        -:   75:#endif
+        -:   76:
+        -:   77:/* N.B. The IV for this mode is _twice_ the block size */
+        -:   78:
+    #####:   79:void AES_ige_encrypt(const unsigned char *in, unsigned char *out,
+        -:   80:					 size_t length, const AES_KEY *key,
+        -:   81:					 unsigned char *ivec, const int enc)
+        -:   82:	{
+        -:   83:	size_t n;
+        -:   84:	size_t len = length;
+        -:   85:
+    #####:   86:	OPENSSL_assert(in && out && key && ivec);
+    #####:   87:	OPENSSL_assert((AES_ENCRYPT == enc)||(AES_DECRYPT == enc));
+    #####:   88:	OPENSSL_assert((length%AES_BLOCK_SIZE) == 0);
+        -:   89:
+    #####:   90:	len = length / AES_BLOCK_SIZE;
+        -:   91:
+    #####:   92:	if (AES_ENCRYPT == enc)
+        -:   93:		{
+    #####:   94:		if (in != out &&
+        -:   95:		    (UNALIGNED_MEMOPS_ARE_FAST || ((size_t)in|(size_t)out|(size_t)ivec)%sizeof(long)==0))
+        -:   96:			{
+        -:   97:			aes_block_t *ivp = (aes_block_t *)ivec;
+    #####:   98:			aes_block_t *iv2p = (aes_block_t *)(ivec + AES_BLOCK_SIZE);
+        -:   99:
+    #####:  100:			while (len)
+        -:  101:				{
+        -:  102:				aes_block_t *inp = (aes_block_t *)in;
+        -:  103:				aes_block_t *outp = (aes_block_t *)out;
+        -:  104:
+    #####:  105:				for(n=0 ; n < N_WORDS; ++n)
+    #####:  106:					outp->data[n] = inp->data[n] ^ ivp->data[n];
+    #####:  107:				AES_encrypt((unsigned char *)outp->data, (unsigned char *)outp->data, key);
+    #####:  108:				for(n=0 ; n < N_WORDS; ++n)
+    #####:  109:					outp->data[n] ^= iv2p->data[n];
+        -:  110:				ivp = outp;
+        -:  111:				iv2p = inp;
+    #####:  112:				--len;
+    #####:  113:				in += AES_BLOCK_SIZE;
+    #####:  114:				out += AES_BLOCK_SIZE;
+        -:  115:				}
+    #####:  116:			memcpy(ivec, ivp->data, AES_BLOCK_SIZE);
+    #####:  117:			memcpy(ivec + AES_BLOCK_SIZE, iv2p->data, AES_BLOCK_SIZE);
+        -:  118:			}
+        -:  119:		else
+        -:  120:			{
+        -:  121:			aes_block_t tmp, tmp2;
+        -:  122:			aes_block_t iv;
+        -:  123:			aes_block_t iv2;
+        -:  124:
+    #####:  125:			load_block(iv, ivec);
+    #####:  126:			load_block(iv2, ivec + AES_BLOCK_SIZE);
+        -:  127:
+    #####:  128:			while (len)
+        -:  129:				{
+    #####:  130:				load_block(tmp, in);
+    #####:  131:				for(n=0 ; n < N_WORDS; ++n)
+    #####:  132:					tmp2.data[n] = tmp.data[n] ^ iv.data[n];
+    #####:  133:				AES_encrypt((unsigned char *)tmp2.data, (unsigned char *)tmp2.data, key);
+    #####:  134:				for(n=0 ; n < N_WORDS; ++n)
+    #####:  135:					tmp2.data[n] ^= iv2.data[n];
+    #####:  136:				store_block(out, tmp2);
+    #####:  137:				iv = tmp2;
+    #####:  138:				iv2 = tmp;
+    #####:  139:				--len;
+    #####:  140:				in += AES_BLOCK_SIZE;
+    #####:  141:				out += AES_BLOCK_SIZE;
+        -:  142:				}
+        -:  143:			memcpy(ivec, iv.data, AES_BLOCK_SIZE);
+    #####:  144:			memcpy(ivec + AES_BLOCK_SIZE, iv2.data, AES_BLOCK_SIZE);
+        -:  145:			}
+        -:  146:		}
+        -:  147:	else
+        -:  148:		{
+    #####:  149:		if (in != out &&
+        -:  150:		    (UNALIGNED_MEMOPS_ARE_FAST || ((size_t)in|(size_t)out|(size_t)ivec)%sizeof(long)==0))
+        -:  151:			{
+        -:  152:			aes_block_t *ivp = (aes_block_t *)ivec;
+    #####:  153:			aes_block_t *iv2p = (aes_block_t *)(ivec + AES_BLOCK_SIZE);
+        -:  154:
+    #####:  155:			while (len)
+        -:  156:				{
+        -:  157:				aes_block_t tmp;
+        -:  158:				aes_block_t *inp = (aes_block_t *)in;
+        -:  159:				aes_block_t *outp = (aes_block_t *)out;
+        -:  160:
+    #####:  161:				for(n=0 ; n < N_WORDS; ++n)
+    #####:  162:					tmp.data[n] = inp->data[n] ^ iv2p->data[n];
+    #####:  163:				AES_decrypt((unsigned char *)tmp.data, (unsigned char *)outp->data, key);
+    #####:  164:				for(n=0 ; n < N_WORDS; ++n)
+    #####:  165:					outp->data[n] ^= ivp->data[n];
+        -:  166:				ivp = inp;
+        -:  167:				iv2p = outp;
+    #####:  168:				--len;
+    #####:  169:				in += AES_BLOCK_SIZE;
+    #####:  170:				out += AES_BLOCK_SIZE;
+        -:  171:				}
+    #####:  172:			memcpy(ivec, ivp->data, AES_BLOCK_SIZE);
+    #####:  173:			memcpy(ivec + AES_BLOCK_SIZE, iv2p->data, AES_BLOCK_SIZE);
+        -:  174:			}
+        -:  175:		else
+        -:  176:			{
+        -:  177:			aes_block_t tmp, tmp2;
+        -:  178:			aes_block_t iv;
+        -:  179:			aes_block_t iv2;
+        -:  180:
+    #####:  181:			load_block(iv, ivec);
+    #####:  182:			load_block(iv2, ivec + AES_BLOCK_SIZE);
+        -:  183:
+    #####:  184:			while (len)
+        -:  185:				{
+    #####:  186:				load_block(tmp, in);
+    #####:  187:				tmp2 = tmp;
+    #####:  188:				for(n=0 ; n < N_WORDS; ++n)
+    #####:  189:					tmp.data[n] ^= iv2.data[n];
+    #####:  190:				AES_decrypt((unsigned char *)tmp.data, (unsigned char *)tmp.data, key);
+    #####:  191:				for(n=0 ; n < N_WORDS; ++n)
+    #####:  192:					tmp.data[n] ^= iv.data[n];
+    #####:  193:				store_block(out, tmp);
+    #####:  194:				iv = tmp2;
+    #####:  195:				iv2 = tmp;
+    #####:  196:				--len;
+    #####:  197:				in += AES_BLOCK_SIZE;
+    #####:  198:				out += AES_BLOCK_SIZE;
+        -:  199:				}
+        -:  200:			memcpy(ivec, iv.data, AES_BLOCK_SIZE);
+    #####:  201:			memcpy(ivec + AES_BLOCK_SIZE, iv2.data, AES_BLOCK_SIZE);
+        -:  202:			}
+        -:  203:		}
+    #####:  204:	}
+        -:  205:
+        -:  206:/*
+        -:  207: * Note that its effectively impossible to do biIGE in anything other
+        -:  208: * than a single pass, so no provision is made for chaining.
+        -:  209: */
+        -:  210:
+        -:  211:/* N.B. The IV for this mode is _four times_ the block size */
+        -:  212:
+    #####:  213:void AES_bi_ige_encrypt(const unsigned char *in, unsigned char *out,
+        -:  214:						size_t length, const AES_KEY *key,
+        -:  215:						const AES_KEY *key2, const unsigned char *ivec,
+        -:  216:						const int enc)
+        -:  217:	{
+        -:  218:	size_t n;
+        -:  219:	size_t len = length;
+        -:  220:	unsigned char tmp[AES_BLOCK_SIZE];
+        -:  221:	unsigned char tmp2[AES_BLOCK_SIZE];
+        -:  222:	unsigned char tmp3[AES_BLOCK_SIZE];
+        -:  223:	unsigned char prev[AES_BLOCK_SIZE];
+        -:  224:	const unsigned char *iv;
+        -:  225:	const unsigned char *iv2;
+        -:  226:
+    #####:  227:	OPENSSL_assert(in && out && key && ivec);
+    #####:  228:	OPENSSL_assert((AES_ENCRYPT == enc)||(AES_DECRYPT == enc));
+    #####:  229:	OPENSSL_assert((length%AES_BLOCK_SIZE) == 0);
+        -:  230:
+    #####:  231:	if (AES_ENCRYPT == enc)
+        -:  232:		{
+        -:  233:		/* XXX: Do a separate case for when in != out (strictly should
+        -:  234:		   check for overlap, too) */
+        -:  235:
+        -:  236:		/* First the forward pass */ 
+        -:  237:		iv = ivec;
+    #####:  238:		iv2 = ivec + AES_BLOCK_SIZE;
+    #####:  239:		while (len >= AES_BLOCK_SIZE)
+        -:  240:			{
+    #####:  241:			for(n=0 ; n < AES_BLOCK_SIZE ; ++n)
+    #####:  242:				out[n] = in[n] ^ iv[n];
+    #####:  243:			AES_encrypt(out, out, key);
+    #####:  244:			for(n=0 ; n < AES_BLOCK_SIZE ; ++n)
+    #####:  245:				out[n] ^= iv2[n];
+        -:  246:			iv = out;
+        -:  247:			memcpy(prev, in, AES_BLOCK_SIZE);
+        -:  248:			iv2 = prev;
+    #####:  249:			len -= AES_BLOCK_SIZE;
+    #####:  250:			in += AES_BLOCK_SIZE;
+    #####:  251:			out += AES_BLOCK_SIZE;
+        -:  252:			}
+        -:  253:
+        -:  254:		/* And now backwards */
+    #####:  255:		iv = ivec + AES_BLOCK_SIZE*2;
+    #####:  256:		iv2 = ivec + AES_BLOCK_SIZE*3;
+        -:  257:		len = length;
+    #####:  258:		while(len >= AES_BLOCK_SIZE)
+        -:  259:			{
+    #####:  260:			out -= AES_BLOCK_SIZE;
+        -:  261:			/* XXX: reduce copies by alternating between buffers */
+        -:  262:			memcpy(tmp, out, AES_BLOCK_SIZE);
+    #####:  263:			for(n=0 ; n < AES_BLOCK_SIZE ; ++n)
+    #####:  264:				out[n] ^= iv[n];
+        -:  265:			/*			hexdump(stdout, "out ^ iv", out, AES_BLOCK_SIZE); */
+    #####:  266:			AES_encrypt(out, out, key);
+        -:  267:			/*			hexdump(stdout,"enc", out, AES_BLOCK_SIZE); */
+        -:  268:			/*			hexdump(stdout,"iv2", iv2, AES_BLOCK_SIZE); */
+    #####:  269:			for(n=0 ; n < AES_BLOCK_SIZE ; ++n)
+    #####:  270:				out[n] ^= iv2[n];
+        -:  271:			/*			hexdump(stdout,"out", out, AES_BLOCK_SIZE); */
+        -:  272:			iv = out;
+        -:  273:			memcpy(prev, tmp, AES_BLOCK_SIZE);
+        -:  274:			iv2 = prev;
+    #####:  275:			len -= AES_BLOCK_SIZE;
+        -:  276:			}
+        -:  277:		}
+        -:  278:	else
+        -:  279:		{
+        -:  280:		/* First backwards */
+    #####:  281:		iv = ivec + AES_BLOCK_SIZE*2;
+    #####:  282:		iv2 = ivec + AES_BLOCK_SIZE*3;
+    #####:  283:		in += length;
+    #####:  284:		out += length;
+    #####:  285:		while (len >= AES_BLOCK_SIZE)
+        -:  286:			{
+    #####:  287:			in -= AES_BLOCK_SIZE;
+    #####:  288:			out -= AES_BLOCK_SIZE;
+        -:  289:			memcpy(tmp, in, AES_BLOCK_SIZE);
+        -:  290:			memcpy(tmp2, in, AES_BLOCK_SIZE);
+    #####:  291:			for(n=0 ; n < AES_BLOCK_SIZE ; ++n)
+    #####:  292:				tmp[n] ^= iv2[n];
+    #####:  293:			AES_decrypt(tmp, out, key);
+    #####:  294:			for(n=0 ; n < AES_BLOCK_SIZE ; ++n)
+    #####:  295:				out[n] ^= iv[n];
+        -:  296:			memcpy(tmp3, tmp2, AES_BLOCK_SIZE);
+        -:  297:			iv = tmp3;
+        -:  298:			iv2 = out;
+    #####:  299:			len -= AES_BLOCK_SIZE;
+        -:  300:			}
+        -:  301:
+        -:  302:		/* And now forwards */
+        -:  303:		iv = ivec;
+    #####:  304:		iv2 = ivec + AES_BLOCK_SIZE;
+        -:  305:		len = length;
+    #####:  306:		while (len >= AES_BLOCK_SIZE)
+        -:  307:			{
+        -:  308:			memcpy(tmp, out, AES_BLOCK_SIZE);
+        -:  309:			memcpy(tmp2, out, AES_BLOCK_SIZE);
+    #####:  310:			for(n=0 ; n < AES_BLOCK_SIZE ; ++n)
+    #####:  311:				tmp[n] ^= iv2[n];
+    #####:  312:			AES_decrypt(tmp, out, key);
+    #####:  313:			for(n=0 ; n < AES_BLOCK_SIZE ; ++n)
+    #####:  314:				out[n] ^= iv[n];
+        -:  315:			memcpy(tmp3, tmp2, AES_BLOCK_SIZE);
+        -:  316:			iv = tmp3;
+        -:  317:			iv2 = out;
+    #####:  318:			len -= AES_BLOCK_SIZE;
+        -:  319:			in += AES_BLOCK_SIZE;
+    #####:  320:			out += AES_BLOCK_SIZE;
+        -:  321:			}
+        -:  322:		}
+    #####:  323:	}

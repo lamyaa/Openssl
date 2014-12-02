@@ -1,0 +1,289 @@
+        -:    0:Source:pkey.c
+        -:    0:Graph:pkey.gcno
+        -:    0:Data:pkey.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* apps/pkey.c */
+        -:    2:/* Written by Dr Stephen N Henson (steve@openssl.org) for the OpenSSL
+        -:    3: * project 2006
+        -:    4: */
+        -:    5:/* ====================================================================
+        -:    6: * Copyright (c) 2006 The OpenSSL Project.  All rights reserved.
+        -:    7: *
+        -:    8: * Redistribution and use in source and binary forms, with or without
+        -:    9: * modification, are permitted provided that the following conditions
+        -:   10: * are met:
+        -:   11: *
+        -:   12: * 1. Redistributions of source code must retain the above copyright
+        -:   13: *    notice, this list of conditions and the following disclaimer. 
+        -:   14: *
+        -:   15: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   16: *    notice, this list of conditions and the following disclaimer in
+        -:   17: *    the documentation and/or other materials provided with the
+        -:   18: *    distribution.
+        -:   19: *
+        -:   20: * 3. All advertising materials mentioning features or use of this
+        -:   21: *    software must display the following acknowledgment:
+        -:   22: *    "This product includes software developed by the OpenSSL Project
+        -:   23: *    for use in the OpenSSL Toolkit. (http://www.OpenSSL.org/)"
+        -:   24: *
+        -:   25: * 4. The names "OpenSSL Toolkit" and "OpenSSL Project" must not be used to
+        -:   26: *    endorse or promote products derived from this software without
+        -:   27: *    prior written permission. For written permission, please contact
+        -:   28: *    licensing@OpenSSL.org.
+        -:   29: *
+        -:   30: * 5. Products derived from this software may not be called "OpenSSL"
+        -:   31: *    nor may "OpenSSL" appear in their names without prior written
+        -:   32: *    permission of the OpenSSL Project.
+        -:   33: *
+        -:   34: * 6. Redistributions of any form whatsoever must retain the following
+        -:   35: *    acknowledgment:
+        -:   36: *    "This product includes software developed by the OpenSSL Project
+        -:   37: *    for use in the OpenSSL Toolkit (http://www.OpenSSL.org/)"
+        -:   38: *
+        -:   39: * THIS SOFTWARE IS PROVIDED BY THE OpenSSL PROJECT ``AS IS'' AND ANY
+        -:   40: * EXPRESSED OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   41: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+        -:   42: * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE OpenSSL PROJECT OR
+        -:   43: * ITS CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+        -:   44: * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+        -:   45: * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+        -:   46: * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   47: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+        -:   48: * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+        -:   49: * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+        -:   50: * OF THE POSSIBILITY OF SUCH DAMAGE.
+        -:   51: * ====================================================================
+        -:   52: *
+        -:   53: * This product includes cryptographic software written by Eric Young
+        -:   54: * (eay@cryptsoft.com).  This product includes software written by Tim
+        -:   55: * Hudson (tjh@cryptsoft.com).
+        -:   56: *
+        -:   57: */
+        -:   58:#include <stdio.h>
+        -:   59:#include <string.h>
+        -:   60:#include "apps.h"
+        -:   61:#include <openssl/pem.h>
+        -:   62:#include <openssl/err.h>
+        -:   63:#include <openssl/evp.h>
+        -:   64:
+        -:   65:#define PROG pkey_main
+        -:   66:
+        -:   67:int MAIN(int, char **);
+        -:   68:
+    #####:   69:int MAIN(int argc, char **argv)
+        -:   70:	{
+        -:   71:	ENGINE *e = NULL;
+        -:   72:	char **args, *infile = NULL, *outfile = NULL;
+        -:   73:	char *passargin = NULL, *passargout = NULL;
+        -:   74:	BIO *in = NULL, *out = NULL;
+        -:   75:	const EVP_CIPHER *cipher = NULL;
+        -:   76:	int informat, outformat;
+        -:   77:	int pubin = 0, pubout = 0, pubtext = 0, text = 0, noout = 0;
+        -:   78:	EVP_PKEY *pkey=NULL;
+    #####:   79:	char *passin = NULL, *passout = NULL;
+        -:   80:	int badarg = 0;
+        -:   81:#ifndef OPENSSL_NO_ENGINE
+        -:   82:	char *engine=NULL;
+        -:   83:#endif
+        -:   84:	int ret = 1;
+        -:   85:
+    #####:   86:	if (bio_err == NULL)
+    #####:   87:		bio_err = BIO_new_fp (stderr, BIO_NOCLOSE);
+        -:   88:
+    #####:   89:	if (!load_config(bio_err, NULL))
+        -:   90:		goto end;
+        -:   91:
+        -:   92:	informat=FORMAT_PEM;
+        -:   93:	outformat=FORMAT_PEM;
+        -:   94:
+    #####:   95:	ERR_load_crypto_strings();
+    #####:   96:	OpenSSL_add_all_algorithms();
+    #####:   97:	args = argv + 1;
+    #####:   98:	while (!badarg && *args && *args[0] == '-')
+        -:   99:		{
+    #####:  100:		if (!strcmp(*args,"-inform"))
+        -:  101:			{
+    #####:  102:			if (args[1])
+        -:  103:				{
+    #####:  104:				args++;
+    #####:  105:				informat=str2fmt(*args);
+        -:  106:				}
+        -:  107:			else badarg = 1;
+        -:  108:			}
+    #####:  109:		else if (!strcmp(*args,"-outform"))
+        -:  110:			{
+    #####:  111:			if (args[1])
+        -:  112:				{
+    #####:  113:				args++;
+    #####:  114:				outformat=str2fmt(*args);
+        -:  115:				}
+        -:  116:			else badarg = 1;
+        -:  117:			}
+    #####:  118:		else if (!strcmp(*args,"-passin"))
+        -:  119:			{
+    #####:  120:			if (!args[1]) goto bad;
+    #####:  121:			passargin= *(++args);
+        -:  122:			}
+    #####:  123:		else if (!strcmp(*args,"-passout"))
+        -:  124:			{
+    #####:  125:			if (!args[1]) goto bad;
+    #####:  126:			passargout= *(++args);
+        -:  127:			}
+        -:  128:#ifndef OPENSSL_NO_ENGINE
+    #####:  129:		else if (strcmp(*args,"-engine") == 0)
+        -:  130:			{
+    #####:  131:			if (!args[1]) goto bad;
+    #####:  132:			engine= *(++args);
+        -:  133:			}
+        -:  134:#endif
+    #####:  135:		else if (!strcmp (*args, "-in"))
+        -:  136:			{
+    #####:  137:			if (args[1])
+        -:  138:				{
+    #####:  139:				args++;
+        -:  140:				infile = *args;
+        -:  141:				}
+        -:  142:			else badarg = 1;
+        -:  143:			}
+    #####:  144:		else if (!strcmp (*args, "-out"))
+        -:  145:			{
+    #####:  146:			if (args[1])
+        -:  147:				{
+    #####:  148:				args++;
+        -:  149:				outfile = *args;
+        -:  150:				}
+        -:  151:			else badarg = 1;
+        -:  152:			}
+    #####:  153:		else if (strcmp(*args,"-pubin") == 0)
+        -:  154:			{
+        -:  155:			pubin=1;
+        -:  156:			pubout=1;
+        -:  157:			pubtext=1;
+        -:  158:			}
+    #####:  159:		else if (strcmp(*args,"-pubout") == 0)
+        -:  160:			pubout=1;
+    #####:  161:		else if (strcmp(*args,"-text_pub") == 0)
+        -:  162:			{
+        -:  163:			pubtext=1;
+        -:  164:			text=1;
+        -:  165:			}
+    #####:  166:		else if (strcmp(*args,"-text") == 0)
+        -:  167:			text=1;
+    #####:  168:		else if (strcmp(*args,"-noout") == 0)
+        -:  169:			noout=1;
+        -:  170:		else
+        -:  171:			{
+    #####:  172:			cipher = EVP_get_cipherbyname(*args + 1);
+    #####:  173:			if (!cipher)
+        -:  174:				{
+    #####:  175:				BIO_printf(bio_err, "Unknown cipher %s\n",
+    #####:  176:								*args + 1);
+        -:  177:				badarg = 1;
+        -:  178:				}
+        -:  179:			}
+    #####:  180:		args++;
+        -:  181:		}
+        -:  182:
+    #####:  183:	if (badarg)
+        -:  184:		{
+        -:  185:		bad:
+    #####:  186:		BIO_printf(bio_err, "Usage pkey [options]\n");
+    #####:  187:		BIO_printf(bio_err, "where options are\n");
+    #####:  188:		BIO_printf(bio_err, "-in file        input file\n");
+    #####:  189:		BIO_printf(bio_err, "-inform X       input format (DER or PEM)\n");
+    #####:  190:		BIO_printf(bio_err, "-passin arg     input file pass phrase source\n");
+    #####:  191:		BIO_printf(bio_err, "-outform X      output format (DER or PEM)\n");
+    #####:  192:		BIO_printf(bio_err, "-out file       output file\n");
+    #####:  193:		BIO_printf(bio_err, "-passout arg    output file pass phrase source\n");
+        -:  194:#ifndef OPENSSL_NO_ENGINE
+    #####:  195:		BIO_printf(bio_err, "-engine e       use engine e, possibly a hardware device.\n");
+        -:  196:#endif
+    #####:  197:		return 1;
+        -:  198:		}
+        -:  199:
+        -:  200:#ifndef OPENSSL_NO_ENGINE
+    #####:  201:        e = setup_engine(bio_err, engine, 0);
+        -:  202:#endif
+        -:  203:
+    #####:  204:	if (!app_passwd(bio_err, passargin, passargout, &passin, &passout))
+        -:  205:		{
+    #####:  206:		BIO_printf(bio_err, "Error getting passwords\n");
+    #####:  207:		goto end;
+        -:  208:		}
+        -:  209:
+    #####:  210:	if (outfile)
+        -:  211:		{
+    #####:  212:		if (!(out = BIO_new_file (outfile, "wb")))
+        -:  213:			{
+    #####:  214:			BIO_printf(bio_err,
+        -:  215:				 "Can't open output file %s\n", outfile);
+    #####:  216:			goto end;
+        -:  217:			}
+        -:  218:		}
+        -:  219:	else
+        -:  220:		{
+    #####:  221:		out = BIO_new_fp (stdout, BIO_NOCLOSE);
+        -:  222:#ifdef OPENSSL_SYS_VMS
+        -:  223:			{
+        -:  224:			BIO *tmpbio = BIO_new(BIO_f_linebuffer());
+        -:  225:			out = BIO_push(tmpbio, out);
+        -:  226:			}
+        -:  227:#endif
+        -:  228:		}
+        -:  229:
+    #####:  230:	if (pubin)
+    #####:  231:		pkey = load_pubkey(bio_err, infile, informat, 1,
+        -:  232:			passin, e, "Public Key");
+        -:  233:	else
+    #####:  234:		pkey = load_key(bio_err, infile, informat, 1,
+        -:  235:			passin, e, "key");
+    #####:  236:	if (!pkey)
+        -:  237:		goto end;
+        -:  238:
+    #####:  239:	if (!noout)
+        -:  240:		{
+    #####:  241:		if (outformat == FORMAT_PEM) 
+        -:  242:			{
+    #####:  243:			if (pubout)
+    #####:  244:				PEM_write_bio_PUBKEY(out,pkey);
+        -:  245:			else
+    #####:  246:				PEM_write_bio_PrivateKey(out, pkey, cipher,
+        -:  247:							NULL, 0, NULL, passout);
+        -:  248:			}
+    #####:  249:		else if (outformat == FORMAT_ASN1)
+        -:  250:			{
+    #####:  251:			if (pubout)
+    #####:  252:				i2d_PUBKEY_bio(out, pkey);
+        -:  253:			else
+    #####:  254:				i2d_PrivateKey_bio(out, pkey);
+        -:  255:			}
+        -:  256:		else
+        -:  257:			{
+    #####:  258:			BIO_printf(bio_err, "Bad format specified for key\n");
+    #####:  259:			goto end;
+        -:  260:			}
+        -:  261:
+        -:  262:		}
+        -:  263:
+    #####:  264:	if (text)
+        -:  265:		{
+    #####:  266:		if (pubtext)
+    #####:  267:			EVP_PKEY_print_public(out, pkey, 0, NULL);
+        -:  268:		else
+    #####:  269:			EVP_PKEY_print_private(out, pkey, 0, NULL);
+        -:  270:		}
+        -:  271:
+        -:  272:	ret = 0;
+        -:  273:
+        -:  274:	end:
+    #####:  275:	EVP_PKEY_free(pkey);
+    #####:  276:	BIO_free_all(out);
+    #####:  277:	BIO_free(in);
+    #####:  278:	if (passin)
+    #####:  279:		OPENSSL_free(passin);
+    #####:  280:	if (passout)
+    #####:  281:		OPENSSL_free(passout);
+        -:  282:
+    #####:  283:	return ret;
+        -:  284:	}

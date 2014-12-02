@@ -1,0 +1,271 @@
+        -:    0:Source:t_req.c
+        -:    0:Graph:t_req.gcno
+        -:    0:Data:t_req.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* crypto/asn1/t_req.c */
+        -:    2:/* Copyright (C) 1995-1998 Eric Young (eay@cryptsoft.com)
+        -:    3: * All rights reserved.
+        -:    4: *
+        -:    5: * This package is an SSL implementation written
+        -:    6: * by Eric Young (eay@cryptsoft.com).
+        -:    7: * The implementation was written so as to conform with Netscapes SSL.
+        -:    8: * 
+        -:    9: * This library is free for commercial and non-commercial use as long as
+        -:   10: * the following conditions are aheared to.  The following conditions
+        -:   11: * apply to all code found in this distribution, be it the RC4, RSA,
+        -:   12: * lhash, DES, etc., code; not just the SSL code.  The SSL documentation
+        -:   13: * included with this distribution is covered by the same copyright terms
+        -:   14: * except that the holder is Tim Hudson (tjh@cryptsoft.com).
+        -:   15: * 
+        -:   16: * Copyright remains Eric Young's, and as such any Copyright notices in
+        -:   17: * the code are not to be removed.
+        -:   18: * If this package is used in a product, Eric Young should be given attribution
+        -:   19: * as the author of the parts of the library used.
+        -:   20: * This can be in the form of a textual message at program startup or
+        -:   21: * in documentation (online or textual) provided with the package.
+        -:   22: * 
+        -:   23: * Redistribution and use in source and binary forms, with or without
+        -:   24: * modification, are permitted provided that the following conditions
+        -:   25: * are met:
+        -:   26: * 1. Redistributions of source code must retain the copyright
+        -:   27: *    notice, this list of conditions and the following disclaimer.
+        -:   28: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   29: *    notice, this list of conditions and the following disclaimer in the
+        -:   30: *    documentation and/or other materials provided with the distribution.
+        -:   31: * 3. All advertising materials mentioning features or use of this software
+        -:   32: *    must display the following acknowledgement:
+        -:   33: *    "This product includes cryptographic software written by
+        -:   34: *     Eric Young (eay@cryptsoft.com)"
+        -:   35: *    The word 'cryptographic' can be left out if the rouines from the library
+        -:   36: *    being used are not cryptographic related :-).
+        -:   37: * 4. If you include any Windows specific code (or a derivative thereof) from 
+        -:   38: *    the apps directory (application code) you must include an acknowledgement:
+        -:   39: *    "This product includes software written by Tim Hudson (tjh@cryptsoft.com)"
+        -:   40: * 
+        -:   41: * THIS SOFTWARE IS PROVIDED BY ERIC YOUNG ``AS IS'' AND
+        -:   42: * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   43: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+        -:   44: * ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+        -:   45: * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+        -:   46: * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+        -:   47: * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   48: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+        -:   49: * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+        -:   50: * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+        -:   51: * SUCH DAMAGE.
+        -:   52: * 
+        -:   53: * The licence and distribution terms for any publically available version or
+        -:   54: * derivative of this code cannot be changed.  i.e. this code cannot simply be
+        -:   55: * copied and put under another distribution licence
+        -:   56: * [including the GNU Public Licence.]
+        -:   57: */
+        -:   58:
+        -:   59:#include <stdio.h>
+        -:   60:#include "cryptlib.h"
+        -:   61:#include <openssl/buffer.h>
+        -:   62:#include <openssl/bn.h>
+        -:   63:#include <openssl/objects.h>
+        -:   64:#include <openssl/x509.h>
+        -:   65:#include <openssl/x509v3.h>
+        -:   66:#ifndef OPENSSL_NO_RSA
+        -:   67:#include <openssl/rsa.h>
+        -:   68:#endif
+        -:   69:#ifndef OPENSSL_NO_DSA
+        -:   70:#include <openssl/dsa.h>
+        -:   71:#endif
+        -:   72:
+        -:   73:#ifndef OPENSSL_NO_FP_API
+    #####:   74:int X509_REQ_print_fp(FILE *fp, X509_REQ *x)
+        -:   75:        {
+        -:   76:        BIO *b;
+        -:   77:        int ret;
+        -:   78:
+    #####:   79:        if ((b=BIO_new(BIO_s_file())) == NULL)
+        -:   80:		{
+    #####:   81:		X509err(X509_F_X509_REQ_PRINT_FP,ERR_R_BUF_LIB);
+    #####:   82:                return(0);
+        -:   83:		}
+    #####:   84:        BIO_set_fp(b,fp,BIO_NOCLOSE);
+        -:   85:        ret=X509_REQ_print(b, x);
+    #####:   86:        BIO_free(b);
+    #####:   87:        return(ret);
+        -:   88:        }
+        -:   89:#endif
+        -:   90:
+    #####:   91:int X509_REQ_print_ex(BIO *bp, X509_REQ *x, unsigned long nmflags, unsigned long cflag)
+        -:   92:	{
+        -:   93:	unsigned long l;
+        -:   94:	int i;
+        -:   95:	const char *neg;
+        -:   96:	X509_REQ_INFO *ri;
+        -:   97:	EVP_PKEY *pkey;
+        -:   98:	STACK_OF(X509_ATTRIBUTE) *sk;
+        -:   99:	STACK_OF(X509_EXTENSION) *exts;
+        -:  100:	char mlch = ' ';
+        -:  101:	int nmindent = 0;
+        -:  102:
+    #####:  103:	if((nmflags & XN_FLAG_SEP_MASK) == XN_FLAG_SEP_MULTILINE) {
+        -:  104:		mlch = '\n';
+        -:  105:		nmindent = 12;
+        -:  106:	}
+        -:  107:
+    #####:  108:	if(nmflags == X509_FLAG_COMPAT)
+        -:  109:		nmindent = 16;
+        -:  110:
+        -:  111:
+    #####:  112:	ri=x->req_info;
+    #####:  113:	if(!(cflag & X509_FLAG_NO_HEADER))
+        -:  114:		{
+    #####:  115:		if (BIO_write(bp,"Certificate Request:\n",21) <= 0) goto err;
+    #####:  116:		if (BIO_write(bp,"    Data:\n",10) <= 0) goto err;
+        -:  117:		}
+    #####:  118:	if(!(cflag & X509_FLAG_NO_VERSION))
+        -:  119:		{
+    #####:  120:		neg=(ri->version->type == V_ASN1_NEG_INTEGER)?"-":"";
+        -:  121:		l=0;
+    #####:  122:		for (i=0; i<ri->version->length; i++)
+    #####:  123:			{ l<<=8; l+=ri->version->data[i]; }
+    #####:  124:		if(BIO_printf(bp,"%8sVersion: %s%lu (%s0x%lx)\n","",neg,l,neg,
+        -:  125:			      l) <= 0)
+        -:  126:		    goto err;
+        -:  127:		}
+    #####:  128:        if(!(cflag & X509_FLAG_NO_SUBJECT))
+        -:  129:                {
+    #####:  130:                if (BIO_printf(bp,"        Subject:%c",mlch) <= 0) goto err;
+    #####:  131:                if (X509_NAME_print_ex(bp,ri->subject,nmindent, nmflags) < 0) goto err;
+    #####:  132:                if (BIO_write(bp,"\n",1) <= 0) goto err;
+        -:  133:                }
+    #####:  134:	if(!(cflag & X509_FLAG_NO_PUBKEY))
+        -:  135:		{
+    #####:  136:		if (BIO_write(bp,"        Subject Public Key Info:\n",33) <= 0)
+        -:  137:			goto err;
+    #####:  138:		if (BIO_printf(bp,"%12sPublic Key Algorithm: ","") <= 0)
+        -:  139:			goto err;
+    #####:  140:		if (i2a_ASN1_OBJECT(bp, ri->pubkey->algor->algorithm) <= 0)
+        -:  141:			goto err;
+    #####:  142:		if (BIO_puts(bp, "\n") <= 0)
+        -:  143:			goto err;
+        -:  144:
+    #####:  145:		pkey=X509_REQ_get_pubkey(x);
+    #####:  146:		if (pkey == NULL)
+        -:  147:			{
+    #####:  148:			BIO_printf(bp,"%12sUnable to load Public Key\n","");
+    #####:  149:			ERR_print_errors(bp);
+        -:  150:			}
+        -:  151:		else
+        -:  152:			{
+    #####:  153:			EVP_PKEY_print_public(bp, pkey, 16, NULL);
+    #####:  154:			EVP_PKEY_free(pkey);
+        -:  155:			}
+        -:  156:		}
+        -:  157:
+    #####:  158:	if(!(cflag & X509_FLAG_NO_ATTRIBUTES))
+        -:  159:		{
+        -:  160:		/* may not be */
+    #####:  161:		if(BIO_printf(bp,"%8sAttributes:\n","") <= 0)
+        -:  162:		    goto err;
+        -:  163:
+    #####:  164:		sk=x->req_info->attributes;
+    #####:  165:		if (sk_X509_ATTRIBUTE_num(sk) == 0)
+        -:  166:			{
+    #####:  167:			if(BIO_printf(bp,"%12sa0:00\n","") <= 0)
+        -:  168:			    goto err;
+        -:  169:			}
+        -:  170:		else
+        -:  171:			{
+    #####:  172:			for (i=0; i<sk_X509_ATTRIBUTE_num(sk); i++)
+        -:  173:				{
+        -:  174:				ASN1_TYPE *at;
+        -:  175:				X509_ATTRIBUTE *a;
+        -:  176:				ASN1_BIT_STRING *bs=NULL;
+        -:  177:				ASN1_TYPE *t;
+        -:  178:				int j,type=0,count=1,ii=0;
+        -:  179:
+    #####:  180:				a=sk_X509_ATTRIBUTE_value(sk,i);
+    #####:  181:				if(X509_REQ_extension_nid(OBJ_obj2nid(a->object)))
+    #####:  182:									continue;
+    #####:  183:				if(BIO_printf(bp,"%12s","") <= 0)
+        -:  184:				    goto err;
+    #####:  185:				if ((j=i2a_ASN1_OBJECT(bp,a->object)) > 0)
+        -:  186:				{
+    #####:  187:				if (a->single)
+        -:  188:					{
+    #####:  189:					t=a->value.single;
+    #####:  190:					type=t->type;
+    #####:  191:					bs=t->value.bit_string;
+        -:  192:					}
+        -:  193:				else
+        -:  194:					{
+        -:  195:					ii=0;
+    #####:  196:					count=sk_ASN1_TYPE_num(a->value.set);
+        -:  197:get_next:
+    #####:  198:					at=sk_ASN1_TYPE_value(a->value.set,ii);
+    #####:  199:					type=at->type;
+    #####:  200:					bs=at->value.asn1_string;
+        -:  201:					}
+        -:  202:				}
+    #####:  203:				for (j=25-j; j>0; j--)
+    #####:  204:					if (BIO_write(bp," ",1) != 1) goto err;
+    #####:  205:				if (BIO_puts(bp,":") <= 0) goto err;
+    #####:  206:				if (	(type == V_ASN1_PRINTABLESTRING) ||
+    #####:  207:					(type == V_ASN1_T61STRING) ||
+    #####:  208:					(type == V_ASN1_IA5STRING))
+        -:  209:					{
+    #####:  210:					if (BIO_write(bp,(char *)bs->data,bs->length)
+    #####:  211:						!= bs->length)
+        -:  212:						goto err;
+    #####:  213:					BIO_puts(bp,"\n");
+        -:  214:					}
+        -:  215:				else
+        -:  216:					{
+    #####:  217:					BIO_puts(bp,"unable to print attribute\n");
+        -:  218:					}
+    #####:  219:				if (++ii < count) goto get_next;
+        -:  220:				}
+        -:  221:			}
+        -:  222:		}
+    #####:  223:	if(!(cflag & X509_FLAG_NO_EXTENSIONS))
+        -:  224:		{
+    #####:  225:		exts = X509_REQ_get_extensions(x);
+    #####:  226:		if(exts)
+        -:  227:			{
+    #####:  228:			BIO_printf(bp,"%8sRequested Extensions:\n","");
+    #####:  229:			for (i=0; i<sk_X509_EXTENSION_num(exts); i++)
+        -:  230:				{
+        -:  231:				ASN1_OBJECT *obj;
+        -:  232:				X509_EXTENSION *ex;
+        -:  233:				int j;
+    #####:  234:				ex=sk_X509_EXTENSION_value(exts, i);
+    #####:  235:				if (BIO_printf(bp,"%12s","") <= 0) goto err;
+    #####:  236:				obj=X509_EXTENSION_get_object(ex);
+    #####:  237:				i2a_ASN1_OBJECT(bp,obj);
+    #####:  238:				j=X509_EXTENSION_get_critical(ex);
+    #####:  239:				if (BIO_printf(bp,": %s\n",j?"critical":"") <= 0)
+        -:  240:					goto err;
+    #####:  241:				if(!X509V3_EXT_print(bp, ex, cflag, 16))
+        -:  242:					{
+    #####:  243:					BIO_printf(bp, "%16s", "");
+    #####:  244:					M_ASN1_OCTET_STRING_print(bp,ex->value);
+        -:  245:					}
+    #####:  246:				if (BIO_write(bp,"\n",1) <= 0) goto err;
+        -:  247:				}
+    #####:  248:			sk_X509_EXTENSION_pop_free(exts, X509_EXTENSION_free);
+        -:  249:			}
+        -:  250:		}
+        -:  251:
+    #####:  252:	if(!(cflag & X509_FLAG_NO_SIGDUMP))
+        -:  253:		{
+    #####:  254:		if(!X509_signature_print(bp, x->sig_alg, x->signature)) goto err;
+        -:  255:		}
+        -:  256:
+        -:  257:	return(1);
+        -:  258:err:
+    #####:  259:	X509err(X509_F_X509_REQ_PRINT_EX,ERR_R_BUF_LIB);
+    #####:  260:	return(0);
+        -:  261:	}
+        -:  262:
+    #####:  263:int X509_REQ_print(BIO *bp, X509_REQ *x)
+        -:  264:	{
+    #####:  265:	return X509_REQ_print_ex(bp, x, XN_FLAG_COMPAT, X509_FLAG_COMPAT);
+        -:  266:	}

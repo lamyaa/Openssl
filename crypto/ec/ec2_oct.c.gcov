@@ -1,0 +1,412 @@
+        -:    0:Source:ec2_oct.c
+        -:    0:Graph:ec2_oct.gcno
+        -:    0:Data:ec2_oct.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* crypto/ec/ec2_oct.c */
+        -:    2:/* ====================================================================
+        -:    3: * Copyright 2002 Sun Microsystems, Inc. ALL RIGHTS RESERVED.
+        -:    4: *
+        -:    5: * The Elliptic Curve Public-Key Crypto Library (ECC Code) included
+        -:    6: * herein is developed by SUN MICROSYSTEMS, INC., and is contributed
+        -:    7: * to the OpenSSL project.
+        -:    8: *
+        -:    9: * The ECC Code is licensed pursuant to the OpenSSL open source
+        -:   10: * license provided below.
+        -:   11: *
+        -:   12: * The software is originally written by Sheueling Chang Shantz and
+        -:   13: * Douglas Stebila of Sun Microsystems Laboratories.
+        -:   14: *
+        -:   15: */
+        -:   16:/* ====================================================================
+        -:   17: * Copyright (c) 1998-2005 The OpenSSL Project.  All rights reserved.
+        -:   18: *
+        -:   19: * Redistribution and use in source and binary forms, with or without
+        -:   20: * modification, are permitted provided that the following conditions
+        -:   21: * are met:
+        -:   22: *
+        -:   23: * 1. Redistributions of source code must retain the above copyright
+        -:   24: *    notice, this list of conditions and the following disclaimer. 
+        -:   25: *
+        -:   26: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   27: *    notice, this list of conditions and the following disclaimer in
+        -:   28: *    the documentation and/or other materials provided with the
+        -:   29: *    distribution.
+        -:   30: *
+        -:   31: * 3. All advertising materials mentioning features or use of this
+        -:   32: *    software must display the following acknowledgment:
+        -:   33: *    "This product includes software developed by the OpenSSL Project
+        -:   34: *    for use in the OpenSSL Toolkit. (http://www.openssl.org/)"
+        -:   35: *
+        -:   36: * 4. The names "OpenSSL Toolkit" and "OpenSSL Project" must not be used to
+        -:   37: *    endorse or promote products derived from this software without
+        -:   38: *    prior written permission. For written permission, please contact
+        -:   39: *    openssl-core@openssl.org.
+        -:   40: *
+        -:   41: * 5. Products derived from this software may not be called "OpenSSL"
+        -:   42: *    nor may "OpenSSL" appear in their names without prior written
+        -:   43: *    permission of the OpenSSL Project.
+        -:   44: *
+        -:   45: * 6. Redistributions of any form whatsoever must retain the following
+        -:   46: *    acknowledgment:
+        -:   47: *    "This product includes software developed by the OpenSSL Project
+        -:   48: *    for use in the OpenSSL Toolkit (http://www.openssl.org/)"
+        -:   49: *
+        -:   50: * THIS SOFTWARE IS PROVIDED BY THE OpenSSL PROJECT ``AS IS'' AND ANY
+        -:   51: * EXPRESSED OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   52: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+        -:   53: * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE OpenSSL PROJECT OR
+        -:   54: * ITS CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+        -:   55: * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+        -:   56: * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+        -:   57: * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   58: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+        -:   59: * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+        -:   60: * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+        -:   61: * OF THE POSSIBILITY OF SUCH DAMAGE.
+        -:   62: * ====================================================================
+        -:   63: *
+        -:   64: * This product includes cryptographic software written by Eric Young
+        -:   65: * (eay@cryptsoft.com).  This product includes software written by Tim
+        -:   66: * Hudson (tjh@cryptsoft.com).
+        -:   67: *
+        -:   68: */
+        -:   69:
+        -:   70:#include <openssl/err.h>
+        -:   71:
+        -:   72:#include "ec_lcl.h"
+        -:   73:
+        -:   74:#ifndef OPENSSL_NO_EC2M
+        -:   75:
+        -:   76:/* Calculates and sets the affine coordinates of an EC_POINT from the given
+        -:   77: * compressed coordinates.  Uses algorithm 2.3.4 of SEC 1. 
+        -:   78: * Note that the simple implementation only uses affine coordinates.
+        -:   79: *
+        -:   80: * The method is from the following publication:
+        -:   81: * 
+        -:   82: *     Harper, Menezes, Vanstone:
+        -:   83: *     "Public-Key Cryptosystems with Very Small Key Lengths",
+        -:   84: *     EUROCRYPT '92, Springer-Verlag LNCS 658,
+        -:   85: *     published February 1993
+        -:   86: *
+        -:   87: * US Patents 6,141,420 and 6,618,483 (Vanstone, Mullin, Agnew) describe
+        -:   88: * the same method, but claim no priority date earlier than July 29, 1994
+        -:   89: * (and additionally fail to cite the EUROCRYPT '92 publication as prior art).
+        -:   90: */
+    #####:   91:int ec_GF2m_simple_set_compressed_coordinates(const EC_GROUP *group, EC_POINT *point,
+        -:   92:	const BIGNUM *x_, int y_bit, BN_CTX *ctx)
+        -:   93:	{
+        -:   94:	BN_CTX *new_ctx = NULL;
+        -:   95:	BIGNUM *tmp, *x, *y, *z;
+        -:   96:	int ret = 0, z0;
+        -:   97:
+        -:   98:	/* clear error queue */
+    #####:   99:	ERR_clear_error();
+        -:  100:
+    #####:  101:	if (ctx == NULL)
+        -:  102:		{
+    #####:  103:		ctx = new_ctx = BN_CTX_new();
+    #####:  104:		if (ctx == NULL)
+        -:  105:			return 0;
+        -:  106:		}
+        -:  107:
+    #####:  108:	y_bit = (y_bit != 0) ? 1 : 0;
+        -:  109:
+    #####:  110:	BN_CTX_start(ctx);
+    #####:  111:	tmp = BN_CTX_get(ctx);
+    #####:  112:	x = BN_CTX_get(ctx);
+    #####:  113:	y = BN_CTX_get(ctx);
+    #####:  114:	z = BN_CTX_get(ctx);
+    #####:  115:	if (z == NULL) goto err;
+        -:  116:
+    #####:  117:	if (!BN_GF2m_mod_arr(x, x_, group->poly)) goto err;
+    #####:  118:	if (BN_is_zero(x))
+        -:  119:		{
+    #####:  120:		if (!BN_GF2m_mod_sqrt_arr(y, &group->b, group->poly, ctx)) goto err;
+        -:  121:		}
+        -:  122:	else
+        -:  123:		{
+    #####:  124:		if (!group->meth->field_sqr(group, tmp, x, ctx)) goto err;
+    #####:  125:		if (!group->meth->field_div(group, tmp, &group->b, tmp, ctx)) goto err;
+    #####:  126:		if (!BN_GF2m_add(tmp, &group->a, tmp)) goto err;
+    #####:  127:		if (!BN_GF2m_add(tmp, x, tmp)) goto err;
+    #####:  128:		if (!BN_GF2m_mod_solve_quad_arr(z, tmp, group->poly, ctx))
+        -:  129:			{
+    #####:  130:			unsigned long err = ERR_peek_last_error();
+        -:  131:			
+    #####:  132:			if (ERR_GET_LIB(err) == ERR_LIB_BN && ERR_GET_REASON(err) == BN_R_NO_SOLUTION)
+        -:  133:				{
+    #####:  134:				ERR_clear_error();
+    #####:  135:				ECerr(EC_F_EC_GF2M_SIMPLE_SET_COMPRESSED_COORDINATES, EC_R_INVALID_COMPRESSED_POINT);
+        -:  136:				}
+        -:  137:			else
+    #####:  138:				ECerr(EC_F_EC_GF2M_SIMPLE_SET_COMPRESSED_COORDINATES, ERR_R_BN_LIB);
+        -:  139:			goto err;
+        -:  140:			}
+    #####:  141:		z0 = (BN_is_odd(z)) ? 1 : 0;
+    #####:  142:		if (!group->meth->field_mul(group, y, x, z, ctx)) goto err;
+    #####:  143:		if (z0 != y_bit)
+        -:  144:			{
+    #####:  145:			if (!BN_GF2m_add(y, y, x)) goto err;
+        -:  146:			}
+        -:  147:		}
+        -:  148:
+    #####:  149:	if (!EC_POINT_set_affine_coordinates_GF2m(group, point, x, y, ctx)) goto err;
+        -:  150:
+        -:  151:	ret = 1;
+        -:  152:
+        -:  153: err:
+    #####:  154:	BN_CTX_end(ctx);
+    #####:  155:	if (new_ctx != NULL)
+    #####:  156:		BN_CTX_free(new_ctx);
+    #####:  157:	return ret;
+        -:  158:	}
+        -:  159:
+        -:  160:
+        -:  161:/* Converts an EC_POINT to an octet string.  
+        -:  162: * If buf is NULL, the encoded length will be returned.
+        -:  163: * If the length len of buf is smaller than required an error will be returned.
+        -:  164: */
+    #####:  165:size_t ec_GF2m_simple_point2oct(const EC_GROUP *group, const EC_POINT *point, point_conversion_form_t form,
+        -:  166:	unsigned char *buf, size_t len, BN_CTX *ctx)
+        -:  167:	{
+        -:  168:	size_t ret;
+        -:  169:	BN_CTX *new_ctx = NULL;
+        -:  170:	int used_ctx = 0;
+        -:  171:	BIGNUM *x, *y, *yxi;
+        -:  172:	size_t field_len, i, skip;
+        -:  173:
+    #####:  174:	if ((form != POINT_CONVERSION_COMPRESSED)
+    #####:  175:		&& (form != POINT_CONVERSION_UNCOMPRESSED)
+    #####:  176:		&& (form != POINT_CONVERSION_HYBRID))
+        -:  177:		{
+    #####:  178:		ECerr(EC_F_EC_GF2M_SIMPLE_POINT2OCT, EC_R_INVALID_FORM);
+    #####:  179:		goto err;
+        -:  180:		}
+        -:  181:
+    #####:  182:	if (EC_POINT_is_at_infinity(group, point))
+        -:  183:		{
+        -:  184:		/* encodes to a single 0 octet */
+    #####:  185:		if (buf != NULL)
+        -:  186:			{
+    #####:  187:			if (len < 1)
+        -:  188:				{
+    #####:  189:				ECerr(EC_F_EC_GF2M_SIMPLE_POINT2OCT, EC_R_BUFFER_TOO_SMALL);
+    #####:  190:				return 0;
+        -:  191:				}
+    #####:  192:			buf[0] = 0;
+        -:  193:			}
+        -:  194:		return 1;
+        -:  195:		}
+        -:  196:
+        -:  197:
+        -:  198:	/* ret := required output buffer length */
+    #####:  199:	field_len = (EC_GROUP_get_degree(group) + 7) / 8;
+    #####:  200:	ret = (form == POINT_CONVERSION_COMPRESSED) ? 1 + field_len : 1 + 2*field_len;
+        -:  201:
+        -:  202:	/* if 'buf' is NULL, just return required length */
+    #####:  203:	if (buf != NULL)
+        -:  204:		{
+    #####:  205:		if (len < ret)
+        -:  206:			{
+    #####:  207:			ECerr(EC_F_EC_GF2M_SIMPLE_POINT2OCT, EC_R_BUFFER_TOO_SMALL);
+    #####:  208:			goto err;
+        -:  209:			}
+        -:  210:
+    #####:  211:		if (ctx == NULL)
+        -:  212:			{
+    #####:  213:			ctx = new_ctx = BN_CTX_new();
+    #####:  214:			if (ctx == NULL)
+        -:  215:				return 0;
+        -:  216:			}
+        -:  217:
+    #####:  218:		BN_CTX_start(ctx);
+        -:  219:		used_ctx = 1;
+    #####:  220:		x = BN_CTX_get(ctx);
+    #####:  221:		y = BN_CTX_get(ctx);
+    #####:  222:		yxi = BN_CTX_get(ctx);
+    #####:  223:		if (yxi == NULL) goto err;
+        -:  224:
+    #####:  225:		if (!EC_POINT_get_affine_coordinates_GF2m(group, point, x, y, ctx)) goto err;
+        -:  226:
+    #####:  227:		buf[0] = form;
+    #####:  228:		if ((form != POINT_CONVERSION_UNCOMPRESSED) && !BN_is_zero(x))
+        -:  229:			{
+    #####:  230:			if (!group->meth->field_div(group, yxi, y, x, ctx)) goto err;
+    #####:  231:			if (BN_is_odd(yxi)) buf[0]++;
+        -:  232:			}
+        -:  233:
+        -:  234:		i = 1;
+        -:  235:		
+    #####:  236:		skip = field_len - BN_num_bytes(x);
+    #####:  237:		if (skip > field_len)
+        -:  238:			{
+    #####:  239:			ECerr(EC_F_EC_GF2M_SIMPLE_POINT2OCT, ERR_R_INTERNAL_ERROR);
+    #####:  240:			goto err;
+        -:  241:			}
+    #####:  242:		while (skip > 0)
+        -:  243:			{
+    #####:  244:			buf[i++] = 0;
+    #####:  245:			skip--;
+        -:  246:			}
+    #####:  247:		skip = BN_bn2bin(x, buf + i);
+    #####:  248:		i += skip;
+    #####:  249:		if (i != 1 + field_len)
+        -:  250:			{
+    #####:  251:			ECerr(EC_F_EC_GF2M_SIMPLE_POINT2OCT, ERR_R_INTERNAL_ERROR);
+    #####:  252:			goto err;
+        -:  253:			}
+        -:  254:
+    #####:  255:		if (form == POINT_CONVERSION_UNCOMPRESSED || form == POINT_CONVERSION_HYBRID)
+        -:  256:			{
+    #####:  257:			skip = field_len - BN_num_bytes(y);
+    #####:  258:			if (skip > field_len)
+        -:  259:				{
+    #####:  260:				ECerr(EC_F_EC_GF2M_SIMPLE_POINT2OCT, ERR_R_INTERNAL_ERROR);
+    #####:  261:				goto err;
+        -:  262:				}
+    #####:  263:			while (skip > 0)
+        -:  264:				{
+    #####:  265:				buf[i++] = 0;
+    #####:  266:				skip--;
+        -:  267:				}
+    #####:  268:			skip = BN_bn2bin(y, buf + i);
+    #####:  269:			i += skip;
+        -:  270:			}
+        -:  271:
+    #####:  272:		if (i != ret)
+        -:  273:			{
+    #####:  274:			ECerr(EC_F_EC_GF2M_SIMPLE_POINT2OCT, ERR_R_INTERNAL_ERROR);
+    #####:  275:			goto err;
+        -:  276:			}
+        -:  277:		}
+        -:  278:	
+    #####:  279:	if (used_ctx)
+    #####:  280:		BN_CTX_end(ctx);
+    #####:  281:	if (new_ctx != NULL)
+    #####:  282:		BN_CTX_free(new_ctx);
+    #####:  283:	return ret;
+        -:  284:
+        -:  285: err:
+    #####:  286:	if (used_ctx)
+    #####:  287:		BN_CTX_end(ctx);
+    #####:  288:	if (new_ctx != NULL)
+    #####:  289:		BN_CTX_free(new_ctx);
+        -:  290:	return 0;
+        -:  291:	}
+        -:  292:
+        -:  293:
+        -:  294:/* Converts an octet string representation to an EC_POINT. 
+        -:  295: * Note that the simple implementation only uses affine coordinates.
+        -:  296: */
+    #####:  297:int ec_GF2m_simple_oct2point(const EC_GROUP *group, EC_POINT *point,
+        -:  298:	const unsigned char *buf, size_t len, BN_CTX *ctx)
+        -:  299:	{
+        -:  300:	point_conversion_form_t form;
+        -:  301:	int y_bit;
+        -:  302:	BN_CTX *new_ctx = NULL;
+        -:  303:	BIGNUM *x, *y, *yxi;
+        -:  304:	size_t field_len, enc_len;
+        -:  305:	int ret = 0;
+        -:  306:
+    #####:  307:	if (len == 0)
+        -:  308:		{
+    #####:  309:		ECerr(EC_F_EC_GF2M_SIMPLE_OCT2POINT, EC_R_BUFFER_TOO_SMALL);
+    #####:  310:		return 0;
+        -:  311:		}
+    #####:  312:	form = buf[0];
+    #####:  313:	y_bit = form & 1;
+    #####:  314:	form = form & ~1U;
+    #####:  315:	if ((form != 0)	&& (form != POINT_CONVERSION_COMPRESSED)
+    #####:  316:		&& (form != POINT_CONVERSION_UNCOMPRESSED)
+    #####:  317:		&& (form != POINT_CONVERSION_HYBRID))
+        -:  318:		{
+    #####:  319:		ECerr(EC_F_EC_GF2M_SIMPLE_OCT2POINT, EC_R_INVALID_ENCODING);
+    #####:  320:		return 0;
+        -:  321:		}
+    #####:  322:	if ((form == 0 || form == POINT_CONVERSION_UNCOMPRESSED) && y_bit)
+        -:  323:		{
+    #####:  324:		ECerr(EC_F_EC_GF2M_SIMPLE_OCT2POINT, EC_R_INVALID_ENCODING);
+    #####:  325:		return 0;
+        -:  326:		}
+        -:  327:
+    #####:  328:	if (form == 0)
+        -:  329:		{
+    #####:  330:		if (len != 1)
+        -:  331:			{
+    #####:  332:			ECerr(EC_F_EC_GF2M_SIMPLE_OCT2POINT, EC_R_INVALID_ENCODING);
+    #####:  333:			return 0;
+        -:  334:			}
+        -:  335:
+    #####:  336:		return EC_POINT_set_to_infinity(group, point);
+        -:  337:		}
+        -:  338:	
+    #####:  339:	field_len = (EC_GROUP_get_degree(group) + 7) / 8;
+    #####:  340:	enc_len = (form == POINT_CONVERSION_COMPRESSED) ? 1 + field_len : 1 + 2*field_len;
+        -:  341:
+    #####:  342:	if (len != enc_len)
+        -:  343:		{
+    #####:  344:		ECerr(EC_F_EC_GF2M_SIMPLE_OCT2POINT, EC_R_INVALID_ENCODING);
+    #####:  345:		return 0;
+        -:  346:		}
+        -:  347:
+    #####:  348:	if (ctx == NULL)
+        -:  349:		{
+    #####:  350:		ctx = new_ctx = BN_CTX_new();
+    #####:  351:		if (ctx == NULL)
+        -:  352:			return 0;
+        -:  353:		}
+        -:  354:
+    #####:  355:	BN_CTX_start(ctx);
+    #####:  356:	x = BN_CTX_get(ctx);
+    #####:  357:	y = BN_CTX_get(ctx);
+    #####:  358:	yxi = BN_CTX_get(ctx);
+    #####:  359:	if (yxi == NULL) goto err;
+        -:  360:
+    #####:  361:	if (!BN_bin2bn(buf + 1, field_len, x)) goto err;
+    #####:  362:	if (BN_ucmp(x, &group->field) >= 0)
+        -:  363:		{
+    #####:  364:		ECerr(EC_F_EC_GF2M_SIMPLE_OCT2POINT, EC_R_INVALID_ENCODING);
+    #####:  365:		goto err;
+        -:  366:		}
+        -:  367:
+    #####:  368:	if (form == POINT_CONVERSION_COMPRESSED)
+        -:  369:		{
+    #####:  370:		if (!EC_POINT_set_compressed_coordinates_GF2m(group, point, x, y_bit, ctx)) goto err;
+        -:  371:		}
+        -:  372:	else
+        -:  373:		{
+    #####:  374:		if (!BN_bin2bn(buf + 1 + field_len, field_len, y)) goto err;
+    #####:  375:		if (BN_ucmp(y, &group->field) >= 0)
+        -:  376:			{
+    #####:  377:			ECerr(EC_F_EC_GF2M_SIMPLE_OCT2POINT, EC_R_INVALID_ENCODING);
+    #####:  378:			goto err;
+        -:  379:			}
+    #####:  380:		if (form == POINT_CONVERSION_HYBRID)
+        -:  381:			{
+    #####:  382:			if (!group->meth->field_div(group, yxi, y, x, ctx)) goto err;
+    #####:  383:			if (y_bit != BN_is_odd(yxi))
+        -:  384:				{
+    #####:  385:				ECerr(EC_F_EC_GF2M_SIMPLE_OCT2POINT, EC_R_INVALID_ENCODING);
+    #####:  386:				goto err;
+        -:  387:				}
+        -:  388:			}
+        -:  389:
+    #####:  390:		if (!EC_POINT_set_affine_coordinates_GF2m(group, point, x, y, ctx)) goto err;
+        -:  391:		}
+        -:  392:	
+    #####:  393:	if (!EC_POINT_is_on_curve(group, point, ctx)) /* test required by X9.62 */
+        -:  394:		{
+    #####:  395:		ECerr(EC_F_EC_GF2M_SIMPLE_OCT2POINT, EC_R_POINT_IS_NOT_ON_CURVE);
+    #####:  396:		goto err;
+        -:  397:		}
+        -:  398:
+        -:  399:	ret = 1;
+        -:  400:	
+        -:  401: err:
+    #####:  402:	BN_CTX_end(ctx);
+    #####:  403:	if (new_ctx != NULL)
+    #####:  404:		BN_CTX_free(new_ctx);
+    #####:  405:	return ret;
+        -:  406:	}
+        -:  407:#endif

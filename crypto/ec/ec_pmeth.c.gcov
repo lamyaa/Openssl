@@ -1,0 +1,346 @@
+        -:    0:Source:ec_pmeth.c
+        -:    0:Graph:ec_pmeth.gcno
+        -:    0:Data:ec_pmeth.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* Written by Dr Stephen N Henson (steve@openssl.org) for the OpenSSL
+        -:    2: * project 2006.
+        -:    3: */
+        -:    4:/* ====================================================================
+        -:    5: * Copyright (c) 2006 The OpenSSL Project.  All rights reserved.
+        -:    6: *
+        -:    7: * Redistribution and use in source and binary forms, with or without
+        -:    8: * modification, are permitted provided that the following conditions
+        -:    9: * are met:
+        -:   10: *
+        -:   11: * 1. Redistributions of source code must retain the above copyright
+        -:   12: *    notice, this list of conditions and the following disclaimer. 
+        -:   13: *
+        -:   14: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   15: *    notice, this list of conditions and the following disclaimer in
+        -:   16: *    the documentation and/or other materials provided with the
+        -:   17: *    distribution.
+        -:   18: *
+        -:   19: * 3. All advertising materials mentioning features or use of this
+        -:   20: *    software must display the following acknowledgment:
+        -:   21: *    "This product includes software developed by the OpenSSL Project
+        -:   22: *    for use in the OpenSSL Toolkit. (http://www.OpenSSL.org/)"
+        -:   23: *
+        -:   24: * 4. The names "OpenSSL Toolkit" and "OpenSSL Project" must not be used to
+        -:   25: *    endorse or promote products derived from this software without
+        -:   26: *    prior written permission. For written permission, please contact
+        -:   27: *    licensing@OpenSSL.org.
+        -:   28: *
+        -:   29: * 5. Products derived from this software may not be called "OpenSSL"
+        -:   30: *    nor may "OpenSSL" appear in their names without prior written
+        -:   31: *    permission of the OpenSSL Project.
+        -:   32: *
+        -:   33: * 6. Redistributions of any form whatsoever must retain the following
+        -:   34: *    acknowledgment:
+        -:   35: *    "This product includes software developed by the OpenSSL Project
+        -:   36: *    for use in the OpenSSL Toolkit (http://www.OpenSSL.org/)"
+        -:   37: *
+        -:   38: * THIS SOFTWARE IS PROVIDED BY THE OpenSSL PROJECT ``AS IS'' AND ANY
+        -:   39: * EXPRESSED OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   40: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+        -:   41: * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE OpenSSL PROJECT OR
+        -:   42: * ITS CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+        -:   43: * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+        -:   44: * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+        -:   45: * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   46: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+        -:   47: * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+        -:   48: * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+        -:   49: * OF THE POSSIBILITY OF SUCH DAMAGE.
+        -:   50: * ====================================================================
+        -:   51: *
+        -:   52: * This product includes cryptographic software written by Eric Young
+        -:   53: * (eay@cryptsoft.com).  This product includes software written by Tim
+        -:   54: * Hudson (tjh@cryptsoft.com).
+        -:   55: *
+        -:   56: */
+        -:   57:
+        -:   58:#include <stdio.h>
+        -:   59:#include "cryptlib.h"
+        -:   60:#include <openssl/asn1t.h>
+        -:   61:#include <openssl/x509.h>
+        -:   62:#include <openssl/ec.h>
+        -:   63:#include <openssl/ecdsa.h>
+        -:   64:#include <openssl/evp.h>
+        -:   65:#include "evp_locl.h"
+        -:   66:
+        -:   67:/* EC pkey context structure */
+        -:   68:
+        -:   69:typedef struct
+        -:   70:	{
+        -:   71:	/* Key and paramgen group */
+        -:   72:	EC_GROUP *gen_group;
+        -:   73:	/* message digest */
+        -:   74:	const EVP_MD *md;
+        -:   75:	} EC_PKEY_CTX;
+        -:   76:
+    #####:   77:static int pkey_ec_init(EVP_PKEY_CTX *ctx)
+        -:   78:	{
+        -:   79:	EC_PKEY_CTX *dctx;
+    #####:   80:	dctx = OPENSSL_malloc(sizeof(EC_PKEY_CTX));
+    #####:   81:	if (!dctx)
+        -:   82:		return 0;
+    #####:   83:	dctx->gen_group = NULL;
+    #####:   84:	dctx->md = NULL;
+        -:   85:
+    #####:   86:	ctx->data = dctx;
+        -:   87:
+    #####:   88:	return 1;
+        -:   89:	}
+        -:   90:
+    #####:   91:static int pkey_ec_copy(EVP_PKEY_CTX *dst, EVP_PKEY_CTX *src)
+        -:   92:	{
+        -:   93:	EC_PKEY_CTX *dctx, *sctx;
+    #####:   94:	if (!pkey_ec_init(dst))
+        -:   95:		return 0;
+    #####:   96:       	sctx = src->data;
+    #####:   97:	dctx = dst->data;
+    #####:   98:	if (sctx->gen_group)
+        -:   99:		{
+    #####:  100:		dctx->gen_group = EC_GROUP_dup(sctx->gen_group);
+    #####:  101:		if (!dctx->gen_group)
+        -:  102:			return 0;
+        -:  103:		}
+    #####:  104:	dctx->md = sctx->md;
+    #####:  105:	return 1;
+        -:  106:	}
+        -:  107:
+    #####:  108:static void pkey_ec_cleanup(EVP_PKEY_CTX *ctx)
+        -:  109:	{
+    #####:  110:	EC_PKEY_CTX *dctx = ctx->data;
+    #####:  111:	if (dctx)
+        -:  112:		{
+    #####:  113:		if (dctx->gen_group)
+    #####:  114:			EC_GROUP_free(dctx->gen_group);
+    #####:  115:		OPENSSL_free(dctx);
+        -:  116:		}
+    #####:  117:	}
+        -:  118:
+    #####:  119:static int pkey_ec_sign(EVP_PKEY_CTX *ctx, unsigned char *sig, size_t *siglen,
+        -:  120:					const unsigned char *tbs, size_t tbslen)
+        -:  121:	{
+        -:  122:	int ret, type;
+        -:  123:	unsigned int sltmp;
+    #####:  124:	EC_PKEY_CTX *dctx = ctx->data;
+    #####:  125:	EC_KEY *ec = ctx->pkey->pkey.ec;
+        -:  126:
+    #####:  127:	if (!sig)
+        -:  128:		{
+    #####:  129:		*siglen = ECDSA_size(ec);
+    #####:  130:		return 1;
+        -:  131:		}
+    #####:  132:	else if(*siglen < (size_t)ECDSA_size(ec))
+        -:  133:		{
+    #####:  134:		ECerr(EC_F_PKEY_EC_SIGN, EC_R_BUFFER_TOO_SMALL);
+    #####:  135:		return 0;
+        -:  136:		}
+        -:  137:
+    #####:  138:	if (dctx->md)
+    #####:  139:		type = EVP_MD_type(dctx->md);
+        -:  140:	else
+        -:  141:		type = NID_sha1;
+        -:  142:
+        -:  143:
+    #####:  144:	ret = ECDSA_sign(type, tbs, tbslen, sig, &sltmp, ec);
+        -:  145:
+    #####:  146:	if (ret <= 0)
+        -:  147:		return ret;
+    #####:  148:	*siglen = (size_t)sltmp;
+    #####:  149:	return 1;
+        -:  150:	}
+        -:  151:
+    #####:  152:static int pkey_ec_verify(EVP_PKEY_CTX *ctx,
+        -:  153:					const unsigned char *sig, size_t siglen,
+        -:  154:					const unsigned char *tbs, size_t tbslen)
+        -:  155:	{
+        -:  156:	int ret, type;
+    #####:  157:	EC_PKEY_CTX *dctx = ctx->data;
+    #####:  158:	EC_KEY *ec = ctx->pkey->pkey.ec;
+        -:  159:
+    #####:  160:	if (dctx->md)
+    #####:  161:		type = EVP_MD_type(dctx->md);
+        -:  162:	else
+        -:  163:		type = NID_sha1;
+        -:  164:
+    #####:  165:	ret = ECDSA_verify(type, tbs, tbslen, sig, siglen, ec);
+        -:  166:
+    #####:  167:	return ret;
+        -:  168:	}
+        -:  169:
+    #####:  170:static int pkey_ec_derive(EVP_PKEY_CTX *ctx, unsigned char *key, size_t *keylen)
+        -:  171:	{
+        -:  172:	int ret;
+        -:  173:	size_t outlen;
+        -:  174:	const EC_POINT *pubkey = NULL;
+    #####:  175:	if (!ctx->pkey || !ctx->peerkey)
+        -:  176:		{
+    #####:  177:		ECerr(EC_F_PKEY_EC_DERIVE, EC_R_KEYS_NOT_SET);
+    #####:  178:		return 0;
+        -:  179:		}
+        -:  180:
+    #####:  181:	if (!key)
+        -:  182:		{
+        -:  183:		const EC_GROUP *group;
+    #####:  184:		group = EC_KEY_get0_group(ctx->pkey->pkey.ec);
+    #####:  185:		*keylen = (EC_GROUP_get_degree(group) + 7)/8;
+    #####:  186:		return 1;
+        -:  187:		}
+        -:  188:
+    #####:  189:	pubkey = EC_KEY_get0_public_key(ctx->peerkey->pkey.ec);
+        -:  190:
+        -:  191:	/* NB: unlike PKCS#3 DH, if *outlen is less than maximum size this is
+        -:  192:	 * not an error, the result is truncated.
+        -:  193:	 */
+        -:  194:
+    #####:  195:	outlen = *keylen;
+        -:  196:		
+    #####:  197:	ret = ECDH_compute_key(key, outlen, pubkey, ctx->pkey->pkey.ec, 0);
+    #####:  198:	if (ret < 0)
+        -:  199:		return ret;
+    #####:  200:	*keylen = ret;
+    #####:  201:	return 1;
+        -:  202:	}
+        -:  203:
+    #####:  204:static int pkey_ec_ctrl(EVP_PKEY_CTX *ctx, int type, int p1, void *p2)
+        -:  205:	{
+    #####:  206:	EC_PKEY_CTX *dctx = ctx->data;
+        -:  207:	EC_GROUP *group;
+    #####:  208:	switch (type)
+        -:  209:		{
+        -:  210:		case EVP_PKEY_CTRL_EC_PARAMGEN_CURVE_NID:
+    #####:  211:		group = EC_GROUP_new_by_curve_name(p1);
+    #####:  212:		if (group == NULL)
+        -:  213:			{
+    #####:  214:			ECerr(EC_F_PKEY_EC_CTRL, EC_R_INVALID_CURVE);
+    #####:  215:			return 0;
+        -:  216:			}
+    #####:  217:		if (dctx->gen_group)
+    #####:  218:			EC_GROUP_free(dctx->gen_group);
+    #####:  219:		dctx->gen_group = group;
+    #####:  220:		return 1;
+        -:  221:
+        -:  222:		case EVP_PKEY_CTRL_MD:
+    #####:  223:		if (EVP_MD_type((const EVP_MD *)p2) != NID_sha1 &&
+    #####:  224:		    EVP_MD_type((const EVP_MD *)p2) != NID_ecdsa_with_SHA1 &&
+    #####:  225:		    EVP_MD_type((const EVP_MD *)p2) != NID_sha224 &&
+    #####:  226:		    EVP_MD_type((const EVP_MD *)p2) != NID_sha256 &&
+    #####:  227:		    EVP_MD_type((const EVP_MD *)p2) != NID_sha384 &&
+    #####:  228:		    EVP_MD_type((const EVP_MD *)p2) != NID_sha512)
+        -:  229:			{
+    #####:  230:			ECerr(EC_F_PKEY_EC_CTRL, EC_R_INVALID_DIGEST_TYPE);
+    #####:  231:			return 0;
+        -:  232:			}
+    #####:  233:		dctx->md = p2;
+    #####:  234:		return 1;
+        -:  235:
+        -:  236:		case EVP_PKEY_CTRL_PEER_KEY:
+        -:  237:		/* Default behaviour is OK */
+        -:  238:		case EVP_PKEY_CTRL_DIGESTINIT:
+        -:  239:		case EVP_PKEY_CTRL_PKCS7_SIGN:
+        -:  240:		case EVP_PKEY_CTRL_CMS_SIGN:
+        -:  241:		return 1;
+        -:  242:
+        -:  243:		default:
+    #####:  244:		return -2;
+        -:  245:
+        -:  246:		}
+        -:  247:	}
+        -:  248:			
+    #####:  249:static int pkey_ec_ctrl_str(EVP_PKEY_CTX *ctx,
+        -:  250:			const char *type, const char *value)
+        -:  251:	{
+    #####:  252:	if (!strcmp(type, "ec_paramgen_curve"))
+        -:  253:		{
+        -:  254:		int nid;
+    #####:  255:		nid = OBJ_sn2nid(value);
+    #####:  256:		if (nid == NID_undef)
+    #####:  257:			nid = OBJ_ln2nid(value);
+    #####:  258:		if (nid == NID_undef)
+        -:  259:			{
+    #####:  260:			ECerr(EC_F_PKEY_EC_CTRL_STR, EC_R_INVALID_CURVE);
+    #####:  261:			return 0;
+        -:  262:			}
+    #####:  263:		return EVP_PKEY_CTX_set_ec_paramgen_curve_nid(ctx, nid);
+        -:  264:		}
+        -:  265:	return -2;
+        -:  266:	}
+        -:  267:
+    #####:  268:static int pkey_ec_paramgen(EVP_PKEY_CTX *ctx, EVP_PKEY *pkey)
+        -:  269:	{
+        -:  270:	EC_KEY *ec = NULL;
+    #####:  271:	EC_PKEY_CTX *dctx = ctx->data;
+        -:  272:	int ret = 0;
+    #####:  273:	if (dctx->gen_group == NULL)
+        -:  274:		{
+    #####:  275:		ECerr(EC_F_PKEY_EC_PARAMGEN, EC_R_NO_PARAMETERS_SET);
+    #####:  276:		return 0;
+        -:  277:		}
+    #####:  278:	ec = EC_KEY_new();
+    #####:  279:	if (!ec)
+        -:  280:		return 0;
+    #####:  281:	ret = EC_KEY_set_group(ec, dctx->gen_group);
+    #####:  282:	if (ret)
+    #####:  283:		EVP_PKEY_assign_EC_KEY(pkey, ec);
+        -:  284:	else
+    #####:  285:		EC_KEY_free(ec);
+    #####:  286:	return ret;
+        -:  287:	}
+        -:  288:
+    #####:  289:static int pkey_ec_keygen(EVP_PKEY_CTX *ctx, EVP_PKEY *pkey)
+        -:  290:	{
+        -:  291:	EC_KEY *ec = NULL;
+    #####:  292:	if (ctx->pkey == NULL)
+        -:  293:		{
+    #####:  294:		ECerr(EC_F_PKEY_EC_KEYGEN, EC_R_NO_PARAMETERS_SET);
+    #####:  295:		return 0;
+        -:  296:		}
+    #####:  297:	ec = EC_KEY_new();
+    #####:  298:	if (!ec)
+        -:  299:		return 0;
+    #####:  300:	EVP_PKEY_assign_EC_KEY(pkey, ec);
+        -:  301:	/* Note: if error return, pkey is freed by parent routine */
+    #####:  302:	if (!EVP_PKEY_copy_parameters(pkey, ctx->pkey))
+        -:  303:		return 0;
+    #####:  304:	return EC_KEY_generate_key(pkey->pkey.ec);
+        -:  305:	}
+        -:  306:
+        -:  307:const EVP_PKEY_METHOD ec_pkey_meth = 
+        -:  308:	{
+        -:  309:	EVP_PKEY_EC,
+        -:  310:	0,
+        -:  311:	pkey_ec_init,
+        -:  312:	pkey_ec_copy,
+        -:  313:	pkey_ec_cleanup,
+        -:  314:
+        -:  315:	0,
+        -:  316:	pkey_ec_paramgen,
+        -:  317:
+        -:  318:	0,
+        -:  319:	pkey_ec_keygen,
+        -:  320:
+        -:  321:	0,
+        -:  322:	pkey_ec_sign,
+        -:  323:
+        -:  324:	0,
+        -:  325:	pkey_ec_verify,
+        -:  326:
+        -:  327:	0,0,
+        -:  328:
+        -:  329:	0,0,0,0,
+        -:  330:
+        -:  331:	0,0,
+        -:  332:
+        -:  333:	0,0,
+        -:  334:
+        -:  335:	0,
+        -:  336:	pkey_ec_derive,
+        -:  337:
+        -:  338:	pkey_ec_ctrl,
+        -:  339:	pkey_ec_ctrl_str
+        -:  340:
+        -:  341:	};

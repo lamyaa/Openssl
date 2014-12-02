@@ -1,0 +1,524 @@
+        -:    0:Source:x_name.c
+        -:    0:Graph:x_name.gcno
+        -:    0:Data:x_name.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* crypto/asn1/x_name.c */
+        -:    2:/* Copyright (C) 1995-1998 Eric Young (eay@cryptsoft.com)
+        -:    3: * All rights reserved.
+        -:    4: *
+        -:    5: * This package is an SSL implementation written
+        -:    6: * by Eric Young (eay@cryptsoft.com).
+        -:    7: * The implementation was written so as to conform with Netscapes SSL.
+        -:    8: * 
+        -:    9: * This library is free for commercial and non-commercial use as long as
+        -:   10: * the following conditions are aheared to.  The following conditions
+        -:   11: * apply to all code found in this distribution, be it the RC4, RSA,
+        -:   12: * lhash, DES, etc., code; not just the SSL code.  The SSL documentation
+        -:   13: * included with this distribution is covered by the same copyright terms
+        -:   14: * except that the holder is Tim Hudson (tjh@cryptsoft.com).
+        -:   15: * 
+        -:   16: * Copyright remains Eric Young's, and as such any Copyright notices in
+        -:   17: * the code are not to be removed.
+        -:   18: * If this package is used in a product, Eric Young should be given attribution
+        -:   19: * as the author of the parts of the library used.
+        -:   20: * This can be in the form of a textual message at program startup or
+        -:   21: * in documentation (online or textual) provided with the package.
+        -:   22: * 
+        -:   23: * Redistribution and use in source and binary forms, with or without
+        -:   24: * modification, are permitted provided that the following conditions
+        -:   25: * are met:
+        -:   26: * 1. Redistributions of source code must retain the copyright
+        -:   27: *    notice, this list of conditions and the following disclaimer.
+        -:   28: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   29: *    notice, this list of conditions and the following disclaimer in the
+        -:   30: *    documentation and/or other materials provided with the distribution.
+        -:   31: * 3. All advertising materials mentioning features or use of this software
+        -:   32: *    must display the following acknowledgement:
+        -:   33: *    "This product includes cryptographic software written by
+        -:   34: *     Eric Young (eay@cryptsoft.com)"
+        -:   35: *    The word 'cryptographic' can be left out if the rouines from the library
+        -:   36: *    being used are not cryptographic related :-).
+        -:   37: * 4. If you include any Windows specific code (or a derivative thereof) from 
+        -:   38: *    the apps directory (application code) you must include an acknowledgement:
+        -:   39: *    "This product includes software written by Tim Hudson (tjh@cryptsoft.com)"
+        -:   40: * 
+        -:   41: * THIS SOFTWARE IS PROVIDED BY ERIC YOUNG ``AS IS'' AND
+        -:   42: * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   43: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+        -:   44: * ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+        -:   45: * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+        -:   46: * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+        -:   47: * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   48: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+        -:   49: * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+        -:   50: * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+        -:   51: * SUCH DAMAGE.
+        -:   52: * 
+        -:   53: * The licence and distribution terms for any publically available version or
+        -:   54: * derivative of this code cannot be changed.  i.e. this code cannot simply be
+        -:   55: * copied and put under another distribution licence
+        -:   56: * [including the GNU Public Licence.]
+        -:   57: */
+        -:   58:
+        -:   59:#include <stdio.h>
+        -:   60:#include <ctype.h>
+        -:   61:#include "cryptlib.h"
+        -:   62:#include <openssl/asn1t.h>
+        -:   63:#include <openssl/x509.h>
+        -:   64:#include "asn1_locl.h"
+        -:   65:
+        -:   66:typedef STACK_OF(X509_NAME_ENTRY) STACK_OF_X509_NAME_ENTRY;
+        -:   67:DECLARE_STACK_OF(STACK_OF_X509_NAME_ENTRY)
+        -:   68:
+        -:   69:static int x509_name_ex_d2i(ASN1_VALUE **val,
+        -:   70:				const unsigned char **in, long len,
+        -:   71:				const ASN1_ITEM *it,
+        -:   72:				int tag, int aclass, char opt, ASN1_TLC *ctx);
+        -:   73:
+        -:   74:static int x509_name_ex_i2d(ASN1_VALUE **val, unsigned char **out,
+        -:   75:				const ASN1_ITEM *it, int tag, int aclass);
+        -:   76:static int x509_name_ex_new(ASN1_VALUE **val, const ASN1_ITEM *it);
+        -:   77:static void x509_name_ex_free(ASN1_VALUE **val, const ASN1_ITEM *it);
+        -:   78:
+        -:   79:static int x509_name_encode(X509_NAME *a);
+        -:   80:static int x509_name_canon(X509_NAME *a);
+        -:   81:static int asn1_string_canon(ASN1_STRING *out, ASN1_STRING *in);
+        -:   82:static int i2d_name_canon(STACK_OF(STACK_OF_X509_NAME_ENTRY) *intname,
+        -:   83:			  unsigned char **in);
+        -:   84:
+        -:   85:
+        -:   86:static int x509_name_ex_print(BIO *out, ASN1_VALUE **pval,
+        -:   87:						int indent,
+        -:   88:						const char *fname, 
+        -:   89:						const ASN1_PCTX *pctx);
+        -:   90:
+        -:   91:ASN1_SEQUENCE(X509_NAME_ENTRY) = {
+        -:   92:	ASN1_SIMPLE(X509_NAME_ENTRY, object, ASN1_OBJECT),
+        -:   93:	ASN1_SIMPLE(X509_NAME_ENTRY, value, ASN1_PRINTABLE)
+        -:   94:} ASN1_SEQUENCE_END(X509_NAME_ENTRY)
+        -:   95:
+   870024:   96:IMPLEMENT_ASN1_FUNCTIONS(X509_NAME_ENTRY)
+    #####:   97:IMPLEMENT_ASN1_DUP_FUNCTION(X509_NAME_ENTRY)
+        -:   98:
+        -:   99:/* For the "Name" type we need a SEQUENCE OF { SET OF X509_NAME_ENTRY }
+        -:  100: * so declare two template wrappers for this
+        -:  101: */
+        -:  102:
+        -:  103:ASN1_ITEM_TEMPLATE(X509_NAME_ENTRIES) =
+        -:  104:	ASN1_EX_TEMPLATE_TYPE(ASN1_TFLG_SET_OF, 0, RDNS, X509_NAME_ENTRY)
+        -:  105:ASN1_ITEM_TEMPLATE_END(X509_NAME_ENTRIES)
+        -:  106:
+        -:  107:ASN1_ITEM_TEMPLATE(X509_NAME_INTERNAL) =
+        -:  108:	ASN1_EX_TEMPLATE_TYPE(ASN1_TFLG_SEQUENCE_OF, 0, Name, X509_NAME_ENTRIES)
+        -:  109:ASN1_ITEM_TEMPLATE_END(X509_NAME_INTERNAL)
+        -:  110:
+        -:  111:/* Normally that's where it would end: we'd have two nested STACK structures
+        -:  112: * representing the ASN1. Unfortunately X509_NAME uses a completely different
+        -:  113: * form and caches encodings so we have to process the internal form and convert
+        -:  114: * to the external form.
+        -:  115: */
+        -:  116:
+        -:  117:const ASN1_EXTERN_FUNCS x509_name_ff = {
+        -:  118:	NULL,
+        -:  119:	x509_name_ex_new,
+        -:  120:	x509_name_ex_free,
+        -:  121:	0,	/* Default clear behaviour is OK */
+        -:  122:	x509_name_ex_d2i,
+        -:  123:	x509_name_ex_i2d,
+        -:  124:	x509_name_ex_print
+        -:  125:};
+        -:  126:
+        -:  127:IMPLEMENT_EXTERN_ASN1(X509_NAME, V_ASN1_SEQUENCE, x509_name_ff) 
+        -:  128:
+     2291:  129:IMPLEMENT_ASN1_FUNCTIONS(X509_NAME)
+    #####:  130:IMPLEMENT_ASN1_DUP_FUNCTION(X509_NAME)
+        -:  131:
+   121288:  132:static int x509_name_ex_new(ASN1_VALUE **val, const ASN1_ITEM *it)
+        -:  133:{
+        -:  134:	X509_NAME *ret = NULL;
+   121288:  135:	ret = OPENSSL_malloc(sizeof(X509_NAME));
+   121288:  136:	if(!ret) goto memerr;
+   121288:  137:	if ((ret->entries=sk_X509_NAME_ENTRY_new_null()) == NULL)
+        -:  138:		goto memerr;
+   121288:  139:	if((ret->bytes = BUF_MEM_new()) == NULL) goto memerr;
+   121288:  140:	ret->canon_enc = NULL;
+   121288:  141:	ret->canon_enclen = 0;
+   121288:  142:	ret->modified=1;
+   121288:  143:	*val = (ASN1_VALUE *)ret;
+   121288:  144:	return 1;
+        -:  145:
+        -:  146: memerr:
+    #####:  147:	ASN1err(ASN1_F_X509_NAME_EX_NEW, ERR_R_MALLOC_FAILURE);
+    #####:  148:	if (ret)
+        -:  149:		{
+    #####:  150:		if (ret->entries)
+    #####:  151:			sk_X509_NAME_ENTRY_free(ret->entries);
+    #####:  152:		OPENSSL_free(ret);
+        -:  153:		}
+        -:  154:	return 0;
+        -:  155:}
+        -:  156:
+   121288:  157:static void x509_name_ex_free(ASN1_VALUE **pval, const ASN1_ITEM *it)
+        -:  158:{
+        -:  159:	X509_NAME *a;
+   121288:  160:	if(!pval || !*pval)
+   121288:  161:	    return;
+        -:  162:	a = (X509_NAME *)*pval;
+        -:  163:
+   121288:  164:	BUF_MEM_free(a->bytes);
+   121288:  165:	sk_X509_NAME_ENTRY_pop_free(a->entries,X509_NAME_ENTRY_free);
+   121288:  166:	if (a->canon_enc)
+    61338:  167:		OPENSSL_free(a->canon_enc);
+   121288:  168:	OPENSSL_free(a);
+   121288:  169:	*pval = NULL;
+        -:  170:}
+        -:  171:
+    61338:  172:static int x509_name_ex_d2i(ASN1_VALUE **val,
+        -:  173:			const unsigned char **in, long len, const ASN1_ITEM *it,
+        -:  174:				int tag, int aclass, char opt, ASN1_TLC *ctx)
+        -:  175:{
+    61338:  176:	const unsigned char *p = *in, *q;
+        -:  177:	union { STACK_OF(STACK_OF_X509_NAME_ENTRY) *s;
+    61338:  178:		ASN1_VALUE *a; } intname = {NULL};
+    61338:  179:	union { X509_NAME *x; ASN1_VALUE *a; } nm = {NULL};
+        -:  180:	int i, j, ret;
+        -:  181:	STACK_OF(X509_NAME_ENTRY) *entries;
+        -:  182:	X509_NAME_ENTRY *entry;
+        -:  183:	q = p;
+        -:  184:
+        -:  185:	/* Get internal representation of Name */
+    61338:  186:	ret = ASN1_item_ex_d2i(&intname.a,
+        -:  187:			       &p, len, ASN1_ITEM_rptr(X509_NAME_INTERNAL),
+        -:  188:			       tag, aclass, opt, ctx);
+        -:  189:	
+    61338:  190:	if(ret <= 0) return ret;
+        -:  191:
+    61338:  192:	if(*val) x509_name_ex_free(val, NULL);
+    61338:  193:	if(!x509_name_ex_new(&nm.a, NULL)) goto err;
+        -:  194:	/* We've decoded it: now cache encoding */
+    61338:  195:	if(!BUF_MEM_grow(nm.x->bytes, p - q)) goto err;
+    61338:  196:	memcpy(nm.x->bytes->data, q, p - q);
+        -:  197:
+        -:  198:	/* Convert internal representation to X509_NAME structure */
+   351263:  199:	for(i = 0; i < sk_STACK_OF_X509_NAME_ENTRY_num(intname.s); i++) {
+   289925:  200:		entries = sk_STACK_OF_X509_NAME_ENTRY_value(intname.s, i);
+   579933:  201:		for(j = 0; j < sk_X509_NAME_ENTRY_num(entries); j++) {
+   290008:  202:			entry = sk_X509_NAME_ENTRY_value(entries, j);
+   290008:  203:			entry->set = i;
+   290008:  204:			if(!sk_X509_NAME_ENTRY_push(nm.x->entries, entry))
+        -:  205:				goto err;
+        -:  206:		}
+   289925:  207:		sk_X509_NAME_ENTRY_free(entries);
+        -:  208:	}
+    61338:  209:	sk_STACK_OF_X509_NAME_ENTRY_free(intname.s);
+    61338:  210:	ret = x509_name_canon(nm.x);
+    61338:  211:	if (!ret)
+        -:  212:		goto err;
+    61338:  213:	nm.x->modified = 0;
+    61338:  214:	*val = nm.a;
+    61338:  215:	*in = p;
+    61338:  216:	return ret;
+        -:  217:err:
+    #####:  218:        if (nm.x != NULL)
+        -:  219:		X509_NAME_free(nm.x);
+    #####:  220:	ASN1err(ASN1_F_X509_NAME_EX_D2I, ERR_R_NESTED_ASN1_ERROR);
+    #####:  221:	return 0;
+        -:  222:}
+        -:  223:
+     2291:  224:static int x509_name_ex_i2d(ASN1_VALUE **val, unsigned char **out, const ASN1_ITEM *it, int tag, int aclass)
+        -:  225:{
+        -:  226:	int ret;
+     2291:  227:	X509_NAME *a = (X509_NAME *)*val;
+     2291:  228:	if(a->modified) {
+    #####:  229:		ret = x509_name_encode(a);
+    #####:  230:		if(ret < 0)
+        -:  231:			return ret;
+    #####:  232:		ret = x509_name_canon(a);
+    #####:  233:		if(ret < 0)
+        -:  234:			return ret;
+        -:  235:	}
+     2291:  236:	ret = a->bytes->length;
+     2291:  237:	if(out != NULL) {
+    #####:  238:		memcpy(*out,a->bytes->data,ret);
+    #####:  239:		*out+=ret;
+        -:  240:	}
+     2291:  241:	return ret;
+        -:  242:}
+        -:  243:
+    #####:  244:static void local_sk_X509_NAME_ENTRY_free(STACK_OF(X509_NAME_ENTRY) *ne)
+        -:  245:	{
+    #####:  246:	sk_X509_NAME_ENTRY_free(ne);
+    #####:  247:	}
+        -:  248:
+   289925:  249:static void local_sk_X509_NAME_ENTRY_pop_free(STACK_OF(X509_NAME_ENTRY) *ne)
+        -:  250:	{
+   289925:  251:	sk_X509_NAME_ENTRY_pop_free(ne, X509_NAME_ENTRY_free);
+   289925:  252:	}
+        -:  253:
+    #####:  254:static int x509_name_encode(X509_NAME *a)
+        -:  255:{
+        -:  256:	union { STACK_OF(STACK_OF_X509_NAME_ENTRY) *s;
+    #####:  257:		ASN1_VALUE *a; } intname = {NULL};
+        -:  258:	int len;
+        -:  259:	unsigned char *p;
+        -:  260:	STACK_OF(X509_NAME_ENTRY) *entries = NULL;
+        -:  261:	X509_NAME_ENTRY *entry;
+        -:  262:	int i, set = -1;
+    #####:  263:	intname.s = sk_STACK_OF_X509_NAME_ENTRY_new_null();
+    #####:  264:	if(!intname.s) goto memerr;
+    #####:  265:	for(i = 0; i < sk_X509_NAME_ENTRY_num(a->entries); i++) {
+    #####:  266:		entry = sk_X509_NAME_ENTRY_value(a->entries, i);
+    #####:  267:		if(entry->set != set) {
+    #####:  268:			entries = sk_X509_NAME_ENTRY_new_null();
+    #####:  269:			if(!entries) goto memerr;
+    #####:  270:			if(!sk_STACK_OF_X509_NAME_ENTRY_push(intname.s,
+        -:  271:							     entries))
+        -:  272:				goto memerr;
+    #####:  273:			set = entry->set;
+        -:  274:		}
+    #####:  275:		if(!sk_X509_NAME_ENTRY_push(entries, entry)) goto memerr;
+        -:  276:	}
+    #####:  277:	len = ASN1_item_ex_i2d(&intname.a, NULL,
+        -:  278:			       ASN1_ITEM_rptr(X509_NAME_INTERNAL), -1, -1);
+    #####:  279:	if (!BUF_MEM_grow(a->bytes,len)) goto memerr;
+    #####:  280:	p=(unsigned char *)a->bytes->data;
+    #####:  281:	ASN1_item_ex_i2d(&intname.a,
+        -:  282:			 &p, ASN1_ITEM_rptr(X509_NAME_INTERNAL), -1, -1);
+    #####:  283:	sk_STACK_OF_X509_NAME_ENTRY_pop_free(intname.s,
+        -:  284:					     local_sk_X509_NAME_ENTRY_free);
+    #####:  285:	a->modified = 0;
+    #####:  286:	return len;
+        -:  287:memerr:
+    #####:  288:	sk_STACK_OF_X509_NAME_ENTRY_pop_free(intname.s,
+        -:  289:					     local_sk_X509_NAME_ENTRY_free);
+    #####:  290:	ASN1err(ASN1_F_X509_NAME_ENCODE, ERR_R_MALLOC_FAILURE);
+    #####:  291:	return -1;
+        -:  292:}
+        -:  293:
+    #####:  294:static int x509_name_ex_print(BIO *out, ASN1_VALUE **pval,
+        -:  295:						int indent,
+        -:  296:						const char *fname, 
+        -:  297:						const ASN1_PCTX *pctx)
+        -:  298:	{
+    #####:  299:	if (X509_NAME_print_ex(out, (X509_NAME *)*pval,
+        -:  300:					indent, pctx->nm_flags) <= 0)
+        -:  301:		return 0;
+    #####:  302:	return 2;
+        -:  303:	}
+        -:  304:
+        -:  305:/* This function generates the canonical encoding of the Name structure.
+        -:  306: * In it all strings are converted to UTF8, leading, trailing and
+        -:  307: * multiple spaces collapsed, converted to lower case and the leading
+        -:  308: * SEQUENCE header removed.
+        -:  309: *
+        -:  310: * In future we could also normalize the UTF8 too.
+        -:  311: *
+        -:  312: * By doing this comparison of Name structures can be rapidly
+        -:  313: * perfomed by just using memcmp() of the canonical encoding.
+        -:  314: * By omitting the leading SEQUENCE name constraints of type
+        -:  315: * dirName can also be checked with a simple memcmp().
+        -:  316: */
+        -:  317:
+    61338:  318:static int x509_name_canon(X509_NAME *a)
+        -:  319:	{
+        -:  320:	unsigned char *p;
+        -:  321:	STACK_OF(STACK_OF_X509_NAME_ENTRY) *intname = NULL;
+        -:  322:	STACK_OF(X509_NAME_ENTRY) *entries = NULL;
+        -:  323:	X509_NAME_ENTRY *entry, *tmpentry = NULL;
+        -:  324:	int i, set = -1, ret = 0;
+        -:  325:
+    61338:  326:	if (a->canon_enc)
+        -:  327:		{
+    #####:  328:		OPENSSL_free(a->canon_enc);
+    #####:  329:		a->canon_enc = NULL;
+        -:  330:		}
+        -:  331:	/* Special case: empty X509_NAME => null encoding */
+    61338:  332:	if (sk_X509_NAME_ENTRY_num(a->entries) == 0)
+        -:  333:		{
+    #####:  334:		a->canon_enclen = 0;
+    #####:  335:		return 1;
+        -:  336:		}
+    61338:  337:	intname = sk_STACK_OF_X509_NAME_ENTRY_new_null();
+    61338:  338:	if(!intname)
+        -:  339:		goto err;
+   290008:  340:	for(i = 0; i < sk_X509_NAME_ENTRY_num(a->entries); i++)
+        -:  341:		{
+   290008:  342:		entry = sk_X509_NAME_ENTRY_value(a->entries, i);
+   290008:  343:		if(entry->set != set)
+        -:  344:			{
+   289925:  345:			entries = sk_X509_NAME_ENTRY_new_null();
+   289925:  346:			if(!entries)
+        -:  347:				goto err;
+   289925:  348:			if(!sk_STACK_OF_X509_NAME_ENTRY_push(intname, entries))
+        -:  349:				goto err;
+   289925:  350:			set = entry->set;
+        -:  351:			}
+        -:  352:		tmpentry = X509_NAME_ENTRY_new();
+   290008:  353:		tmpentry->object = OBJ_dup(entry->object);
+   290008:  354:		if (!asn1_string_canon(tmpentry->value, entry->value))
+        -:  355:			goto err;
+   290008:  356:		if(!sk_X509_NAME_ENTRY_push(entries, tmpentry))
+        -:  357:			goto err;
+        -:  358:		tmpentry = NULL;
+        -:  359:		}
+        -:  360:
+        -:  361:	/* Finally generate encoding */
+        -:  362:
+    61338:  363:	a->canon_enclen = i2d_name_canon(intname, NULL);
+        -:  364:
+    61338:  365:	p = OPENSSL_malloc(a->canon_enclen);
+        -:  366:
+    61338:  367:	if (!p)
+        -:  368:		goto err;
+        -:  369:
+    61338:  370:	a->canon_enc = p;
+        -:  371:
+    61338:  372:	i2d_name_canon(intname, &p);
+        -:  373:
+        -:  374:	ret = 1;
+        -:  375:
+        -:  376:	err:
+        -:  377:
+    61338:  378:	if (tmpentry)
+        -:  379:		X509_NAME_ENTRY_free(tmpentry);
+    61338:  380:	if (intname)
+    61338:  381:		sk_STACK_OF_X509_NAME_ENTRY_pop_free(intname,
+        -:  382:					local_sk_X509_NAME_ENTRY_pop_free);
+    61338:  383:	return ret;
+        -:  384:	}
+        -:  385:
+        -:  386:/* Bitmap of all the types of string that will be canonicalized. */
+        -:  387:
+        -:  388:#define ASN1_MASK_CANON	\
+        -:  389:	(B_ASN1_UTF8STRING | B_ASN1_BMPSTRING | B_ASN1_UNIVERSALSTRING \
+        -:  390:	| B_ASN1_PRINTABLESTRING | B_ASN1_T61STRING | B_ASN1_IA5STRING \
+        -:  391:	| B_ASN1_VISIBLESTRING)
+        -:  392:	
+        -:  393:
+   290008:  394:static int asn1_string_canon(ASN1_STRING *out, ASN1_STRING *in)
+        -:  395:	{
+        -:  396:	unsigned char *to, *from;
+        -:  397:	int len, i;
+        -:  398:
+        -:  399:	/* If type not in bitmask just copy string across */
+   290008:  400:	if (!(ASN1_tag2bit(in->type) & ASN1_MASK_CANON))
+        -:  401:		{
+    #####:  402:		if (!ASN1_STRING_copy(out, in))
+        -:  403:			return 0;
+    #####:  404:		return 1;
+        -:  405:		}
+        -:  406:
+   290008:  407:	out->type = V_ASN1_UTF8STRING;
+   290008:  408:	out->length = ASN1_STRING_to_UTF8(&out->data, in);
+   290008:  409:	if (out->length == -1)
+        -:  410:		return 0;
+        -:  411:
+   290008:  412:	to = out->data;
+        -:  413:	from = to;
+        -:  414:
+        -:  415:	len = out->length;
+        -:  416:
+        -:  417:	/* Convert string in place to canonical form.
+        -:  418:	 * Ultimately we may need to handle a wider range of characters
+        -:  419:	 * but for now ignore anything with MSB set and rely on the
+        -:  420:	 * isspace() and tolower() functions.
+        -:  421:	 */
+        -:  422:
+        -:  423:	/* Ignore leading spaces */
+   580078:  424:	while((len > 0) && !(*from & 0x80) && isspace(*from))
+        -:  425:		{
+       62:  426:		from++;
+       62:  427:		len--;
+        -:  428:		}
+        -:  429:
+   290008:  430:	to = from + len - 1;
+        -:  431:
+        -:  432:	/* Ignore trailing spaces */
+   580121:  433:	while ((len > 0) && !(*to & 0x80) && isspace(*to))
+        -:  434:		{
+      105:  435:		to--;
+      105:  436:		len--;
+        -:  437:		}
+        -:  438:
+        -:  439:	to = out->data;
+        -:  440:
+        -:  441:	i = 0;
+  3994519:  442:	while(i < len)
+        -:  443:		{
+        -:  444:		/* If MSB set just copy across */
+  3704511:  445:		if (*from & 0x80)
+        -:  446:			{
+     9892:  447:			*to++ = *from++;
+     9892:  448:			i++;
+        -:  449:			}
+        -:  450:		/* Collapse multiple spaces */
+  3694619:  451:		else if (isspace(*from))
+        -:  452:			{
+        -:  453:			/* Copy one space across */
+   254552:  454:			*to++ = ' ';
+        -:  455:			/* Ignore subsequent spaces. Note: don't need to
+        -:  456:			 * check len here because we know the last 
+        -:  457:			 * character is a non-space so we can't overflow.
+        -:  458:			 */
+        -:  459:			do
+        -:  460:				{
+   254687:  461:				from++;
+   254687:  462:				i++;
+        -:  463:				}
+   254687:  464:			while(!(*from & 0x80) && isspace(*from));
+        -:  465:			}
+        -:  466:		else
+        -:  467:			{
+  3440067:  468:			*to++ = tolower(*from);
+  3440067:  469:			from++;
+  3440067:  470:			i++;
+        -:  471:			}
+        -:  472:		}
+        -:  473:
+   290008:  474:	out->length = to - out->data;
+        -:  475:
+   290008:  476:	return 1;
+        -:  477:
+        -:  478:	}
+        -:  479:
+   122676:  480:static int i2d_name_canon(STACK_OF(STACK_OF_X509_NAME_ENTRY) *_intname,
+        -:  481:			  unsigned char **in)
+        -:  482:	{
+        -:  483:	int i, len, ltmp;
+        -:  484:	ASN1_VALUE *v;
+        -:  485:	STACK_OF(ASN1_VALUE) *intname = (STACK_OF(ASN1_VALUE) *)_intname;
+        -:  486:
+        -:  487:	len = 0;
+   702526:  488:	for (i = 0; i < sk_ASN1_VALUE_num(intname); i++)
+        -:  489:		{
+   579850:  490:		v = sk_ASN1_VALUE_value(intname, i);
+   579850:  491:		ltmp = ASN1_item_ex_i2d(&v, in,
+        -:  492:			ASN1_ITEM_rptr(X509_NAME_ENTRIES), -1, -1);
+   579850:  493:		if (ltmp < 0)
+        -:  494:			return ltmp;
+   579850:  495:		len += ltmp;
+        -:  496:		}
+        -:  497:	return len;
+        -:  498:	}
+        -:  499:
+    #####:  500:int X509_NAME_set(X509_NAME **xn, X509_NAME *name)
+        -:  501:	{
+        -:  502:	X509_NAME *in;
+        -:  503:
+    #####:  504:	if (!xn || !name) return(0);
+        -:  505:
+    #####:  506:	if (*xn != name)
+        -:  507:		{
+        -:  508:		in=X509_NAME_dup(name);
+    #####:  509:		if (in != NULL)
+        -:  510:			{
+    #####:  511:			X509_NAME_free(*xn);
+    #####:  512:			*xn=in;
+        -:  513:			}
+        -:  514:		}
+    #####:  515:	return(*xn != NULL);
+        -:  516:	}
+        -:  517:	
+        -:  518:IMPLEMENT_STACK_OF(X509_NAME_ENTRY)
+        -:  519:IMPLEMENT_ASN1_SET_OF(X509_NAME_ENTRY)

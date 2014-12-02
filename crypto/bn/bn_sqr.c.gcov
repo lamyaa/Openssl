@@ -1,0 +1,299 @@
+        -:    0:Source:bn_sqr.c
+        -:    0:Graph:bn_sqr.gcno
+        -:    0:Data:bn_sqr.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* crypto/bn/bn_sqr.c */
+        -:    2:/* Copyright (C) 1995-1998 Eric Young (eay@cryptsoft.com)
+        -:    3: * All rights reserved.
+        -:    4: *
+        -:    5: * This package is an SSL implementation written
+        -:    6: * by Eric Young (eay@cryptsoft.com).
+        -:    7: * The implementation was written so as to conform with Netscapes SSL.
+        -:    8: * 
+        -:    9: * This library is free for commercial and non-commercial use as long as
+        -:   10: * the following conditions are aheared to.  The following conditions
+        -:   11: * apply to all code found in this distribution, be it the RC4, RSA,
+        -:   12: * lhash, DES, etc., code; not just the SSL code.  The SSL documentation
+        -:   13: * included with this distribution is covered by the same copyright terms
+        -:   14: * except that the holder is Tim Hudson (tjh@cryptsoft.com).
+        -:   15: * 
+        -:   16: * Copyright remains Eric Young's, and as such any Copyright notices in
+        -:   17: * the code are not to be removed.
+        -:   18: * If this package is used in a product, Eric Young should be given attribution
+        -:   19: * as the author of the parts of the library used.
+        -:   20: * This can be in the form of a textual message at program startup or
+        -:   21: * in documentation (online or textual) provided with the package.
+        -:   22: * 
+        -:   23: * Redistribution and use in source and binary forms, with or without
+        -:   24: * modification, are permitted provided that the following conditions
+        -:   25: * are met:
+        -:   26: * 1. Redistributions of source code must retain the copyright
+        -:   27: *    notice, this list of conditions and the following disclaimer.
+        -:   28: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   29: *    notice, this list of conditions and the following disclaimer in the
+        -:   30: *    documentation and/or other materials provided with the distribution.
+        -:   31: * 3. All advertising materials mentioning features or use of this software
+        -:   32: *    must display the following acknowledgement:
+        -:   33: *    "This product includes cryptographic software written by
+        -:   34: *     Eric Young (eay@cryptsoft.com)"
+        -:   35: *    The word 'cryptographic' can be left out if the rouines from the library
+        -:   36: *    being used are not cryptographic related :-).
+        -:   37: * 4. If you include any Windows specific code (or a derivative thereof) from 
+        -:   38: *    the apps directory (application code) you must include an acknowledgement:
+        -:   39: *    "This product includes software written by Tim Hudson (tjh@cryptsoft.com)"
+        -:   40: * 
+        -:   41: * THIS SOFTWARE IS PROVIDED BY ERIC YOUNG ``AS IS'' AND
+        -:   42: * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   43: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+        -:   44: * ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+        -:   45: * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+        -:   46: * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+        -:   47: * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   48: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+        -:   49: * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+        -:   50: * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+        -:   51: * SUCH DAMAGE.
+        -:   52: * 
+        -:   53: * The licence and distribution terms for any publically available version or
+        -:   54: * derivative of this code cannot be changed.  i.e. this code cannot simply be
+        -:   55: * copied and put under another distribution licence
+        -:   56: * [including the GNU Public Licence.]
+        -:   57: */
+        -:   58:
+        -:   59:#include <stdio.h>
+        -:   60:#include "cryptlib.h"
+        -:   61:#include "bn_lcl.h"
+        -:   62:
+        -:   63:/* r must not be a */
+        -:   64:/* I've just gone over this and it is now %20 faster on x86 - eay - 27 Jun 96 */
+    #####:   65:int BN_sqr(BIGNUM *r, const BIGNUM *a, BN_CTX *ctx)
+        -:   66:	{
+        -:   67:	int max,al;
+        -:   68:	int ret = 0;
+        -:   69:	BIGNUM *tmp,*rr;
+        -:   70:
+        -:   71:#ifdef BN_COUNT
+        -:   72:	fprintf(stderr,"BN_sqr %d * %d\n",a->top,a->top);
+        -:   73:#endif
+        -:   74:	bn_check_top(a);
+        -:   75:
+    #####:   76:	al=a->top;
+    #####:   77:	if (al <= 0)
+        -:   78:		{
+    #####:   79:		r->top=0;
+    #####:   80:		return 1;
+        -:   81:		}
+        -:   82:
+    #####:   83:	BN_CTX_start(ctx);
+    #####:   84:	rr=(a != r) ? r : BN_CTX_get(ctx);
+    #####:   85:	tmp=BN_CTX_get(ctx);
+    #####:   86:	if (!rr || !tmp) goto err;
+        -:   87:
+    #####:   88:	max = 2 * al; /* Non-zero (from above) */
+    #####:   89:	if (bn_wexpand(rr,max) == NULL) goto err;
+        -:   90:
+    #####:   91:	if (al == 4)
+        -:   92:		{
+        -:   93:#ifndef BN_SQR_COMBA
+        -:   94:		BN_ULONG t[8];
+        -:   95:		bn_sqr_normal(rr->d,a->d,4,t);
+        -:   96:#else
+    #####:   97:		bn_sqr_comba4(rr->d,a->d);
+        -:   98:#endif
+        -:   99:		}
+    #####:  100:	else if (al == 8)
+        -:  101:		{
+        -:  102:#ifndef BN_SQR_COMBA
+        -:  103:		BN_ULONG t[16];
+        -:  104:		bn_sqr_normal(rr->d,a->d,8,t);
+        -:  105:#else
+    #####:  106:		bn_sqr_comba8(rr->d,a->d);
+        -:  107:#endif
+        -:  108:		}
+        -:  109:	else 
+        -:  110:		{
+        -:  111:#if defined(BN_RECURSION)
+    #####:  112:		if (al < BN_SQR_RECURSIVE_SIZE_NORMAL)
+        -:  113:			{
+        -:  114:			BN_ULONG t[BN_SQR_RECURSIVE_SIZE_NORMAL*2];
+    #####:  115:			bn_sqr_normal(rr->d,a->d,al,t);
+        -:  116:			}
+        -:  117:		else
+        -:  118:			{
+        -:  119:			int j,k;
+        -:  120:
+    #####:  121:			j=BN_num_bits_word((BN_ULONG)al);
+    #####:  122:			j=1<<(j-1);
+    #####:  123:			k=j+j;
+    #####:  124:			if (al == j)
+        -:  125:				{
+    #####:  126:				if (bn_wexpand(tmp,k*2) == NULL) goto err;
+    #####:  127:				bn_sqr_recursive(rr->d,a->d,al,tmp->d);
+        -:  128:				}
+        -:  129:			else
+        -:  130:				{
+    #####:  131:				if (bn_wexpand(tmp,max) == NULL) goto err;
+    #####:  132:				bn_sqr_normal(rr->d,a->d,al,tmp->d);
+        -:  133:				}
+        -:  134:			}
+        -:  135:#else
+        -:  136:		if (bn_wexpand(tmp,max) == NULL) goto err;
+        -:  137:		bn_sqr_normal(rr->d,a->d,al,tmp->d);
+        -:  138:#endif
+        -:  139:		}
+        -:  140:
+    #####:  141:	rr->neg=0;
+        -:  142:	/* If the most-significant half of the top word of 'a' is zero, then
+        -:  143:	 * the square of 'a' will max-1 words. */
+    #####:  144:	if(a->d[al - 1] == (a->d[al - 1] & BN_MASK2l))
+    #####:  145:		rr->top = max - 1;
+        -:  146:	else
+    #####:  147:		rr->top = max;
+    #####:  148:	if (rr != r) BN_copy(r,rr);
+        -:  149:	ret = 1;
+        -:  150: err:
+        -:  151:	bn_check_top(rr);
+        -:  152:	bn_check_top(tmp);
+    #####:  153:	BN_CTX_end(ctx);
+    #####:  154:	return(ret);
+        -:  155:	}
+        -:  156:
+        -:  157:/* tmp must have 2*n words */
+    #####:  158:void bn_sqr_normal(BN_ULONG *r, const BN_ULONG *a, int n, BN_ULONG *tmp)
+        -:  159:	{
+        -:  160:	int i,j,max;
+        -:  161:	const BN_ULONG *ap;
+        -:  162:	BN_ULONG *rp;
+        -:  163:
+    #####:  164:	max=n*2;
+        -:  165:	ap=a;
+        -:  166:	rp=r;
+    #####:  167:	rp[0]=rp[max-1]=0;
+    #####:  168:	rp++;
+        -:  169:	j=n;
+        -:  170:
+    #####:  171:	if (--j > 0)
+        -:  172:		{
+    #####:  173:		ap++;
+    #####:  174:		rp[j]=bn_mul_words(rp,ap,j,ap[-1]);
+    #####:  175:		rp+=2;
+        -:  176:		}
+        -:  177:
+    #####:  178:	for (i=n-2; i>0; i--)
+        -:  179:		{
+    #####:  180:		j--;
+    #####:  181:		ap++;
+    #####:  182:		rp[j]=bn_mul_add_words(rp,ap,j,ap[-1]);
+    #####:  183:		rp+=2;
+        -:  184:		}
+        -:  185:
+    #####:  186:	bn_add_words(r,r,r,max);
+        -:  187:
+        -:  188:	/* There will not be a carry */
+        -:  189:
+    #####:  190:	bn_sqr_words(tmp,a,n);
+        -:  191:
+    #####:  192:	bn_add_words(r,r,tmp,max);
+    #####:  193:	}
+        -:  194:
+        -:  195:#ifdef BN_RECURSION
+        -:  196:/* r is 2*n words in size,
+        -:  197: * a and b are both n words in size.    (There's not actually a 'b' here ...)
+        -:  198: * n must be a power of 2.
+        -:  199: * We multiply and return the result.
+        -:  200: * t must be 2*n words in size
+        -:  201: * We calculate
+        -:  202: * a[0]*b[0]
+        -:  203: * a[0]*b[0]+a[1]*b[1]+(a[0]-a[1])*(b[1]-b[0])
+        -:  204: * a[1]*b[1]
+        -:  205: */
+    #####:  206:void bn_sqr_recursive(BN_ULONG *r, const BN_ULONG *a, int n2, BN_ULONG *t)
+        -:  207:	{
+    #####:  208:	int n=n2/2;
+        -:  209:	int zero,c1;
+        -:  210:	BN_ULONG ln,lo,*p;
+        -:  211:
+        -:  212:#ifdef BN_COUNT
+        -:  213:	fprintf(stderr," bn_sqr_recursive %d * %d\n",n2,n2);
+        -:  214:#endif
+    #####:  215:	if (n2 == 4)
+        -:  216:		{
+        -:  217:#ifndef BN_SQR_COMBA
+        -:  218:		bn_sqr_normal(r,a,4,t);
+        -:  219:#else
+    #####:  220:		bn_sqr_comba4(r,a);
+        -:  221:#endif
+    #####:  222:		return;
+        -:  223:		}
+    #####:  224:	else if (n2 == 8)
+        -:  225:		{
+        -:  226:#ifndef BN_SQR_COMBA
+        -:  227:		bn_sqr_normal(r,a,8,t);
+        -:  228:#else
+    #####:  229:		bn_sqr_comba8(r,a);
+        -:  230:#endif
+    #####:  231:		return;
+        -:  232:		}
+    #####:  233:	if (n2 < BN_SQR_RECURSIVE_SIZE_NORMAL)
+        -:  234:		{
+    #####:  235:		bn_sqr_normal(r,a,n2,t);
+    #####:  236:		return;
+        -:  237:		}
+        -:  238:	/* r=(a[0]-a[1])*(a[1]-a[0]) */
+    #####:  239:	c1=bn_cmp_words(a,&(a[n]),n);
+        -:  240:	zero=0;
+    #####:  241:	if (c1 > 0)
+    #####:  242:		bn_sub_words(t,a,&(a[n]),n);
+    #####:  243:	else if (c1 < 0)
+    #####:  244:		bn_sub_words(t,&(a[n]),a,n);
+        -:  245:	else
+        -:  246:		zero=1;
+        -:  247:
+        -:  248:	/* The result will always be negative unless it is zero */
+    #####:  249:	p= &(t[n2*2]);
+        -:  250:
+    #####:  251:	if (!zero)
+    #####:  252:		bn_sqr_recursive(&(t[n2]),t,n,p);
+        -:  253:	else
+    #####:  254:		memset(&(t[n2]),0,n2*sizeof(BN_ULONG));
+    #####:  255:	bn_sqr_recursive(r,a,n,p);
+    #####:  256:	bn_sqr_recursive(&(r[n2]),&(a[n]),n,p);
+        -:  257:
+        -:  258:	/* t[32] holds (a[0]-a[1])*(a[1]-a[0]), it is negative or zero
+        -:  259:	 * r[10] holds (a[0]*b[0])
+        -:  260:	 * r[32] holds (b[1]*b[1])
+        -:  261:	 */
+        -:  262:
+    #####:  263:	c1=(int)(bn_add_words(t,r,&(r[n2]),n2));
+        -:  264:
+        -:  265:	/* t[32] is negative */
+    #####:  266:	c1-=(int)(bn_sub_words(&(t[n2]),t,&(t[n2]),n2));
+        -:  267:
+        -:  268:	/* t[32] holds (a[0]-a[1])*(a[1]-a[0])+(a[0]*a[0])+(a[1]*a[1])
+        -:  269:	 * r[10] holds (a[0]*a[0])
+        -:  270:	 * r[32] holds (a[1]*a[1])
+        -:  271:	 * c1 holds the carry bits
+        -:  272:	 */
+    #####:  273:	c1+=(int)(bn_add_words(&(r[n]),&(r[n]),&(t[n2]),n2));
+    #####:  274:	if (c1)
+        -:  275:		{
+    #####:  276:		p= &(r[n+n2]);
+    #####:  277:		lo= *p;
+    #####:  278:		ln=(lo+c1)&BN_MASK2;
+    #####:  279:		*p=ln;
+        -:  280:
+        -:  281:		/* The overflow will stop before we over write
+        -:  282:		 * words we should not overwrite */
+    #####:  283:		if (ln < (BN_ULONG)c1)
+        -:  284:			{
+        -:  285:			do	{
+    #####:  286:				p++;
+    #####:  287:				lo= *p;
+    #####:  288:				ln=(lo+1)&BN_MASK2;
+    #####:  289:				*p=ln;
+    #####:  290:				} while (ln == 0);
+        -:  291:			}
+        -:  292:		}
+        -:  293:	}
+        -:  294:#endif

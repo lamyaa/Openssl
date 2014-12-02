@@ -1,0 +1,879 @@
+        -:    0:Source:v3_utl.c
+        -:    0:Graph:v3_utl.gcno
+        -:    0:Data:v3_utl.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* v3_utl.c */
+        -:    2:/* Written by Dr Stephen N Henson (steve@openssl.org) for the OpenSSL
+        -:    3: * project.
+        -:    4: */
+        -:    5:/* ====================================================================
+        -:    6: * Copyright (c) 1999-2003 The OpenSSL Project.  All rights reserved.
+        -:    7: *
+        -:    8: * Redistribution and use in source and binary forms, with or without
+        -:    9: * modification, are permitted provided that the following conditions
+        -:   10: * are met:
+        -:   11: *
+        -:   12: * 1. Redistributions of source code must retain the above copyright
+        -:   13: *    notice, this list of conditions and the following disclaimer. 
+        -:   14: *
+        -:   15: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   16: *    notice, this list of conditions and the following disclaimer in
+        -:   17: *    the documentation and/or other materials provided with the
+        -:   18: *    distribution.
+        -:   19: *
+        -:   20: * 3. All advertising materials mentioning features or use of this
+        -:   21: *    software must display the following acknowledgment:
+        -:   22: *    "This product includes software developed by the OpenSSL Project
+        -:   23: *    for use in the OpenSSL Toolkit. (http://www.OpenSSL.org/)"
+        -:   24: *
+        -:   25: * 4. The names "OpenSSL Toolkit" and "OpenSSL Project" must not be used to
+        -:   26: *    endorse or promote products derived from this software without
+        -:   27: *    prior written permission. For written permission, please contact
+        -:   28: *    licensing@OpenSSL.org.
+        -:   29: *
+        -:   30: * 5. Products derived from this software may not be called "OpenSSL"
+        -:   31: *    nor may "OpenSSL" appear in their names without prior written
+        -:   32: *    permission of the OpenSSL Project.
+        -:   33: *
+        -:   34: * 6. Redistributions of any form whatsoever must retain the following
+        -:   35: *    acknowledgment:
+        -:   36: *    "This product includes software developed by the OpenSSL Project
+        -:   37: *    for use in the OpenSSL Toolkit (http://www.OpenSSL.org/)"
+        -:   38: *
+        -:   39: * THIS SOFTWARE IS PROVIDED BY THE OpenSSL PROJECT ``AS IS'' AND ANY
+        -:   40: * EXPRESSED OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   41: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+        -:   42: * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE OpenSSL PROJECT OR
+        -:   43: * ITS CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+        -:   44: * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+        -:   45: * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+        -:   46: * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   47: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+        -:   48: * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+        -:   49: * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+        -:   50: * OF THE POSSIBILITY OF SUCH DAMAGE.
+        -:   51: * ====================================================================
+        -:   52: *
+        -:   53: * This product includes cryptographic software written by Eric Young
+        -:   54: * (eay@cryptsoft.com).  This product includes software written by Tim
+        -:   55: * Hudson (tjh@cryptsoft.com).
+        -:   56: *
+        -:   57: */
+        -:   58:/* X509 v3 extension utilities */
+        -:   59:
+        -:   60:
+        -:   61:#include <stdio.h>
+        -:   62:#include <ctype.h>
+        -:   63:#include "cryptlib.h"
+        -:   64:#include <openssl/conf.h>
+        -:   65:#include <openssl/x509v3.h>
+        -:   66:#include <openssl/bn.h>
+        -:   67:
+        -:   68:static char *strip_spaces(char *name);
+        -:   69:static int sk_strcmp(const char * const *a, const char * const *b);
+        -:   70:static STACK_OF(OPENSSL_STRING) *get_email(X509_NAME *name, GENERAL_NAMES *gens);
+        -:   71:static void str_free(OPENSSL_STRING str);
+        -:   72:static int append_ia5(STACK_OF(OPENSSL_STRING) **sk, ASN1_IA5STRING *email);
+        -:   73:
+        -:   74:static int ipv4_from_asc(unsigned char *v4, const char *in);
+        -:   75:static int ipv6_from_asc(unsigned char *v6, const char *in);
+        -:   76:static int ipv6_cb(const char *elem, int len, void *usr);
+        -:   77:static int ipv6_hex(unsigned char *out, const char *in, int inlen);
+        -:   78:
+        -:   79:/* Add a CONF_VALUE name value pair to stack */
+        -:   80:
+    #####:   81:int X509V3_add_value(const char *name, const char *value,
+        -:   82:						STACK_OF(CONF_VALUE) **extlist)
+        -:   83:{
+        -:   84:	CONF_VALUE *vtmp = NULL;
+        -:   85:	char *tname = NULL, *tvalue = NULL;
+    #####:   86:	if(name && !(tname = BUF_strdup(name))) goto err;
+    #####:   87:	if(value && !(tvalue = BUF_strdup(value))) goto err;
+    #####:   88:	if(!(vtmp = (CONF_VALUE *)OPENSSL_malloc(sizeof(CONF_VALUE)))) goto err;
+    #####:   89:	if(!*extlist && !(*extlist = sk_CONF_VALUE_new_null())) goto err;
+    #####:   90:	vtmp->section = NULL;
+    #####:   91:	vtmp->name = tname;
+    #####:   92:	vtmp->value = tvalue;
+    #####:   93:	if(!sk_CONF_VALUE_push(*extlist, vtmp)) goto err;
+        -:   94:	return 1;
+        -:   95:	err:
+    #####:   96:	X509V3err(X509V3_F_X509V3_ADD_VALUE,ERR_R_MALLOC_FAILURE);
+    #####:   97:	if(vtmp) OPENSSL_free(vtmp);
+    #####:   98:	if(tname) OPENSSL_free(tname);
+    #####:   99:	if(tvalue) OPENSSL_free(tvalue);
+        -:  100:	return 0;
+        -:  101:}
+        -:  102:
+    #####:  103:int X509V3_add_value_uchar(const char *name, const unsigned char *value,
+        -:  104:			   STACK_OF(CONF_VALUE) **extlist)
+        -:  105:    {
+    #####:  106:    return X509V3_add_value(name,(const char *)value,extlist);
+        -:  107:    }
+        -:  108:
+        -:  109:/* Free function for STACK_OF(CONF_VALUE) */
+        -:  110:
+    #####:  111:void X509V3_conf_free(CONF_VALUE *conf)
+        -:  112:{
+    #####:  113:	if(!conf) return;
+    #####:  114:	if(conf->name) OPENSSL_free(conf->name);
+    #####:  115:	if(conf->value) OPENSSL_free(conf->value);
+    #####:  116:	if(conf->section) OPENSSL_free(conf->section);
+    #####:  117:	OPENSSL_free(conf);
+        -:  118:}
+        -:  119:
+    #####:  120:int X509V3_add_value_bool(const char *name, int asn1_bool,
+        -:  121:						STACK_OF(CONF_VALUE) **extlist)
+        -:  122:{
+    #####:  123:	if(asn1_bool) return X509V3_add_value(name, "TRUE", extlist);
+    #####:  124:	return X509V3_add_value(name, "FALSE", extlist);
+        -:  125:}
+        -:  126:
+    #####:  127:int X509V3_add_value_bool_nf(char *name, int asn1_bool,
+        -:  128:						STACK_OF(CONF_VALUE) **extlist)
+        -:  129:{
+    #####:  130:	if(asn1_bool) return X509V3_add_value(name, "TRUE", extlist);
+        -:  131:	return 1;
+        -:  132:}
+        -:  133:
+        -:  134:
+    #####:  135:char *i2s_ASN1_ENUMERATED(X509V3_EXT_METHOD *method, ASN1_ENUMERATED *a)
+        -:  136:{
+        -:  137:	BIGNUM *bntmp = NULL;
+        -:  138:	char *strtmp = NULL;
+    #####:  139:	if(!a) return NULL;
+    #####:  140:	if(!(bntmp = ASN1_ENUMERATED_to_BN(a, NULL)) ||
+        -:  141:	    !(strtmp = BN_bn2dec(bntmp)) )
+    #####:  142:		X509V3err(X509V3_F_I2S_ASN1_ENUMERATED,ERR_R_MALLOC_FAILURE);
+    #####:  143:	BN_free(bntmp);
+    #####:  144:	return strtmp;
+        -:  145:}
+        -:  146:
+    #####:  147:char *i2s_ASN1_INTEGER(X509V3_EXT_METHOD *method, ASN1_INTEGER *a)
+        -:  148:{
+        -:  149:	BIGNUM *bntmp = NULL;
+        -:  150:	char *strtmp = NULL;
+    #####:  151:	if(!a) return NULL;
+    #####:  152:	if(!(bntmp = ASN1_INTEGER_to_BN(a, NULL)) ||
+        -:  153:	    !(strtmp = BN_bn2dec(bntmp)) )
+    #####:  154:		X509V3err(X509V3_F_I2S_ASN1_INTEGER,ERR_R_MALLOC_FAILURE);
+    #####:  155:	BN_free(bntmp);
+    #####:  156:	return strtmp;
+        -:  157:}
+        -:  158:
+    #####:  159:ASN1_INTEGER *s2i_ASN1_INTEGER(X509V3_EXT_METHOD *method, char *value)
+        -:  160:{
+    #####:  161:	BIGNUM *bn = NULL;
+        -:  162:	ASN1_INTEGER *aint;
+        -:  163:	int isneg, ishex;
+        -:  164:	int ret;
+    #####:  165:	if (!value) {
+    #####:  166:		X509V3err(X509V3_F_S2I_ASN1_INTEGER,X509V3_R_INVALID_NULL_VALUE);
+    #####:  167:		return 0;
+        -:  168:	}
+    #####:  169:	bn = BN_new();
+    #####:  170:	if (value[0] == '-') {
+    #####:  171:		value++;
+        -:  172:		isneg = 1;
+        -:  173:	} else isneg = 0;
+        -:  174:
+    #####:  175:	if (value[0] == '0' && ((value[1] == 'x') || (value[1] == 'X'))) {
+    #####:  176:		value += 2;
+    #####:  177:		ishex = 1;
+        -:  178:	} else ishex = 0;
+        -:  179:
+    #####:  180:	if (ishex) ret = BN_hex2bn(&bn, value);
+    #####:  181:	else ret = BN_dec2bn(&bn, value);
+        -:  182:
+    #####:  183:	if (!ret || value[ret]) {
+    #####:  184:		BN_free(bn);
+    #####:  185:		X509V3err(X509V3_F_S2I_ASN1_INTEGER,X509V3_R_BN_DEC2BN_ERROR);
+    #####:  186:		return 0;
+        -:  187:	}
+        -:  188:
+    #####:  189:	if (isneg && BN_is_zero(bn)) isneg = 0;
+        -:  190:
+    #####:  191:	aint = BN_to_ASN1_INTEGER(bn, NULL);
+    #####:  192:	BN_free(bn);
+    #####:  193:	if (!aint) {
+    #####:  194:		X509V3err(X509V3_F_S2I_ASN1_INTEGER,X509V3_R_BN_TO_ASN1_INTEGER_ERROR);
+    #####:  195:		return 0;
+        -:  196:	}
+    #####:  197:	if (isneg) aint->type |= V_ASN1_NEG;
+    #####:  198:	return aint;
+        -:  199:}
+        -:  200:
+    #####:  201:int X509V3_add_value_int(const char *name, ASN1_INTEGER *aint,
+        -:  202:	     STACK_OF(CONF_VALUE) **extlist)
+        -:  203:{
+        -:  204:	char *strtmp;
+        -:  205:	int ret;
+    #####:  206:	if(!aint) return 1;
+    #####:  207:	if(!(strtmp = i2s_ASN1_INTEGER(NULL, aint))) return 0;
+    #####:  208:	ret = X509V3_add_value(name, strtmp, extlist);
+    #####:  209:	OPENSSL_free(strtmp);
+    #####:  210:	return ret;
+        -:  211:}
+        -:  212:
+    #####:  213:int X509V3_get_value_bool(CONF_VALUE *value, int *asn1_bool)
+        -:  214:{
+        -:  215:	char *btmp;
+    #####:  216:	if(!(btmp = value->value)) goto err;
+    #####:  217:	if(!strcmp(btmp, "TRUE") || !strcmp(btmp, "true")
+    #####:  218:		 || !strcmp(btmp, "Y") || !strcmp(btmp, "y")
+    #####:  219:		|| !strcmp(btmp, "YES") || !strcmp(btmp, "yes")) {
+    #####:  220:		*asn1_bool = 0xff;
+    #####:  221:		return 1;
+    #####:  222:	} else if(!strcmp(btmp, "FALSE") || !strcmp(btmp, "false")
+    #####:  223:		 || !strcmp(btmp, "N") || !strcmp(btmp, "n")
+    #####:  224:		|| !strcmp(btmp, "NO") || !strcmp(btmp, "no")) {
+    #####:  225:		*asn1_bool = 0;
+    #####:  226:		return 1;
+        -:  227:	}
+        -:  228:	err:
+    #####:  229:	X509V3err(X509V3_F_X509V3_GET_VALUE_BOOL,X509V3_R_INVALID_BOOLEAN_STRING);
+    #####:  230:	X509V3_conf_err(value);
+    #####:  231:	return 0;
+        -:  232:}
+        -:  233:
+    #####:  234:int X509V3_get_value_int(CONF_VALUE *value, ASN1_INTEGER **aint)
+        -:  235:{
+        -:  236:	ASN1_INTEGER *itmp;
+    #####:  237:	if(!(itmp = s2i_ASN1_INTEGER(NULL, value->value))) {
+    #####:  238:		X509V3_conf_err(value);
+    #####:  239:		return 0;
+        -:  240:	}
+    #####:  241:	*aint = itmp;
+    #####:  242:	return 1;
+        -:  243:}
+        -:  244:
+        -:  245:#define HDR_NAME	1
+        -:  246:#define HDR_VALUE	2
+        -:  247:
+        -:  248:/*#define DEBUG*/
+        -:  249:
+    #####:  250:STACK_OF(CONF_VALUE) *X509V3_parse_list(const char *line)
+        -:  251:{
+        -:  252:	char *p, *q, c;
+        -:  253:	char *ntmp, *vtmp;
+    #####:  254:	STACK_OF(CONF_VALUE) *values = NULL;
+        -:  255:	char *linebuf;
+        -:  256:	int state;
+        -:  257:	/* We are going to modify the line so copy it first */
+    #####:  258:	linebuf = BUF_strdup(line);
+        -:  259:	state = HDR_NAME;
+        -:  260:	ntmp = NULL;
+        -:  261:	/* Go through all characters */
+    #####:  262:	for(p = linebuf, q = linebuf; (c = *p) && (c!='\r') && (c!='\n'); p++) {
+        -:  263:
+    #####:  264:		switch(state) {
+        -:  265:			case HDR_NAME:
+    #####:  266:			if(c == ':') {
+        -:  267:				state = HDR_VALUE;
+    #####:  268:				*p = 0;
+    #####:  269:				ntmp = strip_spaces(q);
+    #####:  270:				if(!ntmp) {
+    #####:  271:					X509V3err(X509V3_F_X509V3_PARSE_LIST, X509V3_R_INVALID_NULL_NAME);
+    #####:  272:					goto err;
+        -:  273:				}
+    #####:  274:				q = p + 1;
+    #####:  275:			} else if(c == ',') {
+    #####:  276:				*p = 0;
+    #####:  277:				ntmp = strip_spaces(q);
+    #####:  278:				q = p + 1;
+        -:  279:#if 0
+        -:  280:				printf("%s\n", ntmp);
+        -:  281:#endif
+    #####:  282:				if(!ntmp) {
+    #####:  283:					X509V3err(X509V3_F_X509V3_PARSE_LIST, X509V3_R_INVALID_NULL_NAME);
+    #####:  284:					goto err;
+        -:  285:				}
+    #####:  286:				X509V3_add_value(ntmp, NULL, &values);
+        -:  287:			}
+        -:  288:			break ;
+        -:  289:
+        -:  290:			case HDR_VALUE:
+    #####:  291:			if(c == ',') {
+        -:  292:				state = HDR_NAME;
+    #####:  293:				*p = 0;
+    #####:  294:				vtmp = strip_spaces(q);
+        -:  295:#if 0
+        -:  296:				printf("%s\n", ntmp);
+        -:  297:#endif
+    #####:  298:				if(!vtmp) {
+    #####:  299:					X509V3err(X509V3_F_X509V3_PARSE_LIST, X509V3_R_INVALID_NULL_VALUE);
+    #####:  300:					goto err;
+        -:  301:				}
+    #####:  302:				X509V3_add_value(ntmp, vtmp, &values);
+        -:  303:				ntmp = NULL;
+    #####:  304:				q = p + 1;
+        -:  305:			}
+        -:  306:
+        -:  307:		}
+        -:  308:	}
+        -:  309:
+    #####:  310:	if(state == HDR_VALUE) {
+    #####:  311:		vtmp = strip_spaces(q);
+        -:  312:#if 0
+        -:  313:		printf("%s=%s\n", ntmp, vtmp);
+        -:  314:#endif
+    #####:  315:		if(!vtmp) {
+    #####:  316:			X509V3err(X509V3_F_X509V3_PARSE_LIST, X509V3_R_INVALID_NULL_VALUE);
+    #####:  317:			goto err;
+        -:  318:		}
+    #####:  319:		X509V3_add_value(ntmp, vtmp, &values);
+        -:  320:	} else {
+    #####:  321:		ntmp = strip_spaces(q);
+        -:  322:#if 0
+        -:  323:		printf("%s\n", ntmp);
+        -:  324:#endif
+    #####:  325:		if(!ntmp) {
+    #####:  326:			X509V3err(X509V3_F_X509V3_PARSE_LIST, X509V3_R_INVALID_NULL_NAME);
+    #####:  327:			goto err;
+        -:  328:		}
+    #####:  329:		X509V3_add_value(ntmp, NULL, &values);
+        -:  330:	}
+    #####:  331:OPENSSL_free(linebuf);
+    #####:  332:return values;
+        -:  333:
+        -:  334:err:
+    #####:  335:OPENSSL_free(linebuf);
+    #####:  336:sk_CONF_VALUE_pop_free(values, X509V3_conf_free);
+    #####:  337:return NULL;
+        -:  338:
+        -:  339:}
+        -:  340:
+        -:  341:/* Delete leading and trailing spaces from a string */
+    #####:  342:static char *strip_spaces(char *name)
+        -:  343:{
+        -:  344:	char *p, *q;
+        -:  345:	/* Skip over leading spaces */
+        -:  346:	p = name;
+    #####:  347:	while(*p && isspace((unsigned char)*p)) p++;
+    #####:  348:	if(!*p) return NULL;
+    #####:  349:	q = p + strlen(p) - 1;
+    #####:  350:	while((q != p) && isspace((unsigned char)*q)) q--;
+    #####:  351:	if(p != q) q[1] = 0;
+    #####:  352:	if(!*p) return NULL;
+    #####:  353:	return p;
+        -:  354:}
+        -:  355:
+        -:  356:/* hex string utilities */
+        -:  357:
+        -:  358:/* Given a buffer of length 'len' return a OPENSSL_malloc'ed string with its
+        -:  359: * hex representation
+        -:  360: * @@@ (Contents of buffer are always kept in ASCII, also on EBCDIC machines)
+        -:  361: */
+        -:  362:
+    #####:  363:char *hex_to_string(const unsigned char *buffer, long len)
+        -:  364:{
+        -:  365:	char *tmp, *q;
+        -:  366:	const unsigned char *p;
+        -:  367:	int i;
+        -:  368:	const static char hexdig[] = "0123456789ABCDEF";
+    #####:  369:	if(!buffer || !len) return NULL;
+    #####:  370:	if(!(tmp = OPENSSL_malloc(len * 3 + 1))) {
+    #####:  371:		X509V3err(X509V3_F_HEX_TO_STRING,ERR_R_MALLOC_FAILURE);
+    #####:  372:		return NULL;
+        -:  373:	}
+        -:  374:	q = tmp;
+    #####:  375:	for(i = 0, p = buffer; i < len; i++,p++) {
+    #####:  376:		*q++ = hexdig[(*p >> 4) & 0xf];
+    #####:  377:		*q++ = hexdig[*p & 0xf];
+    #####:  378:		*q++ = ':';
+        -:  379:	}
+    #####:  380:	q[-1] = 0;
+        -:  381:#ifdef CHARSET_EBCDIC
+        -:  382:	ebcdic2ascii(tmp, tmp, q - tmp - 1);
+        -:  383:#endif
+        -:  384:
+    #####:  385:	return tmp;
+        -:  386:}
+        -:  387:
+        -:  388:/* Give a string of hex digits convert to
+        -:  389: * a buffer
+        -:  390: */
+        -:  391:
+    #####:  392:unsigned char *string_to_hex(const char *str, long *len)
+        -:  393:{
+        -:  394:	unsigned char *hexbuf, *q;
+        -:  395:	unsigned char ch, cl, *p;
+    #####:  396:	if(!str) {
+    #####:  397:		X509V3err(X509V3_F_STRING_TO_HEX,X509V3_R_INVALID_NULL_ARGUMENT);
+    #####:  398:		return NULL;
+        -:  399:	}
+    #####:  400:	if(!(hexbuf = OPENSSL_malloc(strlen(str) >> 1))) goto err;
+    #####:  401:	for(p = (unsigned char *)str, q = hexbuf; *p;) {
+    #####:  402:		ch = *p++;
+        -:  403:#ifdef CHARSET_EBCDIC
+        -:  404:		ch = os_toebcdic[ch];
+        -:  405:#endif
+    #####:  406:		if(ch == ':') continue;
+    #####:  407:		cl = *p++;
+        -:  408:#ifdef CHARSET_EBCDIC
+        -:  409:		cl = os_toebcdic[cl];
+        -:  410:#endif
+    #####:  411:		if(!cl) {
+    #####:  412:			X509V3err(X509V3_F_STRING_TO_HEX,X509V3_R_ODD_NUMBER_OF_DIGITS);
+    #####:  413:			OPENSSL_free(hexbuf);
+    #####:  414:			return NULL;
+        -:  415:		}
+    #####:  416:		if(isupper(ch)) ch = tolower(ch);
+    #####:  417:		if(isupper(cl)) cl = tolower(cl);
+        -:  418:
+    #####:  419:		if((ch >= '0') && (ch <= '9')) ch -= '0';
+    #####:  420:		else if ((ch >= 'a') && (ch <= 'f')) ch -= 'a' - 10;
+        -:  421:		else goto badhex;
+        -:  422:
+    #####:  423:		if((cl >= '0') && (cl <= '9')) cl -= '0';
+    #####:  424:		else if ((cl >= 'a') && (cl <= 'f')) cl -= 'a' - 10;
+        -:  425:		else goto badhex;
+        -:  426:
+    #####:  427:		*q++ = (ch << 4) | cl;
+        -:  428:	}
+        -:  429:
+    #####:  430:	if(len) *len = q - hexbuf;
+        -:  431:
+    #####:  432:	return hexbuf;
+        -:  433:
+        -:  434:	err:
+    #####:  435:	if(hexbuf) OPENSSL_free(hexbuf);
+    #####:  436:	X509V3err(X509V3_F_STRING_TO_HEX,ERR_R_MALLOC_FAILURE);
+    #####:  437:	return NULL;
+        -:  438:
+        -:  439:	badhex:
+    #####:  440:	OPENSSL_free(hexbuf);
+    #####:  441:	X509V3err(X509V3_F_STRING_TO_HEX,X509V3_R_ILLEGAL_HEX_DIGIT);
+    #####:  442:	return NULL;
+        -:  443:
+        -:  444:}
+        -:  445:
+        -:  446:/* V2I name comparison function: returns zero if 'name' matches
+        -:  447: * cmp or cmp.*
+        -:  448: */
+        -:  449:
+    #####:  450:int name_cmp(const char *name, const char *cmp)
+        -:  451:{
+        -:  452:	int len, ret;
+        -:  453:	char c;
+    #####:  454:	len = strlen(cmp);
+    #####:  455:	if((ret = strncmp(name, cmp, len))) return ret;
+    #####:  456:	c = name[len];
+    #####:  457:	if(!c || (c=='.')) return 0;
+    #####:  458:	return 1;
+        -:  459:}
+        -:  460:
+    #####:  461:static int sk_strcmp(const char * const *a, const char * const *b)
+        -:  462:{
+    #####:  463:	return strcmp(*a, *b);
+        -:  464:}
+        -:  465:
+    #####:  466:STACK_OF(OPENSSL_STRING) *X509_get1_email(X509 *x)
+        -:  467:{
+        -:  468:	GENERAL_NAMES *gens;
+        -:  469:	STACK_OF(OPENSSL_STRING) *ret;
+        -:  470:
+    #####:  471:	gens = X509_get_ext_d2i(x, NID_subject_alt_name, NULL, NULL);
+    #####:  472:	ret = get_email(X509_get_subject_name(x), gens);
+    #####:  473:	sk_GENERAL_NAME_pop_free(gens, GENERAL_NAME_free);
+    #####:  474:	return ret;
+        -:  475:}
+        -:  476:
+    #####:  477:STACK_OF(OPENSSL_STRING) *X509_get1_ocsp(X509 *x)
+        -:  478:{
+        -:  479:	AUTHORITY_INFO_ACCESS *info;
+    #####:  480:	STACK_OF(OPENSSL_STRING) *ret = NULL;
+        -:  481:	int i;
+        -:  482:
+    #####:  483:	info = X509_get_ext_d2i(x, NID_info_access, NULL, NULL);
+    #####:  484:	if (!info)
+        -:  485:		return NULL;
+    #####:  486:	for (i = 0; i < sk_ACCESS_DESCRIPTION_num(info); i++)
+        -:  487:		{
+    #####:  488:		ACCESS_DESCRIPTION *ad = sk_ACCESS_DESCRIPTION_value(info, i);
+    #####:  489:		if (OBJ_obj2nid(ad->method) == NID_ad_OCSP)
+        -:  490:			{
+    #####:  491:			if (ad->location->type == GEN_URI)
+        -:  492:				{
+    #####:  493:				if (!append_ia5(&ret, ad->location->d.uniformResourceIdentifier))
+        -:  494:					break;
+        -:  495:				}
+        -:  496:			}
+        -:  497:		}
+    #####:  498:	AUTHORITY_INFO_ACCESS_free(info);
+    #####:  499:	return ret;
+        -:  500:}
+        -:  501:
+    #####:  502:STACK_OF(OPENSSL_STRING) *X509_REQ_get1_email(X509_REQ *x)
+        -:  503:{
+        -:  504:	GENERAL_NAMES *gens;
+        -:  505:	STACK_OF(X509_EXTENSION) *exts;
+        -:  506:	STACK_OF(OPENSSL_STRING) *ret;
+        -:  507:
+    #####:  508:	exts = X509_REQ_get_extensions(x);
+    #####:  509:	gens = X509V3_get_d2i(exts, NID_subject_alt_name, NULL, NULL);
+    #####:  510:	ret = get_email(X509_REQ_get_subject_name(x), gens);
+    #####:  511:	sk_GENERAL_NAME_pop_free(gens, GENERAL_NAME_free);
+    #####:  512:	sk_X509_EXTENSION_pop_free(exts, X509_EXTENSION_free);
+    #####:  513:	return ret;
+        -:  514:}
+        -:  515:
+        -:  516:
+    #####:  517:static STACK_OF(OPENSSL_STRING) *get_email(X509_NAME *name, GENERAL_NAMES *gens)
+        -:  518:{
+    #####:  519:	STACK_OF(OPENSSL_STRING) *ret = NULL;
+        -:  520:	X509_NAME_ENTRY *ne;
+    #####:  521:	ASN1_IA5STRING *email;
+        -:  522:	GENERAL_NAME *gen;
+        -:  523:	int i;
+        -:  524:	/* Now add any email address(es) to STACK */
+        -:  525:	i = -1;
+        -:  526:	/* First supplied X509_NAME */
+    #####:  527:	while((i = X509_NAME_get_index_by_NID(name,
+        -:  528:					 NID_pkcs9_emailAddress, i)) >= 0) {
+    #####:  529:		ne = X509_NAME_get_entry(name, i);
+    #####:  530:		email = X509_NAME_ENTRY_get_data(ne);
+    #####:  531:		if(!append_ia5(&ret, email)) return NULL;
+        -:  532:	}
+    #####:  533:	for(i = 0; i < sk_GENERAL_NAME_num(gens); i++)
+        -:  534:	{
+    #####:  535:		gen = sk_GENERAL_NAME_value(gens, i);
+    #####:  536:		if(gen->type != GEN_EMAIL) continue;
+    #####:  537:		if(!append_ia5(&ret, gen->d.ia5)) return NULL;
+        -:  538:	}
+    #####:  539:	return ret;
+        -:  540:}
+        -:  541:
+    #####:  542:static void str_free(OPENSSL_STRING str)
+        -:  543:{
+    #####:  544:	OPENSSL_free(str);
+    #####:  545:}
+        -:  546:
+    #####:  547:static int append_ia5(STACK_OF(OPENSSL_STRING) **sk, ASN1_IA5STRING *email)
+        -:  548:{
+        -:  549:	char *emtmp;
+        -:  550:	/* First some sanity checks */
+    #####:  551:	if(email->type != V_ASN1_IA5STRING) return 1;
+    #####:  552:	if(!email->data || !email->length) return 1;
+    #####:  553:	if(!*sk) *sk = sk_OPENSSL_STRING_new(sk_strcmp);
+    #####:  554:	if(!*sk) return 0;
+        -:  555:	/* Don't add duplicates */
+    #####:  556:	if(sk_OPENSSL_STRING_find(*sk, (char *)email->data) != -1) return 1;
+    #####:  557:	emtmp = BUF_strdup((char *)email->data);
+    #####:  558:	if(!emtmp || !sk_OPENSSL_STRING_push(*sk, emtmp)) {
+    #####:  559:		X509_email_free(*sk);
+    #####:  560:		*sk = NULL;
+        -:  561:		return 0;
+        -:  562:	}
+        -:  563:	return 1;
+        -:  564:}
+        -:  565:
+    #####:  566:void X509_email_free(STACK_OF(OPENSSL_STRING) *sk)
+        -:  567:{
+    #####:  568:	sk_OPENSSL_STRING_pop_free(sk, str_free);
+    #####:  569:}
+        -:  570:
+        -:  571:/* Convert IP addresses both IPv4 and IPv6 into an 
+        -:  572: * OCTET STRING compatible with RFC3280.
+        -:  573: */
+        -:  574:
+    #####:  575:ASN1_OCTET_STRING *a2i_IPADDRESS(const char *ipasc)
+        -:  576:	{
+        -:  577:	unsigned char ipout[16];
+        -:  578:	ASN1_OCTET_STRING *ret;
+        -:  579:	int iplen;
+        -:  580:
+        -:  581:	/* If string contains a ':' assume IPv6 */
+        -:  582:
+    #####:  583:	iplen = a2i_ipadd(ipout, ipasc);
+        -:  584:
+    #####:  585:	if (!iplen)
+        -:  586:		return NULL;
+        -:  587:
+    #####:  588:	ret = ASN1_OCTET_STRING_new();
+    #####:  589:	if (!ret)
+        -:  590:		return NULL;
+    #####:  591:	if (!ASN1_OCTET_STRING_set(ret, ipout, iplen))
+        -:  592:		{
+    #####:  593:		ASN1_OCTET_STRING_free(ret);
+    #####:  594:		return NULL;
+        -:  595:		}
+        -:  596:	return ret;
+        -:  597:	}
+        -:  598:
+    #####:  599:ASN1_OCTET_STRING *a2i_IPADDRESS_NC(const char *ipasc)
+        -:  600:	{
+        -:  601:	ASN1_OCTET_STRING *ret = NULL;
+        -:  602:	unsigned char ipout[32];
+        -:  603:	char *iptmp = NULL, *p;
+        -:  604:	int iplen1, iplen2;
+    #####:  605:	p = strchr(ipasc,'/');
+    #####:  606:	if (!p)
+        -:  607:		return NULL;
+    #####:  608:	iptmp = BUF_strdup(ipasc);
+    #####:  609:	if (!iptmp)
+        -:  610:		return NULL;
+    #####:  611:	p = iptmp + (p - ipasc);
+    #####:  612:	*p++ = 0;
+        -:  613:
+    #####:  614:	iplen1 = a2i_ipadd(ipout, iptmp);
+        -:  615:
+    #####:  616:	if (!iplen1)
+        -:  617:		goto err;
+        -:  618:
+    #####:  619:	iplen2 = a2i_ipadd(ipout + iplen1, p);
+        -:  620:
+    #####:  621:	OPENSSL_free(iptmp);
+        -:  622:	iptmp = NULL;
+        -:  623:
+    #####:  624:	if (!iplen2 || (iplen1 != iplen2))
+        -:  625:		goto err;
+        -:  626:
+    #####:  627:	ret = ASN1_OCTET_STRING_new();
+    #####:  628:	if (!ret)
+        -:  629:		goto err;
+    #####:  630:	if (!ASN1_OCTET_STRING_set(ret, ipout, iplen1 + iplen2))
+        -:  631:		goto err;
+        -:  632:
+        -:  633:	return ret;
+        -:  634:
+        -:  635:	err:
+    #####:  636:	if (iptmp)
+    #####:  637:		OPENSSL_free(iptmp);
+    #####:  638:	if (ret)
+    #####:  639:		ASN1_OCTET_STRING_free(ret);
+        -:  640:	return NULL;
+        -:  641:	}
+        -:  642:	
+        -:  643:
+    #####:  644:int a2i_ipadd(unsigned char *ipout, const char *ipasc)
+        -:  645:	{
+        -:  646:	/* If string contains a ':' assume IPv6 */
+        -:  647:
+    #####:  648:	if (strchr(ipasc, ':'))
+        -:  649:		{
+    #####:  650:		if (!ipv6_from_asc(ipout, ipasc))
+        -:  651:			return 0;
+    #####:  652:		return 16;
+        -:  653:		}
+        -:  654:	else
+        -:  655:		{
+    #####:  656:		if (!ipv4_from_asc(ipout, ipasc))
+        -:  657:			return 0;
+    #####:  658:		return 4;
+        -:  659:		}
+        -:  660:	}
+        -:  661:
+    #####:  662:static int ipv4_from_asc(unsigned char *v4, const char *in)
+        -:  663:	{
+        -:  664:	int a0, a1, a2, a3;
+    #####:  665:	if (sscanf(in, "%d.%d.%d.%d", &a0, &a1, &a2, &a3) != 4)
+        -:  666:		return 0;
+    #####:  667:	if ((a0 < 0) || (a0 > 255) || (a1 < 0) || (a1 > 255)
+    #####:  668:		|| (a2 < 0) || (a2 > 255) || (a3 < 0) || (a3 > 255))
+        -:  669:		return 0;
+    #####:  670:	v4[0] = a0;
+    #####:  671:	v4[1] = a1;
+    #####:  672:	v4[2] = a2;
+    #####:  673:	v4[3] = a3;
+    #####:  674:	return 1;
+        -:  675:	}
+        -:  676:
+        -:  677:typedef struct {
+        -:  678:		/* Temporary store for IPV6 output */
+        -:  679:		unsigned char tmp[16];
+        -:  680:		/* Total number of bytes in tmp */
+        -:  681:		int total;
+        -:  682:		/* The position of a zero (corresponding to '::') */
+        -:  683:		int zero_pos;
+        -:  684:		/* Number of zeroes */
+        -:  685:		int zero_cnt;
+        -:  686:	} IPV6_STAT;
+        -:  687:
+        -:  688:
+    #####:  689:static int ipv6_from_asc(unsigned char *v6, const char *in)
+        -:  690:	{
+        -:  691:	IPV6_STAT v6stat;
+    #####:  692:	v6stat.total = 0;
+    #####:  693:	v6stat.zero_pos = -1;
+    #####:  694:	v6stat.zero_cnt = 0;
+        -:  695:	/* Treat the IPv6 representation as a list of values
+        -:  696:	 * separated by ':'. The presence of a '::' will parse
+        -:  697: 	 * as one, two or three zero length elements.
+        -:  698:	 */
+    #####:  699:	if (!CONF_parse_list(in, ':', 0, ipv6_cb, &v6stat))
+        -:  700:		return 0;
+        -:  701:
+        -:  702:	/* Now for some sanity checks */
+        -:  703:
+    #####:  704:	if (v6stat.zero_pos == -1)
+        -:  705:		{
+        -:  706:		/* If no '::' must have exactly 16 bytes */
+    #####:  707:		if (v6stat.total != 16)
+        -:  708:			return 0;
+        -:  709:		}
+        -:  710:	else 
+        -:  711:		{
+        -:  712:		/* If '::' must have less than 16 bytes */
+    #####:  713:		if (v6stat.total == 16)
+        -:  714:			return 0;
+        -:  715:		/* More than three zeroes is an error */
+    #####:  716:		if (v6stat.zero_cnt > 3)
+        -:  717:			return 0;
+        -:  718:		/* Can only have three zeroes if nothing else present */
+    #####:  719:		else if (v6stat.zero_cnt == 3)
+        -:  720:			{
+    #####:  721:			if (v6stat.total > 0)
+        -:  722:				return 0;
+        -:  723:			}
+        -:  724:		/* Can only have two zeroes if at start or end */
+    #####:  725:		else if (v6stat.zero_cnt == 2)
+        -:  726:			{
+    #####:  727:			if ((v6stat.zero_pos != 0)
+    #####:  728:				&& (v6stat.zero_pos != v6stat.total))
+        -:  729:				return 0;
+        -:  730:			}
+        -:  731:		else 
+        -:  732:		/* Can only have one zero if *not* start or end */
+        -:  733:			{
+    #####:  734:			if ((v6stat.zero_pos == 0)
+    #####:  735:				|| (v6stat.zero_pos == v6stat.total))
+        -:  736:				return 0;
+        -:  737:			}
+        -:  738:		}
+        -:  739:
+        -:  740:	/* Format result */
+        -:  741:
+    #####:  742:	if (v6stat.zero_pos >= 0)
+        -:  743:		{
+        -:  744:		/* Copy initial part */
+    #####:  745:		memcpy(v6, v6stat.tmp, v6stat.zero_pos);
+        -:  746:		/* Zero middle */
+    #####:  747:		memset(v6 + v6stat.zero_pos, 0, 16 - v6stat.total);
+        -:  748:		/* Copy final part */
+    #####:  749:		if (v6stat.total != v6stat.zero_pos)
+    #####:  750:			memcpy(v6 + v6stat.zero_pos + 16 - v6stat.total,
+    #####:  751:				v6stat.tmp + v6stat.zero_pos,
+    #####:  752:				v6stat.total - v6stat.zero_pos);
+        -:  753:		}
+        -:  754:	else
+        -:  755:		memcpy(v6, v6stat.tmp, 16);
+        -:  756:
+        -:  757:	return 1;
+        -:  758:	}
+        -:  759:
+    #####:  760:static int ipv6_cb(const char *elem, int len, void *usr)
+        -:  761:	{
+        -:  762:	IPV6_STAT *s = usr;
+        -:  763:	/* Error if 16 bytes written */
+    #####:  764:	if (s->total == 16)
+        -:  765:		return 0;
+    #####:  766:	if (len == 0)
+        -:  767:		{
+        -:  768:		/* Zero length element, corresponds to '::' */
+    #####:  769:		if (s->zero_pos == -1)
+    #####:  770:			s->zero_pos = s->total;
+        -:  771:		/* If we've already got a :: its an error */
+    #####:  772:		else if (s->zero_pos != s->total)
+        -:  773:			return 0;
+    #####:  774:		s->zero_cnt++;
+        -:  775:		}
+        -:  776:	else 
+        -:  777:		{
+        -:  778:		/* If more than 4 characters could be final a.b.c.d form */
+    #####:  779:		if (len > 4)
+        -:  780:			{
+        -:  781:			/* Need at least 4 bytes left */
+    #####:  782:			if (s->total > 12)
+        -:  783:				return 0;
+        -:  784:			/* Must be end of string */
+    #####:  785:			if (elem[len])
+        -:  786:				return 0;
+    #####:  787:			if (!ipv4_from_asc(s->tmp + s->total, elem))
+        -:  788:				return 0;
+    #####:  789:			s->total += 4;
+        -:  790:			}
+        -:  791:		else
+        -:  792:			{
+    #####:  793:			if (!ipv6_hex(s->tmp + s->total, elem, len))
+        -:  794:				return 0;
+    #####:  795:			s->total += 2;
+        -:  796:			}
+        -:  797:		}
+        -:  798:	return 1;
+        -:  799:	}
+        -:  800:
+        -:  801:/* Convert a string of up to 4 hex digits into the corresponding
+        -:  802: * IPv6 form.
+        -:  803: */
+        -:  804:
+    #####:  805:static int ipv6_hex(unsigned char *out, const char *in, int inlen)
+        -:  806:	{
+        -:  807:	unsigned char c;
+        -:  808:	unsigned int num = 0;
+    #####:  809:	if (inlen > 4)
+        -:  810:		return 0;
+    #####:  811:	while(inlen--)
+        -:  812:		{
+    #####:  813:		c = *in++;
+    #####:  814:		num <<= 4;
+    #####:  815:		if ((c >= '0') && (c <= '9'))
+    #####:  816:			num |= c - '0';
+    #####:  817:		else if ((c >= 'A') && (c <= 'F'))
+    #####:  818:			num |= c - 'A' + 10;
+    #####:  819:		else if ((c >= 'a') && (c <= 'f'))
+    #####:  820:			num |=  c - 'a' + 10;
+        -:  821:		else
+        -:  822:			return 0;
+        -:  823:		}
+    #####:  824:	out[0] = num >> 8;
+    #####:  825:	out[1] = num & 0xff;
+    #####:  826:	return 1;
+        -:  827:	}
+        -:  828:
+        -:  829:
+    #####:  830:int X509V3_NAME_from_section(X509_NAME *nm, STACK_OF(CONF_VALUE)*dn_sk,
+        -:  831:						unsigned long chtype)
+        -:  832:	{
+        -:  833:	CONF_VALUE *v;
+        -:  834:	int i, mval;
+        -:  835:	char *p, *type;
+    #####:  836:	if (!nm)
+        -:  837:		return 0;
+        -:  838:
+    #####:  839:	for (i = 0; i < sk_CONF_VALUE_num(dn_sk); i++)
+        -:  840:		{
+    #####:  841:		v=sk_CONF_VALUE_value(dn_sk,i);
+    #####:  842:		type=v->name;
+        -:  843:		/* Skip past any leading X. X: X, etc to allow for
+        -:  844:		 * multiple instances 
+        -:  845:		 */
+    #####:  846:		for(p = type; *p ; p++) 
+        -:  847:#ifndef CHARSET_EBCDIC
+    #####:  848:			if ((*p == ':') || (*p == ',') || (*p == '.'))
+        -:  849:#else
+        -:  850:			if ((*p == os_toascii[':']) || (*p == os_toascii[',']) || (*p == os_toascii['.']))
+        -:  851:#endif
+        -:  852:				{
+    #####:  853:				p++;
+    #####:  854:				if(*p) type = p;
+        -:  855:				break;
+        -:  856:				}
+        -:  857:#ifndef CHARSET_EBCDIC
+    #####:  858:		if (*type == '+')
+        -:  859:#else
+        -:  860:		if (*type == os_toascii['+'])
+        -:  861:#endif
+        -:  862:			{
+        -:  863:			mval = -1;
+    #####:  864:			type++;
+        -:  865:			}
+        -:  866:		else
+        -:  867:			mval = 0;
+    #####:  868:		if (!X509_NAME_add_entry_by_txt(nm,type, chtype,
+    #####:  869:				(unsigned char *) v->value,-1,-1,mval))
+        -:  870:					return 0;
+        -:  871:
+        -:  872:		}
+        -:  873:	return 1;
+        -:  874:	}

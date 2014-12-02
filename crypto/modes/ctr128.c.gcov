@@ -1,0 +1,257 @@
+        -:    0:Source:ctr128.c
+        -:    0:Graph:ctr128.gcno
+        -:    0:Data:ctr128.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* ====================================================================
+        -:    2: * Copyright (c) 2008 The OpenSSL Project.  All rights reserved.
+        -:    3: *
+        -:    4: * Redistribution and use in source and binary forms, with or without
+        -:    5: * modification, are permitted provided that the following conditions
+        -:    6: * are met:
+        -:    7: *
+        -:    8: * 1. Redistributions of source code must retain the above copyright
+        -:    9: *    notice, this list of conditions and the following disclaimer. 
+        -:   10: *
+        -:   11: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   12: *    notice, this list of conditions and the following disclaimer in
+        -:   13: *    the documentation and/or other materials provided with the
+        -:   14: *    distribution.
+        -:   15: *
+        -:   16: * 3. All advertising materials mentioning features or use of this
+        -:   17: *    software must display the following acknowledgment:
+        -:   18: *    "This product includes software developed by the OpenSSL Project
+        -:   19: *    for use in the OpenSSL Toolkit. (http://www.openssl.org/)"
+        -:   20: *
+        -:   21: * 4. The names "OpenSSL Toolkit" and "OpenSSL Project" must not be used to
+        -:   22: *    endorse or promote products derived from this software without
+        -:   23: *    prior written permission. For written permission, please contact
+        -:   24: *    openssl-core@openssl.org.
+        -:   25: *
+        -:   26: * 5. Products derived from this software may not be called "OpenSSL"
+        -:   27: *    nor may "OpenSSL" appear in their names without prior written
+        -:   28: *    permission of the OpenSSL Project.
+        -:   29: *
+        -:   30: * 6. Redistributions of any form whatsoever must retain the following
+        -:   31: *    acknowledgment:
+        -:   32: *    "This product includes software developed by the OpenSSL Project
+        -:   33: *    for use in the OpenSSL Toolkit (http://www.openssl.org/)"
+        -:   34: *
+        -:   35: * THIS SOFTWARE IS PROVIDED BY THE OpenSSL PROJECT ``AS IS'' AND ANY
+        -:   36: * EXPRESSED OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   37: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+        -:   38: * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE OpenSSL PROJECT OR
+        -:   39: * ITS CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+        -:   40: * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+        -:   41: * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+        -:   42: * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   43: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+        -:   44: * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+        -:   45: * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+        -:   46: * OF THE POSSIBILITY OF SUCH DAMAGE.
+        -:   47: * ====================================================================
+        -:   48: *
+        -:   49: */
+        -:   50:
+        -:   51:#include <openssl/crypto.h>
+        -:   52:#include "modes_lcl.h"
+        -:   53:#include <string.h>
+        -:   54:
+        -:   55:#ifndef MODES_DEBUG
+        -:   56:# ifndef NDEBUG
+        -:   57:#  define NDEBUG
+        -:   58:# endif
+        -:   59:#endif
+        -:   60:#include <assert.h>
+        -:   61:
+        -:   62:/* NOTE: the IV/counter CTR mode is big-endian.  The code itself
+        -:   63: * is endian-neutral. */
+        -:   64:
+        -:   65:/* increment counter (128-bit int) by 1 */
+        -:   66:static void ctr128_inc(unsigned char *counter) {
+        -:   67:	u32 n=16;
+        -:   68:	u8  c;
+        -:   69:
+        -:   70:	do {
+    #####:   71:		--n;
+    #####:   72:		c = counter[n];
+    #####:   73:		++c;
+    #####:   74:		counter[n] = c;
+    #####:   75:		if (c) return;
+    #####:   76:	} while (n);
+        -:   77:}
+        -:   78:
+        -:   79:#if !defined(OPENSSL_SMALL_FOOTPRINT)
+        -:   80:static void ctr128_inc_aligned(unsigned char *counter) {
+        -:   81:	size_t *data,c,n;
+        -:   82:	const union { long one; char little; } is_endian = {1};
+        -:   83:
+        -:   84:	if (is_endian.little) {
+        -:   85:		ctr128_inc(counter);
+        -:   86:		return;
+        -:   87:	}
+        -:   88:
+        -:   89:	data = (size_t *)counter;
+        -:   90:	n = 16/sizeof(size_t);
+        -:   91:	do {
+        -:   92:		--n;
+        -:   93:		c = data[n];
+        -:   94:		++c;
+        -:   95:		data[n] = c;
+        -:   96:		if (c) return;
+        -:   97:	} while (n);
+        -:   98:}
+        -:   99:#endif
+        -:  100:
+        -:  101:/* The input encrypted as though 128bit counter mode is being
+        -:  102: * used.  The extra state information to record how much of the
+        -:  103: * 128bit block we have used is contained in *num, and the
+        -:  104: * encrypted counter is kept in ecount_buf.  Both *num and
+        -:  105: * ecount_buf must be initialised with zeros before the first
+        -:  106: * call to CRYPTO_ctr128_encrypt().
+        -:  107: *
+        -:  108: * This algorithm assumes that the counter is in the x lower bits
+        -:  109: * of the IV (ivec), and that the application has full control over
+        -:  110: * overflow and the rest of the IV.  This implementation takes NO
+        -:  111: * responsability for checking that the counter doesn't overflow
+        -:  112: * into the rest of the IV when incremented.
+        -:  113: */
+    #####:  114:void CRYPTO_ctr128_encrypt(const unsigned char *in, unsigned char *out,
+        -:  115:			size_t len, const void *key,
+        -:  116:			unsigned char ivec[16], unsigned char ecount_buf[16],
+        -:  117:			unsigned int *num, block128_f block)
+        -:  118:{
+        -:  119:	unsigned int n;
+        -:  120:	size_t l=0;
+        -:  121:
+        -:  122:	assert(in && out && key && ecount_buf && num);
+        -:  123:	assert(*num < 16);
+        -:  124:
+    #####:  125:	n = *num;
+        -:  126:
+        -:  127:#if !defined(OPENSSL_SMALL_FOOTPRINT)
+        -:  128:	if (16%sizeof(size_t) == 0) do { /* always true actually */
+    #####:  129:		while (n && len) {
+    #####:  130:			*(out++) = *(in++) ^ ecount_buf[n];
+    #####:  131:			--len;
+    #####:  132:			n = (n+1) % 16;
+        -:  133:		}
+        -:  134:
+        -:  135:#if defined(STRICT_ALIGNMENT)
+        -:  136:		if (((size_t)in|(size_t)out|(size_t)ivec)%sizeof(size_t) != 0)
+        -:  137:			break;
+        -:  138:#endif
+    #####:  139:		while (len>=16) {
+    #####:  140:			(*block)(ivec, ecount_buf, key);
+        -:  141:			ctr128_inc_aligned(ivec);
+    #####:  142:			for (; n<16; n+=sizeof(size_t))
+    #####:  143:				*(size_t *)(out+n) =
+    #####:  144:				*(size_t *)(in+n) ^ *(size_t *)(ecount_buf+n);
+    #####:  145:			len -= 16;
+    #####:  146:			out += 16;
+    #####:  147:			in  += 16;
+        -:  148:			n = 0;
+        -:  149:		}
+    #####:  150:		if (len) {
+    #####:  151:			(*block)(ivec, ecount_buf, key);
+        -:  152: 			ctr128_inc_aligned(ivec);
+    #####:  153:			while (len--) {
+    #####:  154:				out[n] = in[n] ^ ecount_buf[n];
+    #####:  155:				++n;
+        -:  156:			}
+        -:  157:		}
+    #####:  158:		*num = n;
+    #####:  159:		return;
+        -:  160:	} while(0);
+        -:  161:	/* the rest would be commonly eliminated by x86* compiler */
+        -:  162:#endif
+        -:  163:	while (l<len) {
+        -:  164:		if (n==0) {
+        -:  165:			(*block)(ivec, ecount_buf, key);
+        -:  166: 			ctr128_inc(ivec);
+        -:  167:		}
+        -:  168:		out[l] = in[l] ^ ecount_buf[n];
+        -:  169:		++l;
+        -:  170:		n = (n+1) % 16;
+        -:  171:	}
+        -:  172:
+        -:  173:	*num=n;
+        -:  174:}
+        -:  175:
+        -:  176:/* increment upper 96 bits of 128-bit counter by 1 */
+        -:  177:static void ctr96_inc(unsigned char *counter) {
+        -:  178:	u32 n=12;
+        -:  179:	u8  c;
+        -:  180:
+        -:  181:	do {
+    #####:  182:		--n;
+    #####:  183:		c = counter[n];
+    #####:  184:		++c;
+    #####:  185:		counter[n] = c;
+    #####:  186:		if (c) return;
+    #####:  187:	} while (n);
+        -:  188:}
+        -:  189:
+    #####:  190:void CRYPTO_ctr128_encrypt_ctr32(const unsigned char *in, unsigned char *out,
+        -:  191:			size_t len, const void *key,
+        -:  192:			unsigned char ivec[16], unsigned char ecount_buf[16],
+        -:  193:			unsigned int *num, ctr128_f func)
+        -:  194:{
+        -:  195:	unsigned int n,ctr32;
+        -:  196:
+        -:  197:	assert(in && out && key && ecount_buf && num);
+        -:  198:	assert(*num < 16);
+        -:  199:
+    #####:  200:	n = *num;
+        -:  201:
+    #####:  202:	while (n && len) {
+    #####:  203:		*(out++) = *(in++) ^ ecount_buf[n];
+    #####:  204:		--len;
+    #####:  205:		n = (n+1) % 16;
+        -:  206:	}
+        -:  207:
+    #####:  208:	ctr32 = GETU32(ivec+12);
+    #####:  209:	while (len>=16) {
+    #####:  210:		size_t blocks = len/16;
+        -:  211:		/*
+        -:  212:		 * 1<<28 is just a not-so-small yet not-so-large number...
+        -:  213:		 * Below condition is practically never met, but it has to
+        -:  214:		 * be checked for code correctness.
+        -:  215:		 */
+    #####:  216:		if (sizeof(size_t)>sizeof(unsigned int) && blocks>(1U<<28))
+        -:  217:			blocks = (1U<<28);
+        -:  218:		/*
+        -:  219:		 * As (*func) operates on 32-bit counter, caller
+        -:  220:		 * has to handle overflow. 'if' below detects the
+        -:  221:		 * overflow, which is then handled by limiting the
+        -:  222:		 * amount of blocks to the exact overflow point...
+        -:  223:		 */
+    #####:  224:		ctr32 += (u32)blocks;
+    #####:  225:		if (ctr32 < blocks) {
+    #####:  226:			blocks -= ctr32;
+        -:  227:			ctr32   = 0;
+        -:  228:		}
+    #####:  229:		(*func)(in,out,blocks,key,ivec);
+        -:  230:		/* (*ctr) does not update ivec, caller does: */
+    #####:  231:		PUTU32(ivec+12,ctr32);
+        -:  232:		/* ... overflow was detected, propogate carry. */
+    #####:  233:		if (ctr32 == 0)	ctr96_inc(ivec);
+    #####:  234:		blocks *= 16;
+    #####:  235:		len -= blocks;
+    #####:  236:		out += blocks;
+    #####:  237:		in  += blocks;
+        -:  238:	}
+    #####:  239:	if (len) {
+        -:  240:		memset(ecount_buf,0,16);
+    #####:  241:		(*func)(ecount_buf,ecount_buf,1,key,ivec);
+    #####:  242:		++ctr32;
+    #####:  243:		PUTU32(ivec+12,ctr32);
+    #####:  244:		if (ctr32 == 0)	ctr96_inc(ivec);
+    #####:  245:		while (len--) {
+    #####:  246:			out[n] = in[n] ^ ecount_buf[n];
+    #####:  247:			++n;
+        -:  248:		}
+        -:  249:	}
+        -:  250:
+    #####:  251:	*num=n;
+    #####:  252:}

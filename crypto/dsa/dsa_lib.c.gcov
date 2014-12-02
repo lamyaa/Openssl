@@ -1,0 +1,334 @@
+        -:    0:Source:dsa_lib.c
+        -:    0:Graph:dsa_lib.gcno
+        -:    0:Data:dsa_lib.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* crypto/dsa/dsa_lib.c */
+        -:    2:/* Copyright (C) 1995-1998 Eric Young (eay@cryptsoft.com)
+        -:    3: * All rights reserved.
+        -:    4: *
+        -:    5: * This package is an SSL implementation written
+        -:    6: * by Eric Young (eay@cryptsoft.com).
+        -:    7: * The implementation was written so as to conform with Netscapes SSL.
+        -:    8: * 
+        -:    9: * This library is free for commercial and non-commercial use as long as
+        -:   10: * the following conditions are aheared to.  The following conditions
+        -:   11: * apply to all code found in this distribution, be it the RC4, RSA,
+        -:   12: * lhash, DES, etc., code; not just the SSL code.  The SSL documentation
+        -:   13: * included with this distribution is covered by the same copyright terms
+        -:   14: * except that the holder is Tim Hudson (tjh@cryptsoft.com).
+        -:   15: * 
+        -:   16: * Copyright remains Eric Young's, and as such any Copyright notices in
+        -:   17: * the code are not to be removed.
+        -:   18: * If this package is used in a product, Eric Young should be given attribution
+        -:   19: * as the author of the parts of the library used.
+        -:   20: * This can be in the form of a textual message at program startup or
+        -:   21: * in documentation (online or textual) provided with the package.
+        -:   22: * 
+        -:   23: * Redistribution and use in source and binary forms, with or without
+        -:   24: * modification, are permitted provided that the following conditions
+        -:   25: * are met:
+        -:   26: * 1. Redistributions of source code must retain the copyright
+        -:   27: *    notice, this list of conditions and the following disclaimer.
+        -:   28: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   29: *    notice, this list of conditions and the following disclaimer in the
+        -:   30: *    documentation and/or other materials provided with the distribution.
+        -:   31: * 3. All advertising materials mentioning features or use of this software
+        -:   32: *    must display the following acknowledgement:
+        -:   33: *    "This product includes cryptographic software written by
+        -:   34: *     Eric Young (eay@cryptsoft.com)"
+        -:   35: *    The word 'cryptographic' can be left out if the rouines from the library
+        -:   36: *    being used are not cryptographic related :-).
+        -:   37: * 4. If you include any Windows specific code (or a derivative thereof) from 
+        -:   38: *    the apps directory (application code) you must include an acknowledgement:
+        -:   39: *    "This product includes software written by Tim Hudson (tjh@cryptsoft.com)"
+        -:   40: * 
+        -:   41: * THIS SOFTWARE IS PROVIDED BY ERIC YOUNG ``AS IS'' AND
+        -:   42: * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   43: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+        -:   44: * ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+        -:   45: * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+        -:   46: * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+        -:   47: * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   48: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+        -:   49: * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+        -:   50: * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+        -:   51: * SUCH DAMAGE.
+        -:   52: * 
+        -:   53: * The licence and distribution terms for any publically available version or
+        -:   54: * derivative of this code cannot be changed.  i.e. this code cannot simply be
+        -:   55: * copied and put under another distribution licence
+        -:   56: * [including the GNU Public Licence.]
+        -:   57: */
+        -:   58:
+        -:   59:/* Original version from Steven Schoch <schoch@sheba.arc.nasa.gov> */
+        -:   60:
+        -:   61:#include <stdio.h>
+        -:   62:#include "cryptlib.h"
+        -:   63:#include <openssl/bn.h>
+        -:   64:#include <openssl/dsa.h>
+        -:   65:#include <openssl/asn1.h>
+        -:   66:#ifndef OPENSSL_NO_ENGINE
+        -:   67:#include <openssl/engine.h>
+        -:   68:#endif
+        -:   69:#ifndef OPENSSL_NO_DH
+        -:   70:#include <openssl/dh.h>
+        -:   71:#endif
+        -:   72:
+        -:   73:#ifdef OPENSSL_FIPS
+        -:   74:#include <openssl/fips.h>
+        -:   75:#endif
+        -:   76:
+        -:   77:const char DSA_version[]="DSA" OPENSSL_VERSION_PTEXT;
+        -:   78:
+        -:   79:static const DSA_METHOD *default_DSA_method = NULL;
+        -:   80:
+    #####:   81:void DSA_set_default_method(const DSA_METHOD *meth)
+        -:   82:	{
+    #####:   83:	default_DSA_method = meth;
+    #####:   84:	}
+        -:   85:
+    10000:   86:const DSA_METHOD *DSA_get_default_method(void)
+        -:   87:	{
+    10000:   88:	if(!default_DSA_method)
+        -:   89:		{
+        -:   90:#ifdef OPENSSL_FIPS
+        -:   91:		if (FIPS_mode())
+        -:   92:			return FIPS_dsa_openssl();
+        -:   93:		else
+        -:   94:			return DSA_OpenSSL();
+        -:   95:#else
+    10000:   96:		default_DSA_method = DSA_OpenSSL();
+        -:   97:#endif
+        -:   98:		}
+    10000:   99:	return default_DSA_method;
+        -:  100:	}
+        -:  101:
+    #####:  102:DSA *DSA_new(void)
+        -:  103:	{
+    #####:  104:	return DSA_new_method(NULL);
+        -:  105:	}
+        -:  106:
+    #####:  107:int DSA_set_method(DSA *dsa, const DSA_METHOD *meth)
+        -:  108:	{
+        -:  109:	/* NB: The caller is specifically setting a method, so it's not up to us
+        -:  110:	 * to deal with which ENGINE it comes from. */
+        -:  111:        const DSA_METHOD *mtmp;
+    #####:  112:        mtmp = dsa->meth;
+    #####:  113:        if (mtmp->finish) mtmp->finish(dsa);
+        -:  114:#ifndef OPENSSL_NO_ENGINE
+    #####:  115:	if (dsa->engine)
+        -:  116:		{
+    #####:  117:		ENGINE_finish(dsa->engine);
+    #####:  118:		dsa->engine = NULL;
+        -:  119:		}
+        -:  120:#endif
+    #####:  121:        dsa->meth = meth;
+    #####:  122:        if (meth->init) meth->init(dsa);
+    #####:  123:        return 1;
+        -:  124:	}
+        -:  125:
+    #####:  126:DSA *DSA_new_method(ENGINE *engine)
+        -:  127:	{
+        -:  128:	DSA *ret;
+        -:  129:
+    #####:  130:	ret=(DSA *)OPENSSL_malloc(sizeof(DSA));
+    #####:  131:	if (ret == NULL)
+        -:  132:		{
+    #####:  133:		DSAerr(DSA_F_DSA_NEW_METHOD,ERR_R_MALLOC_FAILURE);
+    #####:  134:		return(NULL);
+        -:  135:		}
+    #####:  136:	ret->meth = DSA_get_default_method();
+        -:  137:#ifndef OPENSSL_NO_ENGINE
+    #####:  138:	if (engine)
+        -:  139:		{
+    #####:  140:		if (!ENGINE_init(engine))
+        -:  141:			{
+    #####:  142:			DSAerr(DSA_F_DSA_NEW_METHOD, ERR_R_ENGINE_LIB);
+    #####:  143:			OPENSSL_free(ret);
+    #####:  144:			return NULL;
+        -:  145:			}
+    #####:  146:		ret->engine = engine;
+        -:  147:		}
+        -:  148:	else
+    #####:  149:		ret->engine = ENGINE_get_default_DSA();
+    #####:  150:	if(ret->engine)
+        -:  151:		{
+    #####:  152:		ret->meth = ENGINE_get_DSA(ret->engine);
+    #####:  153:		if(!ret->meth)
+        -:  154:			{
+    #####:  155:			DSAerr(DSA_F_DSA_NEW_METHOD,
+        -:  156:				ERR_R_ENGINE_LIB);
+    #####:  157:			ENGINE_finish(ret->engine);
+    #####:  158:			OPENSSL_free(ret);
+    #####:  159:			return NULL;
+        -:  160:			}
+        -:  161:		}
+        -:  162:#endif
+        -:  163:
+    #####:  164:	ret->pad=0;
+    #####:  165:	ret->version=0;
+    #####:  166:	ret->write_params=1;
+    #####:  167:	ret->p=NULL;
+    #####:  168:	ret->q=NULL;
+    #####:  169:	ret->g=NULL;
+        -:  170:
+    #####:  171:	ret->pub_key=NULL;
+    #####:  172:	ret->priv_key=NULL;
+        -:  173:
+    #####:  174:	ret->kinv=NULL;
+    #####:  175:	ret->r=NULL;
+    #####:  176:	ret->method_mont_p=NULL;
+        -:  177:
+    #####:  178:	ret->references=1;
+    #####:  179:	ret->flags=ret->meth->flags & ~DSA_FLAG_NON_FIPS_ALLOW;
+    #####:  180:	CRYPTO_new_ex_data(CRYPTO_EX_INDEX_DSA, ret, &ret->ex_data);
+    #####:  181:	if ((ret->meth->init != NULL) && !ret->meth->init(ret))
+        -:  182:		{
+        -:  183:#ifndef OPENSSL_NO_ENGINE
+    #####:  184:		if (ret->engine)
+    #####:  185:			ENGINE_finish(ret->engine);
+        -:  186:#endif
+    #####:  187:		CRYPTO_free_ex_data(CRYPTO_EX_INDEX_DSA, ret, &ret->ex_data);
+    #####:  188:		OPENSSL_free(ret);
+        -:  189:		ret=NULL;
+        -:  190:		}
+        -:  191:	
+    #####:  192:	return(ret);
+        -:  193:	}
+        -:  194:
+    #####:  195:void DSA_free(DSA *r)
+        -:  196:	{
+        -:  197:	int i;
+        -:  198:
+    #####:  199:	if (r == NULL) return;
+        -:  200:
+    #####:  201:	i=CRYPTO_add(&r->references,-1,CRYPTO_LOCK_DSA);
+        -:  202:#ifdef REF_PRINT
+        -:  203:	REF_PRINT("DSA",r);
+        -:  204:#endif
+    #####:  205:	if (i > 0) return;
+        -:  206:#ifdef REF_CHECK
+        -:  207:	if (i < 0)
+        -:  208:		{
+        -:  209:		fprintf(stderr,"DSA_free, bad reference count\n");
+        -:  210:		abort();
+        -:  211:		}
+        -:  212:#endif
+        -:  213:
+    #####:  214:	if(r->meth->finish)
+    #####:  215:		r->meth->finish(r);
+        -:  216:#ifndef OPENSSL_NO_ENGINE
+    #####:  217:	if(r->engine)
+    #####:  218:		ENGINE_finish(r->engine);
+        -:  219:#endif
+        -:  220:
+    #####:  221:	CRYPTO_free_ex_data(CRYPTO_EX_INDEX_DSA, r, &r->ex_data);
+        -:  222:
+    #####:  223:	if (r->p != NULL) BN_clear_free(r->p);
+    #####:  224:	if (r->q != NULL) BN_clear_free(r->q);
+    #####:  225:	if (r->g != NULL) BN_clear_free(r->g);
+    #####:  226:	if (r->pub_key != NULL) BN_clear_free(r->pub_key);
+    #####:  227:	if (r->priv_key != NULL) BN_clear_free(r->priv_key);
+    #####:  228:	if (r->kinv != NULL) BN_clear_free(r->kinv);
+    #####:  229:	if (r->r != NULL) BN_clear_free(r->r);
+    #####:  230:	OPENSSL_free(r);
+        -:  231:	}
+        -:  232:
+    #####:  233:int DSA_up_ref(DSA *r)
+        -:  234:	{
+    #####:  235:	int i = CRYPTO_add(&r->references, 1, CRYPTO_LOCK_DSA);
+        -:  236:#ifdef REF_PRINT
+        -:  237:	REF_PRINT("DSA",r);
+        -:  238:#endif
+        -:  239:#ifdef REF_CHECK
+        -:  240:	if (i < 2)
+        -:  241:		{
+        -:  242:		fprintf(stderr, "DSA_up_ref, bad reference count\n");
+        -:  243:		abort();
+        -:  244:		}
+        -:  245:#endif
+    #####:  246:	return ((i > 1) ? 1 : 0);
+        -:  247:	}
+        -:  248:
+    #####:  249:int DSA_size(const DSA *r)
+        -:  250:	{
+        -:  251:	int ret,i;
+        -:  252:	ASN1_INTEGER bs;
+        -:  253:	unsigned char buf[4];	/* 4 bytes looks really small.
+        -:  254:				   However, i2d_ASN1_INTEGER() will not look
+        -:  255:				   beyond the first byte, as long as the second
+        -:  256:				   parameter is NULL. */
+        -:  257:
+    #####:  258:	i=BN_num_bits(r->q);
+    #####:  259:	bs.length=(i+7)/8;
+    #####:  260:	bs.data=buf;
+    #####:  261:	bs.type=V_ASN1_INTEGER;
+        -:  262:	/* If the top bit is set the asn1 encoding is 1 larger. */
+    #####:  263:	buf[0]=0xff;	
+        -:  264:
+    #####:  265:	i=i2d_ASN1_INTEGER(&bs,NULL);
+    #####:  266:	i+=i; /* r and s */
+    #####:  267:	ret=ASN1_object_size(1,i,V_ASN1_SEQUENCE);
+    #####:  268:	return(ret);
+        -:  269:	}
+        -:  270:
+    #####:  271:int DSA_get_ex_new_index(long argl, void *argp, CRYPTO_EX_new *new_func,
+        -:  272:	     CRYPTO_EX_dup *dup_func, CRYPTO_EX_free *free_func)
+        -:  273:        {
+    #####:  274:	return CRYPTO_get_ex_new_index(CRYPTO_EX_INDEX_DSA, argl, argp,
+        -:  275:				new_func, dup_func, free_func);
+        -:  276:        }
+        -:  277:
+    #####:  278:int DSA_set_ex_data(DSA *d, int idx, void *arg)
+        -:  279:	{
+    #####:  280:	return(CRYPTO_set_ex_data(&d->ex_data,idx,arg));
+        -:  281:	}
+        -:  282:
+    #####:  283:void *DSA_get_ex_data(DSA *d, int idx)
+        -:  284:	{
+    #####:  285:	return(CRYPTO_get_ex_data(&d->ex_data,idx));
+        -:  286:	}
+        -:  287:
+        -:  288:#ifndef OPENSSL_NO_DH
+    #####:  289:DH *DSA_dup_DH(const DSA *r)
+        -:  290:	{
+        -:  291:	/* DSA has p, q, g, optional pub_key, optional priv_key.
+        -:  292:	 * DH has p, optional length, g, optional pub_key, optional priv_key,
+        -:  293:	 * optional q.
+        -:  294:	 */ 
+        -:  295:
+        -:  296:	DH *ret = NULL;
+        -:  297:
+    #####:  298:	if (r == NULL)
+        -:  299:		goto err;
+    #####:  300:	ret = DH_new();
+    #####:  301:	if (ret == NULL)
+        -:  302:		goto err;
+    #####:  303:	if (r->p != NULL) 
+    #####:  304:		if ((ret->p = BN_dup(r->p)) == NULL)
+        -:  305:			goto err;
+    #####:  306:	if (r->q != NULL)
+        -:  307:		{
+    #####:  308:		ret->length = BN_num_bits(r->q);
+    #####:  309:		if ((ret->q = BN_dup(r->q)) == NULL)
+        -:  310:			goto err;
+        -:  311:		}
+    #####:  312:	if (r->g != NULL)
+    #####:  313:		if ((ret->g = BN_dup(r->g)) == NULL)
+        -:  314:			goto err;
+    #####:  315:	if (r->pub_key != NULL)
+    #####:  316:		if ((ret->pub_key = BN_dup(r->pub_key)) == NULL)
+        -:  317:			goto err;
+    #####:  318:	if (r->priv_key != NULL)
+    #####:  319:		if ((ret->priv_key = BN_dup(r->priv_key)) == NULL)
+        -:  320:			goto err;
+        -:  321:
+    #####:  322:	return ret;
+        -:  323:
+        -:  324: err:
+    #####:  325:	if (ret != NULL)
+    #####:  326:		DH_free(ret);
+        -:  327:	return NULL;
+        -:  328:	}
+        -:  329:#endif

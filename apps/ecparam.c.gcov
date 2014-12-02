@@ -1,0 +1,736 @@
+        -:    0:Source:ecparam.c
+        -:    0:Graph:ecparam.gcno
+        -:    0:Data:ecparam.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* apps/ecparam.c */
+        -:    2:/*
+        -:    3: * Written by Nils Larsch for the OpenSSL project.
+        -:    4: */
+        -:    5:/* ====================================================================
+        -:    6: * Copyright (c) 1998-2005 The OpenSSL Project.  All rights reserved.
+        -:    7: *
+        -:    8: * Redistribution and use in source and binary forms, with or without
+        -:    9: * modification, are permitted provided that the following conditions
+        -:   10: * are met:
+        -:   11: *
+        -:   12: * 1. Redistributions of source code must retain the above copyright
+        -:   13: *    notice, this list of conditions and the following disclaimer. 
+        -:   14: *
+        -:   15: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   16: *    notice, this list of conditions and the following disclaimer in
+        -:   17: *    the documentation and/or other materials provided with the
+        -:   18: *    distribution.
+        -:   19: *
+        -:   20: * 3. All advertising materials mentioning features or use of this
+        -:   21: *    software must display the following acknowledgment:
+        -:   22: *    "This product includes software developed by the OpenSSL Project
+        -:   23: *    for use in the OpenSSL Toolkit. (http://www.openssl.org/)"
+        -:   24: *
+        -:   25: * 4. The names "OpenSSL Toolkit" and "OpenSSL Project" must not be used to
+        -:   26: *    endorse or promote products derived from this software without
+        -:   27: *    prior written permission. For written permission, please contact
+        -:   28: *    openssl-core@openssl.org.
+        -:   29: *
+        -:   30: * 5. Products derived from this software may not be called "OpenSSL"
+        -:   31: *    nor may "OpenSSL" appear in their names without prior written
+        -:   32: *    permission of the OpenSSL Project.
+        -:   33: *
+        -:   34: * 6. Redistributions of any form whatsoever must retain the following
+        -:   35: *    acknowledgment:
+        -:   36: *    "This product includes software developed by the OpenSSL Project
+        -:   37: *    for use in the OpenSSL Toolkit (http://www.openssl.org/)"
+        -:   38: *
+        -:   39: * THIS SOFTWARE IS PROVIDED BY THE OpenSSL PROJECT ``AS IS'' AND ANY
+        -:   40: * EXPRESSED OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   41: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+        -:   42: * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE OpenSSL PROJECT OR
+        -:   43: * ITS CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+        -:   44: * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+        -:   45: * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+        -:   46: * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   47: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+        -:   48: * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+        -:   49: * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+        -:   50: * OF THE POSSIBILITY OF SUCH DAMAGE.
+        -:   51: * ====================================================================
+        -:   52: *
+        -:   53: * This product includes cryptographic software written by Eric Young
+        -:   54: * (eay@cryptsoft.com).  This product includes software written by Tim
+        -:   55: * Hudson (tjh@cryptsoft.com).
+        -:   56: *
+        -:   57: */
+        -:   58:/* ====================================================================
+        -:   59: * Copyright 2002 Sun Microsystems, Inc. ALL RIGHTS RESERVED.
+        -:   60: *
+        -:   61: * Portions of the attached software ("Contribution") are developed by 
+        -:   62: * SUN MICROSYSTEMS, INC., and are contributed to the OpenSSL project.
+        -:   63: *
+        -:   64: * The Contribution is licensed pursuant to the OpenSSL open source
+        -:   65: * license provided above.
+        -:   66: *
+        -:   67: * The elliptic curve binary polynomial software is originally written by 
+        -:   68: * Sheueling Chang Shantz and Douglas Stebila of Sun Microsystems Laboratories.
+        -:   69: *
+        -:   70: */
+        -:   71:
+        -:   72:#include <openssl/opensslconf.h>
+        -:   73:#ifndef OPENSSL_NO_EC
+        -:   74:#include <assert.h>
+        -:   75:#include <stdio.h>
+        -:   76:#include <stdlib.h>
+        -:   77:#include <time.h>
+        -:   78:#include <string.h>
+        -:   79:#include "apps.h"
+        -:   80:#include <openssl/bio.h>
+        -:   81:#include <openssl/err.h>
+        -:   82:#include <openssl/bn.h>
+        -:   83:#include <openssl/ec.h>
+        -:   84:#include <openssl/x509.h>
+        -:   85:#include <openssl/pem.h>
+        -:   86:
+        -:   87:#undef PROG
+        -:   88:#define PROG	ecparam_main
+        -:   89:
+        -:   90:/* -inform arg      - input format - default PEM (DER or PEM)
+        -:   91: * -outform arg     - output format - default PEM
+        -:   92: * -in  arg         - input file  - default stdin
+        -:   93: * -out arg         - output file - default stdout
+        -:   94: * -noout           - do not print the ec parameter
+        -:   95: * -text            - print the ec parameters in text form
+        -:   96: * -check           - validate the ec parameters
+        -:   97: * -C               - print a 'C' function creating the parameters
+        -:   98: * -name arg        - use the ec parameters with 'short name' name
+        -:   99: * -list_curves     - prints a list of all currently available curve 'short names'
+        -:  100: * -conv_form arg   - specifies the point conversion form 
+        -:  101: *                  - possible values: compressed
+        -:  102: *                                     uncompressed (default)
+        -:  103: *                                     hybrid
+        -:  104: * -param_enc arg   - specifies the way the ec parameters are encoded
+        -:  105: *                    in the asn1 der encoding
+        -:  106: *                    possible values: named_curve (default)
+        -:  107: *                                     explicit
+        -:  108: * -no_seed         - if 'explicit' parameters are choosen do not use the seed
+        -:  109: * -genkey          - generate ec key
+        -:  110: * -rand file       - files to use for random number input
+        -:  111: * -engine e        - use engine e, possibly a hardware device
+        -:  112: */
+        -:  113:
+        -:  114:
+        -:  115:static int ecparam_print_var(BIO *,BIGNUM *,const char *,int,unsigned char *);
+        -:  116:
+        -:  117:int MAIN(int, char **);
+        -:  118:
+    #####:  119:int MAIN(int argc, char **argv)
+        -:  120:	{
+        -:  121:	EC_GROUP *group = NULL;
+        -:  122:	point_conversion_form_t form = POINT_CONVERSION_UNCOMPRESSED; 
+        -:  123:	int 	new_form = 0;
+        -:  124:	int 	asn1_flag = OPENSSL_EC_NAMED_CURVE;
+        -:  125:	int 	new_asn1_flag = 0;
+        -:  126:	char 	*curve_name = NULL, *inrand = NULL;
+        -:  127:	int	list_curves = 0, no_seed = 0, check = 0,
+        -:  128:		badops = 0, text = 0, i, need_rand = 0, genkey = 0;
+        -:  129:	char	*infile = NULL, *outfile = NULL, *prog;
+        -:  130:	BIO 	*in = NULL, *out = NULL;
+        -:  131:	int 	informat, outformat, noout = 0, C = 0, ret = 1;
+        -:  132:	char	*engine = NULL;
+        -:  133:
+        -:  134:	BIGNUM	*ec_p = NULL, *ec_a = NULL, *ec_b = NULL,
+        -:  135:		*ec_gen = NULL, *ec_order = NULL, *ec_cofactor = NULL;
+        -:  136:	unsigned char *buffer = NULL;
+        -:  137:
+    #####:  138:	apps_startup();
+        -:  139:
+    #####:  140:	if (bio_err == NULL)
+    #####:  141:		if ((bio_err=BIO_new(BIO_s_file())) != NULL)
+    #####:  142:			BIO_set_fp(bio_err,stderr,BIO_NOCLOSE|BIO_FP_TEXT);
+        -:  143:
+    #####:  144:	if (!load_config(bio_err, NULL))
+        -:  145:		goto end;
+        -:  146:
+        -:  147:	informat=FORMAT_PEM;
+        -:  148:	outformat=FORMAT_PEM;
+        -:  149:
+    #####:  150:	prog=argv[0];
+    #####:  151:	argc--;
+    #####:  152:	argv++;
+    #####:  153:	while (argc >= 1)
+        -:  154:		{
+    #####:  155:		if 	(strcmp(*argv,"-inform") == 0)
+        -:  156:			{
+    #####:  157:			if (--argc < 1) goto bad;
+    #####:  158:			informat=str2fmt(*(++argv));
+        -:  159:			}
+    #####:  160:		else if (strcmp(*argv,"-outform") == 0)
+        -:  161:			{
+    #####:  162:			if (--argc < 1) goto bad;
+    #####:  163:			outformat=str2fmt(*(++argv));
+        -:  164:			}
+    #####:  165:		else if (strcmp(*argv,"-in") == 0)
+        -:  166:			{
+    #####:  167:			if (--argc < 1) goto bad;
+    #####:  168:			infile= *(++argv);
+        -:  169:			}
+    #####:  170:		else if (strcmp(*argv,"-out") == 0)
+        -:  171:			{
+    #####:  172:			if (--argc < 1) goto bad;
+    #####:  173:			outfile= *(++argv);
+        -:  174:			}
+    #####:  175:		else if (strcmp(*argv,"-text") == 0)
+        -:  176:			text = 1;
+    #####:  177:		else if (strcmp(*argv,"-C") == 0)
+        -:  178:			C = 1;
+    #####:  179:		else if (strcmp(*argv,"-check") == 0)
+        -:  180:			check = 1;
+    #####:  181:		else if (strcmp (*argv, "-name") == 0)
+        -:  182:			{
+    #####:  183:			if (--argc < 1)
+        -:  184:				goto bad;
+    #####:  185:			curve_name = *(++argv);
+        -:  186:			}
+    #####:  187:		else if (strcmp(*argv, "-list_curves") == 0)
+        -:  188:			list_curves = 1;
+    #####:  189:		else if (strcmp(*argv, "-conv_form") == 0)
+        -:  190:			{
+    #####:  191:			if (--argc < 1)
+        -:  192:				goto bad;
+    #####:  193:			++argv;
+        -:  194:			new_form = 1;
+    #####:  195:			if (strcmp(*argv, "compressed") == 0)
+        -:  196:				form = POINT_CONVERSION_COMPRESSED;
+    #####:  197:			else if (strcmp(*argv, "uncompressed") == 0)
+        -:  198:				form = POINT_CONVERSION_UNCOMPRESSED;
+    #####:  199:			else if (strcmp(*argv, "hybrid") == 0)
+        -:  200:				form = POINT_CONVERSION_HYBRID;
+        -:  201:			else
+        -:  202:				goto bad;
+        -:  203:			}
+    #####:  204:		else if (strcmp(*argv, "-param_enc") == 0)
+        -:  205:			{
+    #####:  206:			if (--argc < 1)
+        -:  207:				goto bad;
+    #####:  208:			++argv;
+        -:  209:			new_asn1_flag = 1;
+    #####:  210:			if (strcmp(*argv, "named_curve") == 0)
+        -:  211:				asn1_flag = OPENSSL_EC_NAMED_CURVE;
+    #####:  212:			else if (strcmp(*argv, "explicit") == 0)
+        -:  213:				asn1_flag = 0;
+        -:  214:			else
+        -:  215:				goto bad;
+        -:  216:			}
+    #####:  217:		else if (strcmp(*argv, "-no_seed") == 0)
+        -:  218:			no_seed = 1;
+    #####:  219:		else if (strcmp(*argv, "-noout") == 0)
+        -:  220:			noout=1;
+    #####:  221:		else if (strcmp(*argv,"-genkey") == 0)
+        -:  222:			{
+        -:  223:			genkey=1;
+        -:  224:			need_rand=1;
+        -:  225:			}
+    #####:  226:		else if (strcmp(*argv, "-rand") == 0)
+        -:  227:			{
+    #####:  228:			if (--argc < 1) goto bad;
+    #####:  229:			inrand= *(++argv);
+        -:  230:			need_rand=1;
+        -:  231:			}
+    #####:  232:		else if(strcmp(*argv, "-engine") == 0)
+        -:  233:			{
+    #####:  234:			if (--argc < 1) goto bad;
+    #####:  235:			engine = *(++argv);
+        -:  236:			}	
+        -:  237:		else
+        -:  238:			{
+    #####:  239:			BIO_printf(bio_err,"unknown option %s\n",*argv);
+        -:  240:			badops=1;
+    #####:  241:			break;
+        -:  242:			}
+    #####:  243:		argc--;
+    #####:  244:		argv++;
+        -:  245:		}
+        -:  246:
+    #####:  247:	if (badops)
+        -:  248:		{
+        -:  249:bad:
+    #####:  250:		BIO_printf(bio_err, "%s [options] <infile >outfile\n",prog);
+    #####:  251:		BIO_printf(bio_err, "where options are\n");
+    #####:  252:		BIO_printf(bio_err, " -inform arg       input format - "
+        -:  253:				"default PEM (DER or PEM)\n");
+    #####:  254:		BIO_printf(bio_err, " -outform arg      output format - "
+        -:  255:				"default PEM\n");
+    #####:  256:		BIO_printf(bio_err, " -in  arg          input file  - "
+        -:  257:				"default stdin\n");
+    #####:  258:		BIO_printf(bio_err, " -out arg          output file - "
+        -:  259:				"default stdout\n");
+    #####:  260:		BIO_printf(bio_err, " -noout            do not print the "
+        -:  261:				"ec parameter\n");
+    #####:  262:		BIO_printf(bio_err, " -text             print the ec "
+        -:  263:				"parameters in text form\n");
+    #####:  264:		BIO_printf(bio_err, " -check            validate the ec "
+        -:  265:				"parameters\n");
+    #####:  266:		BIO_printf(bio_err, " -C                print a 'C' "
+        -:  267:				"function creating the parameters\n");
+    #####:  268:		BIO_printf(bio_err, " -name arg         use the "
+        -:  269:				"ec parameters with 'short name' name\n");
+    #####:  270:		BIO_printf(bio_err, " -list_curves      prints a list of "
+        -:  271:				"all currently available curve 'short names'\n");
+    #####:  272:		BIO_printf(bio_err, " -conv_form arg    specifies the "
+        -:  273:				"point conversion form \n");
+    #####:  274:		BIO_printf(bio_err, "                   possible values:"
+        -:  275:				" compressed\n");
+    #####:  276:		BIO_printf(bio_err, "                                   "
+        -:  277:				" uncompressed (default)\n");
+    #####:  278:		BIO_printf(bio_err, "                                   "
+        -:  279:				" hybrid\n");
+    #####:  280:		BIO_printf(bio_err, " -param_enc arg    specifies the way"
+        -:  281:				" the ec parameters are encoded\n");
+    #####:  282:		BIO_printf(bio_err, "                   in the asn1 der "
+        -:  283:				"encoding\n");
+    #####:  284:		BIO_printf(bio_err, "                   possible values:"
+        -:  285:				" named_curve (default)\n");
+    #####:  286:		BIO_printf(bio_err, "                                   "
+        -:  287:				" explicit\n");
+    #####:  288:		BIO_printf(bio_err, " -no_seed          if 'explicit'"
+        -:  289:				" parameters are choosen do not"
+        -:  290:				" use the seed\n");
+    #####:  291:		BIO_printf(bio_err, " -genkey           generate ec"
+        -:  292:				" key\n");
+    #####:  293:		BIO_printf(bio_err, " -rand file        files to use for"
+        -:  294:				" random number input\n");
+    #####:  295:		BIO_printf(bio_err, " -engine e         use engine e, "
+        -:  296:				"possibly a hardware device\n");
+    #####:  297:		goto end;
+        -:  298:		}
+        -:  299:
+    #####:  300:	ERR_load_crypto_strings();
+        -:  301:
+    #####:  302:	in=BIO_new(BIO_s_file());
+    #####:  303:	out=BIO_new(BIO_s_file());
+    #####:  304:	if ((in == NULL) || (out == NULL))
+        -:  305:		{
+    #####:  306:		ERR_print_errors(bio_err);
+    #####:  307:		goto end;
+        -:  308:		}
+        -:  309:
+    #####:  310:	if (infile == NULL)
+    #####:  311:		BIO_set_fp(in,stdin,BIO_NOCLOSE);
+        -:  312:	else
+        -:  313:		{
+    #####:  314:		if (BIO_read_filename(in,infile) <= 0)
+        -:  315:			{
+    #####:  316:			perror(infile);
+    #####:  317:			goto end;
+        -:  318:			}
+        -:  319:		}
+    #####:  320:	if (outfile == NULL)
+        -:  321:		{
+    #####:  322:		BIO_set_fp(out,stdout,BIO_NOCLOSE);
+        -:  323:#ifdef OPENSSL_SYS_VMS
+        -:  324:		{
+        -:  325:		BIO *tmpbio = BIO_new(BIO_f_linebuffer());
+        -:  326:		out = BIO_push(tmpbio, out);
+        -:  327:		}
+        -:  328:#endif
+        -:  329:		}
+        -:  330:	else
+        -:  331:		{
+    #####:  332:		if (BIO_write_filename(out,outfile) <= 0)
+        -:  333:			{
+    #####:  334:			perror(outfile);
+    #####:  335:			goto end;
+        -:  336:			}
+        -:  337:		}
+        -:  338:
+        -:  339:#ifndef OPENSSL_NO_ENGINE
+    #####:  340:	setup_engine(bio_err, engine, 0);
+        -:  341:#endif
+        -:  342:
+    #####:  343:	if (list_curves)
+        -:  344:		{
+        -:  345:		EC_builtin_curve *curves = NULL;
+        -:  346:		size_t crv_len = 0;
+        -:  347:		size_t n = 0;
+        -:  348:
+    #####:  349:		crv_len = EC_get_builtin_curves(NULL, 0);
+        -:  350:
+    #####:  351:		curves = OPENSSL_malloc((int)(sizeof(EC_builtin_curve) * crv_len));
+        -:  352:
+    #####:  353:		if (curves == NULL)
+        -:  354:			goto end;
+        -:  355:
+    #####:  356:		if (!EC_get_builtin_curves(curves, crv_len))
+        -:  357:			{
+    #####:  358:			OPENSSL_free(curves);
+    #####:  359:			goto end;
+        -:  360:			}
+        -:  361:
+        -:  362:		
+    #####:  363:		for (n = 0; n < crv_len; n++)
+        -:  364:			{
+        -:  365:			const char *comment;
+        -:  366:			const char *sname;
+    #####:  367:			comment = curves[n].comment;
+    #####:  368:			sname   = OBJ_nid2sn(curves[n].nid);
+    #####:  369:			if (comment == NULL)
+        -:  370:				comment = "CURVE DESCRIPTION NOT AVAILABLE";
+    #####:  371:			if (sname == NULL)
+        -:  372:				sname = "";
+        -:  373:
+    #####:  374:			BIO_printf(out, "  %-10s: ", sname);
+    #####:  375:			BIO_printf(out, "%s\n", comment);
+        -:  376:			} 
+        -:  377:
+    #####:  378:		OPENSSL_free(curves);
+        -:  379:		ret = 0;
+    #####:  380:		goto end;
+        -:  381:		}
+        -:  382:
+    #####:  383:	if (curve_name != NULL)
+        -:  384:		{
+        -:  385:		int nid;
+        -:  386:
+        -:  387:		/* workaround for the SECG curve names secp192r1
+        -:  388:		 * and secp256r1 (which are the same as the curves
+        -:  389:		 * prime192v1 and prime256v1 defined in X9.62)
+        -:  390:		 */
+    #####:  391:		if (!strcmp(curve_name, "secp192r1"))
+        -:  392:			{
+    #####:  393:			BIO_printf(bio_err, "using curve name prime192v1 "
+        -:  394:				"instead of secp192r1\n");
+        -:  395:			nid = NID_X9_62_prime192v1;
+        -:  396:			}
+    #####:  397:		else if (!strcmp(curve_name, "secp256r1"))
+        -:  398:			{
+    #####:  399:			BIO_printf(bio_err, "using curve name prime256v1 "
+        -:  400:				"instead of secp256r1\n");
+        -:  401:			nid = NID_X9_62_prime256v1;
+        -:  402:			}
+        -:  403:		else
+    #####:  404:			nid = OBJ_sn2nid(curve_name);
+        -:  405:	
+    #####:  406:		if (nid == 0)
+        -:  407:			{
+    #####:  408:			BIO_printf(bio_err, "unknown curve name (%s)\n", 
+        -:  409:				curve_name);
+    #####:  410:			goto end;
+        -:  411:			}
+        -:  412:
+    #####:  413:		group = EC_GROUP_new_by_curve_name(nid);
+    #####:  414:		if (group == NULL)
+        -:  415:			{
+    #####:  416:			BIO_printf(bio_err, "unable to create curve (%s)\n", 
+        -:  417:				curve_name);
+    #####:  418:			goto end;
+        -:  419:			}
+    #####:  420:		EC_GROUP_set_asn1_flag(group, asn1_flag);
+    #####:  421:		EC_GROUP_set_point_conversion_form(group, form);
+        -:  422:		}
+    #####:  423:	else if (informat == FORMAT_ASN1)
+        -:  424:		{
+    #####:  425:		group = d2i_ECPKParameters_bio(in, NULL);
+        -:  426:		}
+    #####:  427:	else if (informat == FORMAT_PEM)
+        -:  428:		{
+    #####:  429:		group = PEM_read_bio_ECPKParameters(in,NULL,NULL,NULL);
+        -:  430:		}
+        -:  431:	else
+        -:  432:		{
+    #####:  433:		BIO_printf(bio_err, "bad input format specified\n");
+    #####:  434:		goto end;
+        -:  435:		}
+        -:  436:
+    #####:  437:	if (group == NULL)
+        -:  438:		{
+    #####:  439:		BIO_printf(bio_err, 
+        -:  440:			"unable to load elliptic curve parameters\n");
+    #####:  441:		ERR_print_errors(bio_err);
+    #####:  442:		goto end;
+        -:  443:		}
+        -:  444:
+    #####:  445:	if (new_form)
+    #####:  446:		EC_GROUP_set_point_conversion_form(group, form);
+        -:  447:
+    #####:  448:	if (new_asn1_flag)
+    #####:  449:		EC_GROUP_set_asn1_flag(group, asn1_flag);
+        -:  450:
+    #####:  451:	if (no_seed)
+        -:  452:		{
+    #####:  453:		EC_GROUP_set_seed(group, NULL, 0);
+        -:  454:		}
+        -:  455:
+    #####:  456:	if (text)
+        -:  457:		{
+    #####:  458:		if (!ECPKParameters_print(out, group, 0))
+        -:  459:			goto end;
+        -:  460:		}
+        -:  461:
+    #####:  462:	if (check)
+        -:  463:		{
+    #####:  464:		if (group == NULL)
+    #####:  465:			BIO_printf(bio_err, "no elliptic curve parameters\n");
+    #####:  466:		BIO_printf(bio_err, "checking elliptic curve parameters: ");
+    #####:  467:		if (!EC_GROUP_check(group, NULL))
+        -:  468:			{
+    #####:  469:			BIO_printf(bio_err, "failed\n");
+    #####:  470:			ERR_print_errors(bio_err);
+        -:  471:			}
+        -:  472:		else
+    #####:  473:			BIO_printf(bio_err, "ok\n");
+        -:  474:			
+        -:  475:		}
+        -:  476:
+    #####:  477:	if (C)
+        -:  478:		{
+        -:  479:		size_t	buf_len = 0, tmp_len = 0;
+        -:  480:		const EC_POINT *point;
+        -:  481:		int	is_prime, len = 0;
+    #####:  482:		const EC_METHOD *meth = EC_GROUP_method_of(group);
+        -:  483:
+    #####:  484:		if ((ec_p = BN_new()) == NULL || (ec_a = BN_new()) == NULL ||
+    #####:  485:		    (ec_b = BN_new()) == NULL || (ec_gen = BN_new()) == NULL ||
+    #####:  486:		    (ec_order = BN_new()) == NULL || 
+        -:  487:		    (ec_cofactor = BN_new()) == NULL )
+        -:  488:			{
+    #####:  489:			perror("OPENSSL_malloc");
+    #####:  490:			goto end;
+        -:  491:			}
+        -:  492:
+    #####:  493:		is_prime = (EC_METHOD_get_field_type(meth) == 
+        -:  494:			NID_X9_62_prime_field);
+        -:  495:
+    #####:  496:		if (is_prime)
+        -:  497:			{
+    #####:  498:			if (!EC_GROUP_get_curve_GFp(group, ec_p, ec_a,
+        -:  499:				ec_b, NULL))
+        -:  500:				goto end;
+        -:  501:			}
+        -:  502:		else
+        -:  503:			{
+        -:  504:			/* TODO */
+        -:  505:			goto end;
+        -:  506:			}
+        -:  507:
+    #####:  508:		if ((point = EC_GROUP_get0_generator(group)) == NULL)
+        -:  509:			goto end;
+    #####:  510:		if (!EC_POINT_point2bn(group, point, 
+        -:  511:			EC_GROUP_get_point_conversion_form(group), ec_gen, 
+        -:  512:			NULL))
+        -:  513:			goto end;
+    #####:  514:		if (!EC_GROUP_get_order(group, ec_order, NULL))
+        -:  515:			goto end;
+    #####:  516:		if (!EC_GROUP_get_cofactor(group, ec_cofactor, NULL))
+        -:  517:			goto end;
+        -:  518:
+    #####:  519:		if (!ec_p || !ec_a || !ec_b || !ec_gen || 
+    #####:  520:			!ec_order || !ec_cofactor)
+        -:  521:			goto end;
+        -:  522:
+    #####:  523:		len = BN_num_bits(ec_order);
+        -:  524:
+    #####:  525:		if ((tmp_len = (size_t)BN_num_bytes(ec_p)) > buf_len)
+        -:  526:			buf_len = tmp_len;
+    #####:  527:		if ((tmp_len = (size_t)BN_num_bytes(ec_a)) > buf_len)
+        -:  528:			buf_len = tmp_len;
+    #####:  529:		if ((tmp_len = (size_t)BN_num_bytes(ec_b)) > buf_len)
+        -:  530:			buf_len = tmp_len;
+    #####:  531:		if ((tmp_len = (size_t)BN_num_bytes(ec_gen)) > buf_len)
+        -:  532:			buf_len = tmp_len;
+    #####:  533:		if ((tmp_len = (size_t)BN_num_bytes(ec_order)) > buf_len)
+        -:  534:			buf_len = tmp_len;
+    #####:  535:		if ((tmp_len = (size_t)BN_num_bytes(ec_cofactor)) > buf_len)
+        -:  536:			buf_len = tmp_len;
+        -:  537:
+    #####:  538:		buffer = (unsigned char *)OPENSSL_malloc(buf_len);
+        -:  539:
+    #####:  540:		if (buffer == NULL)
+        -:  541:			{
+    #####:  542:			perror("OPENSSL_malloc");
+    #####:  543:			goto end;
+        -:  544:			}
+        -:  545:
+    #####:  546:		ecparam_print_var(out, ec_p, "ec_p", len, buffer);
+    #####:  547:		ecparam_print_var(out, ec_a, "ec_a", len, buffer);
+    #####:  548:		ecparam_print_var(out, ec_b, "ec_b", len, buffer);
+    #####:  549:		ecparam_print_var(out, ec_gen, "ec_gen", len, buffer);
+    #####:  550:		ecparam_print_var(out, ec_order, "ec_order", len, buffer);
+    #####:  551:		ecparam_print_var(out, ec_cofactor, "ec_cofactor", len, 
+        -:  552:			buffer);
+        -:  553:
+    #####:  554:		BIO_printf(out, "\n\n");
+        -:  555:
+    #####:  556:		BIO_printf(out, "EC_GROUP *get_ec_group_%d(void)\n\t{\n", len);
+    #####:  557:		BIO_printf(out, "\tint ok=0;\n");
+    #####:  558:		BIO_printf(out, "\tEC_GROUP *group = NULL;\n");
+    #####:  559:		BIO_printf(out, "\tEC_POINT *point = NULL;\n");
+    #####:  560:		BIO_printf(out, "\tBIGNUM   *tmp_1 = NULL, *tmp_2 = NULL, "
+        -:  561:				"*tmp_3 = NULL;\n\n");
+    #####:  562:		BIO_printf(out, "\tif ((tmp_1 = BN_bin2bn(ec_p_%d, "
+        -:  563:				"sizeof(ec_p_%d), NULL)) == NULL)\n\t\t"
+        -:  564:				"goto err;\n", len, len);
+    #####:  565:		BIO_printf(out, "\tif ((tmp_2 = BN_bin2bn(ec_a_%d, "
+        -:  566:				"sizeof(ec_a_%d), NULL)) == NULL)\n\t\t"
+        -:  567:				"goto err;\n", len, len);
+    #####:  568:		BIO_printf(out, "\tif ((tmp_3 = BN_bin2bn(ec_b_%d, "
+        -:  569:				"sizeof(ec_b_%d), NULL)) == NULL)\n\t\t"
+        -:  570:				"goto err;\n", len, len);
+    #####:  571:		if (is_prime)
+        -:  572:			{
+    #####:  573:			BIO_printf(out, "\tif ((group = EC_GROUP_new_curve_"
+        -:  574:				"GFp(tmp_1, tmp_2, tmp_3, NULL)) == NULL)"
+        -:  575:				"\n\t\tgoto err;\n\n");
+        -:  576:			}
+        -:  577:		else
+        -:  578:			{
+        -:  579:			/* TODO */
+        -:  580:			goto end;
+        -:  581:			}
+    #####:  582:		BIO_printf(out, "\t/* build generator */\n");
+    #####:  583:		BIO_printf(out, "\tif ((tmp_1 = BN_bin2bn(ec_gen_%d, "
+        -:  584:				"sizeof(ec_gen_%d), tmp_1)) == NULL)"
+        -:  585:				"\n\t\tgoto err;\n", len, len);
+    #####:  586:		BIO_printf(out, "\tpoint = EC_POINT_bn2point(group, tmp_1, "
+        -:  587:				"NULL, NULL);\n");
+    #####:  588:		BIO_printf(out, "\tif (point == NULL)\n\t\tgoto err;\n");
+    #####:  589:		BIO_printf(out, "\tif ((tmp_2 = BN_bin2bn(ec_order_%d, "
+        -:  590:				"sizeof(ec_order_%d), tmp_2)) == NULL)"
+        -:  591:				"\n\t\tgoto err;\n", len, len);
+    #####:  592:		BIO_printf(out, "\tif ((tmp_3 = BN_bin2bn(ec_cofactor_%d, "
+        -:  593:				"sizeof(ec_cofactor_%d), tmp_3)) == NULL)"
+        -:  594:				"\n\t\tgoto err;\n", len, len);
+    #####:  595:		BIO_printf(out, "\tif (!EC_GROUP_set_generator(group, point,"
+        -:  596:				" tmp_2, tmp_3))\n\t\tgoto err;\n");
+    #####:  597:		BIO_printf(out, "\n\tok=1;\n");
+    #####:  598:		BIO_printf(out, "err:\n");
+    #####:  599:		BIO_printf(out, "\tif (tmp_1)\n\t\tBN_free(tmp_1);\n");
+    #####:  600:		BIO_printf(out, "\tif (tmp_2)\n\t\tBN_free(tmp_2);\n");
+    #####:  601:		BIO_printf(out, "\tif (tmp_3)\n\t\tBN_free(tmp_3);\n");
+    #####:  602:		BIO_printf(out, "\tif (point)\n\t\tEC_POINT_free(point);\n");
+    #####:  603:		BIO_printf(out, "\tif (!ok)\n");
+    #####:  604:		BIO_printf(out, "\t\t{\n");
+    #####:  605:		BIO_printf(out, "\t\tEC_GROUP_free(group);\n");
+    #####:  606:		BIO_printf(out, "\t\tgroup = NULL;\n");
+    #####:  607:		BIO_printf(out, "\t\t}\n");
+    #####:  608:		BIO_printf(out, "\treturn(group);\n\t}\n");
+        -:  609:	}
+        -:  610:
+    #####:  611:	if (!noout)
+        -:  612:		{
+    #####:  613:		if (outformat == FORMAT_ASN1)
+    #####:  614:			i = i2d_ECPKParameters_bio(out, group);
+    #####:  615:		else if (outformat == FORMAT_PEM)
+    #####:  616:			i = PEM_write_bio_ECPKParameters(out, group);
+        -:  617:		else	
+        -:  618:			{
+    #####:  619:			BIO_printf(bio_err,"bad output format specified for"
+        -:  620:				" outfile\n");
+    #####:  621:			goto end;
+        -:  622:			}
+    #####:  623:		if (!i)
+        -:  624:			{
+    #####:  625:			BIO_printf(bio_err, "unable to write elliptic "
+        -:  626:				"curve parameters\n");
+    #####:  627:			ERR_print_errors(bio_err);
+    #####:  628:			goto end;
+        -:  629:			}
+        -:  630:		}
+        -:  631:	
+    #####:  632:	if (need_rand)
+        -:  633:		{
+    #####:  634:		app_RAND_load_file(NULL, bio_err, (inrand != NULL));
+    #####:  635:		if (inrand != NULL)
+    #####:  636:			BIO_printf(bio_err,"%ld semi-random bytes loaded\n",
+        -:  637:				app_RAND_load_files(inrand));
+        -:  638:		}
+        -:  639:
+    #####:  640:	if (genkey)
+        -:  641:		{
+    #####:  642:		EC_KEY *eckey = EC_KEY_new();
+        -:  643:
+    #####:  644:		if (eckey == NULL)
+        -:  645:			goto end;
+        -:  646:
+    #####:  647:		assert(need_rand);
+        -:  648:
+    #####:  649:		if (EC_KEY_set_group(eckey, group) == 0)
+        -:  650:			goto end;
+        -:  651:		
+    #####:  652:		if (!EC_KEY_generate_key(eckey))
+        -:  653:			{
+    #####:  654:			EC_KEY_free(eckey);
+    #####:  655:			goto end;
+        -:  656:			}
+    #####:  657:		if (outformat == FORMAT_ASN1)
+    #####:  658:			i = i2d_ECPrivateKey_bio(out, eckey);
+    #####:  659:		else if (outformat == FORMAT_PEM)
+    #####:  660:			i = PEM_write_bio_ECPrivateKey(out, eckey, NULL,
+        -:  661:				NULL, 0, NULL, NULL);
+        -:  662:		else	
+        -:  663:			{
+    #####:  664:			BIO_printf(bio_err, "bad output format specified "
+        -:  665:				"for outfile\n");
+    #####:  666:			EC_KEY_free(eckey);
+    #####:  667:			goto end;
+        -:  668:			}
+    #####:  669:		EC_KEY_free(eckey);
+        -:  670:		}
+        -:  671:
+    #####:  672:	if (need_rand)
+    #####:  673:		app_RAND_write_file(NULL, bio_err);
+        -:  674:
+        -:  675:	ret=0;
+        -:  676:end:
+    #####:  677:	if (ec_p)
+    #####:  678:		BN_free(ec_p);
+    #####:  679:	if (ec_a)
+    #####:  680:		BN_free(ec_a);
+    #####:  681:	if (ec_b)
+    #####:  682:		BN_free(ec_b);
+    #####:  683:	if (ec_gen)
+    #####:  684:		BN_free(ec_gen);
+    #####:  685:	if (ec_order)
+    #####:  686:		BN_free(ec_order);
+    #####:  687:	if (ec_cofactor)
+    #####:  688:		BN_free(ec_cofactor);
+    #####:  689:	if (buffer)
+    #####:  690:		OPENSSL_free(buffer);
+    #####:  691:	if (in != NULL)
+    #####:  692:		BIO_free(in);
+    #####:  693:	if (out != NULL)
+    #####:  694:		BIO_free_all(out);
+    #####:  695:	if (group != NULL)
+    #####:  696:		EC_GROUP_free(group);
+        -:  697:	apps_shutdown();
+    #####:  698:	OPENSSL_EXIT(ret);
+        -:  699:}
+        -:  700:
+    #####:  701:static int ecparam_print_var(BIO *out, BIGNUM *in, const char *var,
+        -:  702:	int len, unsigned char *buffer)
+        -:  703:	{
+    #####:  704:	BIO_printf(out, "static unsigned char %s_%d[] = {", var, len);
+    #####:  705:	if (BN_is_zero(in))
+    #####:  706:		BIO_printf(out, "\n\t0x00");
+        -:  707:	else 
+        -:  708:		{
+        -:  709:		int i, l;
+        -:  710:
+    #####:  711:		l = BN_bn2bin(in, buffer);
+    #####:  712:		for (i=0; i<l-1; i++)
+        -:  713:			{
+    #####:  714:			if ((i%12) == 0) 
+    #####:  715:				BIO_printf(out, "\n\t");
+    #####:  716:			BIO_printf(out, "0x%02X,", buffer[i]);
+        -:  717:			}
+    #####:  718:		if ((i%12) == 0) 
+    #####:  719:			BIO_printf(out, "\n\t");
+    #####:  720:		BIO_printf(out, "0x%02X", buffer[i]);
+        -:  721:		}
+    #####:  722:	BIO_printf(out, "\n\t};\n\n");
+    #####:  723:	return 1;
+        -:  724:	}
+        -:  725:#else /* !OPENSSL_NO_EC */
+        -:  726:
+        -:  727:# if PEDANTIC
+        -:  728:static void *dummy=&dummy;
+        -:  729:# endif
+        -:  730:
+        -:  731:#endif

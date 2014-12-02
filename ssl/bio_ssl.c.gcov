@@ -1,0 +1,610 @@
+        -:    0:Source:bio_ssl.c
+        -:    0:Graph:bio_ssl.gcno
+        -:    0:Data:bio_ssl.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* ssl/bio_ssl.c */
+        -:    2:/* Copyright (C) 1995-1998 Eric Young (eay@cryptsoft.com)
+        -:    3: * All rights reserved.
+        -:    4: *
+        -:    5: * This package is an SSL implementation written
+        -:    6: * by Eric Young (eay@cryptsoft.com).
+        -:    7: * The implementation was written so as to conform with Netscapes SSL.
+        -:    8: * 
+        -:    9: * This library is free for commercial and non-commercial use as long as
+        -:   10: * the following conditions are aheared to.  The following conditions
+        -:   11: * apply to all code found in this distribution, be it the RC4, RSA,
+        -:   12: * lhash, DES, etc., code; not just the SSL code.  The SSL documentation
+        -:   13: * included with this distribution is covered by the same copyright terms
+        -:   14: * except that the holder is Tim Hudson (tjh@cryptsoft.com).
+        -:   15: * 
+        -:   16: * Copyright remains Eric Young's, and as such any Copyright notices in
+        -:   17: * the code are not to be removed.
+        -:   18: * If this package is used in a product, Eric Young should be given attribution
+        -:   19: * as the author of the parts of the library used.
+        -:   20: * This can be in the form of a textual message at program startup or
+        -:   21: * in documentation (online or textual) provided with the package.
+        -:   22: * 
+        -:   23: * Redistribution and use in source and binary forms, with or without
+        -:   24: * modification, are permitted provided that the following conditions
+        -:   25: * are met:
+        -:   26: * 1. Redistributions of source code must retain the copyright
+        -:   27: *    notice, this list of conditions and the following disclaimer.
+        -:   28: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   29: *    notice, this list of conditions and the following disclaimer in the
+        -:   30: *    documentation and/or other materials provided with the distribution.
+        -:   31: * 3. All advertising materials mentioning features or use of this software
+        -:   32: *    must display the following acknowledgement:
+        -:   33: *    "This product includes cryptographic software written by
+        -:   34: *     Eric Young (eay@cryptsoft.com)"
+        -:   35: *    The word 'cryptographic' can be left out if the rouines from the library
+        -:   36: *    being used are not cryptographic related :-).
+        -:   37: * 4. If you include any Windows specific code (or a derivative thereof) from 
+        -:   38: *    the apps directory (application code) you must include an acknowledgement:
+        -:   39: *    "This product includes software written by Tim Hudson (tjh@cryptsoft.com)"
+        -:   40: * 
+        -:   41: * THIS SOFTWARE IS PROVIDED BY ERIC YOUNG ``AS IS'' AND
+        -:   42: * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   43: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+        -:   44: * ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+        -:   45: * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+        -:   46: * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+        -:   47: * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   48: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+        -:   49: * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+        -:   50: * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+        -:   51: * SUCH DAMAGE.
+        -:   52: * 
+        -:   53: * The licence and distribution terms for any publically available version or
+        -:   54: * derivative of this code cannot be changed.  i.e. this code cannot simply be
+        -:   55: * copied and put under another distribution licence
+        -:   56: * [including the GNU Public Licence.]
+        -:   57: */
+        -:   58:
+        -:   59:#include <stdio.h>
+        -:   60:#include <stdlib.h>
+        -:   61:#include <string.h>
+        -:   62:#include <errno.h>
+        -:   63:#include <openssl/crypto.h>
+        -:   64:#include <openssl/bio.h>
+        -:   65:#include <openssl/err.h>
+        -:   66:#include <openssl/ssl.h>
+        -:   67:
+        -:   68:static int ssl_write(BIO *h, const char *buf, int num);
+        -:   69:static int ssl_read(BIO *h, char *buf, int size);
+        -:   70:static int ssl_puts(BIO *h, const char *str);
+        -:   71:static long ssl_ctrl(BIO *h, int cmd, long arg1, void *arg2);
+        -:   72:static int ssl_new(BIO *h);
+        -:   73:static int ssl_free(BIO *data);
+        -:   74:static long ssl_callback_ctrl(BIO *h, int cmd, bio_info_cb *fp);
+        -:   75:typedef struct bio_ssl_st
+        -:   76:	{
+        -:   77:	SSL *ssl; /* The ssl handle :-) */
+        -:   78:	/* re-negotiate every time the total number of bytes is this size */
+        -:   79:	int num_renegotiates;
+        -:   80:	unsigned long renegotiate_count;
+        -:   81:	unsigned long byte_count;
+        -:   82:	unsigned long renegotiate_timeout;
+        -:   83:	unsigned long last_time;
+        -:   84:	} BIO_SSL;
+        -:   85:
+        -:   86:static BIO_METHOD methods_sslp=
+        -:   87:	{
+        -:   88:	BIO_TYPE_SSL,"ssl",
+        -:   89:	ssl_write,
+        -:   90:	ssl_read,
+        -:   91:	ssl_puts,
+        -:   92:	NULL, /* ssl_gets, */
+        -:   93:	ssl_ctrl,
+        -:   94:	ssl_new,
+        -:   95:	ssl_free,
+        -:   96:	ssl_callback_ctrl,
+        -:   97:	};
+        -:   98:
+    #####:   99:BIO_METHOD *BIO_f_ssl(void)
+        -:  100:	{
+    #####:  101:	return(&methods_sslp);
+        -:  102:	}
+        -:  103:
+    #####:  104:static int ssl_new(BIO *bi)
+        -:  105:	{
+        -:  106:	BIO_SSL *bs;
+        -:  107:
+    #####:  108:	bs=(BIO_SSL *)OPENSSL_malloc(sizeof(BIO_SSL));
+    #####:  109:	if (bs == NULL)
+        -:  110:		{
+    #####:  111:		BIOerr(BIO_F_SSL_NEW,ERR_R_MALLOC_FAILURE);
+    #####:  112:		return(0);
+        -:  113:		}
+        -:  114:	memset(bs,0,sizeof(BIO_SSL));
+    #####:  115:	bi->init=0;
+    #####:  116:	bi->ptr=(char *)bs;
+    #####:  117:	bi->flags=0;
+    #####:  118:	return(1);
+        -:  119:	}
+        -:  120:
+    #####:  121:static int ssl_free(BIO *a)
+        -:  122:	{
+        -:  123:	BIO_SSL *bs;
+        -:  124:
+    #####:  125:	if (a == NULL) return(0);
+    #####:  126:	bs=(BIO_SSL *)a->ptr;
+    #####:  127:	if (bs->ssl != NULL) SSL_shutdown(bs->ssl);
+    #####:  128:	if (a->shutdown)
+        -:  129:		{
+    #####:  130:		if (a->init && (bs->ssl != NULL))
+    #####:  131:			SSL_free(bs->ssl);
+    #####:  132:		a->init=0;
+    #####:  133:		a->flags=0;
+        -:  134:		}
+    #####:  135:	if (a->ptr != NULL)
+    #####:  136:		OPENSSL_free(a->ptr);
+        -:  137:	return(1);
+        -:  138:	}
+        -:  139:	
+    #####:  140:static int ssl_read(BIO *b, char *out, int outl)
+        -:  141:	{
+        -:  142:	int ret=1;
+        -:  143:	BIO_SSL *sb;
+        -:  144:	SSL *ssl;
+        -:  145:	int retry_reason=0;
+        -:  146:	int r=0;
+        -:  147:
+    #####:  148:	if (out == NULL) return(0);
+    #####:  149:	sb=(BIO_SSL *)b->ptr;
+    #####:  150:	ssl=sb->ssl;
+        -:  151:
+    #####:  152:	BIO_clear_retry_flags(b);
+        -:  153:
+        -:  154:#if 0
+        -:  155:	if (!SSL_is_init_finished(ssl))
+        -:  156:		{
+        -:  157:/*		ret=SSL_do_handshake(ssl); */
+        -:  158:		if (ret > 0)
+        -:  159:			{
+        -:  160:
+        -:  161:			outflags=(BIO_FLAGS_READ|BIO_FLAGS_SHOULD_RETRY);
+        -:  162:			ret= -1;
+        -:  163:			goto end;
+        -:  164:			}
+        -:  165:		}
+        -:  166:#endif
+        -:  167:/*	if (ret > 0) */
+    #####:  168:	ret=SSL_read(ssl,out,outl);
+        -:  169:
+    #####:  170:	switch (SSL_get_error(ssl,ret))
+        -:  171:		{
+        -:  172:	case SSL_ERROR_NONE:
+    #####:  173:		if (ret <= 0) break;
+    #####:  174:		if (sb->renegotiate_count > 0)
+        -:  175:			{
+    #####:  176:			sb->byte_count+=ret;
+    #####:  177:			if (sb->byte_count > sb->renegotiate_count)
+        -:  178:				{
+    #####:  179:				sb->byte_count=0;
+    #####:  180:				sb->num_renegotiates++;
+    #####:  181:				SSL_renegotiate(ssl);
+        -:  182:				r=1;
+        -:  183:				}
+        -:  184:			}
+    #####:  185:		if ((sb->renegotiate_timeout > 0) && (!r))
+        -:  186:			{
+        -:  187:			unsigned long tm;
+        -:  188:
+    #####:  189:			tm=(unsigned long)time(NULL);
+    #####:  190:			if (tm > sb->last_time+sb->renegotiate_timeout)
+        -:  191:				{
+    #####:  192:				sb->last_time=tm;
+    #####:  193:				sb->num_renegotiates++;
+    #####:  194:				SSL_renegotiate(ssl);
+        -:  195:				}
+        -:  196:			}
+        -:  197:
+        -:  198:		break;
+        -:  199:	case SSL_ERROR_WANT_READ:
+    #####:  200:		BIO_set_retry_read(b);
+    #####:  201:		break;
+        -:  202:	case SSL_ERROR_WANT_WRITE:
+    #####:  203:		BIO_set_retry_write(b);
+    #####:  204:		break;
+        -:  205:	case SSL_ERROR_WANT_X509_LOOKUP:
+    #####:  206:		BIO_set_retry_special(b);
+        -:  207:		retry_reason=BIO_RR_SSL_X509_LOOKUP;
+    #####:  208:		break;
+        -:  209:	case SSL_ERROR_WANT_ACCEPT:
+    #####:  210:		BIO_set_retry_special(b);
+        -:  211:		retry_reason=BIO_RR_ACCEPT;
+    #####:  212:		break;
+        -:  213:	case SSL_ERROR_WANT_CONNECT:
+    #####:  214:		BIO_set_retry_special(b);
+        -:  215:		retry_reason=BIO_RR_CONNECT;
+    #####:  216:		break;
+        -:  217:	case SSL_ERROR_SYSCALL:
+        -:  218:	case SSL_ERROR_SSL:
+        -:  219:	case SSL_ERROR_ZERO_RETURN:
+        -:  220:	default:
+        -:  221:		break;
+        -:  222:		}
+        -:  223:
+    #####:  224:	b->retry_reason=retry_reason;
+    #####:  225:	return(ret);
+        -:  226:	}
+        -:  227:
+    #####:  228:static int ssl_write(BIO *b, const char *out, int outl)
+        -:  229:	{
+        -:  230:	int ret,r=0;
+        -:  231:	int retry_reason=0;
+        -:  232:	SSL *ssl;
+        -:  233:	BIO_SSL *bs;
+        -:  234:
+    #####:  235:	if (out == NULL) return(0);
+    #####:  236:	bs=(BIO_SSL *)b->ptr;
+    #####:  237:	ssl=bs->ssl;
+        -:  238:
+    #####:  239:	BIO_clear_retry_flags(b);
+        -:  240:
+        -:  241:/*	ret=SSL_do_handshake(ssl);
+        -:  242:	if (ret > 0) */
+    #####:  243:	ret=SSL_write(ssl,out,outl);
+        -:  244:
+    #####:  245:	switch (SSL_get_error(ssl,ret))
+        -:  246:		{
+        -:  247:	case SSL_ERROR_NONE:
+    #####:  248:		if (ret <= 0) break;
+    #####:  249:		if (bs->renegotiate_count > 0)
+        -:  250:			{
+    #####:  251:			bs->byte_count+=ret;
+    #####:  252:			if (bs->byte_count > bs->renegotiate_count)
+        -:  253:				{
+    #####:  254:				bs->byte_count=0;
+    #####:  255:				bs->num_renegotiates++;
+    #####:  256:				SSL_renegotiate(ssl);
+        -:  257:				r=1;
+        -:  258:				}
+        -:  259:			}
+    #####:  260:		if ((bs->renegotiate_timeout > 0) && (!r))
+        -:  261:			{
+        -:  262:			unsigned long tm;
+        -:  263:
+    #####:  264:			tm=(unsigned long)time(NULL);
+    #####:  265:			if (tm > bs->last_time+bs->renegotiate_timeout)
+        -:  266:				{
+    #####:  267:				bs->last_time=tm;
+    #####:  268:				bs->num_renegotiates++;
+    #####:  269:				SSL_renegotiate(ssl);
+        -:  270:				}
+        -:  271:			}
+        -:  272:		break;
+        -:  273:	case SSL_ERROR_WANT_WRITE:
+    #####:  274:		BIO_set_retry_write(b);
+    #####:  275:		break;
+        -:  276:	case SSL_ERROR_WANT_READ:
+    #####:  277:		BIO_set_retry_read(b);
+    #####:  278:		break;
+        -:  279:	case SSL_ERROR_WANT_X509_LOOKUP:
+    #####:  280:		BIO_set_retry_special(b);
+        -:  281:		retry_reason=BIO_RR_SSL_X509_LOOKUP;
+    #####:  282:		break;
+        -:  283:	case SSL_ERROR_WANT_CONNECT:
+    #####:  284:		BIO_set_retry_special(b);
+        -:  285:		retry_reason=BIO_RR_CONNECT;
+        -:  286:	case SSL_ERROR_SYSCALL:
+        -:  287:	case SSL_ERROR_SSL:
+        -:  288:	default:
+        -:  289:		break;
+        -:  290:		}
+        -:  291:
+    #####:  292:	b->retry_reason=retry_reason;
+    #####:  293:	return(ret);
+        -:  294:	}
+        -:  295:
+    #####:  296:static long ssl_ctrl(BIO *b, int cmd, long num, void *ptr)
+        -:  297:	{
+        -:  298:	SSL **sslp,*ssl;
+        -:  299:	BIO_SSL *bs;
+        -:  300:	BIO *dbio,*bio;
+        -:  301:	long ret=1;
+        -:  302:
+    #####:  303:	bs=(BIO_SSL *)b->ptr;
+    #####:  304:	ssl=bs->ssl;
+    #####:  305:	if ((ssl == NULL)  && (cmd != BIO_C_SET_SSL))
+        -:  306:		return(0);
+    #####:  307:	switch (cmd)
+        -:  308:		{
+        -:  309:	case BIO_CTRL_RESET:
+    #####:  310:		SSL_shutdown(ssl);
+        -:  311:
+    #####:  312:		if (ssl->handshake_func == ssl->method->ssl_connect)
+    #####:  313:			SSL_set_connect_state(ssl);
+    #####:  314:		else if (ssl->handshake_func == ssl->method->ssl_accept)
+    #####:  315:			SSL_set_accept_state(ssl);
+        -:  316:
+    #####:  317:		SSL_clear(ssl);
+        -:  318:
+    #####:  319:		if (b->next_bio != NULL)
+    #####:  320:			ret=BIO_ctrl(b->next_bio,cmd,num,ptr);
+    #####:  321:		else if (ssl->rbio != NULL)
+    #####:  322:			ret=BIO_ctrl(ssl->rbio,cmd,num,ptr);
+        -:  323:		else
+        -:  324:			ret=1;
+        -:  325:		break;
+        -:  326:	case BIO_CTRL_INFO:
+        -:  327:		ret=0;
+        -:  328:		break;
+        -:  329:	case BIO_C_SSL_MODE:
+    #####:  330:		if (num) /* client mode */
+    #####:  331:			SSL_set_connect_state(ssl);
+        -:  332:		else
+    #####:  333:			SSL_set_accept_state(ssl);
+        -:  334:		break;
+        -:  335:	case BIO_C_SET_SSL_RENEGOTIATE_TIMEOUT:
+    #####:  336:		ret=bs->renegotiate_timeout;
+    #####:  337:		if (num < 60) num=5;
+    #####:  338:		bs->renegotiate_timeout=(unsigned long)num;
+    #####:  339:		bs->last_time=(unsigned long)time(NULL);
+    #####:  340:		break;
+        -:  341:	case BIO_C_SET_SSL_RENEGOTIATE_BYTES:
+    #####:  342:		ret=bs->renegotiate_count;
+    #####:  343:		if ((long)num >=512)
+    #####:  344:			bs->renegotiate_count=(unsigned long)num;
+        -:  345:		break;
+        -:  346:	case BIO_C_GET_SSL_NUM_RENEGOTIATES:
+    #####:  347:		ret=bs->num_renegotiates;
+    #####:  348:		break;
+        -:  349:	case BIO_C_SET_SSL:
+    #####:  350:		if (ssl != NULL)
+        -:  351:			{
+    #####:  352:			ssl_free(b);
+    #####:  353:			if (!ssl_new(b))
+        -:  354:				return 0;
+        -:  355:			}
+    #####:  356:		b->shutdown=(int)num;
+        -:  357:		ssl=(SSL *)ptr;
+    #####:  358:		((BIO_SSL *)b->ptr)->ssl=ssl;
+    #####:  359:		bio=SSL_get_rbio(ssl);
+    #####:  360:		if (bio != NULL)
+        -:  361:			{
+    #####:  362:			if (b->next_bio != NULL)
+    #####:  363:				BIO_push(bio,b->next_bio);
+    #####:  364:			b->next_bio=bio;
+    #####:  365:			CRYPTO_add(&bio->references,1,CRYPTO_LOCK_BIO);
+        -:  366:			}
+    #####:  367:		b->init=1;
+    #####:  368:		break;
+        -:  369:	case BIO_C_GET_SSL:
+    #####:  370:		if (ptr != NULL)
+        -:  371:			{
+        -:  372:			sslp=(SSL **)ptr;
+    #####:  373:			*sslp=ssl;
+        -:  374:			}
+        -:  375:		else
+        -:  376:			ret=0;
+        -:  377:		break;
+        -:  378:	case BIO_CTRL_GET_CLOSE:
+    #####:  379:		ret=b->shutdown;
+    #####:  380:		break;
+        -:  381:	case BIO_CTRL_SET_CLOSE:
+    #####:  382:		b->shutdown=(int)num;
+    #####:  383:		break;
+        -:  384:	case BIO_CTRL_WPENDING:
+    #####:  385:		ret=BIO_ctrl(ssl->wbio,cmd,num,ptr);
+    #####:  386:		break;
+        -:  387:	case BIO_CTRL_PENDING:
+    #####:  388:		ret=SSL_pending(ssl);
+    #####:  389:		if (ret == 0)
+    #####:  390:			ret=BIO_pending(ssl->rbio);
+        -:  391:		break;
+        -:  392:	case BIO_CTRL_FLUSH:
+    #####:  393:		BIO_clear_retry_flags(b);
+    #####:  394:		ret=BIO_ctrl(ssl->wbio,cmd,num,ptr);
+    #####:  395:		BIO_copy_next_retry(b);
+    #####:  396:		break;
+        -:  397:	case BIO_CTRL_PUSH:
+    #####:  398:		if ((b->next_bio != NULL) && (b->next_bio != ssl->rbio))
+        -:  399:			{
+    #####:  400:			SSL_set_bio(ssl,b->next_bio,b->next_bio);
+    #####:  401:			CRYPTO_add(&b->next_bio->references,1,CRYPTO_LOCK_BIO);
+        -:  402:			}
+        -:  403:		break;
+        -:  404:	case BIO_CTRL_POP:
+        -:  405:		/* Only detach if we are the BIO explicitly being popped */
+    #####:  406:		if (b == ptr)
+        -:  407:			{
+        -:  408:			/* Shouldn't happen in practice because the
+        -:  409:			 * rbio and wbio are the same when pushed.
+        -:  410:			 */
+    #####:  411:			if (ssl->rbio != ssl->wbio)
+    #####:  412:				BIO_free_all(ssl->wbio);
+    #####:  413:			if (b->next_bio != NULL)
+    #####:  414:				CRYPTO_add(&b->next_bio->references,-1,CRYPTO_LOCK_BIO);
+    #####:  415:			ssl->wbio=NULL;
+    #####:  416:			ssl->rbio=NULL;
+        -:  417:			}
+        -:  418:		break;
+        -:  419:	case BIO_C_DO_STATE_MACHINE:
+    #####:  420:		BIO_clear_retry_flags(b);
+        -:  421:
+    #####:  422:		b->retry_reason=0;
+    #####:  423:		ret=(int)SSL_do_handshake(ssl);
+        -:  424:
+    #####:  425:		switch (SSL_get_error(ssl,(int)ret))
+        -:  426:			{
+        -:  427:		case SSL_ERROR_WANT_READ:
+    #####:  428:			BIO_set_flags(b,
+        -:  429:				BIO_FLAGS_READ|BIO_FLAGS_SHOULD_RETRY);
+    #####:  430:			break;
+        -:  431:		case SSL_ERROR_WANT_WRITE:
+    #####:  432:			BIO_set_flags(b,
+        -:  433:				BIO_FLAGS_WRITE|BIO_FLAGS_SHOULD_RETRY);
+    #####:  434:			break;
+        -:  435:		case SSL_ERROR_WANT_CONNECT:
+    #####:  436:			BIO_set_flags(b,
+        -:  437:				BIO_FLAGS_IO_SPECIAL|BIO_FLAGS_SHOULD_RETRY);
+    #####:  438:			b->retry_reason=b->next_bio->retry_reason;
+    #####:  439:			break;
+        -:  440:		default:
+        -:  441:			break;
+        -:  442:			}
+        -:  443:		break;
+        -:  444:	case BIO_CTRL_DUP:
+        -:  445:		dbio=(BIO *)ptr;
+    #####:  446:		if (((BIO_SSL *)dbio->ptr)->ssl != NULL)
+    #####:  447:			SSL_free(((BIO_SSL *)dbio->ptr)->ssl);
+    #####:  448:		((BIO_SSL *)dbio->ptr)->ssl=SSL_dup(ssl);
+    #####:  449:		((BIO_SSL *)dbio->ptr)->renegotiate_count=
+    #####:  450:			((BIO_SSL *)b->ptr)->renegotiate_count;
+    #####:  451:		((BIO_SSL *)dbio->ptr)->byte_count=
+    #####:  452:			((BIO_SSL *)b->ptr)->byte_count;
+    #####:  453:		((BIO_SSL *)dbio->ptr)->renegotiate_timeout=
+    #####:  454:			((BIO_SSL *)b->ptr)->renegotiate_timeout;
+    #####:  455:		((BIO_SSL *)dbio->ptr)->last_time=
+    #####:  456:			((BIO_SSL *)b->ptr)->last_time;
+    #####:  457:		ret=(((BIO_SSL *)dbio->ptr)->ssl != NULL);
+    #####:  458:		break;
+        -:  459:	case BIO_C_GET_FD:
+    #####:  460:		ret=BIO_ctrl(ssl->rbio,cmd,num,ptr);
+    #####:  461:		break;
+        -:  462:	case BIO_CTRL_SET_CALLBACK:
+        -:  463:		{
+        -:  464:#if 0 /* FIXME: Should this be used?  -- Richard Levitte */
+        -:  465:		SSLerr(SSL_F_SSL_CTRL, ERR_R_SHOULD_NOT_HAVE_BEEN_CALLED);
+        -:  466:		ret = -1;
+        -:  467:#else
+        -:  468:		ret=0;
+        -:  469:#endif
+        -:  470:		}
+        -:  471:		break;
+        -:  472:	case BIO_CTRL_GET_CALLBACK:
+        -:  473:		{
+        -:  474:		void (**fptr)(const SSL *xssl,int type,int val);
+        -:  475:
+        -:  476:		fptr=(void (**)(const SSL *xssl,int type,int val))ptr;
+    #####:  477:		*fptr=SSL_get_info_callback(ssl);
+        -:  478:		}
+    #####:  479:		break;
+        -:  480:	default:
+    #####:  481:		ret=BIO_ctrl(ssl->rbio,cmd,num,ptr);
+    #####:  482:		break;
+        -:  483:		}
+    #####:  484:	return(ret);
+        -:  485:	}
+        -:  486:
+    #####:  487:static long ssl_callback_ctrl(BIO *b, int cmd, bio_info_cb *fp)
+        -:  488:	{
+        -:  489:	SSL *ssl;
+        -:  490:	BIO_SSL *bs;
+        -:  491:	long ret=1;
+        -:  492:
+    #####:  493:	bs=(BIO_SSL *)b->ptr;
+    #####:  494:	ssl=bs->ssl;
+    #####:  495:	switch (cmd)
+        -:  496:		{
+        -:  497:	case BIO_CTRL_SET_CALLBACK:
+        -:  498:		{
+        -:  499:		/* FIXME: setting this via a completely different prototype
+        -:  500:		   seems like a crap idea */
+    #####:  501:		SSL_set_info_callback(ssl,(void (*)(const SSL *,int,int))fp);
+        -:  502:		}
+    #####:  503:		break;
+        -:  504:	default:
+    #####:  505:		ret=BIO_callback_ctrl(ssl->rbio,cmd,fp);
+    #####:  506:		break;
+        -:  507:		}
+    #####:  508:	return(ret);
+        -:  509:	}
+        -:  510:
+    #####:  511:static int ssl_puts(BIO *bp, const char *str)
+        -:  512:	{
+        -:  513:	int n,ret;
+        -:  514:
+    #####:  515:	n=strlen(str);
+    #####:  516:	ret=BIO_write(bp,str,n);
+    #####:  517:	return(ret);
+        -:  518:	}
+        -:  519:
+    #####:  520:BIO *BIO_new_buffer_ssl_connect(SSL_CTX *ctx)
+        -:  521:	{
+        -:  522:#ifndef OPENSSL_NO_SOCK
+        -:  523:	BIO *ret=NULL,*buf=NULL,*ssl=NULL;
+        -:  524:
+    #####:  525:	if ((buf=BIO_new(BIO_f_buffer())) == NULL)
+        -:  526:		return(NULL);
+    #####:  527:	if ((ssl=BIO_new_ssl_connect(ctx)) == NULL)
+        -:  528:		goto err;
+    #####:  529:	if ((ret=BIO_push(buf,ssl)) == NULL)
+        -:  530:		goto err;
+        -:  531:	return(ret);
+        -:  532:err:
+    #####:  533:	if (buf != NULL) BIO_free(buf);
+    #####:  534:	if (ssl != NULL) BIO_free(ssl);
+        -:  535:#endif
+        -:  536:	return(NULL);
+        -:  537:	}
+        -:  538:
+    #####:  539:BIO *BIO_new_ssl_connect(SSL_CTX *ctx)
+        -:  540:	{
+        -:  541:#ifndef OPENSSL_NO_SOCK
+        -:  542:	BIO *ret=NULL,*con=NULL,*ssl=NULL;
+        -:  543:
+    #####:  544:	if ((con=BIO_new(BIO_s_connect())) == NULL)
+        -:  545:		return(NULL);
+    #####:  546:	if ((ssl=BIO_new_ssl(ctx,1)) == NULL)
+        -:  547:		goto err;
+    #####:  548:	if ((ret=BIO_push(ssl,con)) == NULL)
+        -:  549:		goto err;
+        -:  550:	return(ret);
+        -:  551:err:
+    #####:  552:	if (con != NULL) BIO_free(con);
+        -:  553:#endif
+        -:  554:	return(NULL);
+        -:  555:	}
+        -:  556:
+    #####:  557:BIO *BIO_new_ssl(SSL_CTX *ctx, int client)
+        -:  558:	{
+        -:  559:	BIO *ret;
+        -:  560:	SSL *ssl;
+        -:  561:
+    #####:  562:	if ((ret=BIO_new(BIO_f_ssl())) == NULL)
+        -:  563:		return(NULL);
+    #####:  564:	if ((ssl=SSL_new(ctx)) == NULL)
+        -:  565:		{
+    #####:  566:		BIO_free(ret);
+    #####:  567:		return(NULL);
+        -:  568:		}
+    #####:  569:	if (client)
+    #####:  570:		SSL_set_connect_state(ssl);
+        -:  571:	else
+    #####:  572:		SSL_set_accept_state(ssl);
+        -:  573:		
+    #####:  574:	BIO_set_ssl(ret,ssl,BIO_CLOSE);
+    #####:  575:	return(ret);
+        -:  576:	}
+        -:  577:
+    #####:  578:int BIO_ssl_copy_session_id(BIO *t, BIO *f)
+        -:  579:	{
+    #####:  580:	t=BIO_find_type(t,BIO_TYPE_SSL);
+    #####:  581:	f=BIO_find_type(f,BIO_TYPE_SSL);
+    #####:  582:	if ((t == NULL) || (f == NULL))
+        -:  583:		return(0);
+    #####:  584:	if (	(((BIO_SSL *)t->ptr)->ssl == NULL) || 
+    #####:  585:		(((BIO_SSL *)f->ptr)->ssl == NULL))
+        -:  586:		return(0);
+    #####:  587:	SSL_copy_session_id(((BIO_SSL *)t->ptr)->ssl,((BIO_SSL *)f->ptr)->ssl);
+    #####:  588:	return(1);
+        -:  589:	}
+        -:  590:
+    #####:  591:void BIO_ssl_shutdown(BIO *b)
+        -:  592:	{
+        -:  593:	SSL *s;
+        -:  594:
+    #####:  595:	while (b != NULL)
+        -:  596:		{
+    #####:  597:		if (b->method->type == BIO_TYPE_SSL)
+        -:  598:			{
+    #####:  599:			s=((BIO_SSL *)b->ptr)->ssl;
+    #####:  600:			SSL_shutdown(s);
+    #####:  601:			break;
+        -:  602:			}
+    #####:  603:		b=b->next_bio;
+        -:  604:		}
+    #####:  605:	}

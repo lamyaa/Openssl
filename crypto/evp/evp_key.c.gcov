@@ -1,0 +1,194 @@
+        -:    0:Source:evp_key.c
+        -:    0:Graph:evp_key.gcno
+        -:    0:Data:evp_key.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* crypto/evp/evp_key.c */
+        -:    2:/* Copyright (C) 1995-1998 Eric Young (eay@cryptsoft.com)
+        -:    3: * All rights reserved.
+        -:    4: *
+        -:    5: * This package is an SSL implementation written
+        -:    6: * by Eric Young (eay@cryptsoft.com).
+        -:    7: * The implementation was written so as to conform with Netscapes SSL.
+        -:    8: * 
+        -:    9: * This library is free for commercial and non-commercial use as long as
+        -:   10: * the following conditions are aheared to.  The following conditions
+        -:   11: * apply to all code found in this distribution, be it the RC4, RSA,
+        -:   12: * lhash, DES, etc., code; not just the SSL code.  The SSL documentation
+        -:   13: * included with this distribution is covered by the same copyright terms
+        -:   14: * except that the holder is Tim Hudson (tjh@cryptsoft.com).
+        -:   15: * 
+        -:   16: * Copyright remains Eric Young's, and as such any Copyright notices in
+        -:   17: * the code are not to be removed.
+        -:   18: * If this package is used in a product, Eric Young should be given attribution
+        -:   19: * as the author of the parts of the library used.
+        -:   20: * This can be in the form of a textual message at program startup or
+        -:   21: * in documentation (online or textual) provided with the package.
+        -:   22: * 
+        -:   23: * Redistribution and use in source and binary forms, with or without
+        -:   24: * modification, are permitted provided that the following conditions
+        -:   25: * are met:
+        -:   26: * 1. Redistributions of source code must retain the copyright
+        -:   27: *    notice, this list of conditions and the following disclaimer.
+        -:   28: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   29: *    notice, this list of conditions and the following disclaimer in the
+        -:   30: *    documentation and/or other materials provided with the distribution.
+        -:   31: * 3. All advertising materials mentioning features or use of this software
+        -:   32: *    must display the following acknowledgement:
+        -:   33: *    "This product includes cryptographic software written by
+        -:   34: *     Eric Young (eay@cryptsoft.com)"
+        -:   35: *    The word 'cryptographic' can be left out if the rouines from the library
+        -:   36: *    being used are not cryptographic related :-).
+        -:   37: * 4. If you include any Windows specific code (or a derivative thereof) from 
+        -:   38: *    the apps directory (application code) you must include an acknowledgement:
+        -:   39: *    "This product includes software written by Tim Hudson (tjh@cryptsoft.com)"
+        -:   40: * 
+        -:   41: * THIS SOFTWARE IS PROVIDED BY ERIC YOUNG ``AS IS'' AND
+        -:   42: * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   43: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+        -:   44: * ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+        -:   45: * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+        -:   46: * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+        -:   47: * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   48: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+        -:   49: * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+        -:   50: * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+        -:   51: * SUCH DAMAGE.
+        -:   52: * 
+        -:   53: * The licence and distribution terms for any publically available version or
+        -:   54: * derivative of this code cannot be changed.  i.e. this code cannot simply be
+        -:   55: * copied and put under another distribution licence
+        -:   56: * [including the GNU Public Licence.]
+        -:   57: */
+        -:   58:
+        -:   59:#include <stdio.h>
+        -:   60:#include "cryptlib.h"
+        -:   61:#include <openssl/x509.h>
+        -:   62:#include <openssl/objects.h>
+        -:   63:#include <openssl/evp.h>
+        -:   64:#include <openssl/ui.h>
+        -:   65:
+        -:   66:/* should be init to zeros. */
+        -:   67:static char prompt_string[80];
+        -:   68:
+    #####:   69:void EVP_set_pw_prompt(const char *prompt)
+        -:   70:	{
+    #####:   71:	if (prompt == NULL)
+    #####:   72:		prompt_string[0]='\0';
+        -:   73:	else
+        -:   74:		{
+        -:   75:		strncpy(prompt_string,prompt,79);
+    #####:   76:		prompt_string[79]='\0';
+        -:   77:		}
+    #####:   78:	}
+        -:   79:
+    #####:   80:char *EVP_get_pw_prompt(void)
+        -:   81:	{
+    #####:   82:	if (prompt_string[0] == '\0')
+        -:   83:		return(NULL);
+        -:   84:	else
+    #####:   85:		return(prompt_string);
+        -:   86:	}
+        -:   87:
+        -:   88:/* For historical reasons, the standard function for reading passwords is
+        -:   89: * in the DES library -- if someone ever wants to disable DES,
+        -:   90: * this function will fail */
+    #####:   91:int EVP_read_pw_string(char *buf, int len, const char *prompt, int verify)
+        -:   92:	{
+    #####:   93:	return EVP_read_pw_string_min(buf, 0, len, prompt, verify);
+        -:   94:	}
+        -:   95:
+    #####:   96:int EVP_read_pw_string_min(char *buf, int min, int len, const char *prompt, int verify)
+        -:   97:	{
+        -:   98:	int ret;
+        -:   99:	char buff[BUFSIZ];
+        -:  100:	UI *ui;
+        -:  101:
+    #####:  102:	if ((prompt == NULL) && (prompt_string[0] != '\0'))
+        -:  103:		prompt=prompt_string;
+    #####:  104:	ui = UI_new();
+    #####:  105:	UI_add_input_string(ui,prompt,0,buf,min,(len>=BUFSIZ)?BUFSIZ-1:len);
+    #####:  106:	if (verify)
+    #####:  107:		UI_add_verify_string(ui,prompt,0,
+        -:  108:			buff,min,(len>=BUFSIZ)?BUFSIZ-1:len,buf);
+    #####:  109:	ret = UI_process(ui);
+    #####:  110:	UI_free(ui);
+    #####:  111:	OPENSSL_cleanse(buff,BUFSIZ);
+    #####:  112:	return ret;
+        -:  113:	}
+        -:  114:
+    #####:  115:int EVP_BytesToKey(const EVP_CIPHER *type, const EVP_MD *md, 
+        -:  116:	     const unsigned char *salt, const unsigned char *data, int datal,
+        -:  117:	     int count, unsigned char *key, unsigned char *iv)
+        -:  118:	{
+        -:  119:	EVP_MD_CTX c;
+        -:  120:	unsigned char md_buf[EVP_MAX_MD_SIZE];
+        -:  121:	int niv,nkey,addmd=0;
+    #####:  122:	unsigned int mds=0,i;
+        -:  123:	int rv = 0;
+    #####:  124:	nkey=type->key_len;
+    #####:  125:	niv=type->iv_len;
+    #####:  126:	OPENSSL_assert(nkey <= EVP_MAX_KEY_LENGTH);
+    #####:  127:	OPENSSL_assert(niv <= EVP_MAX_IV_LENGTH);
+        -:  128:
+    #####:  129:	if (data == NULL) return(nkey);
+        -:  130:
+    #####:  131:	EVP_MD_CTX_init(&c);
+        -:  132:	for (;;)
+        -:  133:		{
+    #####:  134:		if (!EVP_DigestInit_ex(&c,md, NULL))
+        -:  135:			return 0;
+    #####:  136:		if (addmd++)
+    #####:  137:			if (!EVP_DigestUpdate(&c,&(md_buf[0]),mds))
+        -:  138:				goto err;
+    #####:  139:		if (!EVP_DigestUpdate(&c,data,datal))
+        -:  140:			goto err;
+    #####:  141:		if (salt != NULL)
+    #####:  142:			if (!EVP_DigestUpdate(&c,salt,PKCS5_SALT_LEN))
+        -:  143:				goto err;
+    #####:  144:		if (!EVP_DigestFinal_ex(&c,&(md_buf[0]),&mds))
+        -:  145:			goto err;
+        -:  146:
+    #####:  147:		for (i=1; i<(unsigned int)count; i++)
+        -:  148:			{
+    #####:  149:			if (!EVP_DigestInit_ex(&c,md, NULL))
+        -:  150:				goto err;
+    #####:  151:			if (!EVP_DigestUpdate(&c,&(md_buf[0]),mds))
+        -:  152:				goto err;
+    #####:  153:			if (!EVP_DigestFinal_ex(&c,&(md_buf[0]),&mds))
+        -:  154:				goto err;
+        -:  155:			}
+        -:  156:		i=0;
+    #####:  157:		if (nkey)
+        -:  158:			{
+        -:  159:			for (;;)
+        -:  160:				{
+    #####:  161:				if (nkey == 0) break;
+    #####:  162:				if (i == mds) break;
+    #####:  163:				if (key != NULL)
+    #####:  164:					*(key++)=md_buf[i];
+    #####:  165:				nkey--;
+    #####:  166:				i++;
+    #####:  167:				}
+        -:  168:			}
+    #####:  169:		if (niv && (i != mds))
+        -:  170:			{
+        -:  171:			for (;;)
+        -:  172:				{
+    #####:  173:				if (niv == 0) break;
+    #####:  174:				if (i == mds) break;
+    #####:  175:				if (iv != NULL)
+    #####:  176:					*(iv++)=md_buf[i];
+    #####:  177:				niv--;
+    #####:  178:				i++;
+    #####:  179:				}
+        -:  180:			}
+    #####:  181:		if ((nkey == 0) && (niv == 0)) break;
+        -:  182:		}
+    #####:  183:	rv = type->key_len;
+        -:  184:	err:
+    #####:  185:	EVP_MD_CTX_cleanup(&c);
+    #####:  186:	OPENSSL_cleanse(&(md_buf[0]),EVP_MAX_MD_SIZE);
+    #####:  187:	return rv;
+        -:  188:	}
+        -:  189:

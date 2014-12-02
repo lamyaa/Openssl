@@ -1,0 +1,489 @@
+        -:    0:Source:dso_dlfcn.c
+        -:    0:Graph:dso_dlfcn.gcno
+        -:    0:Data:dso_dlfcn.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* dso_dlfcn.c -*- mode:C; c-file-style: "eay" -*- */
+        -:    2:/* Written by Geoff Thorpe (geoff@geoffthorpe.net) for the OpenSSL
+        -:    3: * project 2000.
+        -:    4: */
+        -:    5:/* ====================================================================
+        -:    6: * Copyright (c) 2000 The OpenSSL Project.  All rights reserved.
+        -:    7: *
+        -:    8: * Redistribution and use in source and binary forms, with or without
+        -:    9: * modification, are permitted provided that the following conditions
+        -:   10: * are met:
+        -:   11: *
+        -:   12: * 1. Redistributions of source code must retain the above copyright
+        -:   13: *    notice, this list of conditions and the following disclaimer. 
+        -:   14: *
+        -:   15: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   16: *    notice, this list of conditions and the following disclaimer in
+        -:   17: *    the documentation and/or other materials provided with the
+        -:   18: *    distribution.
+        -:   19: *
+        -:   20: * 3. All advertising materials mentioning features or use of this
+        -:   21: *    software must display the following acknowledgment:
+        -:   22: *    "This product includes software developed by the OpenSSL Project
+        -:   23: *    for use in the OpenSSL Toolkit. (http://www.OpenSSL.org/)"
+        -:   24: *
+        -:   25: * 4. The names "OpenSSL Toolkit" and "OpenSSL Project" must not be used to
+        -:   26: *    endorse or promote products derived from this software without
+        -:   27: *    prior written permission. For written permission, please contact
+        -:   28: *    licensing@OpenSSL.org.
+        -:   29: *
+        -:   30: * 5. Products derived from this software may not be called "OpenSSL"
+        -:   31: *    nor may "OpenSSL" appear in their names without prior written
+        -:   32: *    permission of the OpenSSL Project.
+        -:   33: *
+        -:   34: * 6. Redistributions of any form whatsoever must retain the following
+        -:   35: *    acknowledgment:
+        -:   36: *    "This product includes software developed by the OpenSSL Project
+        -:   37: *    for use in the OpenSSL Toolkit (http://www.OpenSSL.org/)"
+        -:   38: *
+        -:   39: * THIS SOFTWARE IS PROVIDED BY THE OpenSSL PROJECT ``AS IS'' AND ANY
+        -:   40: * EXPRESSED OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   41: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+        -:   42: * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE OpenSSL PROJECT OR
+        -:   43: * ITS CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+        -:   44: * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+        -:   45: * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+        -:   46: * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   47: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+        -:   48: * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+        -:   49: * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+        -:   50: * OF THE POSSIBILITY OF SUCH DAMAGE.
+        -:   51: * ====================================================================
+        -:   52: *
+        -:   53: * This product includes cryptographic software written by Eric Young
+        -:   54: * (eay@cryptsoft.com).  This product includes software written by Tim
+        -:   55: * Hudson (tjh@cryptsoft.com).
+        -:   56: *
+        -:   57: */
+        -:   58:
+        -:   59:/* We need to do this early, because stdio.h includes the header files
+        -:   60:   that handle _GNU_SOURCE and other similar macros.  Defining it later
+        -:   61:   is simply too late, because those headers are protected from re-
+        -:   62:   inclusion.  */
+        -:   63:#ifdef __linux
+        -:   64:# ifndef _GNU_SOURCE
+        -:   65:#  define _GNU_SOURCE	/* make sure dladdr is declared */
+        -:   66:# endif
+        -:   67:#endif
+        -:   68:
+        -:   69:#include <stdio.h>
+        -:   70:#include "cryptlib.h"
+        -:   71:#include <openssl/dso.h>
+        -:   72:
+        -:   73:#ifndef DSO_DLFCN
+        -:   74:DSO_METHOD *DSO_METHOD_dlfcn(void)
+        -:   75:	{
+        -:   76:	return NULL;
+        -:   77:	}
+        -:   78:#else
+        -:   79:
+        -:   80:#ifdef HAVE_DLFCN_H
+        -:   81:# ifdef __osf__
+        -:   82:#  define __EXTENSIONS__
+        -:   83:# endif
+        -:   84:# include <dlfcn.h>
+        -:   85:# define HAVE_DLINFO 1
+        -:   86:# if defined(_AIX) || defined(__CYGWIN__) || \
+        -:   87:     defined(__SCO_VERSION__) || defined(_SCO_ELF) || \
+        -:   88:     (defined(__osf__) && !defined(RTLD_NEXT))     || \
+        -:   89:     (defined(__OpenBSD__) && !defined(RTLD_SELF)) || \
+        -:   90:	defined(__ANDROID__)
+        -:   91:#  undef HAVE_DLINFO
+        -:   92:# endif
+        -:   93:#endif
+        -:   94:
+        -:   95:/* Part of the hack in "dlfcn_load" ... */
+        -:   96:#define DSO_MAX_TRANSLATED_SIZE 256
+        -:   97:
+        -:   98:static int dlfcn_load(DSO *dso);
+        -:   99:static int dlfcn_unload(DSO *dso);
+        -:  100:static void *dlfcn_bind_var(DSO *dso, const char *symname);
+        -:  101:static DSO_FUNC_TYPE dlfcn_bind_func(DSO *dso, const char *symname);
+        -:  102:#if 0
+        -:  103:static int dlfcn_unbind(DSO *dso, char *symname, void *symptr);
+        -:  104:static int dlfcn_init(DSO *dso);
+        -:  105:static int dlfcn_finish(DSO *dso);
+        -:  106:static long dlfcn_ctrl(DSO *dso, int cmd, long larg, void *parg);
+        -:  107:#endif
+        -:  108:static char *dlfcn_name_converter(DSO *dso, const char *filename);
+        -:  109:static char *dlfcn_merger(DSO *dso, const char *filespec1,
+        -:  110:	const char *filespec2);
+        -:  111:static int dlfcn_pathbyaddr(void *addr,char *path,int sz);
+        -:  112:static void *dlfcn_globallookup(const char *name);
+        -:  113:
+        -:  114:static DSO_METHOD dso_meth_dlfcn = {
+        -:  115:	"OpenSSL 'dlfcn' shared library method",
+        -:  116:	dlfcn_load,
+        -:  117:	dlfcn_unload,
+        -:  118:	dlfcn_bind_var,
+        -:  119:	dlfcn_bind_func,
+        -:  120:/* For now, "unbind" doesn't exist */
+        -:  121:#if 0
+        -:  122:	NULL, /* unbind_var */
+        -:  123:	NULL, /* unbind_func */
+        -:  124:#endif
+        -:  125:	NULL, /* ctrl */
+        -:  126:	dlfcn_name_converter,
+        -:  127:	dlfcn_merger,
+        -:  128:	NULL, /* init */
+        -:  129:	NULL, /* finish */
+        -:  130:	dlfcn_pathbyaddr,
+        -:  131:	dlfcn_globallookup
+        -:  132:	};
+        -:  133:
+    #####:  134:DSO_METHOD *DSO_METHOD_dlfcn(void)
+        -:  135:	{
+    #####:  136:	return(&dso_meth_dlfcn);
+        -:  137:	}
+        -:  138:
+        -:  139:/* Prior to using the dlopen() function, we should decide on the flag
+        -:  140: * we send. There's a few different ways of doing this and it's a
+        -:  141: * messy venn-diagram to match up which platforms support what. So
+        -:  142: * as we don't have autoconf yet, I'm implementing a hack that could
+        -:  143: * be hacked further relatively easily to deal with cases as we find
+        -:  144: * them. Initially this is to cope with OpenBSD. */
+        -:  145:#if defined(__OpenBSD__) || defined(__NetBSD__)
+        -:  146:#	ifdef DL_LAZY
+        -:  147:#		define DLOPEN_FLAG DL_LAZY
+        -:  148:#	else
+        -:  149:#		ifdef RTLD_NOW
+        -:  150:#			define DLOPEN_FLAG RTLD_NOW
+        -:  151:#		else
+        -:  152:#			define DLOPEN_FLAG 0
+        -:  153:#		endif
+        -:  154:#	endif
+        -:  155:#else
+        -:  156:#	ifdef OPENSSL_SYS_SUNOS
+        -:  157:#		define DLOPEN_FLAG 1
+        -:  158:#	else
+        -:  159:#		define DLOPEN_FLAG RTLD_NOW /* Hope this works everywhere else */
+        -:  160:#	endif
+        -:  161:#endif
+        -:  162:
+        -:  163:/* For this DSO_METHOD, our meth_data STACK will contain;
+        -:  164: * (i) the handle (void*) returned from dlopen().
+        -:  165: */
+        -:  166:
+    #####:  167:static int dlfcn_load(DSO *dso)
+        -:  168:	{
+        -:  169:	void *ptr = NULL;
+        -:  170:	/* See applicable comments in dso_dl.c */
+    #####:  171:	char *filename = DSO_convert_filename(dso, NULL);
+        -:  172:	int flags = DLOPEN_FLAG;
+        -:  173:
+    #####:  174:	if(filename == NULL)
+        -:  175:		{
+    #####:  176:		DSOerr(DSO_F_DLFCN_LOAD,DSO_R_NO_FILENAME);
+    #####:  177:		goto err;
+        -:  178:		}
+        -:  179:
+        -:  180:#ifdef RTLD_GLOBAL
+    #####:  181:	if (dso->flags & DSO_FLAG_GLOBAL_SYMBOLS)
+        -:  182:		flags |= RTLD_GLOBAL;
+        -:  183:#endif
+    #####:  184:	ptr = dlopen(filename, flags);
+    #####:  185:	if(ptr == NULL)
+        -:  186:		{
+    #####:  187:		DSOerr(DSO_F_DLFCN_LOAD,DSO_R_LOAD_FAILED);
+    #####:  188:		ERR_add_error_data(4, "filename(", filename, "): ", dlerror());
+    #####:  189:		goto err;
+        -:  190:		}
+    #####:  191:	if(!sk_void_push(dso->meth_data, (char *)ptr))
+        -:  192:		{
+    #####:  193:		DSOerr(DSO_F_DLFCN_LOAD,DSO_R_STACK_ERROR);
+    #####:  194:		goto err;
+        -:  195:		}
+        -:  196:	/* Success */
+    #####:  197:	dso->loaded_filename = filename;
+    #####:  198:	return(1);
+        -:  199:err:
+        -:  200:	/* Cleanup! */
+    #####:  201:	if(filename != NULL)
+    #####:  202:		OPENSSL_free(filename);
+    #####:  203:	if(ptr != NULL)
+    #####:  204:		dlclose(ptr);
+        -:  205:	return(0);
+        -:  206:}
+        -:  207:
+    #####:  208:static int dlfcn_unload(DSO *dso)
+        -:  209:	{
+        -:  210:	void *ptr;
+    #####:  211:	if(dso == NULL)
+        -:  212:		{
+    #####:  213:		DSOerr(DSO_F_DLFCN_UNLOAD,ERR_R_PASSED_NULL_PARAMETER);
+    #####:  214:		return(0);
+        -:  215:		}
+    #####:  216:	if(sk_void_num(dso->meth_data) < 1)
+        -:  217:		return(1);
+    #####:  218:	ptr = sk_void_pop(dso->meth_data);
+    #####:  219:	if(ptr == NULL)
+        -:  220:		{
+    #####:  221:		DSOerr(DSO_F_DLFCN_UNLOAD,DSO_R_NULL_HANDLE);
+        -:  222:		/* Should push the value back onto the stack in
+        -:  223:		 * case of a retry. */
+    #####:  224:		sk_void_push(dso->meth_data, ptr);
+    #####:  225:		return(0);
+        -:  226:		}
+        -:  227:	/* For now I'm not aware of any errors associated with dlclose() */
+    #####:  228:	dlclose(ptr);
+    #####:  229:	return(1);
+        -:  230:	}
+        -:  231:
+    #####:  232:static void *dlfcn_bind_var(DSO *dso, const char *symname)
+        -:  233:	{
+        -:  234:	void *ptr, *sym;
+        -:  235:
+    #####:  236:	if((dso == NULL) || (symname == NULL))
+        -:  237:		{
+    #####:  238:		DSOerr(DSO_F_DLFCN_BIND_VAR,ERR_R_PASSED_NULL_PARAMETER);
+    #####:  239:		return(NULL);
+        -:  240:		}
+    #####:  241:	if(sk_void_num(dso->meth_data) < 1)
+        -:  242:		{
+    #####:  243:		DSOerr(DSO_F_DLFCN_BIND_VAR,DSO_R_STACK_ERROR);
+    #####:  244:		return(NULL);
+        -:  245:		}
+    #####:  246:	ptr = sk_void_value(dso->meth_data, sk_void_num(dso->meth_data) - 1);
+    #####:  247:	if(ptr == NULL)
+        -:  248:		{
+    #####:  249:		DSOerr(DSO_F_DLFCN_BIND_VAR,DSO_R_NULL_HANDLE);
+    #####:  250:		return(NULL);
+        -:  251:		}
+    #####:  252:	sym = dlsym(ptr, symname);
+    #####:  253:	if(sym == NULL)
+        -:  254:		{
+    #####:  255:		DSOerr(DSO_F_DLFCN_BIND_VAR,DSO_R_SYM_FAILURE);
+    #####:  256:		ERR_add_error_data(4, "symname(", symname, "): ", dlerror());
+    #####:  257:		return(NULL);
+        -:  258:		}
+        -:  259:	return(sym);
+        -:  260:	}
+        -:  261:
+    #####:  262:static DSO_FUNC_TYPE dlfcn_bind_func(DSO *dso, const char *symname)
+        -:  263:	{
+        -:  264:	void *ptr;
+        -:  265:	union {
+        -:  266:		DSO_FUNC_TYPE sym;
+        -:  267:		void *dlret;
+        -:  268:	} u;
+        -:  269:
+    #####:  270:	if((dso == NULL) || (symname == NULL))
+        -:  271:		{
+    #####:  272:		DSOerr(DSO_F_DLFCN_BIND_FUNC,ERR_R_PASSED_NULL_PARAMETER);
+    #####:  273:		return(NULL);
+        -:  274:		}
+    #####:  275:	if(sk_void_num(dso->meth_data) < 1)
+        -:  276:		{
+    #####:  277:		DSOerr(DSO_F_DLFCN_BIND_FUNC,DSO_R_STACK_ERROR);
+    #####:  278:		return(NULL);
+        -:  279:		}
+    #####:  280:	ptr = sk_void_value(dso->meth_data, sk_void_num(dso->meth_data) - 1);
+    #####:  281:	if(ptr == NULL)
+        -:  282:		{
+    #####:  283:		DSOerr(DSO_F_DLFCN_BIND_FUNC,DSO_R_NULL_HANDLE);
+    #####:  284:		return(NULL);
+        -:  285:		}
+    #####:  286:	u.dlret = dlsym(ptr, symname);
+    #####:  287:	if(u.dlret == NULL)
+        -:  288:		{
+    #####:  289:		DSOerr(DSO_F_DLFCN_BIND_FUNC,DSO_R_SYM_FAILURE);
+    #####:  290:		ERR_add_error_data(4, "symname(", symname, "): ", dlerror());
+    #####:  291:		return(NULL);
+        -:  292:		}
+    #####:  293:	return u.sym;
+        -:  294:	}
+        -:  295:
+    #####:  296:static char *dlfcn_merger(DSO *dso, const char *filespec1,
+        -:  297:	const char *filespec2)
+        -:  298:	{
+        -:  299:	char *merged;
+        -:  300:
+    #####:  301:	if(!filespec1 && !filespec2)
+        -:  302:		{
+    #####:  303:		DSOerr(DSO_F_DLFCN_MERGER,
+        -:  304:				ERR_R_PASSED_NULL_PARAMETER);
+    #####:  305:		return(NULL);
+        -:  306:		}
+        -:  307:	/* If the first file specification is a rooted path, it rules.
+        -:  308:	   same goes if the second file specification is missing. */
+    #####:  309:	if (!filespec2 || (filespec1 != NULL && filespec1[0] == '/'))
+        -:  310:		{
+    #####:  311:		merged = OPENSSL_malloc(strlen(filespec1) + 1);
+    #####:  312:		if(!merged)
+        -:  313:			{
+    #####:  314:			DSOerr(DSO_F_DLFCN_MERGER, ERR_R_MALLOC_FAILURE);
+    #####:  315:			return(NULL);
+        -:  316:			}
+        -:  317:		strcpy(merged, filespec1);
+        -:  318:		}
+        -:  319:	/* If the first file specification is missing, the second one rules. */
+    #####:  320:	else if (!filespec1)
+        -:  321:		{
+    #####:  322:		merged = OPENSSL_malloc(strlen(filespec2) + 1);
+    #####:  323:		if(!merged)
+        -:  324:			{
+    #####:  325:			DSOerr(DSO_F_DLFCN_MERGER,
+        -:  326:				ERR_R_MALLOC_FAILURE);
+    #####:  327:			return(NULL);
+        -:  328:			}
+        -:  329:		strcpy(merged, filespec2);
+        -:  330:		}
+        -:  331:	else
+        -:  332:		/* This part isn't as trivial as it looks.  It assumes that
+        -:  333:		   the second file specification really is a directory, and
+        -:  334:		   makes no checks whatsoever.  Therefore, the result becomes
+        -:  335:		   the concatenation of filespec2 followed by a slash followed
+        -:  336:		   by filespec1. */
+        -:  337:		{
+        -:  338:		int spec2len, len;
+        -:  339:
+    #####:  340:		spec2len = strlen(filespec2);
+    #####:  341:		len = spec2len + (filespec1 ? strlen(filespec1) : 0);
+        -:  342:
+    #####:  343:		if(filespec2 && filespec2[spec2len - 1] == '/')
+        -:  344:			{
+    #####:  345:			spec2len--;
+    #####:  346:			len--;
+        -:  347:			}
+    #####:  348:		merged = OPENSSL_malloc(len + 2);
+    #####:  349:		if(!merged)
+        -:  350:			{
+    #####:  351:			DSOerr(DSO_F_DLFCN_MERGER,
+        -:  352:				ERR_R_MALLOC_FAILURE);
+    #####:  353:			return(NULL);
+        -:  354:			}
+        -:  355:		strcpy(merged, filespec2);
+    #####:  356:		merged[spec2len] = '/';
+    #####:  357:		strcpy(&merged[spec2len + 1], filespec1);
+        -:  358:		}
+    #####:  359:	return(merged);
+        -:  360:	}
+        -:  361:
+        -:  362:#ifdef OPENSSL_SYS_MACOSX
+        -:  363:#define DSO_ext	".dylib"
+        -:  364:#define DSO_extlen 6
+        -:  365:#else
+        -:  366:#define DSO_ext	".so"
+        -:  367:#define DSO_extlen 3
+        -:  368:#endif
+        -:  369:
+        -:  370:
+    #####:  371:static char *dlfcn_name_converter(DSO *dso, const char *filename)
+        -:  372:	{
+        -:  373:	char *translated;
+        -:  374:	int len, rsize, transform;
+        -:  375:
+    #####:  376:	len = strlen(filename);
+    #####:  377:	rsize = len + 1;
+    #####:  378:	transform = (strstr(filename, "/") == NULL);
+    #####:  379:	if(transform)
+        -:  380:		{
+        -:  381:		/* We will convert this to "%s.so" or "lib%s.so" etc */
+    #####:  382:		rsize += DSO_extlen;	/* The length of ".so" */
+    #####:  383:		if ((DSO_flags(dso) & DSO_FLAG_NAME_TRANSLATION_EXT_ONLY) == 0)
+    #####:  384:			rsize += 3; /* The length of "lib" */
+        -:  385:		}
+    #####:  386:	translated = OPENSSL_malloc(rsize);
+    #####:  387:	if(translated == NULL)
+        -:  388:		{
+    #####:  389:		DSOerr(DSO_F_DLFCN_NAME_CONVERTER,
+        -:  390:				DSO_R_NAME_TRANSLATION_FAILED);
+    #####:  391:		return(NULL);
+        -:  392:		}
+    #####:  393:	if(transform)
+        -:  394:		{
+    #####:  395:		if ((DSO_flags(dso) & DSO_FLAG_NAME_TRANSLATION_EXT_ONLY) == 0)
+        -:  396:			sprintf(translated, "lib%s" DSO_ext, filename);
+        -:  397:		else
+        -:  398:			sprintf(translated, "%s" DSO_ext, filename);
+        -:  399:		}
+        -:  400:	else
+        -:  401:		sprintf(translated, "%s", filename);
+    #####:  402:	return(translated);
+        -:  403:	}
+        -:  404:
+        -:  405:#ifdef __sgi
+        -:  406:/*
+        -:  407:This is a quote from IRIX manual for dladdr(3c):
+        -:  408:
+        -:  409:     <dlfcn.h> does not contain a prototype for dladdr or definition of
+        -:  410:     Dl_info.  The #include <dlfcn.h>  in the SYNOPSIS line is traditional,
+        -:  411:     but contains no dladdr prototype and no IRIX library contains an
+        -:  412:     implementation.  Write your own declaration based on the code below.
+        -:  413:
+        -:  414:     The following code is dependent on internal interfaces that are not
+        -:  415:     part of the IRIX compatibility guarantee; however, there is no future
+        -:  416:     intention to change this interface, so on a practical level, the code
+        -:  417:     below is safe to use on IRIX.
+        -:  418:*/
+        -:  419:#include <rld_interface.h>
+        -:  420:#ifndef _RLD_INTERFACE_DLFCN_H_DLADDR
+        -:  421:#define _RLD_INTERFACE_DLFCN_H_DLADDR
+        -:  422:typedef struct Dl_info {
+        -:  423:    const char * dli_fname;
+        -:  424:    void       * dli_fbase;
+        -:  425:    const char * dli_sname;
+        -:  426:    void       * dli_saddr;
+        -:  427:    int          dli_version;
+        -:  428:    int          dli_reserved1;
+        -:  429:    long         dli_reserved[4];
+        -:  430:} Dl_info;
+        -:  431:#else
+        -:  432:typedef struct Dl_info Dl_info;
+        -:  433:#endif
+        -:  434:#define _RLD_DLADDR             14
+        -:  435:
+        -:  436:static int dladdr(void *address, Dl_info *dl)
+        -:  437:{
+        -:  438:	void *v;
+        -:  439:	v = _rld_new_interface(_RLD_DLADDR,address,dl);
+        -:  440:	return (int)v;
+        -:  441:}
+        -:  442:#endif /* __sgi */
+        -:  443:
+    #####:  444:static int dlfcn_pathbyaddr(void *addr,char *path,int sz)
+        -:  445:	{
+        -:  446:#ifdef HAVE_DLINFO
+        -:  447:	Dl_info dli;
+        -:  448:	int len;
+        -:  449:
+    #####:  450:	if (addr == NULL)
+        -:  451:		{
+        -:  452:		union	{ int(*f)(void*,char*,int); void *p; } t =
+        -:  453:			{ dlfcn_pathbyaddr };
+        -:  454:		addr = t.p;
+        -:  455:		}
+        -:  456:
+    #####:  457:	if (dladdr(addr,&dli))
+        -:  458:		{
+    #####:  459:		len = (int)strlen(dli.dli_fname);
+    #####:  460:		if (sz <= 0) return len+1;
+    #####:  461:		if (len >= sz) len=sz-1;
+    #####:  462:		memcpy(path,dli.dli_fname,len);
+    #####:  463:		path[len++]=0;
+    #####:  464:		return len;
+        -:  465:		}
+        -:  466:
+    #####:  467:	ERR_add_error_data(4, "dlfcn_pathbyaddr(): ", dlerror());
+        -:  468:#endif
+    #####:  469:	return -1;
+        -:  470:	}
+        -:  471:
+    #####:  472:static void *dlfcn_globallookup(const char *name)
+        -:  473:	{
+    #####:  474:	void *ret = NULL,*handle = dlopen(NULL,RTLD_LAZY);
+        -:  475:	
+    #####:  476:	if (handle)
+        -:  477:		{
+    #####:  478:		ret = dlsym(handle,name);
+    #####:  479:		dlclose(handle);
+        -:  480:		}
+        -:  481:
+    #####:  482:	return ret;
+        -:  483:	}
+        -:  484:#endif /* DSO_DLFCN */

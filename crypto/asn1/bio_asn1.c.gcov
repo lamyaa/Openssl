@@ -1,0 +1,500 @@
+        -:    0:Source:bio_asn1.c
+        -:    0:Graph:bio_asn1.gcno
+        -:    0:Data:bio_asn1.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* bio_asn1.c */
+        -:    2:/* Written by Dr Stephen N Henson (steve@openssl.org) for the OpenSSL
+        -:    3: * project.
+        -:    4: */
+        -:    5:/* ====================================================================
+        -:    6: * Copyright (c) 2006 The OpenSSL Project.  All rights reserved.
+        -:    7: *
+        -:    8: * Redistribution and use in source and binary forms, with or without
+        -:    9: * modification, are permitted provided that the following conditions
+        -:   10: * are met:
+        -:   11: *
+        -:   12: * 1. Redistributions of source code must retain the above copyright
+        -:   13: *    notice, this list of conditions and the following disclaimer. 
+        -:   14: *
+        -:   15: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   16: *    notice, this list of conditions and the following disclaimer in
+        -:   17: *    the documentation and/or other materials provided with the
+        -:   18: *    distribution.
+        -:   19: *
+        -:   20: * 3. All advertising materials mentioning features or use of this
+        -:   21: *    software must display the following acknowledgment:
+        -:   22: *    "This product includes software developed by the OpenSSL Project
+        -:   23: *    for use in the OpenSSL Toolkit. (http://www.OpenSSL.org/)"
+        -:   24: *
+        -:   25: * 4. The names "OpenSSL Toolkit" and "OpenSSL Project" must not be used to
+        -:   26: *    endorse or promote products derived from this software without
+        -:   27: *    prior written permission. For written permission, please contact
+        -:   28: *    licensing@OpenSSL.org.
+        -:   29: *
+        -:   30: * 5. Products derived from this software may not be called "OpenSSL"
+        -:   31: *    nor may "OpenSSL" appear in their names without prior written
+        -:   32: *    permission of the OpenSSL Project.
+        -:   33: *
+        -:   34: * 6. Redistributions of any form whatsoever must retain the following
+        -:   35: *    acknowledgment:
+        -:   36: *    "This product includes software developed by the OpenSSL Project
+        -:   37: *    for use in the OpenSSL Toolkit (http://www.OpenSSL.org/)"
+        -:   38: *
+        -:   39: * THIS SOFTWARE IS PROVIDED BY THE OpenSSL PROJECT ``AS IS'' AND ANY
+        -:   40: * EXPRESSED OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   41: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+        -:   42: * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE OpenSSL PROJECT OR
+        -:   43: * ITS CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+        -:   44: * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+        -:   45: * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+        -:   46: * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   47: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+        -:   48: * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+        -:   49: * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+        -:   50: * OF THE POSSIBILITY OF SUCH DAMAGE.
+        -:   51: * ====================================================================
+        -:   52: *
+        -:   53: * This product includes cryptographic software written by Eric Young
+        -:   54: * (eay@cryptsoft.com).  This product includes software written by Tim
+        -:   55: * Hudson (tjh@cryptsoft.com).
+        -:   56: *
+        -:   57: */
+        -:   58:
+        -:   59:/* Experimental ASN1 BIO. When written through the data is converted
+        -:   60: * to an ASN1 string type: default is OCTET STRING. Additional functions
+        -:   61: * can be provided to add prefix and suffix data.
+        -:   62: */
+        -:   63:
+        -:   64:#include <string.h>
+        -:   65:#include <openssl/bio.h>
+        -:   66:#include <openssl/asn1.h>
+        -:   67:
+        -:   68:/* Must be large enough for biggest tag+length */
+        -:   69:#define DEFAULT_ASN1_BUF_SIZE 20
+        -:   70:
+        -:   71:typedef enum 
+        -:   72:	{
+        -:   73:	ASN1_STATE_START,
+        -:   74:	ASN1_STATE_PRE_COPY,
+        -:   75:	ASN1_STATE_HEADER,
+        -:   76:	ASN1_STATE_HEADER_COPY,
+        -:   77:	ASN1_STATE_DATA_COPY,
+        -:   78:	ASN1_STATE_POST_COPY,
+        -:   79:	ASN1_STATE_DONE
+        -:   80:	} asn1_bio_state_t;
+        -:   81:
+        -:   82:typedef struct BIO_ASN1_EX_FUNCS_st
+        -:   83:	{
+        -:   84:	asn1_ps_func	*ex_func;
+        -:   85:	asn1_ps_func	*ex_free_func;
+        -:   86:	} BIO_ASN1_EX_FUNCS;
+        -:   87:
+        -:   88:typedef struct BIO_ASN1_BUF_CTX_t
+        -:   89:	{
+        -:   90:	/* Internal state */
+        -:   91:	asn1_bio_state_t state;
+        -:   92:	/* Internal buffer */
+        -:   93:	unsigned char *buf;
+        -:   94:	/* Size of buffer */
+        -:   95:	int bufsize;
+        -:   96:	/* Current position in buffer */
+        -:   97:	int bufpos;
+        -:   98:	/* Current buffer length */
+        -:   99:	int buflen;
+        -:  100:	/* Amount of data to copy */
+        -:  101:	int copylen;
+        -:  102:	/* Class and tag to use */
+        -:  103:	int asn1_class, asn1_tag;
+        -:  104:	asn1_ps_func *prefix, *prefix_free, *suffix, *suffix_free;
+        -:  105:	/* Extra buffer for prefix and suffix data */
+        -:  106:	unsigned char *ex_buf;
+        -:  107:	int ex_len;
+        -:  108:	int ex_pos;
+        -:  109:	void *ex_arg;
+        -:  110:	} BIO_ASN1_BUF_CTX;
+        -:  111:
+        -:  112:
+        -:  113:static int asn1_bio_write(BIO *h, const char *buf,int num);
+        -:  114:static int asn1_bio_read(BIO *h, char *buf, int size);
+        -:  115:static int asn1_bio_puts(BIO *h, const char *str);
+        -:  116:static int asn1_bio_gets(BIO *h, char *str, int size);
+        -:  117:static long asn1_bio_ctrl(BIO *h, int cmd, long arg1, void *arg2);
+        -:  118:static int asn1_bio_new(BIO *h);
+        -:  119:static int asn1_bio_free(BIO *data);
+        -:  120:static long asn1_bio_callback_ctrl(BIO *h, int cmd, bio_info_cb *fp);
+        -:  121:
+        -:  122:static int asn1_bio_init(BIO_ASN1_BUF_CTX *ctx, int size);
+        -:  123:static int asn1_bio_flush_ex(BIO *b, BIO_ASN1_BUF_CTX *ctx,
+        -:  124:				asn1_ps_func *cleanup, asn1_bio_state_t next);
+        -:  125:static int asn1_bio_setup_ex(BIO *b, BIO_ASN1_BUF_CTX *ctx,
+        -:  126:				asn1_ps_func *setup, 
+        -:  127:				asn1_bio_state_t ex_state,
+        -:  128:				asn1_bio_state_t other_state);
+        -:  129:
+        -:  130:static BIO_METHOD methods_asn1=
+        -:  131:	{
+        -:  132:	BIO_TYPE_ASN1,
+        -:  133:	"asn1",
+        -:  134:	asn1_bio_write,
+        -:  135:	asn1_bio_read,
+        -:  136:	asn1_bio_puts,
+        -:  137:	asn1_bio_gets,
+        -:  138:	asn1_bio_ctrl,
+        -:  139:	asn1_bio_new,
+        -:  140:	asn1_bio_free,
+        -:  141:	asn1_bio_callback_ctrl,
+        -:  142:	};
+        -:  143:
+    #####:  144:BIO_METHOD *BIO_f_asn1(void)
+        -:  145:	{
+    #####:  146:	return(&methods_asn1);
+        -:  147:	}
+        -:  148:
+        -:  149:
+    #####:  150:static int asn1_bio_new(BIO *b)
+        -:  151:	{
+        -:  152:	BIO_ASN1_BUF_CTX *ctx;
+    #####:  153:	ctx = OPENSSL_malloc(sizeof(BIO_ASN1_BUF_CTX));
+    #####:  154:	if (!ctx)
+        -:  155:		return 0;
+    #####:  156:	if (!asn1_bio_init(ctx, DEFAULT_ASN1_BUF_SIZE))
+        -:  157:		return 0;
+    #####:  158:	b->init = 1;
+    #####:  159:	b->ptr = (char *)ctx;
+    #####:  160:	b->flags = 0;
+    #####:  161:	return 1;
+        -:  162:	}
+        -:  163:
+    #####:  164:static int asn1_bio_init(BIO_ASN1_BUF_CTX *ctx, int size)
+        -:  165:	{
+    #####:  166:	ctx->buf = OPENSSL_malloc(size);
+    #####:  167:	if (!ctx->buf)
+        -:  168:		return 0;
+    #####:  169:	ctx->bufsize = size;
+    #####:  170:	ctx->bufpos = 0;
+    #####:  171:	ctx->buflen = 0;
+    #####:  172:	ctx->copylen = 0;
+    #####:  173:	ctx->asn1_class = V_ASN1_UNIVERSAL;
+    #####:  174:	ctx->asn1_tag = V_ASN1_OCTET_STRING;
+    #####:  175:	ctx->ex_buf = 0;
+    #####:  176:	ctx->ex_pos = 0;
+    #####:  177:	ctx->ex_len = 0;
+    #####:  178:	ctx->state = ASN1_STATE_START;
+    #####:  179:	return 1;
+        -:  180:	}
+        -:  181:
+    #####:  182:static int asn1_bio_free(BIO *b)
+        -:  183:	{
+        -:  184:	BIO_ASN1_BUF_CTX *ctx;
+    #####:  185:	ctx = (BIO_ASN1_BUF_CTX *) b->ptr;
+    #####:  186:	if (ctx == NULL)
+        -:  187:		return 0;
+    #####:  188:	if (ctx->buf)
+    #####:  189:		OPENSSL_free(ctx->buf);
+    #####:  190:	OPENSSL_free(ctx);
+    #####:  191:	b->init = 0;
+    #####:  192:	b->ptr = NULL;
+    #####:  193:	b->flags = 0;
+    #####:  194:	return 1;
+        -:  195:	}
+        -:  196:
+    #####:  197:static int asn1_bio_write(BIO *b, const char *in , int inl)
+        -:  198:	{
+        -:  199:	BIO_ASN1_BUF_CTX *ctx;
+        -:  200:	int wrmax, wrlen, ret;
+        -:  201:	unsigned char *p;
+    #####:  202:	if (!in || (inl < 0) || (b->next_bio == NULL))
+        -:  203:		return 0;
+    #####:  204:	ctx = (BIO_ASN1_BUF_CTX *) b->ptr;
+    #####:  205:	if (ctx == NULL)
+        -:  206:		return 0;
+        -:  207:
+        -:  208:	wrlen = 0;
+        -:  209:	ret = -1;
+        -:  210:
+        -:  211:	for(;;)
+        -:  212:		{
+    #####:  213:		switch (ctx->state)
+        -:  214:			{
+        -:  215:
+        -:  216:			/* Setup prefix data, call it */
+        -:  217:			case ASN1_STATE_START:
+    #####:  218:			if (!asn1_bio_setup_ex(b, ctx, ctx->prefix,
+        -:  219:				ASN1_STATE_PRE_COPY, ASN1_STATE_HEADER))
+        -:  220:				return 0;
+        -:  221:			break;
+        -:  222:
+        -:  223:			/* Copy any pre data first */
+        -:  224:			case ASN1_STATE_PRE_COPY:
+        -:  225:
+    #####:  226:			ret = asn1_bio_flush_ex(b, ctx, ctx->prefix_free,
+        -:  227:							ASN1_STATE_HEADER);
+        -:  228:
+    #####:  229:			if (ret <= 0)
+        -:  230:				goto done;
+        -:  231:
+        -:  232:			break;
+        -:  233:
+        -:  234:			case ASN1_STATE_HEADER:
+    #####:  235:			ctx->buflen =
+    #####:  236:				ASN1_object_size(0, inl, ctx->asn1_tag) - inl;
+    #####:  237:			OPENSSL_assert(ctx->buflen <= ctx->bufsize);
+    #####:  238:			p = ctx->buf;
+    #####:  239:			ASN1_put_object(&p, 0, inl,
+        -:  240:					ctx->asn1_tag, ctx->asn1_class);
+    #####:  241:			ctx->copylen = inl;
+    #####:  242:			ctx->state = ASN1_STATE_HEADER_COPY;
+        -:  243:
+    #####:  244:			break;
+        -:  245:
+        -:  246:			case ASN1_STATE_HEADER_COPY:	
+    #####:  247:			ret = BIO_write(b->next_bio,
+    #####:  248:					ctx->buf + ctx->bufpos, ctx->buflen);
+    #####:  249:			if (ret <= 0)
+        -:  250:				goto done;
+        -:  251:
+    #####:  252:			ctx->buflen -= ret;
+    #####:  253:			if (ctx->buflen)
+    #####:  254:				ctx->bufpos += ret;
+        -:  255:			else
+        -:  256:				{
+    #####:  257:				ctx->bufpos = 0;
+    #####:  258:				ctx->state = ASN1_STATE_DATA_COPY;
+        -:  259:				}
+        -:  260:
+        -:  261:			break;
+        -:  262:
+        -:  263:			case ASN1_STATE_DATA_COPY:
+        -:  264:
+    #####:  265:			if (inl > ctx->copylen)
+        -:  266:				wrmax = ctx->copylen;
+        -:  267:			else
+        -:  268:				wrmax = inl;
+    #####:  269:			ret = BIO_write(b->next_bio, in, wrmax);
+    #####:  270:			if (ret <= 0)
+        -:  271:				break;
+    #####:  272:			wrlen += ret;
+    #####:  273:			ctx->copylen -= ret;
+    #####:  274:			in += ret;
+    #####:  275:			inl -= ret;
+        -:  276:
+    #####:  277:			if (ctx->copylen == 0)
+    #####:  278:				ctx->state = ASN1_STATE_HEADER;
+        -:  279:
+    #####:  280:			if (inl == 0)
+        -:  281:				goto done;
+        -:  282:
+        -:  283:			break;
+        -:  284:
+        -:  285:			default:
+    #####:  286:			BIO_clear_retry_flags(b);
+    #####:  287:			return 0;
+        -:  288:
+        -:  289:			}
+        -:  290:
+        -:  291:		}
+        -:  292:
+        -:  293:	done:
+    #####:  294:	BIO_clear_retry_flags(b);
+    #####:  295:	BIO_copy_next_retry(b);
+        -:  296:
+    #####:  297:	return (wrlen > 0) ? wrlen : ret;
+        -:  298:
+        -:  299:	}
+        -:  300:
+    #####:  301:static int asn1_bio_flush_ex(BIO *b, BIO_ASN1_BUF_CTX *ctx,
+        -:  302:				asn1_ps_func *cleanup, asn1_bio_state_t next)
+        -:  303:	{
+        -:  304:	int ret;
+    #####:  305:	if (ctx->ex_len <= 0)
+        -:  306:		return 1;
+        -:  307:	for(;;)
+        -:  308:		{
+    #####:  309:		ret = BIO_write(b->next_bio, ctx->ex_buf + ctx->ex_pos,
+        -:  310:								ctx->ex_len);
+    #####:  311:		if (ret <= 0)
+        -:  312:			break;
+    #####:  313:		ctx->ex_len -= ret;
+    #####:  314:		if (ctx->ex_len > 0)
+    #####:  315:			ctx->ex_pos += ret;
+        -:  316:		else
+        -:  317:			{
+    #####:  318:			if(cleanup)
+    #####:  319:				cleanup(b, &ctx->ex_buf, &ctx->ex_len,
+    #####:  320:								&ctx->ex_arg);
+    #####:  321:			ctx->state = next;
+    #####:  322:			ctx->ex_pos = 0;
+    #####:  323:			break;
+        -:  324:			}
+    #####:  325:		}
+    #####:  326:	return ret;
+        -:  327:	}
+        -:  328:
+    #####:  329:static int asn1_bio_setup_ex(BIO *b, BIO_ASN1_BUF_CTX *ctx,
+        -:  330:				asn1_ps_func *setup, 
+        -:  331:				asn1_bio_state_t ex_state,
+        -:  332:				asn1_bio_state_t other_state)
+        -:  333:	{
+    #####:  334:	if (setup && !setup(b, &ctx->ex_buf, &ctx->ex_len, &ctx->ex_arg))
+        -:  335:		{
+    #####:  336:		BIO_clear_retry_flags(b);
+    #####:  337:		return 0;
+        -:  338:		}
+    #####:  339:	if (ctx->ex_len > 0)
+    #####:  340:		ctx->state = ex_state;
+        -:  341:	else
+    #####:  342:		ctx->state = other_state;
+        -:  343:	return 1;
+        -:  344:	}
+        -:  345:
+    #####:  346:static int asn1_bio_read(BIO *b, char *in , int inl)
+        -:  347:	{
+    #####:  348:	if (!b->next_bio)
+        -:  349:		return 0;
+    #####:  350:	return BIO_read(b->next_bio, in , inl);
+        -:  351:	}
+        -:  352:
+    #####:  353:static int asn1_bio_puts(BIO *b, const char *str)
+        -:  354:	{
+    #####:  355:	return asn1_bio_write(b, str, strlen(str));
+        -:  356:	}
+        -:  357:
+    #####:  358:static int asn1_bio_gets(BIO *b, char *str, int size)
+        -:  359:	{
+    #####:  360:	if (!b->next_bio)
+        -:  361:		return 0;
+    #####:  362:	return BIO_gets(b->next_bio, str , size);
+        -:  363:	}
+        -:  364:
+    #####:  365:static long asn1_bio_callback_ctrl(BIO *b, int cmd, bio_info_cb *fp)
+        -:  366:	{
+    #####:  367:	if (b->next_bio == NULL) return(0);
+    #####:  368:	return BIO_callback_ctrl(b->next_bio,cmd,fp);
+        -:  369:	}
+        -:  370:
+    #####:  371:static long asn1_bio_ctrl(BIO *b, int cmd, long arg1, void *arg2)
+        -:  372:	{
+        -:  373:	BIO_ASN1_BUF_CTX *ctx;
+        -:  374:	BIO_ASN1_EX_FUNCS *ex_func;
+        -:  375:	long ret = 1;
+    #####:  376:	ctx = (BIO_ASN1_BUF_CTX *) b->ptr;
+    #####:  377:	if (ctx == NULL)
+        -:  378:		return 0;
+    #####:  379:	switch(cmd)
+        -:  380:		{
+        -:  381:
+        -:  382:		case BIO_C_SET_PREFIX:
+        -:  383:		ex_func = arg2;
+    #####:  384:		ctx->prefix  = ex_func->ex_func;
+    #####:  385:		ctx->prefix_free  = ex_func->ex_free_func;
+    #####:  386:		break;
+        -:  387:
+        -:  388:		case BIO_C_GET_PREFIX:
+        -:  389:		ex_func = arg2;
+    #####:  390:		ex_func->ex_func = ctx->prefix;
+    #####:  391:		ex_func->ex_free_func = ctx->prefix_free;
+    #####:  392:		break;
+        -:  393:
+        -:  394:		case BIO_C_SET_SUFFIX:
+        -:  395:		ex_func = arg2;
+    #####:  396:		ctx->suffix  = ex_func->ex_func;
+    #####:  397:		ctx->suffix_free  = ex_func->ex_free_func;
+    #####:  398:		break;
+        -:  399:
+        -:  400:		case BIO_C_GET_SUFFIX:
+        -:  401:		ex_func = arg2;
+    #####:  402:		ex_func->ex_func = ctx->suffix;
+    #####:  403:		ex_func->ex_free_func = ctx->suffix_free;
+    #####:  404:		break;
+        -:  405:
+        -:  406:		case BIO_C_SET_EX_ARG:
+    #####:  407:		ctx->ex_arg = arg2;
+    #####:  408:		break;
+        -:  409:
+        -:  410:		case BIO_C_GET_EX_ARG:
+    #####:  411:		*(void **)arg2 = ctx->ex_arg;
+    #####:  412:		break;
+        -:  413:
+        -:  414:		case BIO_CTRL_FLUSH:
+    #####:  415:		if (!b->next_bio)
+        -:  416:			return 0;
+        -:  417:
+        -:  418:		/* Call post function if possible */
+    #####:  419:		if (ctx->state == ASN1_STATE_HEADER)
+        -:  420:			{
+    #####:  421:			if (!asn1_bio_setup_ex(b, ctx, ctx->suffix,
+        -:  422:				ASN1_STATE_POST_COPY, ASN1_STATE_DONE))
+        -:  423:				return 0;
+        -:  424:			}
+        -:  425:
+    #####:  426:		if (ctx->state == ASN1_STATE_POST_COPY)
+        -:  427:			{
+    #####:  428:			ret = asn1_bio_flush_ex(b, ctx, ctx->suffix_free,
+        -:  429:							ASN1_STATE_DONE);
+    #####:  430:			if (ret <= 0)
+        -:  431:				return ret;
+        -:  432:			}
+        -:  433:
+    #####:  434:		if (ctx->state == ASN1_STATE_DONE)
+    #####:  435:			return BIO_ctrl(b->next_bio, cmd, arg1, arg2);
+        -:  436:		else
+        -:  437:			{
+    #####:  438:			BIO_clear_retry_flags(b);
+    #####:  439:			return 0;
+        -:  440:			}
+        -:  441:		break;
+        -:  442:
+        -:  443:
+        -:  444:		default:
+    #####:  445:		if (!b->next_bio)
+        -:  446:			return 0;
+    #####:  447:		return BIO_ctrl(b->next_bio, cmd, arg1, arg2);
+        -:  448:
+        -:  449:		}
+        -:  450:
+        -:  451:	return ret;
+        -:  452:	}
+        -:  453:
+        -:  454:static int asn1_bio_set_ex(BIO *b, int cmd,
+        -:  455:		asn1_ps_func *ex_func, asn1_ps_func *ex_free_func)
+        -:  456:	{
+        -:  457:	BIO_ASN1_EX_FUNCS extmp;
+    #####:  458:	extmp.ex_func = ex_func;
+    #####:  459:	extmp.ex_free_func = ex_free_func;
+    #####:  460:	return BIO_ctrl(b, cmd, 0, &extmp);
+        -:  461:	}
+        -:  462:
+        -:  463:static int asn1_bio_get_ex(BIO *b, int cmd,
+        -:  464:		asn1_ps_func **ex_func, asn1_ps_func **ex_free_func)
+        -:  465:	{
+        -:  466:	BIO_ASN1_EX_FUNCS extmp;
+        -:  467:	int ret;
+    #####:  468:	ret = BIO_ctrl(b, cmd, 0, &extmp);
+    #####:  469:	if (ret > 0)
+        -:  470:		{
+    #####:  471:		*ex_func = extmp.ex_func;
+    #####:  472:		*ex_free_func = extmp.ex_free_func;
+        -:  473:		}
+        -:  474:	return ret;
+        -:  475:	}
+        -:  476:
+    #####:  477:int BIO_asn1_set_prefix(BIO *b, asn1_ps_func *prefix, asn1_ps_func *prefix_free)
+        -:  478:	{
+    #####:  479:	return asn1_bio_set_ex(b, BIO_C_SET_PREFIX, prefix, prefix_free);
+        -:  480:	}
+        -:  481:
+    #####:  482:int BIO_asn1_get_prefix(BIO *b, asn1_ps_func **pprefix, asn1_ps_func **pprefix_free)
+        -:  483:	{
+    #####:  484:	return asn1_bio_get_ex(b, BIO_C_GET_PREFIX, pprefix, pprefix_free);
+        -:  485:	}
+        -:  486:
+    #####:  487:int BIO_asn1_set_suffix(BIO *b, asn1_ps_func *suffix, asn1_ps_func *suffix_free)
+        -:  488:	{
+    #####:  489:	return asn1_bio_set_ex(b, BIO_C_SET_SUFFIX, suffix, suffix_free);
+        -:  490:	}
+        -:  491:
+    #####:  492:int BIO_asn1_get_suffix(BIO *b, asn1_ps_func **psuffix, asn1_ps_func **psuffix_free)
+        -:  493:	{
+    #####:  494:	return asn1_bio_get_ex(b, BIO_C_GET_SUFFIX, psuffix, psuffix_free);
+        -:  495:	}

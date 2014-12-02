@@ -1,0 +1,611 @@
+        -:    0:Source:asm/x86_64-gcc.c
+        -:    0:Graph:x86_64-gcc.gcno
+        -:    0:Data:x86_64-gcc.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:#include "../bn_lcl.h"
+        -:    2:#if !(defined(__GNUC__) && __GNUC__>=2)
+        -:    3:# include "../bn_asm.c"	/* kind of dirty hack for Sun Studio */
+        -:    4:#else
+        -:    5:/*
+        -:    6: * x86_64 BIGNUM accelerator version 0.1, December 2002.
+        -:    7: *
+        -:    8: * Implemented by Andy Polyakov <appro@fy.chalmers.se> for the OpenSSL
+        -:    9: * project.
+        -:   10: *
+        -:   11: * Rights for redistribution and usage in source and binary forms are
+        -:   12: * granted according to the OpenSSL license. Warranty of any kind is
+        -:   13: * disclaimed.
+        -:   14: *
+        -:   15: * Q. Version 0.1? It doesn't sound like Andy, he used to assign real
+        -:   16: *    versions, like 1.0...
+        -:   17: * A. Well, that's because this code is basically a quick-n-dirty
+        -:   18: *    proof-of-concept hack. As you can see it's implemented with
+        -:   19: *    inline assembler, which means that you're bound to GCC and that
+        -:   20: *    there might be enough room for further improvement.
+        -:   21: *
+        -:   22: * Q. Why inline assembler?
+        -:   23: * A. x86_64 features own ABI which I'm not familiar with. This is
+        -:   24: *    why I decided to let the compiler take care of subroutine
+        -:   25: *    prologue/epilogue as well as register allocation. For reference.
+        -:   26: *    Win64 implements different ABI for AMD64, different from Linux.
+        -:   27: *
+        -:   28: * Q. How much faster does it get?
+        -:   29: * A. 'apps/openssl speed rsa dsa' output with no-asm:
+        -:   30: *
+        -:   31: *	                  sign    verify    sign/s verify/s
+        -:   32: *	rsa  512 bits   0.0006s   0.0001s   1683.8  18456.2
+        -:   33: *	rsa 1024 bits   0.0028s   0.0002s    356.0   6407.0
+        -:   34: *	rsa 2048 bits   0.0172s   0.0005s     58.0   1957.8
+        -:   35: *	rsa 4096 bits   0.1155s   0.0018s      8.7    555.6
+        -:   36: *	                  sign    verify    sign/s verify/s
+        -:   37: *	dsa  512 bits   0.0005s   0.0006s   2100.8   1768.3
+        -:   38: *	dsa 1024 bits   0.0014s   0.0018s    692.3    559.2
+        -:   39: *	dsa 2048 bits   0.0049s   0.0061s    204.7    165.0
+        -:   40: *
+        -:   41: *    'apps/openssl speed rsa dsa' output with this module:
+        -:   42: *
+        -:   43: *	                  sign    verify    sign/s verify/s
+        -:   44: *	rsa  512 bits   0.0004s   0.0000s   2767.1  33297.9
+        -:   45: *	rsa 1024 bits   0.0012s   0.0001s    867.4  14674.7
+        -:   46: *	rsa 2048 bits   0.0061s   0.0002s    164.0   5270.0
+        -:   47: *	rsa 4096 bits   0.0384s   0.0006s     26.1   1650.8
+        -:   48: *	                  sign    verify    sign/s verify/s
+        -:   49: *	dsa  512 bits   0.0002s   0.0003s   4442.2   3786.3
+        -:   50: *	dsa 1024 bits   0.0005s   0.0007s   1835.1   1497.4
+        -:   51: *	dsa 2048 bits   0.0016s   0.0020s    620.4    504.6
+        -:   52: *
+        -:   53: *    For the reference. IA-32 assembler implementation performs
+        -:   54: *    very much like 64-bit code compiled with no-asm on the same
+        -:   55: *    machine.
+        -:   56: */
+        -:   57:
+        -:   58:#ifdef _WIN64
+        -:   59:#define BN_ULONG unsigned long long
+        -:   60:#else
+        -:   61:#define BN_ULONG unsigned long
+        -:   62:#endif
+        -:   63:
+        -:   64:#undef mul
+        -:   65:#undef mul_add
+        -:   66:#undef sqr
+        -:   67:
+        -:   68:/*
+        -:   69: * "m"(a), "+m"(r)	is the way to favor DirectPath µ-code;
+        -:   70: * "g"(0)		let the compiler to decide where does it
+        -:   71: *			want to keep the value of zero;
+        -:   72: */
+        -:   73:#define mul_add(r,a,word,carry) do {	\
+        -:   74:	register BN_ULONG high,low;	\
+        -:   75:	asm ("mulq %3"			\
+        -:   76:		: "=a"(low),"=d"(high)	\
+        -:   77:		: "a"(word),"m"(a)	\
+        -:   78:		: "cc");		\
+        -:   79:	asm ("addq %2,%0; adcq %3,%1"	\
+        -:   80:		: "+r"(carry),"+d"(high)\
+        -:   81:		: "a"(low),"g"(0)	\
+        -:   82:		: "cc");		\
+        -:   83:	asm ("addq %2,%0; adcq %3,%1"	\
+        -:   84:		: "+m"(r),"+d"(high)	\
+        -:   85:		: "r"(carry),"g"(0)	\
+        -:   86:		: "cc");		\
+        -:   87:	carry=high;			\
+        -:   88:	} while (0)
+        -:   89:
+        -:   90:#define mul(r,a,word,carry) do {	\
+        -:   91:	register BN_ULONG high,low;	\
+        -:   92:	asm ("mulq %3"			\
+        -:   93:		: "=a"(low),"=d"(high)	\
+        -:   94:		: "a"(word),"g"(a)	\
+        -:   95:		: "cc");		\
+        -:   96:	asm ("addq %2,%0; adcq %3,%1"	\
+        -:   97:		: "+r"(carry),"+d"(high)\
+        -:   98:		: "a"(low),"g"(0)	\
+        -:   99:		: "cc");		\
+        -:  100:	(r)=carry, carry=high;		\
+        -:  101:	} while (0)
+        -:  102:
+        -:  103:#define sqr(r0,r1,a)			\
+        -:  104:	asm ("mulq %2"			\
+        -:  105:		: "=a"(r0),"=d"(r1)	\
+        -:  106:		: "a"(a)		\
+        -:  107:		: "cc");
+        -:  108:
+   382144:  109:BN_ULONG bn_mul_add_words(BN_ULONG *rp, const BN_ULONG *ap, int num, BN_ULONG w)
+        -:  110:	{
+        -:  111:	BN_ULONG c1=0;
+        -:  112:
+   382144:  113:	if (num <= 0) return(c1);
+        -:  114:
+  1910720:  115:	while (num&~3)
+        -:  116:		{
+  1528576:  117:		mul_add(rp[0],ap[0],w,c1);
+  1528576:  118:		mul_add(rp[1],ap[1],w,c1);
+  1528576:  119:		mul_add(rp[2],ap[2],w,c1);
+  1528576:  120:		mul_add(rp[3],ap[3],w,c1);
+  1528576:  121:		ap+=4; rp+=4; num-=4;
+        -:  122:		}
+   382144:  123:	if (num)
+        -:  124:		{
+    #####:  125:		mul_add(rp[0],ap[0],w,c1); if (--num==0) return c1;
+    #####:  126:		mul_add(rp[1],ap[1],w,c1); if (--num==0) return c1;
+    #####:  127:		mul_add(rp[2],ap[2],w,c1); return c1;
+        -:  128:		}
+        -:  129:	
+        -:  130:	return(c1);
+        -:  131:	} 
+        -:  132:
+   250782:  133:BN_ULONG bn_mul_words(BN_ULONG *rp, const BN_ULONG *ap, int num, BN_ULONG w)
+        -:  134:	{
+        -:  135:	BN_ULONG c1=0;
+        -:  136:
+   250782:  137:	if (num <= 0) return(c1);
+        -:  138:
+  1110606:  139:	while (num&~3)
+        -:  140:		{
+   859824:  141:		mul(rp[0],ap[0],w,c1);
+   859824:  142:		mul(rp[1],ap[1],w,c1);
+   859824:  143:		mul(rp[2],ap[2],w,c1);
+   859824:  144:		mul(rp[3],ap[3],w,c1);
+   859824:  145:		ap+=4; rp+=4; num-=4;
+        -:  146:		}
+   250782:  147:	if (num)
+        -:  148:		{
+   238840:  149:		mul(rp[0],ap[0],w,c1); if (--num == 0) return c1;
+    20439:  150:		mul(rp[1],ap[1],w,c1); if (--num == 0) return c1;
+    #####:  151:		mul(rp[2],ap[2],w,c1);
+        -:  152:		}
+    11942:  153:	return(c1);
+        -:  154:	} 
+        -:  155:
+    #####:  156:void bn_sqr_words(BN_ULONG *r, const BN_ULONG *a, int n)
+        -:  157:        {
+    #####:  158:	if (n <= 0) return;
+        -:  159:
+    #####:  160:	while (n&~3)
+        -:  161:		{
+    #####:  162:		sqr(r[0],r[1],a[0]);
+    #####:  163:		sqr(r[2],r[3],a[1]);
+    #####:  164:		sqr(r[4],r[5],a[2]);
+    #####:  165:		sqr(r[6],r[7],a[3]);
+    #####:  166:		a+=4; r+=8; n-=4;
+        -:  167:		}
+    #####:  168:	if (n)
+        -:  169:		{
+    #####:  170:		sqr(r[0],r[1],a[0]); if (--n == 0) return;
+    #####:  171:		sqr(r[2],r[3],a[1]); if (--n == 0) return;
+    #####:  172:		sqr(r[4],r[5],a[2]);
+        -:  173:		}
+        -:  174:	}
+        -:  175:
+    #####:  176:BN_ULONG bn_div_words(BN_ULONG h, BN_ULONG l, BN_ULONG d)
+        -:  177:{	BN_ULONG ret,waste;
+        -:  178:
+    #####:  179:	asm ("divq	%4"
+        -:  180:		: "=a"(ret),"=d"(waste)
+        -:  181:		: "a"(l),"d"(h),"g"(d)
+        -:  182:		: "cc");
+        -:  183:
+    #####:  184:	return ret;
+        -:  185:}
+        -:  186:
+  1133126:  187:BN_ULONG bn_add_words (BN_ULONG *rp, const BN_ULONG *ap, const BN_ULONG *bp,int n)
+        -:  188:{ BN_ULONG ret=0,i=0;
+        -:  189:
+  1133126:  190:	if (n <= 0) return 0;
+        -:  191:
+  1121184:  192:	asm (
+        -:  193:	"	subq	%2,%2		\n"
+        -:  194:	".p2align 4			\n"
+        -:  195:	"1:	movq	(%4,%2,8),%0	\n"
+        -:  196:	"	adcq	(%5,%2,8),%0	\n"
+        -:  197:	"	movq	%0,(%3,%2,8)	\n"
+        -:  198:	"	leaq	1(%2),%2	\n"
+        -:  199:	"	loop	1b		\n"
+        -:  200:	"	sbbq	%0,%0		\n"
+        -:  201:		: "=&a"(ret),"+c"(n),"=&r"(i)
+        -:  202:		: "r"(rp),"r"(ap),"r"(bp)
+        -:  203:		: "cc"
+        -:  204:	);
+        -:  205:
+  1121184:  206:  return ret&1;
+        -:  207:}
+        -:  208:
+        -:  209:#ifndef SIMICS
+   262724:  210:BN_ULONG bn_sub_words (BN_ULONG *rp, const BN_ULONG *ap, const BN_ULONG *bp,int n)
+        -:  211:{ BN_ULONG ret=0,i=0;
+        -:  212:
+   262724:  213:	if (n <= 0) return 0;
+        -:  214:
+   262724:  215:	asm (
+        -:  216:	"	subq	%2,%2		\n"
+        -:  217:	".p2align 4			\n"
+        -:  218:	"1:	movq	(%4,%2,8),%0	\n"
+        -:  219:	"	sbbq	(%5,%2,8),%0	\n"
+        -:  220:	"	movq	%0,(%3,%2,8)	\n"
+        -:  221:	"	leaq	1(%2),%2	\n"
+        -:  222:	"	loop	1b		\n"
+        -:  223:	"	sbbq	%0,%0		\n"
+        -:  224:		: "=&a"(ret),"+c"(n),"=&r"(i)
+        -:  225:		: "r"(rp),"r"(ap),"r"(bp)
+        -:  226:		: "cc"
+        -:  227:	);
+        -:  228:
+   262724:  229:  return ret&1;
+        -:  230:}
+        -:  231:#else
+        -:  232:/* Simics 1.4<7 has buggy sbbq:-( */
+        -:  233:#define BN_MASK2 0xffffffffffffffffL
+        -:  234:BN_ULONG bn_sub_words(BN_ULONG *r, BN_ULONG *a, BN_ULONG *b, int n)
+        -:  235:        {
+        -:  236:	BN_ULONG t1,t2;
+        -:  237:	int c=0;
+        -:  238:
+        -:  239:	if (n <= 0) return((BN_ULONG)0);
+        -:  240:
+        -:  241:	for (;;)
+        -:  242:		{
+        -:  243:		t1=a[0]; t2=b[0];
+        -:  244:		r[0]=(t1-t2-c)&BN_MASK2;
+        -:  245:		if (t1 != t2) c=(t1 < t2);
+        -:  246:		if (--n <= 0) break;
+        -:  247:
+        -:  248:		t1=a[1]; t2=b[1];
+        -:  249:		r[1]=(t1-t2-c)&BN_MASK2;
+        -:  250:		if (t1 != t2) c=(t1 < t2);
+        -:  251:		if (--n <= 0) break;
+        -:  252:
+        -:  253:		t1=a[2]; t2=b[2];
+        -:  254:		r[2]=(t1-t2-c)&BN_MASK2;
+        -:  255:		if (t1 != t2) c=(t1 < t2);
+        -:  256:		if (--n <= 0) break;
+        -:  257:
+        -:  258:		t1=a[3]; t2=b[3];
+        -:  259:		r[3]=(t1-t2-c)&BN_MASK2;
+        -:  260:		if (t1 != t2) c=(t1 < t2);
+        -:  261:		if (--n <= 0) break;
+        -:  262:
+        -:  263:		a+=4;
+        -:  264:		b+=4;
+        -:  265:		r+=4;
+        -:  266:		}
+        -:  267:	return(c);
+        -:  268:	}
+        -:  269:#endif
+        -:  270:
+        -:  271:/* mul_add_c(a,b,c0,c1,c2)  -- c+=a*b for three word number c=(c2,c1,c0) */
+        -:  272:/* mul_add_c2(a,b,c0,c1,c2) -- c+=2*a*b for three word number c=(c2,c1,c0) */
+        -:  273:/* sqr_add_c(a,i,c0,c1,c2)  -- c+=a[i]^2 for three word number c=(c2,c1,c0) */
+        -:  274:/* sqr_add_c2(a,i,c0,c1,c2) -- c+=2*a[i]*a[j] for three word number c=(c2,c1,c0) */
+        -:  275:
+        -:  276:#if 0
+        -:  277:/* original macros are kept for reference purposes */
+        -:  278:#define mul_add_c(a,b,c0,c1,c2) {	\
+        -:  279:	BN_ULONG ta=(a),tb=(b);		\
+        -:  280:	t1 = ta * tb;			\
+        -:  281:	t2 = BN_UMULT_HIGH(ta,tb);	\
+        -:  282:	c0 += t1; t2 += (c0<t1)?1:0;	\
+        -:  283:	c1 += t2; c2 += (c1<t2)?1:0;	\
+        -:  284:	}
+        -:  285:
+        -:  286:#define mul_add_c2(a,b,c0,c1,c2) {	\
+        -:  287:	BN_ULONG ta=(a),tb=(b),t0;	\
+        -:  288:	t1 = BN_UMULT_HIGH(ta,tb);	\
+        -:  289:	t0 = ta * tb;			\
+        -:  290:	t2 = t1+t1; c2 += (t2<t1)?1:0;	\
+        -:  291:	t1 = t0+t0; t2 += (t1<t0)?1:0;	\
+        -:  292:	c0 += t1; t2 += (c0<t1)?1:0;	\
+        -:  293:	c1 += t2; c2 += (c1<t2)?1:0;	\
+        -:  294:	}
+        -:  295:#else
+        -:  296:#define mul_add_c(a,b,c0,c1,c2)	do {	\
+        -:  297:	asm ("mulq %3"			\
+        -:  298:		: "=a"(t1),"=d"(t2)	\
+        -:  299:		: "a"(a),"m"(b)		\
+        -:  300:		: "cc");		\
+        -:  301:	asm ("addq %2,%0; adcq %3,%1"	\
+        -:  302:		: "+r"(c0),"+d"(t2)	\
+        -:  303:		: "a"(t1),"g"(0)	\
+        -:  304:		: "cc");		\
+        -:  305:	asm ("addq %2,%0; adcq %3,%1"	\
+        -:  306:		: "+r"(c1),"+r"(c2)	\
+        -:  307:		: "d"(t2),"g"(0)	\
+        -:  308:		: "cc");		\
+        -:  309:	} while (0)
+        -:  310:
+        -:  311:#define sqr_add_c(a,i,c0,c1,c2)	do {	\
+        -:  312:	asm ("mulq %2"			\
+        -:  313:		: "=a"(t1),"=d"(t2)	\
+        -:  314:		: "a"(a[i])		\
+        -:  315:		: "cc");		\
+        -:  316:	asm ("addq %2,%0; adcq %3,%1"	\
+        -:  317:		: "+r"(c0),"+d"(t2)	\
+        -:  318:		: "a"(t1),"g"(0)	\
+        -:  319:		: "cc");		\
+        -:  320:	asm ("addq %2,%0; adcq %3,%1"	\
+        -:  321:		: "+r"(c1),"+r"(c2)	\
+        -:  322:		: "d"(t2),"g"(0)	\
+        -:  323:		: "cc");		\
+        -:  324:	} while (0)
+        -:  325:
+        -:  326:#define mul_add_c2(a,b,c0,c1,c2) do {	\
+        -:  327:	asm ("mulq %3"			\
+        -:  328:		: "=a"(t1),"=d"(t2)	\
+        -:  329:		: "a"(a),"m"(b)		\
+        -:  330:		: "cc");		\
+        -:  331:	asm ("addq %0,%0; adcq %2,%1"	\
+        -:  332:		: "+d"(t2),"+r"(c2)	\
+        -:  333:		: "g"(0)		\
+        -:  334:		: "cc");		\
+        -:  335:	asm ("addq %0,%0; adcq %2,%1"	\
+        -:  336:		: "+a"(t1),"+d"(t2)	\
+        -:  337:		: "g"(0)		\
+        -:  338:		: "cc");		\
+        -:  339:	asm ("addq %2,%0; adcq %3,%1"	\
+        -:  340:		: "+r"(c0),"+d"(t2)	\
+        -:  341:		: "a"(t1),"g"(0)	\
+        -:  342:		: "cc");		\
+        -:  343:	asm ("addq %2,%0; adcq %3,%1"	\
+        -:  344:		: "+r"(c1),"+r"(c2)	\
+        -:  345:		: "d"(t2),"g"(0)	\
+        -:  346:		: "cc");		\
+        -:  347:	} while (0)
+        -:  348:#endif
+        -:  349:
+        -:  350:#define sqr_add_c2(a,i,j,c0,c1,c2)	\
+        -:  351:	mul_add_c2((a)[i],(a)[j],c0,c1,c2)
+        -:  352:
+    #####:  353:void bn_mul_comba8(BN_ULONG *r, BN_ULONG *a, BN_ULONG *b)
+        -:  354:	{
+        -:  355:	BN_ULONG t1,t2;
+        -:  356:	BN_ULONG c1,c2,c3;
+        -:  357:
+        -:  358:	c1=0;
+        -:  359:	c2=0;
+        -:  360:	c3=0;
+    #####:  361:	mul_add_c(a[0],b[0],c1,c2,c3);
+    #####:  362:	r[0]=c1;
+        -:  363:	c1=0;
+    #####:  364:	mul_add_c(a[0],b[1],c2,c3,c1);
+    #####:  365:	mul_add_c(a[1],b[0],c2,c3,c1);
+    #####:  366:	r[1]=c2;
+        -:  367:	c2=0;
+    #####:  368:	mul_add_c(a[2],b[0],c3,c1,c2);
+    #####:  369:	mul_add_c(a[1],b[1],c3,c1,c2);
+    #####:  370:	mul_add_c(a[0],b[2],c3,c1,c2);
+    #####:  371:	r[2]=c3;
+        -:  372:	c3=0;
+    #####:  373:	mul_add_c(a[0],b[3],c1,c2,c3);
+    #####:  374:	mul_add_c(a[1],b[2],c1,c2,c3);
+    #####:  375:	mul_add_c(a[2],b[1],c1,c2,c3);
+    #####:  376:	mul_add_c(a[3],b[0],c1,c2,c3);
+    #####:  377:	r[3]=c1;
+        -:  378:	c1=0;
+    #####:  379:	mul_add_c(a[4],b[0],c2,c3,c1);
+    #####:  380:	mul_add_c(a[3],b[1],c2,c3,c1);
+    #####:  381:	mul_add_c(a[2],b[2],c2,c3,c1);
+    #####:  382:	mul_add_c(a[1],b[3],c2,c3,c1);
+    #####:  383:	mul_add_c(a[0],b[4],c2,c3,c1);
+    #####:  384:	r[4]=c2;
+        -:  385:	c2=0;
+    #####:  386:	mul_add_c(a[0],b[5],c3,c1,c2);
+    #####:  387:	mul_add_c(a[1],b[4],c3,c1,c2);
+    #####:  388:	mul_add_c(a[2],b[3],c3,c1,c2);
+    #####:  389:	mul_add_c(a[3],b[2],c3,c1,c2);
+    #####:  390:	mul_add_c(a[4],b[1],c3,c1,c2);
+    #####:  391:	mul_add_c(a[5],b[0],c3,c1,c2);
+    #####:  392:	r[5]=c3;
+        -:  393:	c3=0;
+    #####:  394:	mul_add_c(a[6],b[0],c1,c2,c3);
+    #####:  395:	mul_add_c(a[5],b[1],c1,c2,c3);
+    #####:  396:	mul_add_c(a[4],b[2],c1,c2,c3);
+    #####:  397:	mul_add_c(a[3],b[3],c1,c2,c3);
+    #####:  398:	mul_add_c(a[2],b[4],c1,c2,c3);
+    #####:  399:	mul_add_c(a[1],b[5],c1,c2,c3);
+    #####:  400:	mul_add_c(a[0],b[6],c1,c2,c3);
+    #####:  401:	r[6]=c1;
+        -:  402:	c1=0;
+    #####:  403:	mul_add_c(a[0],b[7],c2,c3,c1);
+    #####:  404:	mul_add_c(a[1],b[6],c2,c3,c1);
+    #####:  405:	mul_add_c(a[2],b[5],c2,c3,c1);
+    #####:  406:	mul_add_c(a[3],b[4],c2,c3,c1);
+    #####:  407:	mul_add_c(a[4],b[3],c2,c3,c1);
+    #####:  408:	mul_add_c(a[5],b[2],c2,c3,c1);
+    #####:  409:	mul_add_c(a[6],b[1],c2,c3,c1);
+    #####:  410:	mul_add_c(a[7],b[0],c2,c3,c1);
+    #####:  411:	r[7]=c2;
+        -:  412:	c2=0;
+    #####:  413:	mul_add_c(a[7],b[1],c3,c1,c2);
+    #####:  414:	mul_add_c(a[6],b[2],c3,c1,c2);
+    #####:  415:	mul_add_c(a[5],b[3],c3,c1,c2);
+    #####:  416:	mul_add_c(a[4],b[4],c3,c1,c2);
+    #####:  417:	mul_add_c(a[3],b[5],c3,c1,c2);
+    #####:  418:	mul_add_c(a[2],b[6],c3,c1,c2);
+    #####:  419:	mul_add_c(a[1],b[7],c3,c1,c2);
+    #####:  420:	r[8]=c3;
+        -:  421:	c3=0;
+    #####:  422:	mul_add_c(a[2],b[7],c1,c2,c3);
+    #####:  423:	mul_add_c(a[3],b[6],c1,c2,c3);
+    #####:  424:	mul_add_c(a[4],b[5],c1,c2,c3);
+    #####:  425:	mul_add_c(a[5],b[4],c1,c2,c3);
+    #####:  426:	mul_add_c(a[6],b[3],c1,c2,c3);
+    #####:  427:	mul_add_c(a[7],b[2],c1,c2,c3);
+    #####:  428:	r[9]=c1;
+        -:  429:	c1=0;
+    #####:  430:	mul_add_c(a[7],b[3],c2,c3,c1);
+    #####:  431:	mul_add_c(a[6],b[4],c2,c3,c1);
+    #####:  432:	mul_add_c(a[5],b[5],c2,c3,c1);
+    #####:  433:	mul_add_c(a[4],b[6],c2,c3,c1);
+    #####:  434:	mul_add_c(a[3],b[7],c2,c3,c1);
+    #####:  435:	r[10]=c2;
+        -:  436:	c2=0;
+    #####:  437:	mul_add_c(a[4],b[7],c3,c1,c2);
+    #####:  438:	mul_add_c(a[5],b[6],c3,c1,c2);
+    #####:  439:	mul_add_c(a[6],b[5],c3,c1,c2);
+    #####:  440:	mul_add_c(a[7],b[4],c3,c1,c2);
+    #####:  441:	r[11]=c3;
+        -:  442:	c3=0;
+    #####:  443:	mul_add_c(a[7],b[5],c1,c2,c3);
+    #####:  444:	mul_add_c(a[6],b[6],c1,c2,c3);
+    #####:  445:	mul_add_c(a[5],b[7],c1,c2,c3);
+    #####:  446:	r[12]=c1;
+        -:  447:	c1=0;
+    #####:  448:	mul_add_c(a[6],b[7],c2,c3,c1);
+    #####:  449:	mul_add_c(a[7],b[6],c2,c3,c1);
+    #####:  450:	r[13]=c2;
+        -:  451:	c2=0;
+    #####:  452:	mul_add_c(a[7],b[7],c3,c1,c2);
+    #####:  453:	r[14]=c3;
+    #####:  454:	r[15]=c1;
+    #####:  455:	}
+        -:  456:
+    #####:  457:void bn_mul_comba4(BN_ULONG *r, BN_ULONG *a, BN_ULONG *b)
+        -:  458:	{
+        -:  459:	BN_ULONG t1,t2;
+        -:  460:	BN_ULONG c1,c2,c3;
+        -:  461:
+        -:  462:	c1=0;
+        -:  463:	c2=0;
+        -:  464:	c3=0;
+    #####:  465:	mul_add_c(a[0],b[0],c1,c2,c3);
+    #####:  466:	r[0]=c1;
+        -:  467:	c1=0;
+    #####:  468:	mul_add_c(a[0],b[1],c2,c3,c1);
+    #####:  469:	mul_add_c(a[1],b[0],c2,c3,c1);
+    #####:  470:	r[1]=c2;
+        -:  471:	c2=0;
+    #####:  472:	mul_add_c(a[2],b[0],c3,c1,c2);
+    #####:  473:	mul_add_c(a[1],b[1],c3,c1,c2);
+    #####:  474:	mul_add_c(a[0],b[2],c3,c1,c2);
+    #####:  475:	r[2]=c3;
+        -:  476:	c3=0;
+    #####:  477:	mul_add_c(a[0],b[3],c1,c2,c3);
+    #####:  478:	mul_add_c(a[1],b[2],c1,c2,c3);
+    #####:  479:	mul_add_c(a[2],b[1],c1,c2,c3);
+    #####:  480:	mul_add_c(a[3],b[0],c1,c2,c3);
+    #####:  481:	r[3]=c1;
+        -:  482:	c1=0;
+    #####:  483:	mul_add_c(a[3],b[1],c2,c3,c1);
+    #####:  484:	mul_add_c(a[2],b[2],c2,c3,c1);
+    #####:  485:	mul_add_c(a[1],b[3],c2,c3,c1);
+    #####:  486:	r[4]=c2;
+        -:  487:	c2=0;
+    #####:  488:	mul_add_c(a[2],b[3],c3,c1,c2);
+    #####:  489:	mul_add_c(a[3],b[2],c3,c1,c2);
+    #####:  490:	r[5]=c3;
+        -:  491:	c3=0;
+    #####:  492:	mul_add_c(a[3],b[3],c1,c2,c3);
+    #####:  493:	r[6]=c1;
+    #####:  494:	r[7]=c2;
+    #####:  495:	}
+        -:  496:
+    #####:  497:void bn_sqr_comba8(BN_ULONG *r, const BN_ULONG *a)
+        -:  498:	{
+        -:  499:	BN_ULONG t1,t2;
+        -:  500:	BN_ULONG c1,c2,c3;
+        -:  501:
+        -:  502:	c1=0;
+        -:  503:	c2=0;
+        -:  504:	c3=0;
+    #####:  505:	sqr_add_c(a,0,c1,c2,c3);
+    #####:  506:	r[0]=c1;
+        -:  507:	c1=0;
+    #####:  508:	sqr_add_c2(a,1,0,c2,c3,c1);
+    #####:  509:	r[1]=c2;
+        -:  510:	c2=0;
+    #####:  511:	sqr_add_c(a,1,c3,c1,c2);
+    #####:  512:	sqr_add_c2(a,2,0,c3,c1,c2);
+    #####:  513:	r[2]=c3;
+        -:  514:	c3=0;
+    #####:  515:	sqr_add_c2(a,3,0,c1,c2,c3);
+    #####:  516:	sqr_add_c2(a,2,1,c1,c2,c3);
+    #####:  517:	r[3]=c1;
+        -:  518:	c1=0;
+    #####:  519:	sqr_add_c(a,2,c2,c3,c1);
+    #####:  520:	sqr_add_c2(a,3,1,c2,c3,c1);
+    #####:  521:	sqr_add_c2(a,4,0,c2,c3,c1);
+    #####:  522:	r[4]=c2;
+        -:  523:	c2=0;
+    #####:  524:	sqr_add_c2(a,5,0,c3,c1,c2);
+    #####:  525:	sqr_add_c2(a,4,1,c3,c1,c2);
+    #####:  526:	sqr_add_c2(a,3,2,c3,c1,c2);
+    #####:  527:	r[5]=c3;
+        -:  528:	c3=0;
+    #####:  529:	sqr_add_c(a,3,c1,c2,c3);
+    #####:  530:	sqr_add_c2(a,4,2,c1,c2,c3);
+    #####:  531:	sqr_add_c2(a,5,1,c1,c2,c3);
+    #####:  532:	sqr_add_c2(a,6,0,c1,c2,c3);
+    #####:  533:	r[6]=c1;
+        -:  534:	c1=0;
+    #####:  535:	sqr_add_c2(a,7,0,c2,c3,c1);
+    #####:  536:	sqr_add_c2(a,6,1,c2,c3,c1);
+    #####:  537:	sqr_add_c2(a,5,2,c2,c3,c1);
+    #####:  538:	sqr_add_c2(a,4,3,c2,c3,c1);
+    #####:  539:	r[7]=c2;
+        -:  540:	c2=0;
+    #####:  541:	sqr_add_c(a,4,c3,c1,c2);
+    #####:  542:	sqr_add_c2(a,5,3,c3,c1,c2);
+    #####:  543:	sqr_add_c2(a,6,2,c3,c1,c2);
+    #####:  544:	sqr_add_c2(a,7,1,c3,c1,c2);
+    #####:  545:	r[8]=c3;
+        -:  546:	c3=0;
+    #####:  547:	sqr_add_c2(a,7,2,c1,c2,c3);
+    #####:  548:	sqr_add_c2(a,6,3,c1,c2,c3);
+    #####:  549:	sqr_add_c2(a,5,4,c1,c2,c3);
+    #####:  550:	r[9]=c1;
+        -:  551:	c1=0;
+    #####:  552:	sqr_add_c(a,5,c2,c3,c1);
+    #####:  553:	sqr_add_c2(a,6,4,c2,c3,c1);
+    #####:  554:	sqr_add_c2(a,7,3,c2,c3,c1);
+    #####:  555:	r[10]=c2;
+        -:  556:	c2=0;
+    #####:  557:	sqr_add_c2(a,7,4,c3,c1,c2);
+    #####:  558:	sqr_add_c2(a,6,5,c3,c1,c2);
+    #####:  559:	r[11]=c3;
+        -:  560:	c3=0;
+    #####:  561:	sqr_add_c(a,6,c1,c2,c3);
+    #####:  562:	sqr_add_c2(a,7,5,c1,c2,c3);
+    #####:  563:	r[12]=c1;
+        -:  564:	c1=0;
+    #####:  565:	sqr_add_c2(a,7,6,c2,c3,c1);
+    #####:  566:	r[13]=c2;
+        -:  567:	c2=0;
+    #####:  568:	sqr_add_c(a,7,c3,c1,c2);
+    #####:  569:	r[14]=c3;
+    #####:  570:	r[15]=c1;
+    #####:  571:	}
+        -:  572:
+    #####:  573:void bn_sqr_comba4(BN_ULONG *r, const BN_ULONG *a)
+        -:  574:	{
+        -:  575:	BN_ULONG t1,t2;
+        -:  576:	BN_ULONG c1,c2,c3;
+        -:  577:
+        -:  578:	c1=0;
+        -:  579:	c2=0;
+        -:  580:	c3=0;
+    #####:  581:	sqr_add_c(a,0,c1,c2,c3);
+    #####:  582:	r[0]=c1;
+        -:  583:	c1=0;
+    #####:  584:	sqr_add_c2(a,1,0,c2,c3,c1);
+    #####:  585:	r[1]=c2;
+        -:  586:	c2=0;
+    #####:  587:	sqr_add_c(a,1,c3,c1,c2);
+    #####:  588:	sqr_add_c2(a,2,0,c3,c1,c2);
+    #####:  589:	r[2]=c3;
+        -:  590:	c3=0;
+    #####:  591:	sqr_add_c2(a,3,0,c1,c2,c3);
+    #####:  592:	sqr_add_c2(a,2,1,c1,c2,c3);
+    #####:  593:	r[3]=c1;
+        -:  594:	c1=0;
+    #####:  595:	sqr_add_c(a,2,c2,c3,c1);
+    #####:  596:	sqr_add_c2(a,3,1,c2,c3,c1);
+    #####:  597:	r[4]=c2;
+        -:  598:	c2=0;
+    #####:  599:	sqr_add_c2(a,3,2,c3,c1,c2);
+    #####:  600:	r[5]=c3;
+        -:  601:	c3=0;
+    #####:  602:	sqr_add_c(a,3,c1,c2,c3);
+    #####:  603:	r[6]=c1;
+    #####:  604:	r[7]=c2;
+    #####:  605:	}
+        -:  606:#endif

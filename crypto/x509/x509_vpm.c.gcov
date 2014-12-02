@@ -1,0 +1,443 @@
+        -:    0:Source:x509_vpm.c
+        -:    0:Graph:x509_vpm.gcno
+        -:    0:Data:x509_vpm.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* x509_vpm.c */
+        -:    2:/* Written by Dr Stephen N Henson (steve@openssl.org) for the OpenSSL
+        -:    3: * project 2004.
+        -:    4: */
+        -:    5:/* ====================================================================
+        -:    6: * Copyright (c) 2004 The OpenSSL Project.  All rights reserved.
+        -:    7: *
+        -:    8: * Redistribution and use in source and binary forms, with or without
+        -:    9: * modification, are permitted provided that the following conditions
+        -:   10: * are met:
+        -:   11: *
+        -:   12: * 1. Redistributions of source code must retain the above copyright
+        -:   13: *    notice, this list of conditions and the following disclaimer. 
+        -:   14: *
+        -:   15: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   16: *    notice, this list of conditions and the following disclaimer in
+        -:   17: *    the documentation and/or other materials provided with the
+        -:   18: *    distribution.
+        -:   19: *
+        -:   20: * 3. All advertising materials mentioning features or use of this
+        -:   21: *    software must display the following acknowledgment:
+        -:   22: *    "This product includes software developed by the OpenSSL Project
+        -:   23: *    for use in the OpenSSL Toolkit. (http://www.OpenSSL.org/)"
+        -:   24: *
+        -:   25: * 4. The names "OpenSSL Toolkit" and "OpenSSL Project" must not be used to
+        -:   26: *    endorse or promote products derived from this software without
+        -:   27: *    prior written permission. For written permission, please contact
+        -:   28: *    licensing@OpenSSL.org.
+        -:   29: *
+        -:   30: * 5. Products derived from this software may not be called "OpenSSL"
+        -:   31: *    nor may "OpenSSL" appear in their names without prior written
+        -:   32: *    permission of the OpenSSL Project.
+        -:   33: *
+        -:   34: * 6. Redistributions of any form whatsoever must retain the following
+        -:   35: *    acknowledgment:
+        -:   36: *    "This product includes software developed by the OpenSSL Project
+        -:   37: *    for use in the OpenSSL Toolkit (http://www.OpenSSL.org/)"
+        -:   38: *
+        -:   39: * THIS SOFTWARE IS PROVIDED BY THE OpenSSL PROJECT ``AS IS'' AND ANY
+        -:   40: * EXPRESSED OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   41: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+        -:   42: * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE OpenSSL PROJECT OR
+        -:   43: * ITS CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+        -:   44: * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+        -:   45: * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+        -:   46: * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   47: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+        -:   48: * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+        -:   49: * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+        -:   50: * OF THE POSSIBILITY OF SUCH DAMAGE.
+        -:   51: * ====================================================================
+        -:   52: *
+        -:   53: * This product includes cryptographic software written by Eric Young
+        -:   54: * (eay@cryptsoft.com).  This product includes software written by Tim
+        -:   55: * Hudson (tjh@cryptsoft.com).
+        -:   56: *
+        -:   57: */
+        -:   58:
+        -:   59:#include <stdio.h>
+        -:   60:
+        -:   61:#include "cryptlib.h"
+        -:   62:#include <openssl/crypto.h>
+        -:   63:#include <openssl/lhash.h>
+        -:   64:#include <openssl/buffer.h>
+        -:   65:#include <openssl/x509.h>
+        -:   66:#include <openssl/x509v3.h>
+        -:   67:
+        -:   68:/* X509_VERIFY_PARAM functions */
+        -:   69:
+    80000:   70:static void x509_verify_param_zero(X509_VERIFY_PARAM *param)
+        -:   71:	{
+    80000:   72:	if (!param)
+    80000:   73:		return;
+    80000:   74:	param->name = NULL;
+    80000:   75:	param->purpose = 0;
+    80000:   76:	param->trust = 0;
+        -:   77:	/*param->inh_flags = X509_VP_FLAG_DEFAULT;*/
+    80000:   78:	param->inh_flags = 0;
+    80000:   79:	param->flags = 0;
+    80000:   80:	param->depth = -1;
+    80000:   81:	if (param->policies)
+        -:   82:		{
+    #####:   83:		sk_ASN1_OBJECT_pop_free(param->policies, ASN1_OBJECT_free);
+    #####:   84:		param->policies = NULL;
+        -:   85:		}
+        -:   86:	}
+        -:   87:
+    40000:   88:X509_VERIFY_PARAM *X509_VERIFY_PARAM_new(void)
+        -:   89:	{
+        -:   90:	X509_VERIFY_PARAM *param;
+    40000:   91:	param = OPENSSL_malloc(sizeof(X509_VERIFY_PARAM));
+        -:   92:	memset(param, 0, sizeof(X509_VERIFY_PARAM));
+    40000:   93:	x509_verify_param_zero(param);
+    40000:   94:	return param;
+        -:   95:	}
+        -:   96:
+    40000:   97:void X509_VERIFY_PARAM_free(X509_VERIFY_PARAM *param)
+        -:   98:	{
+    40000:   99:	x509_verify_param_zero(param);
+    40000:  100:	OPENSSL_free(param);
+    40000:  101:	}
+        -:  102:
+        -:  103:/* This function determines how parameters are "inherited" from one structure
+        -:  104: * to another. There are several different ways this can happen.
+        -:  105: *
+        -:  106: * 1. If a child structure needs to have its values initialized from a parent
+        -:  107: *    they are simply copied across. For example SSL_CTX copied to SSL.
+        -:  108: * 2. If the structure should take on values only if they are currently unset.
+        -:  109: *    For example the values in an SSL structure will take appropriate value
+        -:  110: *    for SSL servers or clients but only if the application has not set new
+        -:  111: *    ones.
+        -:  112: *
+        -:  113: * The "inh_flags" field determines how this function behaves. 
+        -:  114: *
+        -:  115: * Normally any values which are set in the default are not copied from the
+        -:  116: * destination and verify flags are ORed together.
+        -:  117: *
+        -:  118: * If X509_VP_FLAG_DEFAULT is set then anything set in the source is copied
+        -:  119: * to the destination. Effectively the values in "to" become default values
+        -:  120: * which will be used only if nothing new is set in "from".
+        -:  121: *
+        -:  122: * If X509_VP_FLAG_OVERWRITE is set then all value are copied across whether
+        -:  123: * they are set or not. Flags is still Ored though.
+        -:  124: *
+        -:  125: * If X509_VP_FLAG_RESET_FLAGS is set then the flags value is copied instead
+        -:  126: * of ORed.
+        -:  127: *
+        -:  128: * If X509_VP_FLAG_LOCKED is set then no values are copied.
+        -:  129: *
+        -:  130: * If X509_VP_FLAG_ONCE is set then the current inh_flags setting is zeroed
+        -:  131: * after the next call.
+        -:  132: */
+        -:  133:
+        -:  134:/* Macro to test if a field should be copied from src to dest */
+        -:  135:
+        -:  136:#define test_x509_verify_param_copy(field, def) \
+        -:  137:	(to_overwrite || \
+        -:  138:		((src->field != def) && (to_default || (dest->field == def))))
+        -:  139:
+        -:  140:/* Macro to test and copy a field if necessary */
+        -:  141:
+        -:  142:#define x509_verify_param_copy(field, def) \
+        -:  143:	if (test_x509_verify_param_copy(field, def)) \
+        -:  144:		dest->field = src->field
+        -:  145:		
+        -:  146:
+    50000:  147:int X509_VERIFY_PARAM_inherit(X509_VERIFY_PARAM *dest,
+        -:  148:						const X509_VERIFY_PARAM *src)
+        -:  149:	{
+        -:  150:	unsigned long inh_flags;
+        -:  151:	int to_default, to_overwrite;
+    50000:  152:	if (!src)
+        -:  153:		return 1;
+    50000:  154:	inh_flags = dest->inh_flags | src->inh_flags;
+        -:  155:
+    50000:  156:	if (inh_flags & X509_VP_FLAG_ONCE)
+    #####:  157:		dest->inh_flags = 0;
+        -:  158:
+    50000:  159:	if (inh_flags & X509_VP_FLAG_LOCKED)
+        -:  160:		return 1;
+        -:  161:
+    50000:  162:	if (inh_flags & X509_VP_FLAG_DEFAULT)
+        -:  163:		to_default = 1;
+        -:  164:	else
+        -:  165:		to_default = 0;
+        -:  166:
+    50000:  167:	if (inh_flags & X509_VP_FLAG_OVERWRITE)
+        -:  168:		to_overwrite = 1;
+        -:  169:	else
+        -:  170:		to_overwrite = 0;
+        -:  171:
+    50000:  172:	x509_verify_param_copy(purpose, 0);
+    50000:  173:	x509_verify_param_copy(trust, 0);
+    50000:  174:	x509_verify_param_copy(depth, -1);
+        -:  175:
+        -:  176:	/* If overwrite or check time not set, copy across */
+        -:  177:
+    50000:  178:	if (to_overwrite || !(dest->flags & X509_V_FLAG_USE_CHECK_TIME))
+        -:  179:		{
+    50000:  180:		dest->check_time = src->check_time;
+    50000:  181:		dest->flags &= ~X509_V_FLAG_USE_CHECK_TIME;
+        -:  182:		/* Don't need to copy flag: that is done below */
+        -:  183:		}
+        -:  184:
+    50000:  185:	if (inh_flags & X509_VP_FLAG_RESET_FLAGS)
+    #####:  186:		dest->flags = 0;
+        -:  187:
+    50000:  188:	dest->flags |= src->flags;
+        -:  189:
+    50000:  190:	if (test_x509_verify_param_copy(policies, NULL))
+        -:  191:		{
+    #####:  192:		if (!X509_VERIFY_PARAM_set1_policies(dest, src->policies))
+        -:  193:			return 0;
+        -:  194:		}
+        -:  195:
+        -:  196:	return 1;
+        -:  197:	}
+        -:  198:
+    10000:  199:int X509_VERIFY_PARAM_set1(X509_VERIFY_PARAM *to,
+        -:  200:						const X509_VERIFY_PARAM *from)
+        -:  201:	{
+    10000:  202:	unsigned long save_flags = to->inh_flags;
+        -:  203:	int ret;
+    10000:  204:	to->inh_flags |= X509_VP_FLAG_DEFAULT;
+    10000:  205:	ret = X509_VERIFY_PARAM_inherit(to, from);
+    10000:  206:	to->inh_flags = save_flags;
+    10000:  207:	return ret;
+        -:  208:	}
+        -:  209:
+    #####:  210:int X509_VERIFY_PARAM_set1_name(X509_VERIFY_PARAM *param, const char *name)
+        -:  211:	{
+    #####:  212:	if (param->name)
+    #####:  213:		OPENSSL_free(param->name);
+    #####:  214:	param->name = BUF_strdup(name);
+    #####:  215:	if (param->name)
+        -:  216:		return 1;
+    #####:  217:	return 0;
+        -:  218:	}
+        -:  219:
+    #####:  220:int X509_VERIFY_PARAM_set_flags(X509_VERIFY_PARAM *param, unsigned long flags)
+        -:  221:	{
+    #####:  222:	param->flags |= flags;
+    #####:  223:	if (flags & X509_V_FLAG_POLICY_MASK)
+    #####:  224:		param->flags |= X509_V_FLAG_POLICY_CHECK;
+    #####:  225:	return 1;
+        -:  226:	}
+        -:  227:
+    #####:  228:int X509_VERIFY_PARAM_clear_flags(X509_VERIFY_PARAM *param, unsigned long flags)
+        -:  229:	{
+    #####:  230:	param->flags &= ~flags;
+    #####:  231:	return 1;
+        -:  232:	}
+        -:  233:
+    #####:  234:unsigned long X509_VERIFY_PARAM_get_flags(X509_VERIFY_PARAM *param)
+        -:  235:	{
+    #####:  236:	return param->flags;
+        -:  237:	}
+        -:  238:
+    #####:  239:int X509_VERIFY_PARAM_set_purpose(X509_VERIFY_PARAM *param, int purpose)
+        -:  240:	{
+    #####:  241:	return X509_PURPOSE_set(&param->purpose, purpose);
+        -:  242:	}
+        -:  243:
+    #####:  244:int X509_VERIFY_PARAM_set_trust(X509_VERIFY_PARAM *param, int trust)
+        -:  245:	{
+    #####:  246:	return X509_TRUST_set(&param->trust, trust);
+        -:  247:	}
+        -:  248:
+    #####:  249:void X509_VERIFY_PARAM_set_depth(X509_VERIFY_PARAM *param, int depth)
+        -:  250:	{
+    #####:  251:	param->depth = depth;
+    #####:  252:	}
+        -:  253:
+    #####:  254:void X509_VERIFY_PARAM_set_time(X509_VERIFY_PARAM *param, time_t t)
+        -:  255:	{
+    #####:  256:	param->check_time = t;
+    #####:  257:	param->flags |= X509_V_FLAG_USE_CHECK_TIME;
+    #####:  258:	}
+        -:  259:
+    #####:  260:int X509_VERIFY_PARAM_add0_policy(X509_VERIFY_PARAM *param, ASN1_OBJECT *policy)
+        -:  261:	{
+    #####:  262:	if (!param->policies)
+        -:  263:		{
+    #####:  264:		param->policies = sk_ASN1_OBJECT_new_null();
+    #####:  265:		if (!param->policies)
+        -:  266:			return 0;
+        -:  267:		}
+    #####:  268:	if (!sk_ASN1_OBJECT_push(param->policies, policy))
+        -:  269:		return 0;
+    #####:  270:	return 1;
+        -:  271:	}
+        -:  272:
+    #####:  273:int X509_VERIFY_PARAM_set1_policies(X509_VERIFY_PARAM *param, 
+        -:  274:					STACK_OF(ASN1_OBJECT) *policies)
+        -:  275:	{
+        -:  276:	int i;
+        -:  277:	ASN1_OBJECT *oid, *doid;
+    #####:  278:	if (!param)
+        -:  279:		return 0;
+    #####:  280:	if (param->policies)
+    #####:  281:		sk_ASN1_OBJECT_pop_free(param->policies, ASN1_OBJECT_free);
+        -:  282:
+    #####:  283:	if (!policies)
+        -:  284:		{
+    #####:  285:		param->policies = NULL;
+    #####:  286:		return 1;
+        -:  287:		}
+        -:  288:
+    #####:  289:	param->policies = sk_ASN1_OBJECT_new_null();
+    #####:  290:	if (!param->policies)
+        -:  291:		return 0;
+        -:  292:
+    #####:  293:	for (i = 0; i < sk_ASN1_OBJECT_num(policies); i++)
+        -:  294:		{
+    #####:  295:		oid = sk_ASN1_OBJECT_value(policies, i);
+    #####:  296:		doid = OBJ_dup(oid);
+    #####:  297:		if (!doid)
+        -:  298:			return 0;
+    #####:  299:		if (!sk_ASN1_OBJECT_push(param->policies, doid))
+        -:  300:			{
+    #####:  301:			ASN1_OBJECT_free(doid);
+    #####:  302:			return 0;
+        -:  303:			}
+        -:  304:		}
+    #####:  305:	param->flags |= X509_V_FLAG_POLICY_CHECK;
+    #####:  306:	return 1;
+        -:  307:	}
+        -:  308:
+    #####:  309:int X509_VERIFY_PARAM_get_depth(const X509_VERIFY_PARAM *param)
+        -:  310:	{
+    #####:  311:	return param->depth;
+        -:  312:	}
+        -:  313:
+        -:  314:/* Default verify parameters: these are used for various
+        -:  315: * applications and can be overridden by the user specified table.
+        -:  316: * NB: the 'name' field *must* be in alphabetical order because it
+        -:  317: * will be searched using OBJ_search.
+        -:  318: */
+        -:  319:
+        -:  320:static const X509_VERIFY_PARAM default_table[] = {
+        -:  321:	{
+        -:  322:	"default",	/* X509 default parameters */
+        -:  323:	0,		/* Check time */
+        -:  324:	0,		/* internal flags */
+        -:  325:	0,		/* flags */
+        -:  326:	0,		/* purpose */
+        -:  327:	0,		/* trust */
+        -:  328:	100,		/* depth */
+        -:  329:	NULL		/* policies */
+        -:  330:	},
+        -:  331:	{
+        -:  332:	"pkcs7",			/* S/MIME sign parameters */
+        -:  333:	0,				/* Check time */
+        -:  334:	0,				/* internal flags */
+        -:  335:	0,				/* flags */
+        -:  336:	X509_PURPOSE_SMIME_SIGN,	/* purpose */
+        -:  337:	X509_TRUST_EMAIL,		/* trust */
+        -:  338:	-1,				/* depth */
+        -:  339:	NULL				/* policies */
+        -:  340:	},
+        -:  341:	{
+        -:  342:	"smime_sign",			/* S/MIME sign parameters */
+        -:  343:	0,				/* Check time */
+        -:  344:	0,				/* internal flags */
+        -:  345:	0,				/* flags */
+        -:  346:	X509_PURPOSE_SMIME_SIGN,	/* purpose */
+        -:  347:	X509_TRUST_EMAIL,		/* trust */
+        -:  348:	-1,				/* depth */
+        -:  349:	NULL				/* policies */
+        -:  350:	},
+        -:  351:	{
+        -:  352:	"ssl_client",			/* SSL/TLS client parameters */
+        -:  353:	0,				/* Check time */
+        -:  354:	0,				/* internal flags */
+        -:  355:	0,				/* flags */
+        -:  356:	X509_PURPOSE_SSL_CLIENT,	/* purpose */
+        -:  357:	X509_TRUST_SSL_CLIENT,		/* trust */
+        -:  358:	-1,				/* depth */
+        -:  359:	NULL				/* policies */
+        -:  360:	},
+        -:  361:	{
+        -:  362:	"ssl_server",			/* SSL/TLS server parameters */
+        -:  363:	0,				/* Check time */
+        -:  364:	0,				/* internal flags */
+        -:  365:	0,				/* flags */
+        -:  366:	X509_PURPOSE_SSL_SERVER,	/* purpose */
+        -:  367:	X509_TRUST_SSL_SERVER,		/* trust */
+        -:  368:	-1,				/* depth */
+        -:  369:	NULL				/* policies */
+        -:  370:	}};
+        -:  371:
+        -:  372:static STACK_OF(X509_VERIFY_PARAM) *param_table = NULL;
+        -:  373:
+        -:  374:static int table_cmp(const X509_VERIFY_PARAM *a, const X509_VERIFY_PARAM *b)
+        -:  375:
+        -:  376:	{
+    50000:  377:	return strcmp(a->name, b->name);
+        -:  378:	}
+        -:  379:
+        -:  380:DECLARE_OBJ_BSEARCH_CMP_FN(X509_VERIFY_PARAM, X509_VERIFY_PARAM,
+        -:  381:			   table);
+   120000:  382:IMPLEMENT_OBJ_BSEARCH_CMP_FN(X509_VERIFY_PARAM, X509_VERIFY_PARAM,
+        -:  383:			     table);
+        -:  384:
+    #####:  385:static int param_cmp(const X509_VERIFY_PARAM * const *a,
+        -:  386:			const X509_VERIFY_PARAM * const *b)
+        -:  387:	{
+    #####:  388:	return strcmp((*a)->name, (*b)->name);
+        -:  389:	}
+        -:  390:
+    #####:  391:int X509_VERIFY_PARAM_add0_table(X509_VERIFY_PARAM *param)
+        -:  392:	{
+        -:  393:	int idx;
+        -:  394:	X509_VERIFY_PARAM *ptmp;
+    #####:  395:	if (!param_table)
+        -:  396:		{
+    #####:  397:		param_table = sk_X509_VERIFY_PARAM_new(param_cmp);
+    #####:  398:		if (!param_table)
+        -:  399:			return 0;
+        -:  400:		}
+        -:  401:	else
+        -:  402:		{
+    #####:  403:		idx = sk_X509_VERIFY_PARAM_find(param_table, param);
+    #####:  404:		if (idx != -1)
+        -:  405:			{
+    #####:  406:			ptmp = sk_X509_VERIFY_PARAM_value(param_table, idx);
+        -:  407:			X509_VERIFY_PARAM_free(ptmp);
+    #####:  408:			(void)sk_X509_VERIFY_PARAM_delete(param_table, idx);
+        -:  409:			}
+        -:  410:		}
+    #####:  411:	if (!sk_X509_VERIFY_PARAM_push(param_table, param))
+        -:  412:		return 0;
+    #####:  413:	return 1;
+        -:  414:	}
+        -:  415:
+    20000:  416:const X509_VERIFY_PARAM *X509_VERIFY_PARAM_lookup(const char *name)
+        -:  417:	{
+        -:  418:	int idx;
+        -:  419:	X509_VERIFY_PARAM pm;
+        -:  420:
+    20000:  421:	pm.name = (char *)name;
+    20000:  422:	if (param_table)
+        -:  423:		{
+    #####:  424:		idx = sk_X509_VERIFY_PARAM_find(param_table, &pm);
+    #####:  425:		if (idx != -1)
+    #####:  426:			return sk_X509_VERIFY_PARAM_value(param_table, idx);
+        -:  427:		}
+    20000:  428:	return OBJ_bsearch_table(&pm, default_table,
+        -:  429:			   sizeof(default_table)/sizeof(X509_VERIFY_PARAM));
+        -:  430:	}
+        -:  431:
+    #####:  432:void X509_VERIFY_PARAM_table_cleanup(void)
+        -:  433:	{
+    #####:  434:	if (param_table)
+    #####:  435:		sk_X509_VERIFY_PARAM_pop_free(param_table,
+        -:  436:						X509_VERIFY_PARAM_free);
+    #####:  437:	param_table = NULL;
+    #####:  438:	}

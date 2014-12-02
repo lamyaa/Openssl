@@ -1,0 +1,3378 @@
+        -:    0:Source:s3_clnt.c
+        -:    0:Graph:s3_clnt.gcno
+        -:    0:Data:s3_clnt.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* ssl/s3_clnt.c */
+        -:    2:/* Copyright (C) 1995-1998 Eric Young (eay@cryptsoft.com)
+        -:    3: * All rights reserved.
+        -:    4: *
+        -:    5: * This package is an SSL implementation written
+        -:    6: * by Eric Young (eay@cryptsoft.com).
+        -:    7: * The implementation was written so as to conform with Netscapes SSL.
+        -:    8: * 
+        -:    9: * This library is free for commercial and non-commercial use as long as
+        -:   10: * the following conditions are aheared to.  The following conditions
+        -:   11: * apply to all code found in this distribution, be it the RC4, RSA,
+        -:   12: * lhash, DES, etc., code; not just the SSL code.  The SSL documentation
+        -:   13: * included with this distribution is covered by the same copyright terms
+        -:   14: * except that the holder is Tim Hudson (tjh@cryptsoft.com).
+        -:   15: * 
+        -:   16: * Copyright remains Eric Young's, and as such any Copyright notices in
+        -:   17: * the code are not to be removed.
+        -:   18: * If this package is used in a product, Eric Young should be given attribution
+        -:   19: * as the author of the parts of the library used.
+        -:   20: * This can be in the form of a textual message at program startup or
+        -:   21: * in documentation (online or textual) provided with the package.
+        -:   22: * 
+        -:   23: * Redistribution and use in source and binary forms, with or without
+        -:   24: * modification, are permitted provided that the following conditions
+        -:   25: * are met:
+        -:   26: * 1. Redistributions of source code must retain the copyright
+        -:   27: *    notice, this list of conditions and the following disclaimer.
+        -:   28: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   29: *    notice, this list of conditions and the following disclaimer in the
+        -:   30: *    documentation and/or other materials provided with the distribution.
+        -:   31: * 3. All advertising materials mentioning features or use of this software
+        -:   32: *    must display the following acknowledgement:
+        -:   33: *    "This product includes cryptographic software written by
+        -:   34: *     Eric Young (eay@cryptsoft.com)"
+        -:   35: *    The word 'cryptographic' can be left out if the rouines from the library
+        -:   36: *    being used are not cryptographic related :-).
+        -:   37: * 4. If you include any Windows specific code (or a derivative thereof) from 
+        -:   38: *    the apps directory (application code) you must include an acknowledgement:
+        -:   39: *    "This product includes software written by Tim Hudson (tjh@cryptsoft.com)"
+        -:   40: * 
+        -:   41: * THIS SOFTWARE IS PROVIDED BY ERIC YOUNG ``AS IS'' AND
+        -:   42: * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   43: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+        -:   44: * ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+        -:   45: * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+        -:   46: * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+        -:   47: * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   48: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+        -:   49: * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+        -:   50: * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+        -:   51: * SUCH DAMAGE.
+        -:   52: * 
+        -:   53: * The licence and distribution terms for any publically available version or
+        -:   54: * derivative of this code cannot be changed.  i.e. this code cannot simply be
+        -:   55: * copied and put under another distribution licence
+        -:   56: * [including the GNU Public Licence.]
+        -:   57: */
+        -:   58:/* ====================================================================
+        -:   59: * Copyright (c) 1998-2007 The OpenSSL Project.  All rights reserved.
+        -:   60: *
+        -:   61: * Redistribution and use in source and binary forms, with or without
+        -:   62: * modification, are permitted provided that the following conditions
+        -:   63: * are met:
+        -:   64: *
+        -:   65: * 1. Redistributions of source code must retain the above copyright
+        -:   66: *    notice, this list of conditions and the following disclaimer. 
+        -:   67: *
+        -:   68: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   69: *    notice, this list of conditions and the following disclaimer in
+        -:   70: *    the documentation and/or other materials provided with the
+        -:   71: *    distribution.
+        -:   72: *
+        -:   73: * 3. All advertising materials mentioning features or use of this
+        -:   74: *    software must display the following acknowledgment:
+        -:   75: *    "This product includes software developed by the OpenSSL Project
+        -:   76: *    for use in the OpenSSL Toolkit. (http://www.openssl.org/)"
+        -:   77: *
+        -:   78: * 4. The names "OpenSSL Toolkit" and "OpenSSL Project" must not be used to
+        -:   79: *    endorse or promote products derived from this software without
+        -:   80: *    prior written permission. For written permission, please contact
+        -:   81: *    openssl-core@openssl.org.
+        -:   82: *
+        -:   83: * 5. Products derived from this software may not be called "OpenSSL"
+        -:   84: *    nor may "OpenSSL" appear in their names without prior written
+        -:   85: *    permission of the OpenSSL Project.
+        -:   86: *
+        -:   87: * 6. Redistributions of any form whatsoever must retain the following
+        -:   88: *    acknowledgment:
+        -:   89: *    "This product includes software developed by the OpenSSL Project
+        -:   90: *    for use in the OpenSSL Toolkit (http://www.openssl.org/)"
+        -:   91: *
+        -:   92: * THIS SOFTWARE IS PROVIDED BY THE OpenSSL PROJECT ``AS IS'' AND ANY
+        -:   93: * EXPRESSED OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   94: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+        -:   95: * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE OpenSSL PROJECT OR
+        -:   96: * ITS CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+        -:   97: * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+        -:   98: * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+        -:   99: * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:  100: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+        -:  101: * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+        -:  102: * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+        -:  103: * OF THE POSSIBILITY OF SUCH DAMAGE.
+        -:  104: * ====================================================================
+        -:  105: *
+        -:  106: * This product includes cryptographic software written by Eric Young
+        -:  107: * (eay@cryptsoft.com).  This product includes software written by Tim
+        -:  108: * Hudson (tjh@cryptsoft.com).
+        -:  109: *
+        -:  110: */
+        -:  111:/* ====================================================================
+        -:  112: * Copyright 2002 Sun Microsystems, Inc. ALL RIGHTS RESERVED.
+        -:  113: *
+        -:  114: * Portions of the attached software ("Contribution") are developed by 
+        -:  115: * SUN MICROSYSTEMS, INC., and are contributed to the OpenSSL project.
+        -:  116: *
+        -:  117: * The Contribution is licensed pursuant to the OpenSSL open source
+        -:  118: * license provided above.
+        -:  119: *
+        -:  120: * ECC cipher suite support in OpenSSL originally written by
+        -:  121: * Vipul Gupta and Sumit Gupta of Sun Microsystems Laboratories.
+        -:  122: *
+        -:  123: */
+        -:  124:/* ====================================================================
+        -:  125: * Copyright 2005 Nokia. All rights reserved.
+        -:  126: *
+        -:  127: * The portions of the attached software ("Contribution") is developed by
+        -:  128: * Nokia Corporation and is licensed pursuant to the OpenSSL open source
+        -:  129: * license.
+        -:  130: *
+        -:  131: * The Contribution, originally written by Mika Kousa and Pasi Eronen of
+        -:  132: * Nokia Corporation, consists of the "PSK" (Pre-Shared Key) ciphersuites
+        -:  133: * support (see RFC 4279) to OpenSSL.
+        -:  134: *
+        -:  135: * No patent licenses or other rights except those expressly stated in
+        -:  136: * the OpenSSL open source license shall be deemed granted or received
+        -:  137: * expressly, by implication, estoppel, or otherwise.
+        -:  138: *
+        -:  139: * No assurances are provided by Nokia that the Contribution does not
+        -:  140: * infringe the patent or other intellectual property rights of any third
+        -:  141: * party or that the license provides you with all the necessary rights
+        -:  142: * to make use of the Contribution.
+        -:  143: *
+        -:  144: * THE SOFTWARE IS PROVIDED "AS IS" WITHOUT WARRANTY OF ANY KIND. IN
+        -:  145: * ADDITION TO THE DISCLAIMERS INCLUDED IN THE LICENSE, NOKIA
+        -:  146: * SPECIFICALLY DISCLAIMS ANY LIABILITY FOR CLAIMS BROUGHT BY YOU OR ANY
+        -:  147: * OTHER ENTITY BASED ON INFRINGEMENT OF INTELLECTUAL PROPERTY RIGHTS OR
+        -:  148: * OTHERWISE.
+        -:  149: */
+        -:  150:
+        -:  151:#include <stdio.h>
+        -:  152:#include "ssl_locl.h"
+        -:  153:#include "kssl_lcl.h"
+        -:  154:#include <openssl/buffer.h>
+        -:  155:#include <openssl/rand.h>
+        -:  156:#include <openssl/objects.h>
+        -:  157:#include <openssl/evp.h>
+        -:  158:#include <openssl/md5.h>
+        -:  159:#ifdef OPENSSL_FIPS
+        -:  160:#include <openssl/fips.h>
+        -:  161:#endif
+        -:  162:#ifndef OPENSSL_NO_DH
+        -:  163:#include <openssl/dh.h>
+        -:  164:#endif
+        -:  165:#include <openssl/bn.h>
+        -:  166:#ifndef OPENSSL_NO_ENGINE
+        -:  167:#include <openssl/engine.h>
+        -:  168:#endif
+        -:  169:
+        -:  170:static const SSL_METHOD *ssl3_get_client_method(int ver);
+        -:  171:static int ca_dn_cmp(const X509_NAME * const *a,const X509_NAME * const *b);
+        -:  172:
+    #####:  173:static const SSL_METHOD *ssl3_get_client_method(int ver)
+        -:  174:	{
+    #####:  175:	if (ver == SSL3_VERSION)
+        -:  176:		return(SSLv3_client_method());
+        -:  177:	else
+    #####:  178:		return(NULL);
+        -:  179:	}
+        -:  180:
+    #####:  181:IMPLEMENT_ssl3_meth_func(SSLv3_client_method,
+        -:  182:			ssl_undefined_function,
+        -:  183:			ssl3_connect,
+        -:  184:			ssl3_get_client_method)
+        -:  185:
+    10000:  186:int ssl3_connect(SSL *s)
+        -:  187:	{
+        -:  188:	BUF_MEM *buf=NULL;
+    10000:  189:	unsigned long Time=(unsigned long)time(NULL);
+        -:  190:	void (*cb)(const SSL *ssl,int type,int val)=NULL;
+        -:  191:	int ret= -1;
+        -:  192:	int new_state,state,skip=0;
+        -:  193:
+    10000:  194:	RAND_add(&Time,sizeof(Time),0);
+    10000:  195:	ERR_clear_error();
+    10000:  196:	clear_sys_error();
+        -:  197:
+    10000:  198:	if (s->info_callback != NULL)
+        -:  199:		cb=s->info_callback;
+    10000:  200:	else if (s->ctx->info_callback != NULL)
+        -:  201:		cb=s->ctx->info_callback;
+        -:  202:	
+    10000:  203:	s->in_handshake++;
+    10000:  204:	if (!SSL_in_init(s) || SSL_in_before(s)) SSL_clear(s); 
+        -:  205:
+        -:  206:#ifndef OPENSSL_NO_HEARTBEATS
+        -:  207:	/* If we're awaiting a HeartbeatResponse, pretend we
+        -:  208:	 * already got and don't await it anymore, because
+        -:  209:	 * Heartbeats don't make sense during handshakes anyway.
+        -:  210:	 */
+    10000:  211:	if (s->tlsext_hb_pending)
+        -:  212:		{
+    #####:  213:		s->tlsext_hb_pending = 0;
+    #####:  214:		s->tlsext_hb_seq++;
+        -:  215:		}
+        -:  216:#endif
+        -:  217:
+        -:  218:	for (;;)
+        -:  219:		{
+   120000:  220:		state=s->state;
+        -:  221:
+   120000:  222:		switch(s->state)
+        -:  223:			{
+        -:  224:		case SSL_ST_RENEGOTIATE:
+    #####:  225:			s->renegotiate=1;
+    #####:  226:			s->state=SSL_ST_CONNECT;
+    #####:  227:			s->ctx->stats.sess_connect_renegotiate++;
+        -:  228:			/* break */
+        -:  229:		case SSL_ST_BEFORE:
+        -:  230:		case SSL_ST_CONNECT:
+        -:  231:		case SSL_ST_BEFORE|SSL_ST_CONNECT:
+        -:  232:		case SSL_ST_OK|SSL_ST_CONNECT:
+        -:  233:
+    #####:  234:			s->server=0;
+    #####:  235:			if (cb != NULL) cb(s,SSL_CB_HANDSHAKE_START,1);
+        -:  236:
+    #####:  237:			if ((s->version & 0xff00 ) != 0x0300)
+        -:  238:				{
+    #####:  239:				SSLerr(SSL_F_SSL3_CONNECT, ERR_R_INTERNAL_ERROR);
+        -:  240:				ret = -1;
+    #####:  241:				goto end;
+        -:  242:				}
+        -:  243:				
+        -:  244:			/* s->version=SSL3_VERSION; */
+    #####:  245:			s->type=SSL_ST_CONNECT;
+        -:  246:
+    #####:  247:			if (s->init_buf == NULL)
+        -:  248:				{
+    #####:  249:				if ((buf=BUF_MEM_new()) == NULL)
+        -:  250:					{
+        -:  251:					ret= -1;
+        -:  252:					goto end;
+        -:  253:					}
+    #####:  254:				if (!BUF_MEM_grow(buf,SSL3_RT_MAX_PLAIN_LENGTH))
+        -:  255:					{
+        -:  256:					ret= -1;
+        -:  257:					goto end;
+        -:  258:					}
+    #####:  259:				s->init_buf=buf;
+        -:  260:				buf=NULL;
+        -:  261:				}
+        -:  262:
+    #####:  263:			if (!ssl3_setup_buffers(s)) { ret= -1; goto end; }
+        -:  264:
+        -:  265:			/* setup buffing BIO */
+    #####:  266:			if (!ssl_init_wbio_buffer(s,0)) { ret= -1; goto end; }
+        -:  267:
+        -:  268:			/* don't push the buffering BIO quite yet */
+        -:  269:
+    #####:  270:			ssl3_init_finished_mac(s);
+        -:  271:
+    #####:  272:			s->state=SSL3_ST_CW_CLNT_HELLO_A;
+    #####:  273:			s->ctx->stats.sess_connect++;
+    #####:  274:			s->init_num=0;
+    #####:  275:			break;
+        -:  276:
+        -:  277:		case SSL3_ST_CW_CLNT_HELLO_A:
+        -:  278:		case SSL3_ST_CW_CLNT_HELLO_B:
+        -:  279:
+    #####:  280:			s->shutdown=0;
+    #####:  281:			ret=ssl3_client_hello(s);
+    #####:  282:			if (ret <= 0) goto end;
+    #####:  283:			s->state=SSL3_ST_CR_SRVR_HELLO_A;
+    #####:  284:			s->init_num=0;
+        -:  285:
+        -:  286:			/* turn on buffering for the next lot of output */
+    #####:  287:			if (s->bbio != s->wbio)
+    #####:  288:				s->wbio=BIO_push(s->bbio,s->wbio);
+        -:  289:
+        -:  290:			break;
+        -:  291:
+        -:  292:		case SSL3_ST_CR_SRVR_HELLO_A:
+        -:  293:		case SSL3_ST_CR_SRVR_HELLO_B:
+    10000:  294:			ret=ssl3_get_server_hello(s);
+    10000:  295:			if (ret <= 0) goto end;
+        -:  296:
+    10000:  297:			if (s->hit)
+        -:  298:				{
+    #####:  299:				s->state=SSL3_ST_CR_FINISHED_A;
+        -:  300:#ifndef OPENSSL_NO_TLSEXT
+    #####:  301:				if (s->tlsext_ticket_expected)
+        -:  302:					{
+        -:  303:					/* receive renewed session ticket */
+    #####:  304:					s->state=SSL3_ST_CR_SESSION_TICKET_A;
+        -:  305:					}
+        -:  306:#endif
+        -:  307:				}
+        -:  308:			else
+    10000:  309:				s->state=SSL3_ST_CR_CERT_A;
+    10000:  310:			s->init_num=0;
+    10000:  311:			break;
+        -:  312:
+        -:  313:		case SSL3_ST_CR_CERT_A:
+        -:  314:		case SSL3_ST_CR_CERT_B:
+        -:  315:#ifndef OPENSSL_NO_TLSEXT
+    10000:  316:			ret=ssl3_check_finished(s);
+    10000:  317:			if (ret <= 0) goto end;
+    10000:  318:			if (ret == 2)
+        -:  319:				{
+    #####:  320:				s->hit = 1;
+    #####:  321:				if (s->tlsext_ticket_expected)
+    #####:  322:					s->state=SSL3_ST_CR_SESSION_TICKET_A;
+        -:  323:				else
+    #####:  324:					s->state=SSL3_ST_CR_FINISHED_A;
+    #####:  325:				s->init_num=0;
+    #####:  326:				break;
+        -:  327:				}
+        -:  328:#endif
+        -:  329:			/* Check if it is anon DH/ECDH */
+        -:  330:			/* or PSK */
+    20000:  331:			if (!(s->s3->tmp.new_cipher->algorithm_auth & SSL_aNULL) &&
+    10000:  332:			    !(s->s3->tmp.new_cipher->algorithm_mkey & SSL_kPSK))
+        -:  333:				{
+    10000:  334:				ret=ssl3_get_server_certificate(s);
+    10000:  335:				if (ret <= 0) goto end;
+        -:  336:#ifndef OPENSSL_NO_TLSEXT
+    10000:  337:				if (s->tlsext_status_expected)
+    #####:  338:					s->state=SSL3_ST_CR_CERT_STATUS_A;
+        -:  339:				else
+    10000:  340:					s->state=SSL3_ST_CR_KEY_EXCH_A;
+        -:  341:				}
+        -:  342:			else
+        -:  343:				{
+        -:  344:				skip = 1;
+    #####:  345:				s->state=SSL3_ST_CR_KEY_EXCH_A;
+        -:  346:				}
+        -:  347:#else
+        -:  348:				}
+        -:  349:			else
+        -:  350:				skip=1;
+        -:  351:
+        -:  352:			s->state=SSL3_ST_CR_KEY_EXCH_A;
+        -:  353:#endif
+    10000:  354:			s->init_num=0;
+    10000:  355:			break;
+        -:  356:
+        -:  357:		case SSL3_ST_CR_KEY_EXCH_A:
+        -:  358:		case SSL3_ST_CR_KEY_EXCH_B:
+    10000:  359:			ret=ssl3_get_key_exchange(s);
+    10000:  360:			if (ret <= 0) goto end;
+    10000:  361:			s->state=SSL3_ST_CR_CERT_REQ_A;
+    10000:  362:			s->init_num=0;
+        -:  363:
+        -:  364:			/* at this point we check that we have the
+        -:  365:			 * required stuff from the server */
+    10000:  366:			if (!ssl3_check_cert_and_algorithm(s))
+        -:  367:				{
+        -:  368:				ret= -1;
+        -:  369:				goto end;
+        -:  370:				}
+        -:  371:			break;
+        -:  372:
+        -:  373:		case SSL3_ST_CR_CERT_REQ_A:
+        -:  374:		case SSL3_ST_CR_CERT_REQ_B:
+    10000:  375:			ret=ssl3_get_certificate_request(s);
+    10000:  376:			if (ret <= 0) goto end;
+    10000:  377:			s->state=SSL3_ST_CR_SRVR_DONE_A;
+    10000:  378:			s->init_num=0;
+    10000:  379:			break;
+        -:  380:
+        -:  381:		case SSL3_ST_CR_SRVR_DONE_A:
+        -:  382:		case SSL3_ST_CR_SRVR_DONE_B:
+    10000:  383:			ret=ssl3_get_server_done(s);
+    10000:  384:			if (ret <= 0) goto end;
+        -:  385:#ifndef OPENSSL_NO_SRP
+    10000:  386:			if (s->s3->tmp.new_cipher->algorithm_mkey & SSL_kSRP)
+        -:  387:				{
+    #####:  388:				if ((ret = SRP_Calc_A_param(s))<=0)
+        -:  389:					{
+    #####:  390:					SSLerr(SSL_F_SSL3_CONNECT,SSL_R_SRP_A_CALC);
+    #####:  391:					ssl3_send_alert(s,SSL3_AL_FATAL,SSL_AD_INTERNAL_ERROR);
+    #####:  392:					goto end;
+        -:  393:					}
+        -:  394:				}
+        -:  395:#endif
+    10000:  396:			if (s->s3->tmp.cert_req)
+    #####:  397:				s->state=SSL3_ST_CW_CERT_A;
+        -:  398:			else
+    10000:  399:				s->state=SSL3_ST_CW_KEY_EXCH_A;
+    10000:  400:			s->init_num=0;
+        -:  401:
+    10000:  402:			break;
+        -:  403:
+        -:  404:		case SSL3_ST_CW_CERT_A:
+        -:  405:		case SSL3_ST_CW_CERT_B:
+        -:  406:		case SSL3_ST_CW_CERT_C:
+        -:  407:		case SSL3_ST_CW_CERT_D:
+    #####:  408:			ret=ssl3_send_client_certificate(s);
+    #####:  409:			if (ret <= 0) goto end;
+    #####:  410:			s->state=SSL3_ST_CW_KEY_EXCH_A;
+    #####:  411:			s->init_num=0;
+    #####:  412:			break;
+        -:  413:
+        -:  414:		case SSL3_ST_CW_KEY_EXCH_A:
+        -:  415:		case SSL3_ST_CW_KEY_EXCH_B:
+    10000:  416:			ret=ssl3_send_client_key_exchange(s);
+    10000:  417:			if (ret <= 0) goto end;
+        -:  418:			/* EAY EAY EAY need to check for DH fix cert
+        -:  419:			 * sent back */
+        -:  420:			/* For TLS, cert_req is set to 2, so a cert chain
+        -:  421:			 * of nothing is sent, but no verify packet is sent */
+        -:  422:			/* XXX: For now, we do not support client 
+        -:  423:			 * authentication in ECDH cipher suites with
+        -:  424:			 * ECDH (rather than ECDSA) certificates.
+        -:  425:			 * We need to skip the certificate verify 
+        -:  426:			 * message when client's ECDH public key is sent 
+        -:  427:			 * inside the client certificate.
+        -:  428:			 */
+    10000:  429:			if (s->s3->tmp.cert_req == 1)
+        -:  430:				{
+    #####:  431:				s->state=SSL3_ST_CW_CERT_VRFY_A;
+        -:  432:				}
+        -:  433:			else
+        -:  434:				{
+    10000:  435:				s->state=SSL3_ST_CW_CHANGE_A;
+    10000:  436:				s->s3->change_cipher_spec=0;
+        -:  437:				}
+    10000:  438:			if (s->s3->flags & TLS1_FLAGS_SKIP_CERT_VERIFY)
+        -:  439:				{
+    #####:  440:				s->state=SSL3_ST_CW_CHANGE_A;
+    #####:  441:				s->s3->change_cipher_spec=0;
+        -:  442:				}
+        -:  443:
+    10000:  444:			s->init_num=0;
+    10000:  445:			break;
+        -:  446:
+        -:  447:		case SSL3_ST_CW_CERT_VRFY_A:
+        -:  448:		case SSL3_ST_CW_CERT_VRFY_B:
+    #####:  449:			ret=ssl3_send_client_verify(s);
+    #####:  450:			if (ret <= 0) goto end;
+    #####:  451:			s->state=SSL3_ST_CW_CHANGE_A;
+    #####:  452:			s->init_num=0;
+    #####:  453:			s->s3->change_cipher_spec=0;
+    #####:  454:			break;
+        -:  455:
+        -:  456:		case SSL3_ST_CW_CHANGE_A:
+        -:  457:		case SSL3_ST_CW_CHANGE_B:
+    10000:  458:			ret=ssl3_send_change_cipher_spec(s,
+        -:  459:				SSL3_ST_CW_CHANGE_A,SSL3_ST_CW_CHANGE_B);
+    10000:  460:			if (ret <= 0) goto end;
+        -:  461:
+        -:  462:#if defined(OPENSSL_NO_TLSEXT) || defined(OPENSSL_NO_NEXTPROTONEG)
+        -:  463:			s->state=SSL3_ST_CW_FINISHED_A;
+        -:  464:#else
+    10000:  465:			if (s->s3->next_proto_neg_seen)
+    #####:  466:				s->state=SSL3_ST_CW_NEXT_PROTO_A;
+        -:  467:			else
+    10000:  468:				s->state=SSL3_ST_CW_FINISHED_A;
+        -:  469:#endif
+    10000:  470:			s->init_num=0;
+        -:  471:
+    10000:  472:			s->session->cipher=s->s3->tmp.new_cipher;
+        -:  473:#ifdef OPENSSL_NO_COMP
+        -:  474:			s->session->compress_meth=0;
+        -:  475:#else
+    10000:  476:			if (s->s3->tmp.new_compression == NULL)
+    10000:  477:				s->session->compress_meth=0;
+        -:  478:			else
+    #####:  479:				s->session->compress_meth=
+    #####:  480:					s->s3->tmp.new_compression->id;
+        -:  481:#endif
+    10000:  482:			if (!s->method->ssl3_enc->setup_key_block(s))
+        -:  483:				{
+        -:  484:				ret= -1;
+        -:  485:				goto end;
+        -:  486:				}
+        -:  487:
+    10000:  488:			if (!s->method->ssl3_enc->change_cipher_state(s,
+        -:  489:				SSL3_CHANGE_CIPHER_CLIENT_WRITE))
+        -:  490:				{
+        -:  491:				ret= -1;
+        -:  492:				goto end;
+        -:  493:				}
+        -:  494:
+        -:  495:			break;
+        -:  496:
+        -:  497:#if !defined(OPENSSL_NO_TLSEXT) && !defined(OPENSSL_NO_NEXTPROTONEG)
+        -:  498:		case SSL3_ST_CW_NEXT_PROTO_A:
+        -:  499:		case SSL3_ST_CW_NEXT_PROTO_B:
+    #####:  500:			ret=ssl3_send_next_proto(s);
+    #####:  501:			if (ret <= 0) goto end;
+    #####:  502:			s->state=SSL3_ST_CW_FINISHED_A;
+    #####:  503:			break;
+        -:  504:#endif
+        -:  505:
+        -:  506:		case SSL3_ST_CW_FINISHED_A:
+        -:  507:		case SSL3_ST_CW_FINISHED_B:
+    10000:  508:			ret=ssl3_send_finished(s,
+        -:  509:				SSL3_ST_CW_FINISHED_A,SSL3_ST_CW_FINISHED_B,
+        -:  510:				s->method->ssl3_enc->client_finished_label,
+    10000:  511:				s->method->ssl3_enc->client_finished_label_len);
+    10000:  512:			if (ret <= 0) goto end;
+    10000:  513:			s->state=SSL3_ST_CW_FLUSH;
+        -:  514:
+        -:  515:			/* clear flags */
+    10000:  516:			s->s3->flags&= ~SSL3_FLAGS_POP_BUFFER;
+    10000:  517:			if (s->hit)
+        -:  518:				{
+    #####:  519:				s->s3->tmp.next_state=SSL_ST_OK;
+    #####:  520:				if (s->s3->flags & SSL3_FLAGS_DELAY_CLIENT_FINISHED)
+        -:  521:					{
+    #####:  522:					s->state=SSL_ST_OK;
+    #####:  523:					s->s3->flags|=SSL3_FLAGS_POP_BUFFER;
+    #####:  524:					s->s3->delay_buf_pop_ret=0;
+        -:  525:					}
+        -:  526:				}
+        -:  527:			else
+        -:  528:				{
+        -:  529:#ifndef OPENSSL_NO_TLSEXT
+        -:  530:				/* Allow NewSessionTicket if ticket expected */
+    10000:  531:				if (s->tlsext_ticket_expected)
+    10000:  532:					s->s3->tmp.next_state=SSL3_ST_CR_SESSION_TICKET_A;
+        -:  533:				else
+        -:  534:#endif
+        -:  535:				
+    #####:  536:				s->s3->tmp.next_state=SSL3_ST_CR_FINISHED_A;
+        -:  537:				}
+    10000:  538:			s->init_num=0;
+    10000:  539:			break;
+        -:  540:
+        -:  541:#ifndef OPENSSL_NO_TLSEXT
+        -:  542:		case SSL3_ST_CR_SESSION_TICKET_A:
+        -:  543:		case SSL3_ST_CR_SESSION_TICKET_B:
+    10000:  544:			ret=ssl3_get_new_session_ticket(s);
+    10000:  545:			if (ret <= 0) goto end;
+    10000:  546:			s->state=SSL3_ST_CR_FINISHED_A;
+    10000:  547:			s->init_num=0;
+    10000:  548:		break;
+        -:  549:
+        -:  550:		case SSL3_ST_CR_CERT_STATUS_A:
+        -:  551:		case SSL3_ST_CR_CERT_STATUS_B:
+    #####:  552:			ret=ssl3_get_cert_status(s);
+    #####:  553:			if (ret <= 0) goto end;
+    #####:  554:			s->state=SSL3_ST_CR_KEY_EXCH_A;
+    #####:  555:			s->init_num=0;
+    #####:  556:		break;
+        -:  557:#endif
+        -:  558:
+        -:  559:		case SSL3_ST_CR_FINISHED_A:
+        -:  560:		case SSL3_ST_CR_FINISHED_B:
+        -:  561:
+    10000:  562:			ret=ssl3_get_finished(s,SSL3_ST_CR_FINISHED_A,
+        -:  563:				SSL3_ST_CR_FINISHED_B);
+    10000:  564:			if (ret <= 0) goto end;
+        -:  565:
+    10000:  566:			if (s->hit)
+    #####:  567:				s->state=SSL3_ST_CW_CHANGE_A;
+        -:  568:			else
+    10000:  569:				s->state=SSL_ST_OK;
+    10000:  570:			s->init_num=0;
+    10000:  571:			break;
+        -:  572:
+        -:  573:		case SSL3_ST_CW_FLUSH:
+    10000:  574:			s->rwstate=SSL_WRITING;
+    10000:  575:			if (BIO_flush(s->wbio) <= 0)
+        -:  576:				{
+        -:  577:				ret= -1;
+        -:  578:				goto end;
+        -:  579:				}
+    10000:  580:			s->rwstate=SSL_NOTHING;
+    10000:  581:			s->state=s->s3->tmp.next_state;
+    10000:  582:			break;
+        -:  583:
+        -:  584:		case SSL_ST_OK:
+        -:  585:			/* clean a few things up */
+    10000:  586:			ssl3_cleanup_key_block(s);
+        -:  587:
+    10000:  588:			if (s->init_buf != NULL)
+        -:  589:				{
+    10000:  590:				BUF_MEM_free(s->init_buf);
+    10000:  591:				s->init_buf=NULL;
+        -:  592:				}
+        -:  593:
+        -:  594:			/* If we are not 'joining' the last two packets,
+        -:  595:			 * remove the buffering now */
+    10000:  596:			if (!(s->s3->flags & SSL3_FLAGS_POP_BUFFER))
+    10000:  597:				ssl_free_wbio_buffer(s);
+        -:  598:			/* else do it later in ssl3_write */
+        -:  599:
+    10000:  600:			s->init_num=0;
+    10000:  601:			s->renegotiate=0;
+    10000:  602:			s->new_session=0;
+        -:  603:
+    10000:  604:			ssl_update_cache(s,SSL_SESS_CACHE_CLIENT);
+    10000:  605:			if (s->hit) s->ctx->stats.sess_hit++;
+        -:  606:
+        -:  607:			ret=1;
+        -:  608:			/* s->server=0; */
+    10000:  609:			s->handshake_func=ssl3_connect;
+    10000:  610:			s->ctx->stats.sess_connect_good++;
+        -:  611:
+    10000:  612:			if (cb != NULL) cb(s,SSL_CB_HANDSHAKE_DONE,1);
+        -:  613:
+        -:  614:			goto end;
+        -:  615:			/* break; */
+        -:  616:			
+        -:  617:		default:
+    #####:  618:			SSLerr(SSL_F_SSL3_CONNECT,SSL_R_UNKNOWN_STATE);
+        -:  619:			ret= -1;
+    #####:  620:			goto end;
+        -:  621:			/* break; */
+        -:  622:			}
+        -:  623:
+        -:  624:		/* did we do anything */
+   110000:  625:		if (!s->s3->tmp.reuse_message && !skip)
+        -:  626:			{
+    90000:  627:			if (s->debug)
+        -:  628:				{
+    #####:  629:				if ((ret=BIO_flush(s->wbio)) <= 0)
+        -:  630:					goto end;
+        -:  631:				}
+        -:  632:
+    90000:  633:			if ((cb != NULL) && (s->state != state))
+        -:  634:				{
+        -:  635:				new_state=s->state;
+    #####:  636:				s->state=state;
+    #####:  637:				cb(s,SSL_CB_CONNECT_LOOP,1);
+    #####:  638:				s->state=new_state;
+        -:  639:				}
+        -:  640:			}
+        -:  641:		skip=0;
+        -:  642:		}
+        -:  643:end:
+    10000:  644:	s->in_handshake--;
+    10000:  645:	if (buf != NULL)
+    #####:  646:		BUF_MEM_free(buf);
+    10000:  647:	if (cb != NULL)
+    #####:  648:		cb(s,SSL_CB_CONNECT_EXIT,ret);
+    10000:  649:	return(ret);
+        -:  650:	}
+        -:  651:
+        -:  652:
+    #####:  653:int ssl3_client_hello(SSL *s)
+        -:  654:	{
+        -:  655:	unsigned char *buf;
+        -:  656:	unsigned char *p,*d;
+        -:  657:	int i;
+        -:  658:	unsigned long Time,l;
+        -:  659:#ifndef OPENSSL_NO_COMP
+        -:  660:	int j;
+        -:  661:	SSL_COMP *comp;
+        -:  662:#endif
+        -:  663:
+    #####:  664:	buf=(unsigned char *)s->init_buf->data;
+    #####:  665:	if (s->state == SSL3_ST_CW_CLNT_HELLO_A)
+        -:  666:		{
+    #####:  667:		SSL_SESSION *sess = s->session;
+    #####:  668:		if ((sess == NULL) ||
+    #####:  669:			(sess->ssl_version != s->version) ||
+        -:  670:#ifdef OPENSSL_NO_TLSEXT
+        -:  671:			!sess->session_id_length ||
+        -:  672:#else
+    #####:  673:			(!sess->session_id_length && !sess->tlsext_tick) ||
+        -:  674:#endif
+    #####:  675:			(sess->not_resumable))
+        -:  676:			{
+    #####:  677:			if (!ssl_get_new_session(s,0))
+        -:  678:				goto err;
+        -:  679:			}
+        -:  680:		/* else use the pre-loaded session */
+        -:  681:
+    #####:  682:		p=s->s3->client_random;
+    #####:  683:		Time=(unsigned long)time(NULL);			/* Time */
+    #####:  684:		l2n(Time,p);
+    #####:  685:		if (RAND_pseudo_bytes(p,SSL3_RANDOM_SIZE-4) <= 0)
+        -:  686:			goto err;
+        -:  687:
+        -:  688:		/* Do the message type and length last */
+    #####:  689:		d=p= &(buf[4]);
+        -:  690:
+        -:  691:		/* version indicates the negotiated version: for example from
+        -:  692:		 * an SSLv2/v3 compatible client hello). The client_version
+        -:  693:		 * field is the maximum version we permit and it is also
+        -:  694:		 * used in RSA encrypted premaster secrets. Some servers can
+        -:  695:		 * choke if we initially report a higher version then
+        -:  696:		 * renegotiate to a lower one in the premaster secret. This
+        -:  697:		 * didn't happen with TLS 1.0 as most servers supported it
+        -:  698:		 * but it can with TLS 1.1 or later if the server only supports
+        -:  699:		 * 1.0.
+        -:  700:		 *
+        -:  701:		 * Possible scenario with previous logic:
+        -:  702:		 * 	1. Client hello indicates TLS 1.2
+        -:  703:		 * 	2. Server hello says TLS 1.0
+        -:  704:		 *	3. RSA encrypted premaster secret uses 1.2.
+        -:  705:		 * 	4. Handhaked proceeds using TLS 1.0.
+        -:  706:		 *	5. Server sends hello request to renegotiate.
+        -:  707:		 *	6. Client hello indicates TLS v1.0 as we now
+        -:  708:		 *	   know that is maximum server supports.
+        -:  709:		 *	7. Server chokes on RSA encrypted premaster secret
+        -:  710:		 *	   containing version 1.0.
+        -:  711:		 *
+        -:  712:		 * For interoperability it should be OK to always use the
+        -:  713:		 * maximum version we support in client hello and then rely
+        -:  714:		 * on the checking of version to ensure the servers isn't
+        -:  715:		 * being inconsistent: for example initially negotiating with
+        -:  716:		 * TLS 1.0 and renegotiating with TLS 1.2. We do this by using
+        -:  717:		 * client_version in client hello and not resetting it to
+        -:  718:		 * the negotiated version.
+        -:  719:		 */
+        -:  720:#if 0
+        -:  721:		*(p++)=s->version>>8;
+        -:  722:		*(p++)=s->version&0xff;
+        -:  723:		s->client_version=s->version;
+        -:  724:#else
+    #####:  725:		*(p++)=s->client_version>>8;
+    #####:  726:		*(p++)=s->client_version&0xff;
+        -:  727:#endif
+        -:  728:
+        -:  729:		/* Random stuff */
+    #####:  730:		memcpy(p,s->s3->client_random,SSL3_RANDOM_SIZE);
+        -:  731:		p+=SSL3_RANDOM_SIZE;
+        -:  732:
+        -:  733:		/* Session ID */
+    #####:  734:		if (s->new_session)
+        -:  735:			i=0;
+        -:  736:		else
+    #####:  737:			i=s->session->session_id_length;
+    #####:  738:		*(p++)=i;
+    #####:  739:		if (i != 0)
+        -:  740:			{
+    #####:  741:			if (i > (int)sizeof(s->session->session_id))
+        -:  742:				{
+    #####:  743:				SSLerr(SSL_F_SSL3_CLIENT_HELLO, ERR_R_INTERNAL_ERROR);
+    #####:  744:				goto err;
+        -:  745:				}
+    #####:  746:			memcpy(p,s->session->session_id,i);
+    #####:  747:			p+=i;
+        -:  748:			}
+        -:  749:		
+        -:  750:		/* Ciphers supported */
+    #####:  751:		i=ssl_cipher_list_to_bytes(s,SSL_get_ciphers(s),&(p[2]),0);
+    #####:  752:		if (i == 0)
+        -:  753:			{
+    #####:  754:			SSLerr(SSL_F_SSL3_CLIENT_HELLO,SSL_R_NO_CIPHERS_AVAILABLE);
+    #####:  755:			goto err;
+        -:  756:			}
+        -:  757:#ifdef OPENSSL_MAX_TLS1_2_CIPHER_LENGTH
+        -:  758:			/* Some servers hang if client hello > 256 bytes
+        -:  759:			 * as hack workaround chop number of supported ciphers
+        -:  760:			 * to keep it well below this if we use TLS v1.2
+        -:  761:			 */
+        -:  762:			if (TLS1_get_version(s) >= TLS1_2_VERSION
+        -:  763:				&& i > OPENSSL_MAX_TLS1_2_CIPHER_LENGTH)
+        -:  764:				i = OPENSSL_MAX_TLS1_2_CIPHER_LENGTH & ~1;
+        -:  765:#endif
+    #####:  766:		s2n(i,p);
+    #####:  767:		p+=i;
+        -:  768:
+        -:  769:		/* COMPRESSION */
+        -:  770:#ifdef OPENSSL_NO_COMP
+        -:  771:		*(p++)=1;
+        -:  772:#else
+        -:  773:
+    #####:  774:		if ((s->options & SSL_OP_NO_COMPRESSION)
+    #####:  775:					|| !s->ctx->comp_methods)
+        -:  776:			j=0;
+        -:  777:		else
+    #####:  778:			j=sk_SSL_COMP_num(s->ctx->comp_methods);
+    #####:  779:		*(p++)=1+j;
+    #####:  780:		for (i=0; i<j; i++)
+        -:  781:			{
+    #####:  782:			comp=sk_SSL_COMP_value(s->ctx->comp_methods,i);
+    #####:  783:			*(p++)=comp->id;
+        -:  784:			}
+        -:  785:#endif
+    #####:  786:		*(p++)=0; /* Add the NULL method */
+        -:  787:
+        -:  788:#ifndef OPENSSL_NO_TLSEXT
+        -:  789:		/* TLS extensions*/
+    #####:  790:		if (ssl_prepare_clienthello_tlsext(s) <= 0)
+        -:  791:			{
+    #####:  792:			SSLerr(SSL_F_SSL3_CLIENT_HELLO,SSL_R_CLIENTHELLO_TLSEXT);
+    #####:  793:			goto err;
+        -:  794:			}
+    #####:  795:		if ((p = ssl_add_clienthello_tlsext(s, p, buf+SSL3_RT_MAX_PLAIN_LENGTH)) == NULL)
+        -:  796:			{
+    #####:  797:			SSLerr(SSL_F_SSL3_CLIENT_HELLO,ERR_R_INTERNAL_ERROR);
+    #####:  798:			goto err;
+        -:  799:			}
+        -:  800:#endif
+        -:  801:		
+    #####:  802:		l=(p-d);
+        -:  803:		d=buf;
+    #####:  804:		*(d++)=SSL3_MT_CLIENT_HELLO;
+    #####:  805:		l2n3(l,d);
+        -:  806:
+    #####:  807:		s->state=SSL3_ST_CW_CLNT_HELLO_B;
+        -:  808:		/* number of bytes to write */
+    #####:  809:		s->init_num=p-buf;
+    #####:  810:		s->init_off=0;
+        -:  811:		}
+        -:  812:
+        -:  813:	/* SSL3_ST_CW_CLNT_HELLO_B */
+    #####:  814:	return(ssl3_do_write(s,SSL3_RT_HANDSHAKE));
+        -:  815:err:
+        -:  816:	return(-1);
+        -:  817:	}
+        -:  818:
+    10000:  819:int ssl3_get_server_hello(SSL *s)
+        -:  820:	{
+        -:  821:	STACK_OF(SSL_CIPHER) *sk;
+        -:  822:	const SSL_CIPHER *c;
+        -:  823:	unsigned char *p,*d;
+        -:  824:	int i,al,ok;
+        -:  825:	unsigned int j;
+        -:  826:	long n;
+        -:  827:#ifndef OPENSSL_NO_COMP
+        -:  828:	SSL_COMP *comp;
+        -:  829:#endif
+        -:  830:
+    10000:  831:	n=s->method->ssl_get_message(s,
+        -:  832:		SSL3_ST_CR_SRVR_HELLO_A,
+        -:  833:		SSL3_ST_CR_SRVR_HELLO_B,
+        -:  834:		-1,
+        -:  835:		20000, /* ?? */
+        -:  836:		&ok);
+        -:  837:
+    10000:  838:	if (!ok) return((int)n);
+        -:  839:
+    10000:  840:	if ( SSL_version(s) == DTLS1_VERSION || SSL_version(s) == DTLS1_BAD_VER)
+        -:  841:		{
+    #####:  842:		if ( s->s3->tmp.message_type == DTLS1_MT_HELLO_VERIFY_REQUEST)
+        -:  843:			{
+    #####:  844:			if ( s->d1->send_cookie == 0)
+        -:  845:				{
+    #####:  846:				s->s3->tmp.reuse_message = 1;
+    #####:  847:				return 1;
+        -:  848:				}
+        -:  849:			else /* already sent a cookie */
+        -:  850:				{
+    #####:  851:				al=SSL_AD_UNEXPECTED_MESSAGE;
+    #####:  852:				SSLerr(SSL_F_SSL3_GET_SERVER_HELLO,SSL_R_BAD_MESSAGE_TYPE);
+    #####:  853:				goto f_err;
+        -:  854:				}
+        -:  855:			}
+        -:  856:		}
+        -:  857:	
+    10000:  858:	if ( s->s3->tmp.message_type != SSL3_MT_SERVER_HELLO)
+        -:  859:		{
+    #####:  860:		al=SSL_AD_UNEXPECTED_MESSAGE;
+    #####:  861:		SSLerr(SSL_F_SSL3_GET_SERVER_HELLO,SSL_R_BAD_MESSAGE_TYPE);
+    #####:  862:		goto f_err;
+        -:  863:		}
+        -:  864:
+    10000:  865:	d=p=(unsigned char *)s->init_msg;
+        -:  866:
+    10000:  867:	if ((p[0] != (s->version>>8)) || (p[1] != (s->version&0xff)))
+        -:  868:		{
+    #####:  869:		SSLerr(SSL_F_SSL3_GET_SERVER_HELLO,SSL_R_WRONG_SSL_VERSION);
+    #####:  870:		s->version=(s->version&0xff00)|p[1];
+    #####:  871:		al=SSL_AD_PROTOCOL_VERSION;
+    #####:  872:		goto f_err;
+        -:  873:		}
+    10000:  874:	p+=2;
+        -:  875:
+        -:  876:	/* load the server hello data */
+        -:  877:	/* load the server random */
+    10000:  878:	memcpy(s->s3->server_random,p,SSL3_RANDOM_SIZE);
+    10000:  879:	p+=SSL3_RANDOM_SIZE;
+        -:  880:
+        -:  881:	/* get the session-id */
+    10000:  882:	j= *(p++);
+        -:  883:
+    10000:  884:	if ((j > sizeof s->session->session_id) || (j > SSL3_SESSION_ID_SIZE))
+        -:  885:		{
+    #####:  886:		al=SSL_AD_ILLEGAL_PARAMETER;
+    #####:  887:		SSLerr(SSL_F_SSL3_GET_SERVER_HELLO,SSL_R_SSL3_SESSION_ID_TOO_LONG);
+    #####:  888:		goto f_err;
+        -:  889:		}
+        -:  890:
+        -:  891:#ifndef OPENSSL_NO_TLSEXT
+        -:  892:	/* check if we want to resume the session based on external pre-shared secret */
+    10000:  893:	if (s->version >= TLS1_VERSION && s->tls_session_secret_cb)
+        -:  894:		{
+    #####:  895:		SSL_CIPHER *pref_cipher=NULL;
+    #####:  896:		s->session->master_key_length=sizeof(s->session->master_key);
+    #####:  897:		if (s->tls_session_secret_cb(s, s->session->master_key,
+        -:  898:					     &s->session->master_key_length,
+        -:  899:					     NULL, &pref_cipher,
+        -:  900:					     s->tls_session_secret_cb_arg))
+        -:  901:			{
+    #####:  902:			s->session->cipher = pref_cipher ?
+    #####:  903:				pref_cipher : ssl_get_cipher_by_char(s, p+j);
+        -:  904:			}
+        -:  905:		}
+        -:  906:#endif /* OPENSSL_NO_TLSEXT */
+        -:  907:
+    10000:  908:	if (j != 0 && j == s->session->session_id_length
+    #####:  909:	    && memcmp(p,s->session->session_id,j) == 0)
+        -:  910:	    {
+    #####:  911:	    if(s->sid_ctx_length != s->session->sid_ctx_length
+    #####:  912:	       || memcmp(s->session->sid_ctx,s->sid_ctx,s->sid_ctx_length))
+        -:  913:		{
+        -:  914:		/* actually a client application bug */
+    #####:  915:		al=SSL_AD_ILLEGAL_PARAMETER;
+    #####:  916:		SSLerr(SSL_F_SSL3_GET_SERVER_HELLO,SSL_R_ATTEMPT_TO_REUSE_SESSION_IN_DIFFERENT_CONTEXT);
+    #####:  917:		goto f_err;
+        -:  918:		}
+    #####:  919:	    s->hit=1;
+        -:  920:	    }
+        -:  921:	else	/* a miss or crap from the other end */
+        -:  922:		{
+        -:  923:		/* If we were trying for session-id reuse, make a new
+        -:  924:		 * SSL_SESSION so we don't stuff up other people */
+    10000:  925:		s->hit=0;
+    10000:  926:		if (s->session->session_id_length > 0)
+        -:  927:			{
+    #####:  928:			if (!ssl_get_new_session(s,0))
+        -:  929:				{
+    #####:  930:				al=SSL_AD_INTERNAL_ERROR;
+    #####:  931:				goto f_err;
+        -:  932:				}
+        -:  933:			}
+    10000:  934:		s->session->session_id_length=j;
+    10000:  935:		memcpy(s->session->session_id,p,j); /* j could be 0 */
+        -:  936:		}
+    10000:  937:	p+=j;
+    10000:  938:	c=ssl_get_cipher_by_char(s,p);
+    10000:  939:	if (c == NULL)
+        -:  940:		{
+        -:  941:		/* unknown cipher */
+    #####:  942:		al=SSL_AD_ILLEGAL_PARAMETER;
+    #####:  943:		SSLerr(SSL_F_SSL3_GET_SERVER_HELLO,SSL_R_UNKNOWN_CIPHER_RETURNED);
+    #####:  944:		goto f_err;
+        -:  945:		}
+        -:  946:	/* TLS v1.2 only ciphersuites require v1.2 or later */
+    20000:  947:	if ((c->algorithm_ssl & SSL_TLSV1_2) && 
+    20000:  948:		(TLS1_get_version(s) < TLS1_2_VERSION))
+        -:  949:		{
+    #####:  950:		al=SSL_AD_ILLEGAL_PARAMETER;
+    #####:  951:		SSLerr(SSL_F_SSL3_GET_SERVER_HELLO,SSL_R_WRONG_CIPHER_RETURNED);
+    #####:  952:		goto f_err;
+        -:  953:		}
+    10000:  954:	p+=ssl_put_cipher_by_char(s,NULL,NULL);
+        -:  955:
+    10000:  956:	sk=ssl_get_ciphers_by_id(s);
+    10000:  957:	i=sk_SSL_CIPHER_find(sk,c);
+    10000:  958:	if (i < 0)
+        -:  959:		{
+        -:  960:		/* we did not say we would use this cipher */
+    #####:  961:		al=SSL_AD_ILLEGAL_PARAMETER;
+    #####:  962:		SSLerr(SSL_F_SSL3_GET_SERVER_HELLO,SSL_R_WRONG_CIPHER_RETURNED);
+    #####:  963:		goto f_err;
+        -:  964:		}
+        -:  965:
+        -:  966:	/* Depending on the session caching (internal/external), the cipher
+        -:  967:	   and/or cipher_id values may not be set. Make sure that
+        -:  968:	   cipher_id is set and use it for comparison. */
+    10000:  969:	if (s->session->cipher)
+    #####:  970:		s->session->cipher_id = s->session->cipher->id;
+    10000:  971:	if (s->hit && (s->session->cipher_id != c->id))
+        -:  972:		{
+        -:  973:/* Workaround is now obsolete */
+        -:  974:#if 0
+        -:  975:		if (!(s->options &
+        -:  976:			SSL_OP_NETSCAPE_REUSE_CIPHER_CHANGE_BUG))
+        -:  977:#endif
+        -:  978:			{
+    #####:  979:			al=SSL_AD_ILLEGAL_PARAMETER;
+    #####:  980:			SSLerr(SSL_F_SSL3_GET_SERVER_HELLO,SSL_R_OLD_SESSION_CIPHER_NOT_RETURNED);
+    #####:  981:			goto f_err;
+        -:  982:			}
+        -:  983:		}
+    10000:  984:	s->s3->tmp.new_cipher=c;
+        -:  985:	/* Don't digest cached records if TLS v1.2: we may need them for
+        -:  986:	 * client authentication.
+        -:  987:	 */
+    10000:  988:	if (TLS1_get_version(s) < TLS1_2_VERSION && !ssl3_digest_cached_records(s))
+        -:  989:		{
+    #####:  990:		al = SSL_AD_INTERNAL_ERROR;
+    #####:  991:		goto f_err;
+        -:  992:		}
+        -:  993:	/* lets get the compression algorithm */
+        -:  994:	/* COMPRESSION */
+        -:  995:#ifdef OPENSSL_NO_COMP
+        -:  996:	if (*(p++) != 0)
+        -:  997:		{
+        -:  998:		al=SSL_AD_ILLEGAL_PARAMETER;
+        -:  999:		SSLerr(SSL_F_SSL3_GET_SERVER_HELLO,SSL_R_UNSUPPORTED_COMPRESSION_ALGORITHM);
+        -: 1000:		goto f_err;
+        -: 1001:		}
+        -: 1002:	/* If compression is disabled we'd better not try to resume a session
+        -: 1003:	 * using compression.
+        -: 1004:	 */
+        -: 1005:	if (s->session->compress_meth != 0)
+        -: 1006:		{
+        -: 1007:		al=SSL_AD_INTERNAL_ERROR;
+        -: 1008:		SSLerr(SSL_F_SSL3_GET_SERVER_HELLO,SSL_R_INCONSISTENT_COMPRESSION);
+        -: 1009:		goto f_err;
+        -: 1010:		}
+        -: 1011:#else
+    10000: 1012:	j= *(p++);
+    10000: 1013:	if (s->hit && j != s->session->compress_meth)
+        -: 1014:		{
+    #####: 1015:		al=SSL_AD_ILLEGAL_PARAMETER;
+    #####: 1016:		SSLerr(SSL_F_SSL3_GET_SERVER_HELLO,SSL_R_OLD_SESSION_COMPRESSION_ALGORITHM_NOT_RETURNED);
+    #####: 1017:		goto f_err;
+        -: 1018:		}
+    10000: 1019:	if (j == 0)
+        -: 1020:		comp=NULL;
+    #####: 1021:	else if (s->options & SSL_OP_NO_COMPRESSION)
+        -: 1022:		{
+    #####: 1023:		al=SSL_AD_ILLEGAL_PARAMETER;
+    #####: 1024:		SSLerr(SSL_F_SSL3_GET_SERVER_HELLO,SSL_R_COMPRESSION_DISABLED);
+    #####: 1025:		goto f_err;
+        -: 1026:		}
+        -: 1027:	else
+    #####: 1028:		comp=ssl3_comp_find(s->ctx->comp_methods,j);
+        -: 1029:	
+    10000: 1030:	if ((j != 0) && (comp == NULL))
+        -: 1031:		{
+    #####: 1032:		al=SSL_AD_ILLEGAL_PARAMETER;
+    #####: 1033:		SSLerr(SSL_F_SSL3_GET_SERVER_HELLO,SSL_R_UNSUPPORTED_COMPRESSION_ALGORITHM);
+    #####: 1034:		goto f_err;
+        -: 1035:		}
+        -: 1036:	else
+        -: 1037:		{
+    10000: 1038:		s->s3->tmp.new_compression=comp;
+        -: 1039:		}
+        -: 1040:#endif
+        -: 1041:
+        -: 1042:#ifndef OPENSSL_NO_TLSEXT
+        -: 1043:	/* TLS extensions*/
+    10000: 1044:	if (s->version >= SSL3_VERSION)
+        -: 1045:		{
+    10000: 1046:		if (!ssl_parse_serverhello_tlsext(s,&p,d,n, &al))
+        -: 1047:			{
+        -: 1048:			/* 'al' set by ssl_parse_serverhello_tlsext */
+    #####: 1049:			SSLerr(SSL_F_SSL3_GET_SERVER_HELLO,SSL_R_PARSE_TLSEXT);
+    #####: 1050:			goto f_err; 
+        -: 1051:			}
+    10000: 1052:		if (ssl_check_serverhello_tlsext(s) <= 0)
+        -: 1053:			{
+    #####: 1054:			SSLerr(SSL_F_SSL3_GET_SERVER_HELLO,SSL_R_SERVERHELLO_TLSEXT);
+    #####: 1055:				goto err;
+        -: 1056:			}
+        -: 1057:		}
+        -: 1058:#endif
+        -: 1059:
+    10000: 1060:	if (p != (d+n))
+        -: 1061:		{
+        -: 1062:		/* wrong packet length */
+    #####: 1063:		al=SSL_AD_DECODE_ERROR;
+    #####: 1064:		SSLerr(SSL_F_SSL3_GET_SERVER_HELLO,SSL_R_BAD_PACKET_LENGTH);
+    #####: 1065:		goto f_err;
+        -: 1066:		}
+        -: 1067:
+        -: 1068:	return(1);
+        -: 1069:f_err:
+    #####: 1070:	ssl3_send_alert(s,SSL3_AL_FATAL,al);
+        -: 1071:err:
+        -: 1072:	return(-1);
+        -: 1073:	}
+        -: 1074:
+    10000: 1075:int ssl3_get_server_certificate(SSL *s)
+        -: 1076:	{
+        -: 1077:	int al,i,ok,ret= -1;
+        -: 1078:	unsigned long n,nc,llen,l;
+        -: 1079:	X509 *x=NULL;
+        -: 1080:	const unsigned char *q,*p;
+        -: 1081:	unsigned char *d;
+        -: 1082:	STACK_OF(X509) *sk=NULL;
+        -: 1083:	SESS_CERT *sc;
+        -: 1084:	EVP_PKEY *pkey=NULL;
+        -: 1085:	int need_cert = 1; /* VRS: 0=> will allow null cert if auth == KRB5 */
+        -: 1086:
+    10000: 1087:	n=s->method->ssl_get_message(s,
+        -: 1088:		SSL3_ST_CR_CERT_A,
+        -: 1089:		SSL3_ST_CR_CERT_B,
+        -: 1090:		-1,
+        -: 1091:		s->max_cert_list,
+        -: 1092:		&ok);
+        -: 1093:
+    10000: 1094:	if (!ok) return((int)n);
+        -: 1095:
+    20000: 1096:	if ((s->s3->tmp.message_type == SSL3_MT_SERVER_KEY_EXCHANGE) ||
+    10000: 1097:		((s->s3->tmp.new_cipher->algorithm_auth & SSL_aKRB5) && 
+        -: 1098:		(s->s3->tmp.message_type == SSL3_MT_SERVER_DONE)))
+        -: 1099:		{
+    #####: 1100:		s->s3->tmp.reuse_message=1;
+    #####: 1101:		return(1);
+        -: 1102:		}
+        -: 1103:
+    10000: 1104:	if (s->s3->tmp.message_type != SSL3_MT_CERTIFICATE)
+        -: 1105:		{
+        -: 1106:		al=SSL_AD_UNEXPECTED_MESSAGE;
+    #####: 1107:		SSLerr(SSL_F_SSL3_GET_SERVER_CERTIFICATE,SSL_R_BAD_MESSAGE_TYPE);
+    #####: 1108:		goto f_err;
+        -: 1109:		}
+    10000: 1110:	p=d=(unsigned char *)s->init_msg;
+        -: 1111:
+    10000: 1112:	if ((sk=sk_X509_new_null()) == NULL)
+        -: 1113:		{
+    #####: 1114:		SSLerr(SSL_F_SSL3_GET_SERVER_CERTIFICATE,ERR_R_MALLOC_FAILURE);
+    #####: 1115:		goto err;
+        -: 1116:		}
+        -: 1117:
+    10000: 1118:	n2l3(p,llen);
+    10000: 1119:	if (llen+3 != n)
+        -: 1120:		{
+        -: 1121:		al=SSL_AD_DECODE_ERROR;
+    #####: 1122:		SSLerr(SSL_F_SSL3_GET_SERVER_CERTIFICATE,SSL_R_LENGTH_MISMATCH);
+    #####: 1123:		goto f_err;
+        -: 1124:		}
+    29975: 1125:	for (nc=0; nc<llen; )
+        -: 1126:		{
+    19975: 1127:		n2l3(p,l);
+    19975: 1128:		if ((l+nc+3) > llen)
+        -: 1129:			{
+        -: 1130:			al=SSL_AD_DECODE_ERROR;
+    #####: 1131:			SSLerr(SSL_F_SSL3_GET_SERVER_CERTIFICATE,SSL_R_CERT_LENGTH_MISMATCH);
+    #####: 1132:			goto f_err;
+        -: 1133:			}
+        -: 1134:
+    19975: 1135:		q=p;
+    19975: 1136:		x=d2i_X509(NULL,&q,l);
+    19975: 1137:		if (x == NULL)
+        -: 1138:			{
+        -: 1139:			al=SSL_AD_BAD_CERTIFICATE;
+    #####: 1140:			SSLerr(SSL_F_SSL3_GET_SERVER_CERTIFICATE,ERR_R_ASN1_LIB);
+    #####: 1141:			goto f_err;
+        -: 1142:			}
+    19975: 1143:		if (q != (p+l))
+        -: 1144:			{
+        -: 1145:			al=SSL_AD_DECODE_ERROR;
+    #####: 1146:			SSLerr(SSL_F_SSL3_GET_SERVER_CERTIFICATE,SSL_R_CERT_LENGTH_MISMATCH);
+    #####: 1147:			goto f_err;
+        -: 1148:			}
+    19975: 1149:		if (!sk_X509_push(sk,x))
+        -: 1150:			{
+    #####: 1151:			SSLerr(SSL_F_SSL3_GET_SERVER_CERTIFICATE,ERR_R_MALLOC_FAILURE);
+    #####: 1152:			goto err;
+        -: 1153:			}
+        -: 1154:		x=NULL;
+        -: 1155:		nc+=l+3;
+    19975: 1156:		p=q;
+        -: 1157:		}
+        -: 1158:
+    10000: 1159:	i=ssl_verify_cert_chain(s,sk);
+    10000: 1160:	if ((s->verify_mode != SSL_VERIFY_NONE) && (i <= 0)
+        -: 1161:#ifndef OPENSSL_NO_KRB5
+        -: 1162:	    && !((s->s3->tmp.new_cipher->algorithm_mkey & SSL_kKRB5) &&
+        -: 1163:		 (s->s3->tmp.new_cipher->algorithm_auth & SSL_aKRB5))
+        -: 1164:#endif /* OPENSSL_NO_KRB5 */
+        -: 1165:		)
+        -: 1166:		{
+    #####: 1167:		al=ssl_verify_alarm_type(s->verify_result);
+    #####: 1168:		SSLerr(SSL_F_SSL3_GET_SERVER_CERTIFICATE,SSL_R_CERTIFICATE_VERIFY_FAILED);
+    #####: 1169:		goto f_err; 
+        -: 1170:		}
+    10000: 1171:	ERR_clear_error(); /* but we keep s->verify_result */
+        -: 1172:
+    10000: 1173:	sc=ssl_sess_cert_new();
+    10000: 1174:	if (sc == NULL) goto err;
+        -: 1175:
+    10000: 1176:	if (s->session->sess_cert) ssl_sess_cert_free(s->session->sess_cert);
+    10000: 1177:	s->session->sess_cert=sc;
+        -: 1178:
+    10000: 1179:	sc->cert_chain=sk;
+        -: 1180:	/* Inconsistency alert: cert_chain does include the peer's
+        -: 1181:	 * certificate, which we don't include in s3_srvr.c */
+    10000: 1182:	x=sk_X509_value(sk,0);
+        -: 1183:	sk=NULL;
+        -: 1184: 	/* VRS 19990621: possible memory leak; sk=null ==> !sk_pop_free() @end*/
+        -: 1185:
+    10000: 1186:	pkey=X509_get_pubkey(x);
+        -: 1187:
+        -: 1188:	/* VRS: allow null cert if auth == KRB5 */
+    10000: 1189:	need_cert = ((s->s3->tmp.new_cipher->algorithm_mkey & SSL_kKRB5) &&
+    #####: 1190:	            (s->s3->tmp.new_cipher->algorithm_auth & SSL_aKRB5))
+    10000: 1191:	            ? 0 : 1;
+        -: 1192:
+        -: 1193:#ifdef KSSL_DEBUG
+        -: 1194:	printf("pkey,x = %p, %p\n", pkey,x);
+        -: 1195:	printf("ssl_cert_type(x,pkey) = %d\n", ssl_cert_type(x,pkey));
+        -: 1196:	printf("cipher, alg, nc = %s, %lx, %lx, %d\n", s->s3->tmp.new_cipher->name,
+        -: 1197:		s->s3->tmp.new_cipher->algorithm_mkey, s->s3->tmp.new_cipher->algorithm_auth, need_cert);
+        -: 1198:#endif    /* KSSL_DEBUG */
+        -: 1199:
+    10000: 1200:	if (need_cert && ((pkey == NULL) || EVP_PKEY_missing_parameters(pkey)))
+        -: 1201:		{
+        -: 1202:		x=NULL;
+        -: 1203:		al=SSL3_AL_FATAL;
+    #####: 1204:		SSLerr(SSL_F_SSL3_GET_SERVER_CERTIFICATE,
+        -: 1205:			SSL_R_UNABLE_TO_FIND_PUBLIC_KEY_PARAMETERS);
+    #####: 1206:		goto f_err;
+        -: 1207:		}
+        -: 1208:
+    10000: 1209:	i=ssl_cert_type(x,pkey);
+    10000: 1210:	if (need_cert && i < 0)
+        -: 1211:		{
+        -: 1212:		x=NULL;
+        -: 1213:		al=SSL3_AL_FATAL;
+    #####: 1214:		SSLerr(SSL_F_SSL3_GET_SERVER_CERTIFICATE,
+        -: 1215:			SSL_R_UNKNOWN_CERTIFICATE_TYPE);
+    #####: 1216:		goto f_err;
+        -: 1217:		}
+        -: 1218:
+    10000: 1219:	if (need_cert)
+        -: 1220:		{
+    10000: 1221:		sc->peer_cert_type=i;
+    10000: 1222:		CRYPTO_add(&x->references,1,CRYPTO_LOCK_X509);
+        -: 1223:		/* Why would the following ever happen?
+        -: 1224:		 * We just created sc a couple of lines ago. */
+    10000: 1225:		if (sc->peer_pkeys[i].x509 != NULL)
+    #####: 1226:			X509_free(sc->peer_pkeys[i].x509);
+    10000: 1227:		sc->peer_pkeys[i].x509=x;
+    10000: 1228:		sc->peer_key= &(sc->peer_pkeys[i]);
+        -: 1229:
+    10000: 1230:		if (s->session->peer != NULL)
+    #####: 1231:			X509_free(s->session->peer);
+    10000: 1232:		CRYPTO_add(&x->references,1,CRYPTO_LOCK_X509);
+    10000: 1233:		s->session->peer=x;
+        -: 1234:		}
+        -: 1235:	else
+        -: 1236:		{
+    #####: 1237:		sc->peer_cert_type=i;
+    #####: 1238:		sc->peer_key= NULL;
+        -: 1239:
+    #####: 1240:		if (s->session->peer != NULL)
+    #####: 1241:			X509_free(s->session->peer);
+    #####: 1242:		s->session->peer=NULL;
+        -: 1243:		}
+    10000: 1244:	s->session->verify_result = s->verify_result;
+        -: 1245:
+        -: 1246:	x=NULL;
+        -: 1247:	ret=1;
+        -: 1248:
+        -: 1249:	if (0)
+        -: 1250:		{
+        -: 1251:f_err:
+    #####: 1252:		ssl3_send_alert(s,SSL3_AL_FATAL,al);
+        -: 1253:		}
+        -: 1254:err:
+    10000: 1255:	EVP_PKEY_free(pkey);
+    10000: 1256:	X509_free(x);
+    10000: 1257:	sk_X509_pop_free(sk,X509_free);
+    10000: 1258:	return(ret);
+        -: 1259:	}
+        -: 1260:
+    10000: 1261:int ssl3_get_key_exchange(SSL *s)
+        -: 1262:	{
+        -: 1263:#ifndef OPENSSL_NO_RSA
+        -: 1264:	unsigned char *q,md_buf[EVP_MAX_MD_SIZE*2];
+        -: 1265:#endif
+        -: 1266:	EVP_MD_CTX md_ctx;
+        -: 1267:	unsigned char *param,*p;
+        -: 1268:	int al,i,j,param_len,ok;
+        -: 1269:	long n,alg_k,alg_a;
+        -: 1270:	EVP_PKEY *pkey=NULL;
+        -: 1271:	const EVP_MD *md = NULL;
+        -: 1272:#ifndef OPENSSL_NO_RSA
+        -: 1273:	RSA *rsa=NULL;
+        -: 1274:#endif
+        -: 1275:#ifndef OPENSSL_NO_DH
+        -: 1276:	DH *dh=NULL;
+        -: 1277:#endif
+        -: 1278:#ifndef OPENSSL_NO_ECDH
+        -: 1279:	EC_KEY *ecdh = NULL;
+        -: 1280:	BN_CTX *bn_ctx = NULL;
+        -: 1281:	EC_POINT *srvr_ecpoint = NULL;
+        -: 1282:	int curve_nid = 0;
+        -: 1283:	int encoded_pt_len = 0;
+        -: 1284:#endif
+        -: 1285:
+        -: 1286:	/* use same message size as in ssl3_get_certificate_request()
+        -: 1287:	 * as ServerKeyExchange message may be skipped */
+    10000: 1288:	n=s->method->ssl_get_message(s,
+        -: 1289:		SSL3_ST_CR_KEY_EXCH_A,
+        -: 1290:		SSL3_ST_CR_KEY_EXCH_B,
+        -: 1291:		-1,
+        -: 1292:		s->max_cert_list,
+        -: 1293:		&ok);
+    10000: 1294:	if (!ok) return((int)n);
+        -: 1295:
+    10000: 1296:	if (s->s3->tmp.message_type != SSL3_MT_SERVER_KEY_EXCHANGE)
+        -: 1297:		{
+        -: 1298:#ifndef OPENSSL_NO_PSK
+        -: 1299:		/* In plain PSK ciphersuite, ServerKeyExchange can be
+        -: 1300:		   omitted if no identity hint is sent. Set
+        -: 1301:		   session->sess_cert anyway to avoid problems
+        -: 1302:		   later.*/
+    10000: 1303:		if (s->s3->tmp.new_cipher->algorithm_mkey & SSL_kPSK)
+        -: 1304:			{
+    #####: 1305:			s->session->sess_cert=ssl_sess_cert_new();
+    #####: 1306:			if (s->ctx->psk_identity_hint)
+    #####: 1307:				OPENSSL_free(s->ctx->psk_identity_hint);
+    #####: 1308:			s->ctx->psk_identity_hint = NULL;
+        -: 1309:			}
+        -: 1310:#endif
+    10000: 1311:		s->s3->tmp.reuse_message=1;
+    10000: 1312:		return(1);
+        -: 1313:		}
+        -: 1314:
+    #####: 1315:	param=p=(unsigned char *)s->init_msg;
+    #####: 1316:	if (s->session->sess_cert != NULL)
+        -: 1317:		{
+        -: 1318:#ifndef OPENSSL_NO_RSA
+    #####: 1319:		if (s->session->sess_cert->peer_rsa_tmp != NULL)
+        -: 1320:			{
+    #####: 1321:			RSA_free(s->session->sess_cert->peer_rsa_tmp);
+    #####: 1322:			s->session->sess_cert->peer_rsa_tmp=NULL;
+        -: 1323:			}
+        -: 1324:#endif
+        -: 1325:#ifndef OPENSSL_NO_DH
+    #####: 1326:		if (s->session->sess_cert->peer_dh_tmp)
+        -: 1327:			{
+    #####: 1328:			DH_free(s->session->sess_cert->peer_dh_tmp);
+    #####: 1329:			s->session->sess_cert->peer_dh_tmp=NULL;
+        -: 1330:			}
+        -: 1331:#endif
+        -: 1332:#ifndef OPENSSL_NO_ECDH
+    #####: 1333:		if (s->session->sess_cert->peer_ecdh_tmp)
+        -: 1334:			{
+    #####: 1335:			EC_KEY_free(s->session->sess_cert->peer_ecdh_tmp);
+    #####: 1336:			s->session->sess_cert->peer_ecdh_tmp=NULL;
+        -: 1337:			}
+        -: 1338:#endif
+        -: 1339:		}
+        -: 1340:	else
+        -: 1341:		{
+    #####: 1342:		s->session->sess_cert=ssl_sess_cert_new();
+        -: 1343:		}
+        -: 1344:
+        -: 1345:	param_len=0;
+    #####: 1346:	alg_k=s->s3->tmp.new_cipher->algorithm_mkey;
+    #####: 1347:	alg_a=s->s3->tmp.new_cipher->algorithm_auth;
+    #####: 1348:	EVP_MD_CTX_init(&md_ctx);
+        -: 1349:
+        -: 1350:#ifndef OPENSSL_NO_PSK
+    #####: 1351:	if (alg_k & SSL_kPSK)
+        -: 1352:		{
+        -: 1353:		char tmp_id_hint[PSK_MAX_IDENTITY_LEN+1];
+        -: 1354:
+        -: 1355:		al=SSL_AD_HANDSHAKE_FAILURE;
+    #####: 1356:		n2s(p,i);
+    #####: 1357:		param_len=i+2;
+        -: 1358:		/* Store PSK identity hint for later use, hint is used
+        -: 1359:		 * in ssl3_send_client_key_exchange.  Assume that the
+        -: 1360:		 * maximum length of a PSK identity hint can be as
+        -: 1361:		 * long as the maximum length of a PSK identity. */
+    #####: 1362:		if (i > PSK_MAX_IDENTITY_LEN)
+        -: 1363:			{
+    #####: 1364:			SSLerr(SSL_F_SSL3_GET_KEY_EXCHANGE,
+        -: 1365:				SSL_R_DATA_LENGTH_TOO_LONG);
+    #####: 1366:			goto f_err;
+        -: 1367:			}
+    #####: 1368:		if (param_len > n)
+        -: 1369:			{
+        -: 1370:			al=SSL_AD_DECODE_ERROR;
+    #####: 1371:			SSLerr(SSL_F_SSL3_GET_KEY_EXCHANGE,
+        -: 1372:				SSL_R_BAD_PSK_IDENTITY_HINT_LENGTH);
+    #####: 1373:			goto f_err;
+        -: 1374:			}
+        -: 1375:		/* If received PSK identity hint contains NULL
+        -: 1376:		 * characters, the hint is truncated from the first
+        -: 1377:		 * NULL. p may not be ending with NULL, so create a
+        -: 1378:		 * NULL-terminated string. */
+    #####: 1379:		memcpy(tmp_id_hint, p, i);
+    #####: 1380:		memset(tmp_id_hint+i, 0, PSK_MAX_IDENTITY_LEN+1-i);
+    #####: 1381:		if (s->ctx->psk_identity_hint != NULL)
+    #####: 1382:			OPENSSL_free(s->ctx->psk_identity_hint);
+    #####: 1383:		s->ctx->psk_identity_hint = BUF_strdup(tmp_id_hint);
+    #####: 1384:		if (s->ctx->psk_identity_hint == NULL)
+        -: 1385:			{
+    #####: 1386:			SSLerr(SSL_F_SSL3_GET_KEY_EXCHANGE, ERR_R_MALLOC_FAILURE);
+    #####: 1387:			goto f_err;
+        -: 1388:			}	   
+        -: 1389:
+    #####: 1390:		p+=i;
+    #####: 1391:		n-=param_len;
+        -: 1392:		}
+        -: 1393:	else
+        -: 1394:#endif /* !OPENSSL_NO_PSK */
+        -: 1395:#ifndef OPENSSL_NO_SRP
+    #####: 1396:	if (alg_k & SSL_kSRP)
+        -: 1397:		{
+    #####: 1398:		n2s(p,i);
+    #####: 1399:		param_len=i+2;
+    #####: 1400:		if (param_len > n)
+        -: 1401:			{
+        -: 1402:			al=SSL_AD_DECODE_ERROR;
+    #####: 1403:			SSLerr(SSL_F_SSL3_GET_KEY_EXCHANGE,SSL_R_BAD_SRP_N_LENGTH);
+    #####: 1404:			goto f_err;
+        -: 1405:			}
+    #####: 1406:		if (!(s->srp_ctx.N=BN_bin2bn(p,i,NULL)))
+        -: 1407:			{
+    #####: 1408:			SSLerr(SSL_F_SSL3_GET_KEY_EXCHANGE,ERR_R_BN_LIB);
+    #####: 1409:			goto err;
+        -: 1410:			}
+    #####: 1411:		p+=i;
+        -: 1412:
+    #####: 1413:		n2s(p,i);
+    #####: 1414:		param_len+=i+2;
+    #####: 1415:		if (param_len > n)
+        -: 1416:			{
+        -: 1417:			al=SSL_AD_DECODE_ERROR;
+    #####: 1418:			SSLerr(SSL_F_SSL3_GET_KEY_EXCHANGE,SSL_R_BAD_SRP_G_LENGTH);
+    #####: 1419:			goto f_err;
+        -: 1420:			}
+    #####: 1421:		if (!(s->srp_ctx.g=BN_bin2bn(p,i,NULL)))
+        -: 1422:			{
+    #####: 1423:			SSLerr(SSL_F_SSL3_GET_KEY_EXCHANGE,ERR_R_BN_LIB);
+    #####: 1424:			goto err;
+        -: 1425:			}
+    #####: 1426:		p+=i;
+        -: 1427:
+    #####: 1428:		i = (unsigned int)(p[0]);
+    #####: 1429:		p++;
+    #####: 1430:		param_len+=i+1;
+    #####: 1431:		if (param_len > n)
+        -: 1432:			{
+        -: 1433:			al=SSL_AD_DECODE_ERROR;
+    #####: 1434:			SSLerr(SSL_F_SSL3_GET_KEY_EXCHANGE,SSL_R_BAD_SRP_S_LENGTH);
+    #####: 1435:			goto f_err;
+        -: 1436:			}
+    #####: 1437:		if (!(s->srp_ctx.s=BN_bin2bn(p,i,NULL)))
+        -: 1438:			{
+    #####: 1439:			SSLerr(SSL_F_SSL3_GET_KEY_EXCHANGE,ERR_R_BN_LIB);
+    #####: 1440:			goto err;
+        -: 1441:			}
+    #####: 1442:		p+=i;
+        -: 1443:
+    #####: 1444:		n2s(p,i);
+    #####: 1445:		param_len+=i+2;
+    #####: 1446:		if (param_len > n)
+        -: 1447:			{
+        -: 1448:			al=SSL_AD_DECODE_ERROR;
+    #####: 1449:			SSLerr(SSL_F_SSL3_GET_KEY_EXCHANGE,SSL_R_BAD_SRP_B_LENGTH);
+    #####: 1450:			goto f_err;
+        -: 1451:			}
+    #####: 1452:		if (!(s->srp_ctx.B=BN_bin2bn(p,i,NULL)))
+        -: 1453:			{
+    #####: 1454:			SSLerr(SSL_F_SSL3_GET_KEY_EXCHANGE,ERR_R_BN_LIB);
+    #####: 1455:			goto err;
+        -: 1456:			}
+    #####: 1457:		p+=i;
+    #####: 1458:		n-=param_len;
+        -: 1459:
+        -: 1460:/* We must check if there is a certificate */
+        -: 1461:#ifndef OPENSSL_NO_RSA
+    #####: 1462:		if (alg_a & SSL_aRSA)
+    #####: 1463:			pkey=X509_get_pubkey(s->session->sess_cert->peer_pkeys[SSL_PKEY_RSA_ENC].x509);
+        -: 1464:#else
+        -: 1465:		if (0)
+        -: 1466:			;
+        -: 1467:#endif
+        -: 1468:#ifndef OPENSSL_NO_DSA
+    #####: 1469:		else if (alg_a & SSL_aDSS)
+    #####: 1470:			pkey=X509_get_pubkey(s->session->sess_cert->peer_pkeys[SSL_PKEY_DSA_SIGN].x509);
+        -: 1471:#endif
+        -: 1472:		}
+        -: 1473:	else
+        -: 1474:#endif /* !OPENSSL_NO_SRP */
+        -: 1475:#ifndef OPENSSL_NO_RSA
+    #####: 1476:	if (alg_k & SSL_kRSA)
+        -: 1477:		{
+    #####: 1478:		if ((rsa=RSA_new()) == NULL)
+        -: 1479:			{
+    #####: 1480:			SSLerr(SSL_F_SSL3_GET_KEY_EXCHANGE,ERR_R_MALLOC_FAILURE);
+    #####: 1481:			goto err;
+        -: 1482:			}
+    #####: 1483:		n2s(p,i);
+    #####: 1484:		param_len=i+2;
+    #####: 1485:		if (param_len > n)
+        -: 1486:			{
+        -: 1487:			al=SSL_AD_DECODE_ERROR;
+    #####: 1488:			SSLerr(SSL_F_SSL3_GET_KEY_EXCHANGE,SSL_R_BAD_RSA_MODULUS_LENGTH);
+    #####: 1489:			goto f_err;
+        -: 1490:			}
+    #####: 1491:		if (!(rsa->n=BN_bin2bn(p,i,rsa->n)))
+        -: 1492:			{
+    #####: 1493:			SSLerr(SSL_F_SSL3_GET_KEY_EXCHANGE,ERR_R_BN_LIB);
+    #####: 1494:			goto err;
+        -: 1495:			}
+    #####: 1496:		p+=i;
+        -: 1497:
+    #####: 1498:		n2s(p,i);
+    #####: 1499:		param_len+=i+2;
+    #####: 1500:		if (param_len > n)
+        -: 1501:			{
+        -: 1502:			al=SSL_AD_DECODE_ERROR;
+    #####: 1503:			SSLerr(SSL_F_SSL3_GET_KEY_EXCHANGE,SSL_R_BAD_RSA_E_LENGTH);
+    #####: 1504:			goto f_err;
+        -: 1505:			}
+    #####: 1506:		if (!(rsa->e=BN_bin2bn(p,i,rsa->e)))
+        -: 1507:			{
+    #####: 1508:			SSLerr(SSL_F_SSL3_GET_KEY_EXCHANGE,ERR_R_BN_LIB);
+    #####: 1509:			goto err;
+        -: 1510:			}
+    #####: 1511:		p+=i;
+    #####: 1512:		n-=param_len;
+        -: 1513:
+        -: 1514:		/* this should be because we are using an export cipher */
+    #####: 1515:		if (alg_a & SSL_aRSA)
+    #####: 1516:			pkey=X509_get_pubkey(s->session->sess_cert->peer_pkeys[SSL_PKEY_RSA_ENC].x509);
+        -: 1517:		else
+        -: 1518:			{
+    #####: 1519:			SSLerr(SSL_F_SSL3_GET_KEY_EXCHANGE,ERR_R_INTERNAL_ERROR);
+    #####: 1520:			goto err;
+        -: 1521:			}
+    #####: 1522:		s->session->sess_cert->peer_rsa_tmp=rsa;
+        -: 1523:		rsa=NULL;
+        -: 1524:		}
+        -: 1525:#else /* OPENSSL_NO_RSA */
+        -: 1526:	if (0)
+        -: 1527:		;
+        -: 1528:#endif
+        -: 1529:#ifndef OPENSSL_NO_DH
+    #####: 1530:	else if (alg_k & SSL_kEDH)
+        -: 1531:		{
+    #####: 1532:		if ((dh=DH_new()) == NULL)
+        -: 1533:			{
+    #####: 1534:			SSLerr(SSL_F_SSL3_GET_KEY_EXCHANGE,ERR_R_DH_LIB);
+    #####: 1535:			goto err;
+        -: 1536:			}
+    #####: 1537:		n2s(p,i);
+    #####: 1538:		param_len=i+2;
+    #####: 1539:		if (param_len > n)
+        -: 1540:			{
+        -: 1541:			al=SSL_AD_DECODE_ERROR;
+    #####: 1542:			SSLerr(SSL_F_SSL3_GET_KEY_EXCHANGE,SSL_R_BAD_DH_P_LENGTH);
+    #####: 1543:			goto f_err;
+        -: 1544:			}
+    #####: 1545:		if (!(dh->p=BN_bin2bn(p,i,NULL)))
+        -: 1546:			{
+    #####: 1547:			SSLerr(SSL_F_SSL3_GET_KEY_EXCHANGE,ERR_R_BN_LIB);
+    #####: 1548:			goto err;
+        -: 1549:			}
+    #####: 1550:		p+=i;
+        -: 1551:
+    #####: 1552:		n2s(p,i);
+    #####: 1553:		param_len+=i+2;
+    #####: 1554:		if (param_len > n)
+        -: 1555:			{
+        -: 1556:			al=SSL_AD_DECODE_ERROR;
+    #####: 1557:			SSLerr(SSL_F_SSL3_GET_KEY_EXCHANGE,SSL_R_BAD_DH_G_LENGTH);
+    #####: 1558:			goto f_err;
+        -: 1559:			}
+    #####: 1560:		if (!(dh->g=BN_bin2bn(p,i,NULL)))
+        -: 1561:			{
+    #####: 1562:			SSLerr(SSL_F_SSL3_GET_KEY_EXCHANGE,ERR_R_BN_LIB);
+    #####: 1563:			goto err;
+        -: 1564:			}
+    #####: 1565:		p+=i;
+        -: 1566:
+    #####: 1567:		n2s(p,i);
+    #####: 1568:		param_len+=i+2;
+    #####: 1569:		if (param_len > n)
+        -: 1570:			{
+        -: 1571:			al=SSL_AD_DECODE_ERROR;
+    #####: 1572:			SSLerr(SSL_F_SSL3_GET_KEY_EXCHANGE,SSL_R_BAD_DH_PUB_KEY_LENGTH);
+    #####: 1573:			goto f_err;
+        -: 1574:			}
+    #####: 1575:		if (!(dh->pub_key=BN_bin2bn(p,i,NULL)))
+        -: 1576:			{
+    #####: 1577:			SSLerr(SSL_F_SSL3_GET_KEY_EXCHANGE,ERR_R_BN_LIB);
+    #####: 1578:			goto err;
+        -: 1579:			}
+    #####: 1580:		p+=i;
+    #####: 1581:		n-=param_len;
+        -: 1582:
+        -: 1583:#ifndef OPENSSL_NO_RSA
+    #####: 1584:		if (alg_a & SSL_aRSA)
+    #####: 1585:			pkey=X509_get_pubkey(s->session->sess_cert->peer_pkeys[SSL_PKEY_RSA_ENC].x509);
+        -: 1586:#else
+        -: 1587:		if (0)
+        -: 1588:			;
+        -: 1589:#endif
+        -: 1590:#ifndef OPENSSL_NO_DSA
+    #####: 1591:		else if (alg_a & SSL_aDSS)
+    #####: 1592:			pkey=X509_get_pubkey(s->session->sess_cert->peer_pkeys[SSL_PKEY_DSA_SIGN].x509);
+        -: 1593:#endif
+        -: 1594:		/* else anonymous DH, so no certificate or pkey. */
+        -: 1595:
+    #####: 1596:		s->session->sess_cert->peer_dh_tmp=dh;
+        -: 1597:		dh=NULL;
+        -: 1598:		}
+    #####: 1599:	else if ((alg_k & SSL_kDHr) || (alg_k & SSL_kDHd))
+        -: 1600:		{
+        -: 1601:		al=SSL_AD_ILLEGAL_PARAMETER;
+    #####: 1602:		SSLerr(SSL_F_SSL3_GET_KEY_EXCHANGE,SSL_R_TRIED_TO_USE_UNSUPPORTED_CIPHER);
+    #####: 1603:		goto f_err;
+        -: 1604:		}
+        -: 1605:#endif /* !OPENSSL_NO_DH */
+        -: 1606:
+        -: 1607:#ifndef OPENSSL_NO_ECDH
+    #####: 1608:	else if (alg_k & SSL_kEECDH)
+        -: 1609:		{
+        -: 1610:		EC_GROUP *ngroup;
+        -: 1611:		const EC_GROUP *group;
+        -: 1612:
+    #####: 1613:		if ((ecdh=EC_KEY_new()) == NULL)
+        -: 1614:			{
+    #####: 1615:			SSLerr(SSL_F_SSL3_GET_KEY_EXCHANGE,ERR_R_MALLOC_FAILURE);
+    #####: 1616:			goto err;
+        -: 1617:			}
+        -: 1618:
+        -: 1619:		/* Extract elliptic curve parameters and the
+        -: 1620:		 * server's ephemeral ECDH public key.
+        -: 1621:		 * Keep accumulating lengths of various components in
+        -: 1622:		 * param_len and make sure it never exceeds n.
+        -: 1623:		 */
+        -: 1624:
+        -: 1625:		/* XXX: For now we only support named (not generic) curves
+        -: 1626:		 * and the ECParameters in this case is just three bytes.
+        -: 1627:		 */
+        -: 1628:		param_len=3;
+    #####: 1629:		if ((param_len > n) ||
+    #####: 1630:		    (*p != NAMED_CURVE_TYPE) || 
+    #####: 1631:		    ((curve_nid = tls1_ec_curve_id2nid(*(p + 2))) == 0)) 
+        -: 1632:			{
+        -: 1633:			al=SSL_AD_INTERNAL_ERROR;
+    #####: 1634:			SSLerr(SSL_F_SSL3_GET_KEY_EXCHANGE,SSL_R_UNABLE_TO_FIND_ECDH_PARAMETERS);
+    #####: 1635:			goto f_err;
+        -: 1636:			}
+        -: 1637:
+    #####: 1638:		ngroup = EC_GROUP_new_by_curve_name(curve_nid);
+    #####: 1639:		if (ngroup == NULL)
+        -: 1640:			{
+    #####: 1641:			SSLerr(SSL_F_SSL3_GET_KEY_EXCHANGE,ERR_R_EC_LIB);
+    #####: 1642:			goto err;
+        -: 1643:			}
+    #####: 1644:		if (EC_KEY_set_group(ecdh, ngroup) == 0)
+        -: 1645:			{
+    #####: 1646:			SSLerr(SSL_F_SSL3_GET_KEY_EXCHANGE,ERR_R_EC_LIB);
+    #####: 1647:			goto err;
+        -: 1648:			}
+    #####: 1649:		EC_GROUP_free(ngroup);
+        -: 1650:
+    #####: 1651:		group = EC_KEY_get0_group(ecdh);
+        -: 1652:
+    #####: 1653:		if (SSL_C_IS_EXPORT(s->s3->tmp.new_cipher) &&
+    #####: 1654:		    (EC_GROUP_get_degree(group) > 163))
+        -: 1655:			{
+        -: 1656:			al=SSL_AD_EXPORT_RESTRICTION;
+    #####: 1657:			SSLerr(SSL_F_SSL3_GET_KEY_EXCHANGE,SSL_R_ECGROUP_TOO_LARGE_FOR_CIPHER);
+    #####: 1658:			goto f_err;
+        -: 1659:			}
+        -: 1660:
+        -: 1661:		p+=3;
+        -: 1662:
+        -: 1663:		/* Next, get the encoded ECPoint */
+    #####: 1664:		if (((srvr_ecpoint = EC_POINT_new(group)) == NULL) ||
+        -: 1665:		    ((bn_ctx = BN_CTX_new()) == NULL))
+        -: 1666:			{
+    #####: 1667:			SSLerr(SSL_F_SSL3_GET_KEY_EXCHANGE,ERR_R_MALLOC_FAILURE);
+    #####: 1668:			goto err;
+        -: 1669:			}
+        -: 1670:
+    #####: 1671:		encoded_pt_len = *p;  /* length of encoded point */
+    #####: 1672:		p+=1;
+    #####: 1673:		param_len += (1 + encoded_pt_len);
+    #####: 1674:		if ((param_len > n) ||
+    #####: 1675:		    (EC_POINT_oct2point(group, srvr_ecpoint, 
+        -: 1676:			p, encoded_pt_len, bn_ctx) == 0))
+        -: 1677:			{
+        -: 1678:			al=SSL_AD_DECODE_ERROR;
+    #####: 1679:			SSLerr(SSL_F_SSL3_GET_KEY_EXCHANGE,SSL_R_BAD_ECPOINT);
+    #####: 1680:			goto f_err;
+        -: 1681:			}
+        -: 1682:
+    #####: 1683:		n-=param_len;
+    #####: 1684:		p+=encoded_pt_len;
+        -: 1685:
+        -: 1686:		/* The ECC/TLS specification does not mention
+        -: 1687:		 * the use of DSA to sign ECParameters in the server
+        -: 1688:		 * key exchange message. We do support RSA and ECDSA.
+        -: 1689:		 */
+        -: 1690:		if (0) ;
+        -: 1691:#ifndef OPENSSL_NO_RSA
+    #####: 1692:		else if (alg_a & SSL_aRSA)
+    #####: 1693:			pkey=X509_get_pubkey(s->session->sess_cert->peer_pkeys[SSL_PKEY_RSA_ENC].x509);
+        -: 1694:#endif
+        -: 1695:#ifndef OPENSSL_NO_ECDSA
+    #####: 1696:		else if (alg_a & SSL_aECDSA)
+    #####: 1697:			pkey=X509_get_pubkey(s->session->sess_cert->peer_pkeys[SSL_PKEY_ECC].x509);
+        -: 1698:#endif
+        -: 1699:		/* else anonymous ECDH, so no certificate or pkey. */
+    #####: 1700:		EC_KEY_set_public_key(ecdh, srvr_ecpoint);
+    #####: 1701:		s->session->sess_cert->peer_ecdh_tmp=ecdh;
+        -: 1702:		ecdh=NULL;
+    #####: 1703:		BN_CTX_free(bn_ctx);
+        -: 1704:		bn_ctx = NULL;
+    #####: 1705:		EC_POINT_free(srvr_ecpoint);
+        -: 1706:		srvr_ecpoint = NULL;
+        -: 1707:		}
+    #####: 1708:	else if (alg_k)
+        -: 1709:		{
+        -: 1710:		al=SSL_AD_UNEXPECTED_MESSAGE;
+    #####: 1711:		SSLerr(SSL_F_SSL3_GET_KEY_EXCHANGE,SSL_R_UNEXPECTED_MESSAGE);
+    #####: 1712:		goto f_err;
+        -: 1713:		}
+        -: 1714:#endif /* !OPENSSL_NO_ECDH */
+        -: 1715:
+        -: 1716:
+        -: 1717:	/* p points to the next byte, there are 'n' bytes left */
+        -: 1718:
+        -: 1719:	/* if it was signed, check the signature */
+    #####: 1720:	if (pkey != NULL)
+        -: 1721:		{
+    #####: 1722:		if (TLS1_get_version(s) >= TLS1_2_VERSION)
+    #####: 1723:			{
+    #####: 1724:			int sigalg = tls12_get_sigid(pkey);
+        -: 1725:			/* Should never happen */
+    #####: 1726:			if (sigalg == -1)
+        -: 1727:				{
+    #####: 1728:				SSLerr(SSL_F_SSL3_GET_KEY_EXCHANGE,ERR_R_INTERNAL_ERROR);
+    #####: 1729:				goto err;
+        -: 1730:				}
+        -: 1731:			/* Check key type is consistent with signature */
+    #####: 1732:			if (sigalg != (int)p[1])
+        -: 1733:				{
+    #####: 1734:				SSLerr(SSL_F_SSL3_GET_KEY_EXCHANGE,SSL_R_WRONG_SIGNATURE_TYPE);
+        -: 1735:				al=SSL_AD_DECODE_ERROR;
+    #####: 1736:				goto f_err;
+        -: 1737:				}
+    #####: 1738:			md = tls12_get_hash(p[0]);
+    #####: 1739:			if (md == NULL)
+        -: 1740:				{
+    #####: 1741:				SSLerr(SSL_F_SSL3_GET_KEY_EXCHANGE,SSL_R_UNKNOWN_DIGEST);
+        -: 1742:				al=SSL_AD_DECODE_ERROR;
+    #####: 1743:				goto f_err;
+        -: 1744:				}
+        -: 1745:#ifdef SSL_DEBUG
+        -: 1746:fprintf(stderr, "USING TLSv1.2 HASH %s\n", EVP_MD_name(md));
+        -: 1747:#endif
+    #####: 1748:			p += 2;
+    #####: 1749:			n -= 2;
+        -: 1750:			}
+        -: 1751:		else
+    #####: 1752:			md = EVP_sha1();
+        -: 1753:			
+    #####: 1754:		n2s(p,i);
+    #####: 1755:		n-=2;
+    #####: 1756:		j=EVP_PKEY_size(pkey);
+        -: 1757:
+    #####: 1758:		if ((i != n) || (n > j) || (n <= 0))
+        -: 1759:			{
+        -: 1760:			/* wrong packet length */
+        -: 1761:			al=SSL_AD_DECODE_ERROR;
+    #####: 1762:			SSLerr(SSL_F_SSL3_GET_KEY_EXCHANGE,SSL_R_WRONG_SIGNATURE_LENGTH);
+    #####: 1763:			goto f_err;
+        -: 1764:			}
+        -: 1765:
+        -: 1766:#ifndef OPENSSL_NO_RSA
+    #####: 1767:		if (pkey->type == EVP_PKEY_RSA && TLS1_get_version(s) < TLS1_2_VERSION)
+        -: 1768:			{
+        -: 1769:			int num;
+        -: 1770:
+        -: 1771:			j=0;
+        -: 1772:			q=md_buf;
+    #####: 1773:			for (num=2; num > 0; num--)
+        -: 1774:				{
+    #####: 1775:				EVP_MD_CTX_set_flags(&md_ctx,
+        -: 1776:					EVP_MD_CTX_FLAG_NON_FIPS_ALLOW);
+    #####: 1777:				EVP_DigestInit_ex(&md_ctx,(num == 2)
+    #####: 1778:					?s->ctx->md5:s->ctx->sha1, NULL);
+    #####: 1779:				EVP_DigestUpdate(&md_ctx,&(s->s3->client_random[0]),SSL3_RANDOM_SIZE);
+    #####: 1780:				EVP_DigestUpdate(&md_ctx,&(s->s3->server_random[0]),SSL3_RANDOM_SIZE);
+    #####: 1781:				EVP_DigestUpdate(&md_ctx,param,param_len);
+    #####: 1782:				EVP_DigestFinal_ex(&md_ctx,q,(unsigned int *)&i);
+    #####: 1783:				q+=i;
+    #####: 1784:				j+=i;
+        -: 1785:				}
+    #####: 1786:			i=RSA_verify(NID_md5_sha1, md_buf, j, p, n,
+    #####: 1787:								pkey->pkey.rsa);
+    #####: 1788:			if (i < 0)
+        -: 1789:				{
+        -: 1790:				al=SSL_AD_DECRYPT_ERROR;
+    #####: 1791:				SSLerr(SSL_F_SSL3_GET_KEY_EXCHANGE,SSL_R_BAD_RSA_DECRYPT);
+    #####: 1792:				goto f_err;
+        -: 1793:				}
+    #####: 1794:			if (i == 0)
+        -: 1795:				{
+        -: 1796:				/* bad signature */
+        -: 1797:				al=SSL_AD_DECRYPT_ERROR;
+    #####: 1798:				SSLerr(SSL_F_SSL3_GET_KEY_EXCHANGE,SSL_R_BAD_SIGNATURE);
+    #####: 1799:				goto f_err;
+        -: 1800:				}
+        -: 1801:			}
+        -: 1802:		else
+        -: 1803:#endif
+        -: 1804:			{
+    #####: 1805:			EVP_VerifyInit_ex(&md_ctx, md, NULL);
+    #####: 1806:			EVP_VerifyUpdate(&md_ctx,&(s->s3->client_random[0]),SSL3_RANDOM_SIZE);
+    #####: 1807:			EVP_VerifyUpdate(&md_ctx,&(s->s3->server_random[0]),SSL3_RANDOM_SIZE);
+    #####: 1808:			EVP_VerifyUpdate(&md_ctx,param,param_len);
+    #####: 1809:			if (EVP_VerifyFinal(&md_ctx,p,(int)n,pkey) <= 0)
+        -: 1810:				{
+        -: 1811:				/* bad signature */
+        -: 1812:				al=SSL_AD_DECRYPT_ERROR;
+    #####: 1813:				SSLerr(SSL_F_SSL3_GET_KEY_EXCHANGE,SSL_R_BAD_SIGNATURE);
+    #####: 1814:				goto f_err;
+        -: 1815:				}
+        -: 1816:			}
+        -: 1817:		}
+        -: 1818:	else
+        -: 1819:		{
+    #####: 1820:		if (!(alg_a & SSL_aNULL) && !(alg_k & SSL_kPSK))
+        -: 1821:			/* aNULL or kPSK do not need public keys */
+        -: 1822:			{
+    #####: 1823:			SSLerr(SSL_F_SSL3_GET_KEY_EXCHANGE,ERR_R_INTERNAL_ERROR);
+    #####: 1824:			goto err;
+        -: 1825:			}
+        -: 1826:		/* still data left over */
+    #####: 1827:		if (n != 0)
+        -: 1828:			{
+        -: 1829:			al=SSL_AD_DECODE_ERROR;
+    #####: 1830:			SSLerr(SSL_F_SSL3_GET_KEY_EXCHANGE,SSL_R_EXTRA_DATA_IN_MESSAGE);
+    #####: 1831:			goto f_err;
+        -: 1832:			}
+        -: 1833:		}
+    #####: 1834:	EVP_PKEY_free(pkey);
+    #####: 1835:	EVP_MD_CTX_cleanup(&md_ctx);
+    #####: 1836:	return(1);
+        -: 1837:f_err:
+    #####: 1838:	ssl3_send_alert(s,SSL3_AL_FATAL,al);
+        -: 1839:err:
+    #####: 1840:	EVP_PKEY_free(pkey);
+        -: 1841:#ifndef OPENSSL_NO_RSA
+    #####: 1842:	if (rsa != NULL)
+    #####: 1843:		RSA_free(rsa);
+        -: 1844:#endif
+        -: 1845:#ifndef OPENSSL_NO_DH
+    #####: 1846:	if (dh != NULL)
+    #####: 1847:		DH_free(dh);
+        -: 1848:#endif
+        -: 1849:#ifndef OPENSSL_NO_ECDH
+    #####: 1850:	BN_CTX_free(bn_ctx);
+    #####: 1851:	EC_POINT_free(srvr_ecpoint);
+    #####: 1852:	if (ecdh != NULL)
+    #####: 1853:		EC_KEY_free(ecdh);
+        -: 1854:#endif
+    #####: 1855:	EVP_MD_CTX_cleanup(&md_ctx);
+    #####: 1856:	return(-1);
+        -: 1857:	}
+        -: 1858:
+    10000: 1859:int ssl3_get_certificate_request(SSL *s)
+        -: 1860:	{
+        -: 1861:	int ok,ret=0;
+        -: 1862:	unsigned long n,nc,l;
+        -: 1863:	unsigned int llen, ctype_num,i;
+        -: 1864:	X509_NAME *xn=NULL;
+        -: 1865:	const unsigned char *p,*q;
+        -: 1866:	unsigned char *d;
+        -: 1867:	STACK_OF(X509_NAME) *ca_sk=NULL;
+        -: 1868:
+    10000: 1869:	n=s->method->ssl_get_message(s,
+        -: 1870:		SSL3_ST_CR_CERT_REQ_A,
+        -: 1871:		SSL3_ST_CR_CERT_REQ_B,
+        -: 1872:		-1,
+        -: 1873:		s->max_cert_list,
+        -: 1874:		&ok);
+        -: 1875:
+    10000: 1876:	if (!ok) return((int)n);
+        -: 1877:
+    10000: 1878:	s->s3->tmp.cert_req=0;
+        -: 1879:
+    10000: 1880:	if (s->s3->tmp.message_type == SSL3_MT_SERVER_DONE)
+        -: 1881:		{
+    10000: 1882:		s->s3->tmp.reuse_message=1;
+        -: 1883:		/* If we get here we don't need any cached handshake records
+        -: 1884:		 * as we wont be doing client auth.
+        -: 1885:		 */
+    10000: 1886:		if (s->s3->handshake_buffer)
+        -: 1887:			{
+    10000: 1888:			if (!ssl3_digest_cached_records(s))
+        -: 1889:				goto err;
+        -: 1890:			}
+        -: 1891:		return(1);
+        -: 1892:		}
+        -: 1893:
+    #####: 1894:	if (s->s3->tmp.message_type != SSL3_MT_CERTIFICATE_REQUEST)
+        -: 1895:		{
+    #####: 1896:		ssl3_send_alert(s,SSL3_AL_FATAL,SSL_AD_UNEXPECTED_MESSAGE);
+    #####: 1897:		SSLerr(SSL_F_SSL3_GET_CERTIFICATE_REQUEST,SSL_R_WRONG_MESSAGE_TYPE);
+    #####: 1898:		goto err;
+        -: 1899:		}
+        -: 1900:
+        -: 1901:	/* TLS does not like anon-DH with client cert */
+    #####: 1902:	if (s->version > SSL3_VERSION)
+        -: 1903:		{
+    #####: 1904:		if (s->s3->tmp.new_cipher->algorithm_auth & SSL_aNULL)
+        -: 1905:			{
+    #####: 1906:			ssl3_send_alert(s,SSL3_AL_FATAL,SSL_AD_UNEXPECTED_MESSAGE);
+    #####: 1907:			SSLerr(SSL_F_SSL3_GET_CERTIFICATE_REQUEST,SSL_R_TLS_CLIENT_CERT_REQ_WITH_ANON_CIPHER);
+    #####: 1908:			goto err;
+        -: 1909:			}
+        -: 1910:		}
+        -: 1911:
+    #####: 1912:	p=d=(unsigned char *)s->init_msg;
+        -: 1913:
+    #####: 1914:	if ((ca_sk=sk_X509_NAME_new(ca_dn_cmp)) == NULL)
+        -: 1915:		{
+    #####: 1916:		SSLerr(SSL_F_SSL3_GET_CERTIFICATE_REQUEST,ERR_R_MALLOC_FAILURE);
+    #####: 1917:		goto err;
+        -: 1918:		}
+        -: 1919:
+        -: 1920:	/* get the certificate types */
+    #####: 1921:	ctype_num= *(p++);
+    #####: 1922:	if (ctype_num > SSL3_CT_NUMBER)
+        -: 1923:		ctype_num=SSL3_CT_NUMBER;
+    #####: 1924:	for (i=0; i<ctype_num; i++)
+    #####: 1925:		s->s3->tmp.ctype[i]= p[i];
+    #####: 1926:	p+=ctype_num;
+    #####: 1927:	if (TLS1_get_version(s) >= TLS1_2_VERSION)
+        -: 1928:		{
+    #####: 1929:		n2s(p, llen);
+        -: 1930:		/* Check we have enough room for signature algorithms and
+        -: 1931:		 * following length value.
+        -: 1932:		 */
+    #####: 1933:		if ((unsigned long)(p - d + llen + 2) > n)
+        -: 1934:			{
+    #####: 1935:			ssl3_send_alert(s,SSL3_AL_FATAL,SSL_AD_DECODE_ERROR);
+    #####: 1936:			SSLerr(SSL_F_SSL3_GET_CERTIFICATE_REQUEST,SSL_R_DATA_LENGTH_TOO_LONG);
+    #####: 1937:			goto err;
+        -: 1938:			}
+    #####: 1939:		if ((llen & 1) || !tls1_process_sigalgs(s, p, llen))
+        -: 1940:			{
+    #####: 1941:			ssl3_send_alert(s,SSL3_AL_FATAL,SSL_AD_DECODE_ERROR);
+    #####: 1942:			SSLerr(SSL_F_SSL3_GET_CERTIFICATE_REQUEST,SSL_R_SIGNATURE_ALGORITHMS_ERROR);
+    #####: 1943:			goto err;
+        -: 1944:			}
+    #####: 1945:		p += llen;
+        -: 1946:		}
+        -: 1947:
+        -: 1948:	/* get the CA RDNs */
+    #####: 1949:	n2s(p,llen);
+        -: 1950:#if 0
+        -: 1951:{
+        -: 1952:FILE *out;
+        -: 1953:out=fopen("/tmp/vsign.der","w");
+        -: 1954:fwrite(p,1,llen,out);
+        -: 1955:fclose(out);
+        -: 1956:}
+        -: 1957:#endif
+        -: 1958:
+    #####: 1959:	if ((unsigned long)(p - d + llen) != n)
+        -: 1960:		{
+    #####: 1961:		ssl3_send_alert(s,SSL3_AL_FATAL,SSL_AD_DECODE_ERROR);
+    #####: 1962:		SSLerr(SSL_F_SSL3_GET_CERTIFICATE_REQUEST,SSL_R_LENGTH_MISMATCH);
+    #####: 1963:		goto err;
+        -: 1964:		}
+        -: 1965:
+    #####: 1966:	for (nc=0; nc<llen; )
+        -: 1967:		{
+    #####: 1968:		n2s(p,l);
+    #####: 1969:		if ((l+nc+2) > llen)
+        -: 1970:			{
+    #####: 1971:			if ((s->options & SSL_OP_NETSCAPE_CA_DN_BUG))
+        -: 1972:				goto cont; /* netscape bugs */
+    #####: 1973:			ssl3_send_alert(s,SSL3_AL_FATAL,SSL_AD_DECODE_ERROR);
+    #####: 1974:			SSLerr(SSL_F_SSL3_GET_CERTIFICATE_REQUEST,SSL_R_CA_DN_TOO_LONG);
+    #####: 1975:			goto err;
+        -: 1976:			}
+        -: 1977:
+    #####: 1978:		q=p;
+        -: 1979:
+    #####: 1980:		if ((xn=d2i_X509_NAME(NULL,&q,l)) == NULL)
+        -: 1981:			{
+        -: 1982:			/* If netscape tolerance is on, ignore errors */
+    #####: 1983:			if (s->options & SSL_OP_NETSCAPE_CA_DN_BUG)
+        -: 1984:				goto cont;
+        -: 1985:			else
+        -: 1986:				{
+    #####: 1987:				ssl3_send_alert(s,SSL3_AL_FATAL,SSL_AD_DECODE_ERROR);
+    #####: 1988:				SSLerr(SSL_F_SSL3_GET_CERTIFICATE_REQUEST,ERR_R_ASN1_LIB);
+    #####: 1989:				goto err;
+        -: 1990:				}
+        -: 1991:			}
+        -: 1992:
+    #####: 1993:		if (q != (p+l))
+        -: 1994:			{
+    #####: 1995:			ssl3_send_alert(s,SSL3_AL_FATAL,SSL_AD_DECODE_ERROR);
+    #####: 1996:			SSLerr(SSL_F_SSL3_GET_CERTIFICATE_REQUEST,SSL_R_CA_DN_LENGTH_MISMATCH);
+    #####: 1997:			goto err;
+        -: 1998:			}
+    #####: 1999:		if (!sk_X509_NAME_push(ca_sk,xn))
+        -: 2000:			{
+    #####: 2001:			SSLerr(SSL_F_SSL3_GET_CERTIFICATE_REQUEST,ERR_R_MALLOC_FAILURE);
+    #####: 2002:			goto err;
+        -: 2003:			}
+        -: 2004:
+        -: 2005:		p+=l;
+        -: 2006:		nc+=l+2;
+        -: 2007:		}
+        -: 2008:
+        -: 2009:	if (0)
+        -: 2010:		{
+        -: 2011:cont:
+    #####: 2012:		ERR_clear_error();
+        -: 2013:		}
+        -: 2014:
+        -: 2015:	/* we should setup a certificate to return.... */
+    #####: 2016:	s->s3->tmp.cert_req=1;
+    #####: 2017:	s->s3->tmp.ctype_num=ctype_num;
+    #####: 2018:	if (s->s3->tmp.ca_names != NULL)
+    #####: 2019:		sk_X509_NAME_pop_free(s->s3->tmp.ca_names,X509_NAME_free);
+    #####: 2020:	s->s3->tmp.ca_names=ca_sk;
+        -: 2021:	ca_sk=NULL;
+        -: 2022:
+        -: 2023:	ret=1;
+        -: 2024:err:
+    #####: 2025:	if (ca_sk != NULL) sk_X509_NAME_pop_free(ca_sk,X509_NAME_free);
+    #####: 2026:	return(ret);
+        -: 2027:	}
+        -: 2028:
+    #####: 2029:static int ca_dn_cmp(const X509_NAME * const *a, const X509_NAME * const *b)
+        -: 2030:	{
+    #####: 2031:	return(X509_NAME_cmp(*a,*b));
+        -: 2032:	}
+        -: 2033:#ifndef OPENSSL_NO_TLSEXT
+    10000: 2034:int ssl3_get_new_session_ticket(SSL *s)
+        -: 2035:	{
+        -: 2036:	int ok,al,ret=0, ticklen;
+        -: 2037:	long n;
+        -: 2038:	const unsigned char *p;
+        -: 2039:	unsigned char *d;
+        -: 2040:
+    10000: 2041:	n=s->method->ssl_get_message(s,
+        -: 2042:		SSL3_ST_CR_SESSION_TICKET_A,
+        -: 2043:		SSL3_ST_CR_SESSION_TICKET_B,
+        -: 2044:		-1,
+        -: 2045:		16384,
+        -: 2046:		&ok);
+        -: 2047:
+    10000: 2048:	if (!ok)
+    #####: 2049:		return((int)n);
+        -: 2050:
+    10000: 2051:	if (s->s3->tmp.message_type == SSL3_MT_FINISHED)
+        -: 2052:		{
+    #####: 2053:		s->s3->tmp.reuse_message=1;
+    #####: 2054:		return(1);
+        -: 2055:		}
+    10000: 2056:	if (s->s3->tmp.message_type != SSL3_MT_NEWSESSION_TICKET)
+        -: 2057:		{
+        -: 2058:		al=SSL_AD_UNEXPECTED_MESSAGE;
+    #####: 2059:		SSLerr(SSL_F_SSL3_GET_NEW_SESSION_TICKET,SSL_R_BAD_MESSAGE_TYPE);
+    #####: 2060:		goto f_err;
+        -: 2061:		}
+    10000: 2062:	if (n < 6)
+        -: 2063:		{
+        -: 2064:		/* need at least ticket_lifetime_hint + ticket length */
+        -: 2065:		al = SSL_AD_DECODE_ERROR;
+    #####: 2066:		SSLerr(SSL_F_SSL3_GET_NEW_SESSION_TICKET,SSL_R_LENGTH_MISMATCH);
+    #####: 2067:		goto f_err;
+        -: 2068:		}
+        -: 2069:
+    10000: 2070:	p=d=(unsigned char *)s->init_msg;
+    10000: 2071:	n2l(p, s->session->tlsext_tick_lifetime_hint);
+    10000: 2072:	n2s(p, ticklen);
+        -: 2073:	/* ticket_lifetime_hint + ticket_length + ticket */
+    10000: 2074:	if (ticklen + 6 != n)
+        -: 2075:		{
+        -: 2076:		al = SSL_AD_DECODE_ERROR;
+    #####: 2077:		SSLerr(SSL_F_SSL3_GET_NEW_SESSION_TICKET,SSL_R_LENGTH_MISMATCH);
+    #####: 2078:		goto f_err;
+        -: 2079:		}
+    10000: 2080:	if (s->session->tlsext_tick)
+        -: 2081:		{
+    #####: 2082:		OPENSSL_free(s->session->tlsext_tick);
+    #####: 2083:		s->session->tlsext_ticklen = 0;
+        -: 2084:		}
+    10000: 2085:	s->session->tlsext_tick = OPENSSL_malloc(ticklen);
+    10000: 2086:	if (!s->session->tlsext_tick)
+        -: 2087:		{
+    #####: 2088:		SSLerr(SSL_F_SSL3_GET_NEW_SESSION_TICKET,ERR_R_MALLOC_FAILURE);
+    #####: 2089:		goto err;
+        -: 2090:		}
+    10000: 2091:	memcpy(s->session->tlsext_tick, p, ticklen);
+    10000: 2092:	s->session->tlsext_ticklen = ticklen;
+        -: 2093:	/* There are two ways to detect a resumed ticket sesion.
+        -: 2094:	 * One is to set an appropriate session ID and then the server
+        -: 2095:	 * must return a match in ServerHello. This allows the normal
+        -: 2096:	 * client session ID matching to work and we know much 
+        -: 2097:	 * earlier that the ticket has been accepted.
+        -: 2098:	 * 
+        -: 2099:	 * The other way is to set zero length session ID when the
+        -: 2100:	 * ticket is presented and rely on the handshake to determine
+        -: 2101:	 * session resumption.
+        -: 2102:	 *
+        -: 2103:	 * We choose the former approach because this fits in with
+        -: 2104:	 * assumptions elsewhere in OpenSSL. The session ID is set
+        -: 2105:	 * to the SHA256 (or SHA1 is SHA256 is disabled) hash of the
+        -: 2106:	 * ticket.
+        -: 2107:	 */ 
+    30000: 2108:	EVP_Digest(p, ticklen,
+    20000: 2109:			s->session->session_id, &s->session->session_id_length,
+        -: 2110:#ifndef OPENSSL_NO_SHA256
+        -: 2111:							EVP_sha256(), NULL);
+        -: 2112:#else
+        -: 2113:							EVP_sha1(), NULL);
+        -: 2114:#endif
+        -: 2115:	ret=1;
+    10000: 2116:	return(ret);
+        -: 2117:f_err:
+    #####: 2118:	ssl3_send_alert(s,SSL3_AL_FATAL,al);
+        -: 2119:err:
+        -: 2120:	return(-1);
+        -: 2121:	}
+        -: 2122:
+    #####: 2123:int ssl3_get_cert_status(SSL *s)
+        -: 2124:	{
+        -: 2125:	int ok, al;
+        -: 2126:	unsigned long resplen,n;
+        -: 2127:	const unsigned char *p;
+        -: 2128:
+    #####: 2129:	n=s->method->ssl_get_message(s,
+        -: 2130:		SSL3_ST_CR_CERT_STATUS_A,
+        -: 2131:		SSL3_ST_CR_CERT_STATUS_B,
+        -: 2132:		SSL3_MT_CERTIFICATE_STATUS,
+        -: 2133:		16384,
+        -: 2134:		&ok);
+        -: 2135:
+    #####: 2136:	if (!ok) return((int)n);
+    #####: 2137:	if (n < 4)
+        -: 2138:		{
+        -: 2139:		/* need at least status type + length */
+        -: 2140:		al = SSL_AD_DECODE_ERROR;
+    #####: 2141:		SSLerr(SSL_F_SSL3_GET_CERT_STATUS,SSL_R_LENGTH_MISMATCH);
+    #####: 2142:		goto f_err;
+        -: 2143:		}
+    #####: 2144:	p = (unsigned char *)s->init_msg;
+    #####: 2145:	if (*p++ != TLSEXT_STATUSTYPE_ocsp)
+        -: 2146:		{
+        -: 2147:		al = SSL_AD_DECODE_ERROR;
+    #####: 2148:		SSLerr(SSL_F_SSL3_GET_CERT_STATUS,SSL_R_UNSUPPORTED_STATUS_TYPE);
+    #####: 2149:		goto f_err;
+        -: 2150:		}
+    #####: 2151:	n2l3(p, resplen);
+    #####: 2152:	if (resplen + 4 != n)
+        -: 2153:		{
+        -: 2154:		al = SSL_AD_DECODE_ERROR;
+    #####: 2155:		SSLerr(SSL_F_SSL3_GET_CERT_STATUS,SSL_R_LENGTH_MISMATCH);
+    #####: 2156:		goto f_err;
+        -: 2157:		}
+    #####: 2158:	if (s->tlsext_ocsp_resp)
+    #####: 2159:		OPENSSL_free(s->tlsext_ocsp_resp);
+    #####: 2160:	s->tlsext_ocsp_resp = BUF_memdup(p, resplen);
+    #####: 2161:	if (!s->tlsext_ocsp_resp)
+        -: 2162:		{
+        -: 2163:		al = SSL_AD_INTERNAL_ERROR;
+    #####: 2164:		SSLerr(SSL_F_SSL3_GET_CERT_STATUS,ERR_R_MALLOC_FAILURE);
+    #####: 2165:		goto f_err;
+        -: 2166:		}
+    #####: 2167:	s->tlsext_ocsp_resplen = resplen;
+    #####: 2168:	if (s->ctx->tlsext_status_cb)
+        -: 2169:		{
+        -: 2170:		int ret;
+    #####: 2171:		ret = s->ctx->tlsext_status_cb(s, s->ctx->tlsext_status_arg);
+    #####: 2172:		if (ret == 0)
+        -: 2173:			{
+        -: 2174:			al = SSL_AD_BAD_CERTIFICATE_STATUS_RESPONSE;
+    #####: 2175:			SSLerr(SSL_F_SSL3_GET_CERT_STATUS,SSL_R_INVALID_STATUS_RESPONSE);
+    #####: 2176:			goto f_err;
+        -: 2177:			}
+    #####: 2178:		if (ret < 0)
+        -: 2179:			{
+        -: 2180:			al = SSL_AD_INTERNAL_ERROR;
+    #####: 2181:			SSLerr(SSL_F_SSL3_GET_CERT_STATUS,ERR_R_MALLOC_FAILURE);
+    #####: 2182:			goto f_err;
+        -: 2183:			}
+        -: 2184:		}
+        -: 2185:	return 1;
+        -: 2186:f_err:
+    #####: 2187:	ssl3_send_alert(s,SSL3_AL_FATAL,al);
+    #####: 2188:	return(-1);
+        -: 2189:	}
+        -: 2190:#endif
+        -: 2191:
+    10000: 2192:int ssl3_get_server_done(SSL *s)
+        -: 2193:	{
+        -: 2194:	int ok,ret=0;
+        -: 2195:	long n;
+        -: 2196:
+    10000: 2197:	n=s->method->ssl_get_message(s,
+        -: 2198:		SSL3_ST_CR_SRVR_DONE_A,
+        -: 2199:		SSL3_ST_CR_SRVR_DONE_B,
+        -: 2200:		SSL3_MT_SERVER_DONE,
+        -: 2201:		30, /* should be very small, like 0 :-) */
+        -: 2202:		&ok);
+        -: 2203:
+    10000: 2204:	if (!ok) return((int)n);
+    10000: 2205:	if (n > 0)
+        -: 2206:		{
+        -: 2207:		/* should contain no data */
+    #####: 2208:		ssl3_send_alert(s,SSL3_AL_FATAL,SSL_AD_DECODE_ERROR);
+    #####: 2209:		SSLerr(SSL_F_SSL3_GET_SERVER_DONE,SSL_R_LENGTH_MISMATCH);
+    #####: 2210:		return -1;
+        -: 2211:		}
+        -: 2212:	ret=1;
+        -: 2213:	return(ret);
+        -: 2214:	}
+        -: 2215:
+        -: 2216:
+    10000: 2217:int ssl3_send_client_key_exchange(SSL *s)
+        -: 2218:	{
+        -: 2219:	unsigned char *p,*d;
+        -: 2220:	int n;
+        -: 2221:	unsigned long alg_k;
+        -: 2222:#ifndef OPENSSL_NO_RSA
+        -: 2223:	unsigned char *q;
+        -: 2224:	EVP_PKEY *pkey=NULL;
+        -: 2225:#endif
+        -: 2226:#ifndef OPENSSL_NO_KRB5
+        -: 2227:	KSSL_ERR kssl_err;
+        -: 2228:#endif /* OPENSSL_NO_KRB5 */
+        -: 2229:#ifndef OPENSSL_NO_ECDH
+        -: 2230:	EC_KEY *clnt_ecdh = NULL;
+        -: 2231:	const EC_POINT *srvr_ecpoint = NULL;
+        -: 2232:	EVP_PKEY *srvr_pub_pkey = NULL;
+        -: 2233:	unsigned char *encodedPoint = NULL;
+        -: 2234:	int encoded_pt_len = 0;
+        -: 2235:	BN_CTX * bn_ctx = NULL;
+        -: 2236:#endif
+        -: 2237:
+    10000: 2238:	if (s->state == SSL3_ST_CW_KEY_EXCH_A)
+        -: 2239:		{
+    10000: 2240:		d=(unsigned char *)s->init_buf->data;
+    10000: 2241:		p= &(d[4]);
+        -: 2242:
+    10000: 2243:		alg_k=s->s3->tmp.new_cipher->algorithm_mkey;
+        -: 2244:
+        -: 2245:		/* Fool emacs indentation */
+        -: 2246:		if (0) {}
+        -: 2247:#ifndef OPENSSL_NO_RSA
+    10000: 2248:		else if (alg_k & SSL_kRSA)
+        -: 2249:			{
+        -: 2250:			RSA *rsa;
+        -: 2251:			unsigned char tmp_buf[SSL_MAX_MASTER_KEY_LENGTH];
+        -: 2252:
+    10000: 2253:			if (s->session->sess_cert->peer_rsa_tmp != NULL)
+        -: 2254:				rsa=s->session->sess_cert->peer_rsa_tmp;
+        -: 2255:			else
+        -: 2256:				{
+    10000: 2257:				pkey=X509_get_pubkey(s->session->sess_cert->peer_pkeys[SSL_PKEY_RSA_ENC].x509);
+    20000: 2258:				if ((pkey == NULL) ||
+    20000: 2259:					(pkey->type != EVP_PKEY_RSA) ||
+    10000: 2260:					(pkey->pkey.rsa == NULL))
+        -: 2261:					{
+    #####: 2262:					SSLerr(SSL_F_SSL3_SEND_CLIENT_KEY_EXCHANGE,ERR_R_INTERNAL_ERROR);
+    #####: 2263:					goto err;
+        -: 2264:					}
+        -: 2265:				rsa=pkey->pkey.rsa;
+    10000: 2266:				EVP_PKEY_free(pkey);
+        -: 2267:				}
+        -: 2268:				
+    10000: 2269:			tmp_buf[0]=s->client_version>>8;
+    10000: 2270:			tmp_buf[1]=s->client_version&0xff;
+    10000: 2271:			if (RAND_bytes(&(tmp_buf[2]),sizeof tmp_buf-2) <= 0)
+        -: 2272:					goto err;
+        -: 2273:
+    10000: 2274:			s->session->master_key_length=sizeof tmp_buf;
+        -: 2275:
+        -: 2276:			q=p;
+        -: 2277:			/* Fix buf for TLS and beyond */
+    10000: 2278:			if (s->version > SSL3_VERSION)
+    10000: 2279:				p+=2;
+    10000: 2280:			n=RSA_public_encrypt(sizeof tmp_buf,
+        -: 2281:				tmp_buf,p,rsa,RSA_PKCS1_PADDING);
+        -: 2282:#ifdef PKCS1_CHECK
+        -: 2283:			if (s->options & SSL_OP_PKCS1_CHECK_1) p[1]++;
+        -: 2284:			if (s->options & SSL_OP_PKCS1_CHECK_2) tmp_buf[0]=0x70;
+        -: 2285:#endif
+    10000: 2286:			if (n <= 0)
+        -: 2287:				{
+    #####: 2288:				SSLerr(SSL_F_SSL3_SEND_CLIENT_KEY_EXCHANGE,SSL_R_BAD_RSA_ENCRYPT);
+    #####: 2289:				goto err;
+        -: 2290:				}
+        -: 2291:
+        -: 2292:			/* Fix buf for TLS and beyond */
+    10000: 2293:			if (s->version > SSL3_VERSION)
+        -: 2294:				{
+    10000: 2295:				s2n(n,q);
+    10000: 2296:				n+=2;
+        -: 2297:				}
+        -: 2298:
+    10000: 2299:			s->session->master_key_length=
+    20000: 2300:				s->method->ssl3_enc->generate_master_secret(s,
+    10000: 2301:					s->session->master_key,
+        -: 2302:					tmp_buf,sizeof tmp_buf);
+    10000: 2303:			OPENSSL_cleanse(tmp_buf,sizeof tmp_buf);
+        -: 2304:			}
+        -: 2305:#endif
+        -: 2306:#ifndef OPENSSL_NO_KRB5
+        -: 2307:		else if (alg_k & SSL_kKRB5)
+        -: 2308:			{
+        -: 2309:			krb5_error_code	krb5rc;
+        -: 2310:			KSSL_CTX	*kssl_ctx = s->kssl_ctx;
+        -: 2311:			/*  krb5_data	krb5_ap_req;  */
+        -: 2312:			krb5_data	*enc_ticket;
+        -: 2313:			krb5_data	authenticator, *authp = NULL;
+        -: 2314:			EVP_CIPHER_CTX	ciph_ctx;
+        -: 2315:			const EVP_CIPHER *enc = NULL;
+        -: 2316:			unsigned char	iv[EVP_MAX_IV_LENGTH];
+        -: 2317:			unsigned char	tmp_buf[SSL_MAX_MASTER_KEY_LENGTH];
+        -: 2318:			unsigned char	epms[SSL_MAX_MASTER_KEY_LENGTH 
+        -: 2319:						+ EVP_MAX_IV_LENGTH];
+        -: 2320:			int 		padl, outl = sizeof(epms);
+        -: 2321:
+        -: 2322:			EVP_CIPHER_CTX_init(&ciph_ctx);
+        -: 2323:
+        -: 2324:#ifdef KSSL_DEBUG
+        -: 2325:			printf("ssl3_send_client_key_exchange(%lx & %lx)\n",
+        -: 2326:				alg_k, SSL_kKRB5);
+        -: 2327:#endif	/* KSSL_DEBUG */
+        -: 2328:
+        -: 2329:			authp = NULL;
+        -: 2330:#ifdef KRB5SENDAUTH
+        -: 2331:			if (KRB5SENDAUTH)  authp = &authenticator;
+        -: 2332:#endif	/* KRB5SENDAUTH */
+        -: 2333:
+        -: 2334:			krb5rc = kssl_cget_tkt(kssl_ctx, &enc_ticket, authp,
+        -: 2335:				&kssl_err);
+        -: 2336:			enc = kssl_map_enc(kssl_ctx->enctype);
+        -: 2337:			if (enc == NULL)
+        -: 2338:			    goto err;
+        -: 2339:#ifdef KSSL_DEBUG
+        -: 2340:			{
+        -: 2341:			printf("kssl_cget_tkt rtn %d\n", krb5rc);
+        -: 2342:			if (krb5rc && kssl_err.text)
+        -: 2343:			  printf("kssl_cget_tkt kssl_err=%s\n", kssl_err.text);
+        -: 2344:			}
+        -: 2345:#endif	/* KSSL_DEBUG */
+        -: 2346:
+        -: 2347:			if (krb5rc)
+        -: 2348:				{
+        -: 2349:				ssl3_send_alert(s,SSL3_AL_FATAL,
+        -: 2350:						SSL_AD_HANDSHAKE_FAILURE);
+        -: 2351:				SSLerr(SSL_F_SSL3_SEND_CLIENT_KEY_EXCHANGE,
+        -: 2352:						kssl_err.reason);
+        -: 2353:				goto err;
+        -: 2354:				}
+        -: 2355:
+        -: 2356:			/*  20010406 VRS - Earlier versions used KRB5 AP_REQ
+        -: 2357:			**  in place of RFC 2712 KerberosWrapper, as in:
+        -: 2358:			**
+        -: 2359:			**  Send ticket (copy to *p, set n = length)
+        -: 2360:			**  n = krb5_ap_req.length;
+        -: 2361:			**  memcpy(p, krb5_ap_req.data, krb5_ap_req.length);
+        -: 2362:			**  if (krb5_ap_req.data)  
+        -: 2363:			**    kssl_krb5_free_data_contents(NULL,&krb5_ap_req);
+        -: 2364:			**
+        -: 2365:			**  Now using real RFC 2712 KerberosWrapper
+        -: 2366:			**  (Thanks to Simon Wilkinson <sxw@sxw.org.uk>)
+        -: 2367:			**  Note: 2712 "opaque" types are here replaced
+        -: 2368:			**  with a 2-byte length followed by the value.
+        -: 2369:			**  Example:
+        -: 2370:			**  KerberosWrapper= xx xx asn1ticket 0 0 xx xx encpms
+        -: 2371:			**  Where "xx xx" = length bytes.  Shown here with
+        -: 2372:			**  optional authenticator omitted.
+        -: 2373:			*/
+        -: 2374:
+        -: 2375:			/*  KerberosWrapper.Ticket		*/
+        -: 2376:			s2n(enc_ticket->length,p);
+        -: 2377:			memcpy(p, enc_ticket->data, enc_ticket->length);
+        -: 2378:			p+= enc_ticket->length;
+        -: 2379:			n = enc_ticket->length + 2;
+        -: 2380:
+        -: 2381:			/*  KerberosWrapper.Authenticator	*/
+        -: 2382:			if (authp  &&  authp->length)  
+        -: 2383:				{
+        -: 2384:				s2n(authp->length,p);
+        -: 2385:				memcpy(p, authp->data, authp->length);
+        -: 2386:				p+= authp->length;
+        -: 2387:				n+= authp->length + 2;
+        -: 2388:				
+        -: 2389:				free(authp->data);
+        -: 2390:				authp->data = NULL;
+        -: 2391:				authp->length = 0;
+        -: 2392:				}
+        -: 2393:			else
+        -: 2394:				{
+        -: 2395:				s2n(0,p);/*  null authenticator length	*/
+        -: 2396:				n+=2;
+        -: 2397:				}
+        -: 2398: 
+        -: 2399:			    tmp_buf[0]=s->client_version>>8;
+        -: 2400:			    tmp_buf[1]=s->client_version&0xff;
+        -: 2401:			    if (RAND_bytes(&(tmp_buf[2]),sizeof tmp_buf-2) <= 0)
+        -: 2402:				goto err;
+        -: 2403:
+        -: 2404:			/*  20010420 VRS.  Tried it this way; failed.
+        -: 2405:			**	EVP_EncryptInit_ex(&ciph_ctx,enc, NULL,NULL);
+        -: 2406:			**	EVP_CIPHER_CTX_set_key_length(&ciph_ctx,
+        -: 2407:			**				kssl_ctx->length);
+        -: 2408:			**	EVP_EncryptInit_ex(&ciph_ctx,NULL, key,iv);
+        -: 2409:			*/
+        -: 2410:
+        -: 2411:			memset(iv, 0, sizeof iv);  /* per RFC 1510 */
+        -: 2412:			EVP_EncryptInit_ex(&ciph_ctx,enc, NULL,
+        -: 2413:				kssl_ctx->key,iv);
+        -: 2414:			EVP_EncryptUpdate(&ciph_ctx,epms,&outl,tmp_buf,
+        -: 2415:				sizeof tmp_buf);
+        -: 2416:			EVP_EncryptFinal_ex(&ciph_ctx,&(epms[outl]),&padl);
+        -: 2417:			outl += padl;
+        -: 2418:			if (outl > (int)sizeof epms)
+        -: 2419:				{
+        -: 2420:				SSLerr(SSL_F_SSL3_SEND_CLIENT_KEY_EXCHANGE, ERR_R_INTERNAL_ERROR);
+        -: 2421:				goto err;
+        -: 2422:				}
+        -: 2423:			EVP_CIPHER_CTX_cleanup(&ciph_ctx);
+        -: 2424:
+        -: 2425:			/*  KerberosWrapper.EncryptedPreMasterSecret	*/
+        -: 2426:			s2n(outl,p);
+        -: 2427:			memcpy(p, epms, outl);
+        -: 2428:			p+=outl;
+        -: 2429:			n+=outl + 2;
+        -: 2430:
+        -: 2431:			s->session->master_key_length=
+        -: 2432:				s->method->ssl3_enc->generate_master_secret(s,
+        -: 2433:					s->session->master_key,
+        -: 2434:					tmp_buf, sizeof tmp_buf);
+        -: 2435:
+        -: 2436:			OPENSSL_cleanse(tmp_buf, sizeof tmp_buf);
+        -: 2437:			OPENSSL_cleanse(epms, outl);
+        -: 2438:			}
+        -: 2439:#endif
+        -: 2440:#ifndef OPENSSL_NO_DH
+    #####: 2441:		else if (alg_k & (SSL_kEDH|SSL_kDHr|SSL_kDHd))
+        -: 2442:			{
+        -: 2443:			DH *dh_srvr,*dh_clnt;
+        -: 2444:
+    #####: 2445:			if (s->session->sess_cert == NULL) 
+        -: 2446:				{
+    #####: 2447:				ssl3_send_alert(s,SSL3_AL_FATAL,SSL_AD_UNEXPECTED_MESSAGE);
+    #####: 2448:				SSLerr(SSL_F_SSL3_SEND_CLIENT_KEY_EXCHANGE,SSL_R_UNEXPECTED_MESSAGE);
+    #####: 2449:				goto err;
+        -: 2450:				}
+        -: 2451:
+    #####: 2452:			if (s->session->sess_cert->peer_dh_tmp != NULL)
+        -: 2453:				dh_srvr=s->session->sess_cert->peer_dh_tmp;
+        -: 2454:			else
+        -: 2455:				{
+        -: 2456:				/* we get them from the cert */
+    #####: 2457:				ssl3_send_alert(s,SSL3_AL_FATAL,SSL_AD_HANDSHAKE_FAILURE);
+    #####: 2458:				SSLerr(SSL_F_SSL3_SEND_CLIENT_KEY_EXCHANGE,SSL_R_UNABLE_TO_FIND_DH_PARAMETERS);
+    #####: 2459:				goto err;
+        -: 2460:				}
+        -: 2461:			
+        -: 2462:			/* generate a new random key */
+    #####: 2463:			if ((dh_clnt=DHparams_dup(dh_srvr)) == NULL)
+        -: 2464:				{
+    #####: 2465:				SSLerr(SSL_F_SSL3_SEND_CLIENT_KEY_EXCHANGE,ERR_R_DH_LIB);
+    #####: 2466:				goto err;
+        -: 2467:				}
+    #####: 2468:			if (!DH_generate_key(dh_clnt))
+        -: 2469:				{
+    #####: 2470:				SSLerr(SSL_F_SSL3_SEND_CLIENT_KEY_EXCHANGE,ERR_R_DH_LIB);
+    #####: 2471:				DH_free(dh_clnt);
+    #####: 2472:				goto err;
+        -: 2473:				}
+        -: 2474:
+        -: 2475:			/* use the 'p' output buffer for the DH key, but
+        -: 2476:			 * make sure to clear it out afterwards */
+        -: 2477:
+    #####: 2478:			n=DH_compute_key(p,dh_srvr->pub_key,dh_clnt);
+        -: 2479:
+    #####: 2480:			if (n <= 0)
+        -: 2481:				{
+    #####: 2482:				SSLerr(SSL_F_SSL3_SEND_CLIENT_KEY_EXCHANGE,ERR_R_DH_LIB);
+    #####: 2483:				DH_free(dh_clnt);
+    #####: 2484:				goto err;
+        -: 2485:				}
+        -: 2486:
+        -: 2487:			/* generate master key from the result */
+    #####: 2488:			s->session->master_key_length=
+    #####: 2489:				s->method->ssl3_enc->generate_master_secret(s,
+    #####: 2490:					s->session->master_key,p,n);
+        -: 2491:			/* clean up */
+    #####: 2492:			memset(p,0,n);
+        -: 2493:
+        -: 2494:			/* send off the data */
+    #####: 2495:			n=BN_num_bytes(dh_clnt->pub_key);
+    #####: 2496:			s2n(n,p);
+    #####: 2497:			BN_bn2bin(dh_clnt->pub_key,p);
+    #####: 2498:			n+=2;
+        -: 2499:
+    #####: 2500:			DH_free(dh_clnt);
+        -: 2501:
+        -: 2502:			/* perhaps clean things up a bit EAY EAY EAY EAY*/
+        -: 2503:			}
+        -: 2504:#endif
+        -: 2505:
+        -: 2506:#ifndef OPENSSL_NO_ECDH 
+    #####: 2507:		else if (alg_k & (SSL_kEECDH|SSL_kECDHr|SSL_kECDHe))
+        -: 2508:			{
+        -: 2509:			const EC_GROUP *srvr_group = NULL;
+        -: 2510:			EC_KEY *tkey;
+        -: 2511:			int ecdh_clnt_cert = 0;
+        -: 2512:			int field_size = 0;
+        -: 2513:
+        -: 2514:			/* Did we send out the client's
+        -: 2515:			 * ECDH share for use in premaster
+        -: 2516:			 * computation as part of client certificate?
+        -: 2517:			 * If so, set ecdh_clnt_cert to 1.
+        -: 2518:			 */
+        -: 2519:			if ((alg_k & (SSL_kECDHr|SSL_kECDHe)) && (s->cert != NULL)) 
+        -: 2520:				{
+        -: 2521:				/* XXX: For now, we do not support client
+        -: 2522:				 * authentication using ECDH certificates.
+        -: 2523:				 * To add such support, one needs to add
+        -: 2524:				 * code that checks for appropriate 
+        -: 2525:				 * conditions and sets ecdh_clnt_cert to 1.
+        -: 2526:				 * For example, the cert have an ECC
+        -: 2527:				 * key on the same curve as the server's
+        -: 2528:				 * and the key should be authorized for
+        -: 2529:				 * key agreement.
+        -: 2530:				 *
+        -: 2531:				 * One also needs to add code in ssl3_connect
+        -: 2532:				 * to skip sending the certificate verify
+        -: 2533:				 * message.
+        -: 2534:				 *
+        -: 2535:				 * if ((s->cert->key->privatekey != NULL) &&
+        -: 2536:				 *     (s->cert->key->privatekey->type ==
+        -: 2537:				 *      EVP_PKEY_EC) && ...)
+        -: 2538:				 * ecdh_clnt_cert = 1;
+        -: 2539:				 */
+        -: 2540:				}
+        -: 2541:
+    #####: 2542:			if (s->session->sess_cert->peer_ecdh_tmp != NULL)
+        -: 2543:				{
+        -: 2544:				tkey = s->session->sess_cert->peer_ecdh_tmp;
+        -: 2545:				}
+        -: 2546:			else
+        -: 2547:				{
+        -: 2548:				/* Get the Server Public Key from Cert */
+    #####: 2549:				srvr_pub_pkey = X509_get_pubkey(s->session-> \
+        -: 2550:				    sess_cert->peer_pkeys[SSL_PKEY_ECC].x509);
+    #####: 2551:				if ((srvr_pub_pkey == NULL) ||
+    #####: 2552:				    (srvr_pub_pkey->type != EVP_PKEY_EC) ||
+    #####: 2553:				    (srvr_pub_pkey->pkey.ec == NULL))
+        -: 2554:					{
+    #####: 2555:					SSLerr(SSL_F_SSL3_SEND_CLIENT_KEY_EXCHANGE,
+        -: 2556:					    ERR_R_INTERNAL_ERROR);
+    #####: 2557:					goto err;
+        -: 2558:					}
+        -: 2559:
+        -: 2560:				tkey = srvr_pub_pkey->pkey.ec;
+        -: 2561:				}
+        -: 2562:
+    #####: 2563:			srvr_group   = EC_KEY_get0_group(tkey);
+    #####: 2564:			srvr_ecpoint = EC_KEY_get0_public_key(tkey);
+        -: 2565:
+    #####: 2566:			if ((srvr_group == NULL) || (srvr_ecpoint == NULL))
+        -: 2567:				{
+    #####: 2568:				SSLerr(SSL_F_SSL3_SEND_CLIENT_KEY_EXCHANGE,
+        -: 2569:				    ERR_R_INTERNAL_ERROR);
+    #####: 2570:				goto err;
+        -: 2571:				}
+        -: 2572:
+    #####: 2573:			if ((clnt_ecdh=EC_KEY_new()) == NULL) 
+        -: 2574:				{
+    #####: 2575:				SSLerr(SSL_F_SSL3_SEND_CLIENT_KEY_EXCHANGE,ERR_R_MALLOC_FAILURE);
+    #####: 2576:				goto err;
+        -: 2577:				}
+        -: 2578:
+    #####: 2579:			if (!EC_KEY_set_group(clnt_ecdh, srvr_group))
+        -: 2580:				{
+    #####: 2581:				SSLerr(SSL_F_SSL3_SEND_CLIENT_KEY_EXCHANGE,ERR_R_EC_LIB);
+    #####: 2582:				goto err;
+        -: 2583:				}
+        -: 2584:			if (ecdh_clnt_cert) 
+        -: 2585:				{ 
+        -: 2586:				/* Reuse key info from our certificate
+        -: 2587:				 * We only need our private key to perform
+        -: 2588:				 * the ECDH computation.
+        -: 2589:				 */
+        -: 2590:				const BIGNUM *priv_key;
+        -: 2591:				tkey = s->cert->key->privatekey->pkey.ec;
+        -: 2592:				priv_key = EC_KEY_get0_private_key(tkey);
+        -: 2593:				if (priv_key == NULL)
+        -: 2594:					{
+        -: 2595:					SSLerr(SSL_F_SSL3_SEND_CLIENT_KEY_EXCHANGE,ERR_R_MALLOC_FAILURE);
+        -: 2596:					goto err;
+        -: 2597:					}
+        -: 2598:				if (!EC_KEY_set_private_key(clnt_ecdh, priv_key))
+        -: 2599:					{
+        -: 2600:					SSLerr(SSL_F_SSL3_SEND_CLIENT_KEY_EXCHANGE,ERR_R_EC_LIB);
+        -: 2601:					goto err;
+        -: 2602:					}
+        -: 2603:				}
+        -: 2604:			else 
+        -: 2605:				{
+        -: 2606:				/* Generate a new ECDH key pair */
+    #####: 2607:				if (!(EC_KEY_generate_key(clnt_ecdh)))
+        -: 2608:					{
+    #####: 2609:					SSLerr(SSL_F_SSL3_SEND_CLIENT_KEY_EXCHANGE, ERR_R_ECDH_LIB);
+    #####: 2610:					goto err;
+        -: 2611:					}
+        -: 2612:				}
+        -: 2613:
+        -: 2614:			/* use the 'p' output buffer for the ECDH key, but
+        -: 2615:			 * make sure to clear it out afterwards
+        -: 2616:			 */
+        -: 2617:
+    #####: 2618:			field_size = EC_GROUP_get_degree(srvr_group);
+    #####: 2619:			if (field_size <= 0)
+        -: 2620:				{
+    #####: 2621:				SSLerr(SSL_F_SSL3_SEND_CLIENT_KEY_EXCHANGE, 
+        -: 2622:				       ERR_R_ECDH_LIB);
+    #####: 2623:				goto err;
+        -: 2624:				}
+    #####: 2625:			n=ECDH_compute_key(p, (field_size+7)/8, srvr_ecpoint, clnt_ecdh, NULL);
+    #####: 2626:			if (n <= 0)
+        -: 2627:				{
+    #####: 2628:				SSLerr(SSL_F_SSL3_SEND_CLIENT_KEY_EXCHANGE, 
+        -: 2629:				       ERR_R_ECDH_LIB);
+    #####: 2630:				goto err;
+        -: 2631:				}
+        -: 2632:
+        -: 2633:			/* generate master key from the result */
+    #####: 2634:			s->session->master_key_length = s->method->ssl3_enc \
+    #####: 2635:			    -> generate_master_secret(s, 
+    #####: 2636:				s->session->master_key,
+        -: 2637:				p, n);
+        -: 2638:
+    #####: 2639:			memset(p, 0, n); /* clean up */
+        -: 2640:
+        -: 2641:			if (ecdh_clnt_cert) 
+        -: 2642:				{
+        -: 2643:				/* Send empty client key exch message */
+        -: 2644:				n = 0;
+        -: 2645:				}
+        -: 2646:			else 
+        -: 2647:				{
+        -: 2648:				/* First check the size of encoding and
+        -: 2649:				 * allocate memory accordingly.
+        -: 2650:				 */
+    #####: 2651:				encoded_pt_len = 
+    #####: 2652:				    EC_POINT_point2oct(srvr_group, 
+        -: 2653:					EC_KEY_get0_public_key(clnt_ecdh), 
+        -: 2654:					POINT_CONVERSION_UNCOMPRESSED, 
+        -: 2655:					NULL, 0, NULL);
+        -: 2656:
+    #####: 2657:				encodedPoint = (unsigned char *) 
+        -: 2658:				    OPENSSL_malloc(encoded_pt_len * 
+        -: 2659:					sizeof(unsigned char)); 
+    #####: 2660:				bn_ctx = BN_CTX_new();
+    #####: 2661:				if ((encodedPoint == NULL) || 
+    #####: 2662:				    (bn_ctx == NULL)) 
+        -: 2663:					{
+    #####: 2664:					SSLerr(SSL_F_SSL3_SEND_CLIENT_KEY_EXCHANGE,ERR_R_MALLOC_FAILURE);
+    #####: 2665:					goto err;
+        -: 2666:					}
+        -: 2667:
+        -: 2668:				/* Encode the public key */
+    #####: 2669:				n = EC_POINT_point2oct(srvr_group, 
+        -: 2670:				    EC_KEY_get0_public_key(clnt_ecdh), 
+        -: 2671:				    POINT_CONVERSION_UNCOMPRESSED, 
+        -: 2672:				    encodedPoint, encoded_pt_len, bn_ctx);
+        -: 2673:
+    #####: 2674:				*p = n; /* length of encoded point */
+        -: 2675:				/* Encoded point will be copied here */
+    #####: 2676:				p += 1; 
+        -: 2677:				/* copy the point */
+    #####: 2678:				memcpy((unsigned char *)p, encodedPoint, n);
+        -: 2679:				/* increment n to account for length field */
+    #####: 2680:				n += 1; 
+        -: 2681:				}
+        -: 2682:
+        -: 2683:			/* Free allocated memory */
+    #####: 2684:			BN_CTX_free(bn_ctx);
+    #####: 2685:			if (encodedPoint != NULL) OPENSSL_free(encodedPoint);
+    #####: 2686:			if (clnt_ecdh != NULL) 
+    #####: 2687:				 EC_KEY_free(clnt_ecdh);
+    #####: 2688:			EVP_PKEY_free(srvr_pub_pkey);
+        -: 2689:			}
+        -: 2690:#endif /* !OPENSSL_NO_ECDH */
+    #####: 2691:		else if (alg_k & SSL_kGOST) 
+        -: 2692:			{
+        -: 2693:			/* GOST key exchange message creation */
+        -: 2694:			EVP_PKEY_CTX *pkey_ctx;
+        -: 2695:			X509 *peer_cert; 
+        -: 2696:			size_t msglen;
+        -: 2697:			unsigned int md_len;
+        -: 2698:			int keytype;
+        -: 2699:			unsigned char premaster_secret[32],shared_ukm[32], tmp[256];
+        -: 2700:			EVP_MD_CTX *ukm_hash;
+        -: 2701:			EVP_PKEY *pub_key;
+        -: 2702:
+        -: 2703:			/* Get server sertificate PKEY and create ctx from it */
+    #####: 2704:			peer_cert=s->session->sess_cert->peer_pkeys[(keytype=SSL_PKEY_GOST01)].x509;
+    #####: 2705:			if (!peer_cert) 
+    #####: 2706:				peer_cert=s->session->sess_cert->peer_pkeys[(keytype=SSL_PKEY_GOST94)].x509;
+    #####: 2707:			if (!peer_cert)		{
+    #####: 2708:					SSLerr(SSL_F_SSL3_SEND_CLIENT_KEY_EXCHANGE,SSL_R_NO_GOST_CERTIFICATE_SENT_BY_PEER);
+    #####: 2709:					goto err;
+        -: 2710:				}	
+        -: 2711:				
+    #####: 2712:			pkey_ctx=EVP_PKEY_CTX_new(pub_key=X509_get_pubkey(peer_cert),NULL);
+        -: 2713:			/* If we have send a certificate, and certificate key
+        -: 2714:
+        -: 2715:			 * parameters match those of server certificate, use
+        -: 2716:			 * certificate key for key exchange
+        -: 2717:			 */
+        -: 2718:
+        -: 2719:			 /* Otherwise, generate ephemeral key pair */
+        -: 2720:					
+    #####: 2721:			EVP_PKEY_encrypt_init(pkey_ctx);
+        -: 2722:			  /* Generate session key */	
+    #####: 2723:		    RAND_bytes(premaster_secret,32);
+        -: 2724:			/* If we have client certificate, use its secret as peer key */
+    #####: 2725:			if (s->s3->tmp.cert_req && s->cert->key->privatekey) {
+    #####: 2726:				if (EVP_PKEY_derive_set_peer(pkey_ctx,s->cert->key->privatekey) <=0) {
+        -: 2727:					/* If there was an error - just ignore it. Ephemeral key
+        -: 2728:					* would be used
+        -: 2729:					*/
+    #####: 2730:					ERR_clear_error();
+        -: 2731:				}
+        -: 2732:			}			
+        -: 2733:			/* Compute shared IV and store it in algorithm-specific
+        -: 2734:			 * context data */
+    #####: 2735:			ukm_hash = EVP_MD_CTX_create();
+    #####: 2736:			EVP_DigestInit(ukm_hash,EVP_get_digestbynid(NID_id_GostR3411_94));
+    #####: 2737:			EVP_DigestUpdate(ukm_hash,s->s3->client_random,SSL3_RANDOM_SIZE);
+    #####: 2738:			EVP_DigestUpdate(ukm_hash,s->s3->server_random,SSL3_RANDOM_SIZE);
+    #####: 2739:			EVP_DigestFinal_ex(ukm_hash, shared_ukm, &md_len);
+    #####: 2740:			EVP_MD_CTX_destroy(ukm_hash);
+    #####: 2741:			if (EVP_PKEY_CTX_ctrl(pkey_ctx,-1,EVP_PKEY_OP_ENCRYPT,EVP_PKEY_CTRL_SET_IV,
+        -: 2742:				8,shared_ukm)<0) {
+    #####: 2743:					SSLerr(SSL_F_SSL3_SEND_CLIENT_KEY_EXCHANGE,
+        -: 2744:						SSL_R_LIBRARY_BUG);
+    #####: 2745:					goto err;
+        -: 2746:				}	
+        -: 2747:			/* Make GOST keytransport blob message */
+        -: 2748:			/*Encapsulate it into sequence */
+    #####: 2749:			*(p++)=V_ASN1_SEQUENCE | V_ASN1_CONSTRUCTED;
+    #####: 2750:			msglen=255;
+    #####: 2751:			if (EVP_PKEY_encrypt(pkey_ctx,tmp,&msglen,premaster_secret,32)<0) {
+    #####: 2752:			SSLerr(SSL_F_SSL3_SEND_CLIENT_KEY_EXCHANGE,
+        -: 2753:					SSL_R_LIBRARY_BUG);
+    #####: 2754:				goto err;
+        -: 2755:			}
+    #####: 2756:			if (msglen >= 0x80)
+        -: 2757:				{
+    #####: 2758:				*(p++)=0x81;
+    #####: 2759:				*(p++)= msglen & 0xff;
+    #####: 2760:				n=msglen+3;
+        -: 2761:				}
+        -: 2762:			else
+        -: 2763:				{
+    #####: 2764:				*(p++)= msglen & 0xff;
+    #####: 2765:				n=msglen+2;
+        -: 2766:				}
+    #####: 2767:			memcpy(p, tmp, msglen);
+        -: 2768:			/* Check if pubkey from client certificate was used */
+    #####: 2769:			if (EVP_PKEY_CTX_ctrl(pkey_ctx, -1, -1, EVP_PKEY_CTRL_PEER_KEY, 2, NULL) > 0)
+        -: 2770:				{
+        -: 2771:				/* Set flag "skip certificate verify" */
+    #####: 2772:				s->s3->flags |= TLS1_FLAGS_SKIP_CERT_VERIFY;
+        -: 2773:				}
+    #####: 2774:			EVP_PKEY_CTX_free(pkey_ctx);
+    #####: 2775:			s->session->master_key_length=
+    #####: 2776:				s->method->ssl3_enc->generate_master_secret(s,
+    #####: 2777:					s->session->master_key,premaster_secret,32);
+    #####: 2778:			EVP_PKEY_free(pub_key);
+        -: 2779:
+        -: 2780:			}
+        -: 2781:#ifndef OPENSSL_NO_SRP
+    #####: 2782:		else if (alg_k & SSL_kSRP)
+        -: 2783:			{
+    #####: 2784:			if (s->srp_ctx.A != NULL)
+        -: 2785:				{
+        -: 2786:				/* send off the data */
+    #####: 2787:				n=BN_num_bytes(s->srp_ctx.A);
+    #####: 2788:				s2n(n,p);
+    #####: 2789:				BN_bn2bin(s->srp_ctx.A,p);
+    #####: 2790:				n+=2;
+        -: 2791:				}
+        -: 2792:			else
+        -: 2793:				{
+    #####: 2794:				SSLerr(SSL_F_SSL3_SEND_CLIENT_KEY_EXCHANGE,ERR_R_INTERNAL_ERROR);
+    #####: 2795:				goto err;
+        -: 2796:				}
+    #####: 2797:			if (s->session->srp_username != NULL)
+    #####: 2798:				OPENSSL_free(s->session->srp_username);
+    #####: 2799:			s->session->srp_username = BUF_strdup(s->srp_ctx.login);
+    #####: 2800:			if (s->session->srp_username == NULL)
+        -: 2801:				{
+    #####: 2802:				SSLerr(SSL_F_SSL3_SEND_CLIENT_KEY_EXCHANGE,
+        -: 2803:					ERR_R_MALLOC_FAILURE);
+    #####: 2804:				goto err;
+        -: 2805:				}
+        -: 2806:
+    #####: 2807:			if ((s->session->master_key_length = SRP_generate_client_master_secret(s,s->session->master_key))<0)
+        -: 2808:				{
+    #####: 2809:				SSLerr(SSL_F_SSL3_SEND_CLIENT_KEY_EXCHANGE,ERR_R_INTERNAL_ERROR);
+    #####: 2810:				goto err;
+        -: 2811:				}
+        -: 2812:			}
+        -: 2813:#endif
+        -: 2814:#ifndef OPENSSL_NO_PSK
+    #####: 2815:		else if (alg_k & SSL_kPSK)
+        -: 2816:			{
+        -: 2817:			char identity[PSK_MAX_IDENTITY_LEN];
+        -: 2818:			unsigned char *t = NULL;
+        -: 2819:			unsigned char psk_or_pre_ms[PSK_MAX_PSK_LEN*2+4];
+        -: 2820:			unsigned int pre_ms_len = 0, psk_len = 0;
+        -: 2821:			int psk_err = 1;
+        -: 2822:
+        -: 2823:			n = 0;
+    #####: 2824:			if (s->psk_client_callback == NULL)
+        -: 2825:				{
+    #####: 2826:				SSLerr(SSL_F_SSL3_SEND_CLIENT_KEY_EXCHANGE,
+        -: 2827:					SSL_R_PSK_NO_CLIENT_CB);
+    #####: 2828:				goto err;
+        -: 2829:				}
+        -: 2830:
+    #####: 2831:			psk_len = s->psk_client_callback(s, s->ctx->psk_identity_hint,
+        -: 2832:				identity, PSK_MAX_IDENTITY_LEN,
+        -: 2833:				psk_or_pre_ms, sizeof(psk_or_pre_ms));
+    #####: 2834:			if (psk_len > PSK_MAX_PSK_LEN)
+        -: 2835:				{
+    #####: 2836:				SSLerr(SSL_F_SSL3_SEND_CLIENT_KEY_EXCHANGE,
+        -: 2837:					ERR_R_INTERNAL_ERROR);
+    #####: 2838:				goto psk_err;
+        -: 2839:				}
+    #####: 2840:			else if (psk_len == 0)
+        -: 2841:				{
+    #####: 2842:				SSLerr(SSL_F_SSL3_SEND_CLIENT_KEY_EXCHANGE,
+        -: 2843:					SSL_R_PSK_IDENTITY_NOT_FOUND);
+    #####: 2844:				goto psk_err;
+        -: 2845:				}
+        -: 2846:
+        -: 2847:			/* create PSK pre_master_secret */
+    #####: 2848:			pre_ms_len = 2+psk_len+2+psk_len;
+        -: 2849:			t = psk_or_pre_ms;
+    #####: 2850:			memmove(psk_or_pre_ms+psk_len+4, psk_or_pre_ms, psk_len);
+    #####: 2851:			s2n(psk_len, t);
+        -: 2852:			memset(t, 0, psk_len);
+    #####: 2853:			t+=psk_len;
+    #####: 2854:			s2n(psk_len, t);
+        -: 2855:
+    #####: 2856:			if (s->session->psk_identity_hint != NULL)
+    #####: 2857:				OPENSSL_free(s->session->psk_identity_hint);
+    #####: 2858:			s->session->psk_identity_hint = BUF_strdup(s->ctx->psk_identity_hint);
+    #####: 2859:			if (s->ctx->psk_identity_hint != NULL &&
+    #####: 2860:				s->session->psk_identity_hint == NULL)
+        -: 2861:				{
+    #####: 2862:				SSLerr(SSL_F_SSL3_SEND_CLIENT_KEY_EXCHANGE,
+        -: 2863:					ERR_R_MALLOC_FAILURE);
+    #####: 2864:				goto psk_err;
+        -: 2865:				}
+        -: 2866:
+    #####: 2867:			if (s->session->psk_identity != NULL)
+    #####: 2868:				OPENSSL_free(s->session->psk_identity);
+    #####: 2869:			s->session->psk_identity = BUF_strdup(identity);
+    #####: 2870:			if (s->session->psk_identity == NULL)
+        -: 2871:				{
+    #####: 2872:				SSLerr(SSL_F_SSL3_SEND_CLIENT_KEY_EXCHANGE,
+        -: 2873:					ERR_R_MALLOC_FAILURE);
+    #####: 2874:				goto psk_err;
+        -: 2875:				}
+        -: 2876:
+    #####: 2877:			s->session->master_key_length =
+    #####: 2878:				s->method->ssl3_enc->generate_master_secret(s,
+    #####: 2879:					s->session->master_key,
+        -: 2880:					psk_or_pre_ms, pre_ms_len); 
+    #####: 2881:			n = strlen(identity);
+    #####: 2882:			s2n(n, p);
+    #####: 2883:			memcpy(p, identity, n);
+    #####: 2884:			n+=2;
+        -: 2885:			psk_err = 0;
+        -: 2886:		psk_err:
+    #####: 2887:			OPENSSL_cleanse(identity, PSK_MAX_IDENTITY_LEN);
+    #####: 2888:			OPENSSL_cleanse(psk_or_pre_ms, sizeof(psk_or_pre_ms));
+    #####: 2889:			if (psk_err != 0)
+        -: 2890:				{
+    #####: 2891:				ssl3_send_alert(s, SSL3_AL_FATAL, SSL_AD_HANDSHAKE_FAILURE);
+    #####: 2892:				goto err;
+        -: 2893:				}
+        -: 2894:			}
+        -: 2895:#endif
+        -: 2896:		else
+        -: 2897:			{
+    #####: 2898:			ssl3_send_alert(s, SSL3_AL_FATAL,
+        -: 2899:			    SSL_AD_HANDSHAKE_FAILURE);
+    #####: 2900:			SSLerr(SSL_F_SSL3_SEND_CLIENT_KEY_EXCHANGE,
+        -: 2901:			    ERR_R_INTERNAL_ERROR);
+    #####: 2902:			goto err;
+        -: 2903:			}
+        -: 2904:		
+    10000: 2905:		*(d++)=SSL3_MT_CLIENT_KEY_EXCHANGE;
+    10000: 2906:		l2n3(n,d);
+        -: 2907:
+    10000: 2908:		s->state=SSL3_ST_CW_KEY_EXCH_B;
+        -: 2909:		/* number of bytes to write */
+    10000: 2910:		s->init_num=n+4;
+    10000: 2911:		s->init_off=0;
+        -: 2912:		}
+        -: 2913:
+        -: 2914:	/* SSL3_ST_CW_KEY_EXCH_B */
+    10000: 2915:	return(ssl3_do_write(s,SSL3_RT_HANDSHAKE));
+        -: 2916:err:
+        -: 2917:#ifndef OPENSSL_NO_ECDH
+    #####: 2918:	BN_CTX_free(bn_ctx);
+    #####: 2919:	if (encodedPoint != NULL) OPENSSL_free(encodedPoint);
+    #####: 2920:	if (clnt_ecdh != NULL) 
+    #####: 2921:		EC_KEY_free(clnt_ecdh);
+    #####: 2922:	EVP_PKEY_free(srvr_pub_pkey);
+        -: 2923:#endif
+    #####: 2924:	return(-1);
+        -: 2925:	}
+        -: 2926:
+    #####: 2927:int ssl3_send_client_verify(SSL *s)
+        -: 2928:	{
+        -: 2929:	unsigned char *p,*d;
+        -: 2930:	unsigned char data[MD5_DIGEST_LENGTH+SHA_DIGEST_LENGTH];
+        -: 2931:	EVP_PKEY *pkey;
+        -: 2932:	EVP_PKEY_CTX *pctx=NULL;
+        -: 2933:	EVP_MD_CTX mctx;
+    #####: 2934:	unsigned u=0;
+        -: 2935:	unsigned long n;
+        -: 2936:	int j;
+        -: 2937:
+    #####: 2938:	EVP_MD_CTX_init(&mctx);
+        -: 2939:
+    #####: 2940:	if (s->state == SSL3_ST_CW_CERT_VRFY_A)
+        -: 2941:		{
+    #####: 2942:		d=(unsigned char *)s->init_buf->data;
+    #####: 2943:		p= &(d[4]);
+    #####: 2944:		pkey=s->cert->key->privatekey;
+        -: 2945:/* Create context from key and test if sha1 is allowed as digest */
+    #####: 2946:		pctx = EVP_PKEY_CTX_new(pkey,NULL);
+    #####: 2947:		EVP_PKEY_sign_init(pctx);
+    #####: 2948:		if (EVP_PKEY_CTX_set_signature_md(pctx, EVP_sha1())>0)
+        -: 2949:			{
+    #####: 2950:			if (TLS1_get_version(s) < TLS1_2_VERSION)
+    #####: 2951:				s->method->ssl3_enc->cert_verify_mac(s,
+        -: 2952:						NID_sha1,
+        -: 2953:						&(data[MD5_DIGEST_LENGTH]));
+        -: 2954:			}
+        -: 2955:		else
+        -: 2956:			{
+    #####: 2957:			ERR_clear_error();
+        -: 2958:			}
+        -: 2959:		/* For TLS v1.2 send signature algorithm and signature
+        -: 2960:		 * using agreed digest and cached handshake records.
+        -: 2961:		 */
+    #####: 2962:		if (TLS1_get_version(s) >= TLS1_2_VERSION)
+    #####: 2963:			{
+        -: 2964:			long hdatalen = 0;
+        -: 2965:			void *hdata;
+    #####: 2966:			const EVP_MD *md = s->cert->key->digest;
+    #####: 2967:			hdatalen = BIO_get_mem_data(s->s3->handshake_buffer,
+        -: 2968:								&hdata);
+    #####: 2969:			if (hdatalen <= 0 || !tls12_get_sigandhash(p, pkey, md))
+        -: 2970:				{
+    #####: 2971:				SSLerr(SSL_F_SSL3_SEND_CLIENT_VERIFY,
+        -: 2972:						ERR_R_INTERNAL_ERROR);
+    #####: 2973:				goto err;
+        -: 2974:				}
+        -: 2975:			p += 2;
+        -: 2976:#ifdef SSL_DEBUG
+        -: 2977:			fprintf(stderr, "Using TLS 1.2 with client alg %s\n",
+        -: 2978:							EVP_MD_name(md));
+        -: 2979:#endif
+    #####: 2980:			if (!EVP_SignInit_ex(&mctx, md, NULL)
+    #####: 2981:				|| !EVP_SignUpdate(&mctx, hdata, hdatalen)
+    #####: 2982:				|| !EVP_SignFinal(&mctx, p + 2, &u, pkey))
+        -: 2983:				{
+    #####: 2984:				SSLerr(SSL_F_SSL3_SEND_CLIENT_VERIFY,
+        -: 2985:						ERR_R_EVP_LIB);
+    #####: 2986:				goto err;
+        -: 2987:				}
+    #####: 2988:			s2n(u,p);
+    #####: 2989:			n = u + 4;
+    #####: 2990:			if (!ssl3_digest_cached_records(s))
+        -: 2991:				goto err;
+        -: 2992:			}
+        -: 2993:		else
+        -: 2994:#ifndef OPENSSL_NO_RSA
+    #####: 2995:		if (pkey->type == EVP_PKEY_RSA)
+        -: 2996:			{
+    #####: 2997:			s->method->ssl3_enc->cert_verify_mac(s,
+        -: 2998:				NID_md5,
+        -: 2999:			 	&(data[0]));
+    #####: 3000:			if (RSA_sign(NID_md5_sha1, data,
+        -: 3001:					 MD5_DIGEST_LENGTH+SHA_DIGEST_LENGTH,
+    #####: 3002:					&(p[2]), &u, pkey->pkey.rsa) <= 0 )
+        -: 3003:				{
+    #####: 3004:				SSLerr(SSL_F_SSL3_SEND_CLIENT_VERIFY,ERR_R_RSA_LIB);
+    #####: 3005:				goto err;
+        -: 3006:				}
+    #####: 3007:			s2n(u,p);
+    #####: 3008:			n=u+2;
+        -: 3009:			}
+        -: 3010:		else
+        -: 3011:#endif
+        -: 3012:#ifndef OPENSSL_NO_DSA
+    #####: 3013:			if (pkey->type == EVP_PKEY_DSA)
+        -: 3014:			{
+    #####: 3015:			if (!DSA_sign(pkey->save_type,
+        -: 3016:				&(data[MD5_DIGEST_LENGTH]),
+        -: 3017:				SHA_DIGEST_LENGTH,&(p[2]),
+    #####: 3018:				(unsigned int *)&j,pkey->pkey.dsa))
+        -: 3019:				{
+    #####: 3020:				SSLerr(SSL_F_SSL3_SEND_CLIENT_VERIFY,ERR_R_DSA_LIB);
+    #####: 3021:				goto err;
+        -: 3022:				}
+    #####: 3023:			s2n(j,p);
+    #####: 3024:			n=j+2;
+        -: 3025:			}
+        -: 3026:		else
+        -: 3027:#endif
+        -: 3028:#ifndef OPENSSL_NO_ECDSA
+    #####: 3029:			if (pkey->type == EVP_PKEY_EC)
+        -: 3030:			{
+    #####: 3031:			if (!ECDSA_sign(pkey->save_type,
+        -: 3032:				&(data[MD5_DIGEST_LENGTH]),
+        -: 3033:				SHA_DIGEST_LENGTH,&(p[2]),
+    #####: 3034:				(unsigned int *)&j,pkey->pkey.ec))
+        -: 3035:				{
+    #####: 3036:				SSLerr(SSL_F_SSL3_SEND_CLIENT_VERIFY,
+        -: 3037:				    ERR_R_ECDSA_LIB);
+    #####: 3038:				goto err;
+        -: 3039:				}
+    #####: 3040:			s2n(j,p);
+    #####: 3041:			n=j+2;
+        -: 3042:			}
+        -: 3043:		else
+        -: 3044:#endif
+    #####: 3045:		if (pkey->type == NID_id_GostR3410_94 || pkey->type == NID_id_GostR3410_2001) 
+        -: 3046:		{
+        -: 3047:		unsigned char signbuf[64];
+        -: 3048:		int i;
+    #####: 3049:		size_t sigsize=64;
+    #####: 3050:		s->method->ssl3_enc->cert_verify_mac(s,
+        -: 3051:			NID_id_GostR3411_94,
+        -: 3052:			data);
+    #####: 3053:		if (EVP_PKEY_sign(pctx, signbuf, &sigsize, data, 32) <= 0) {
+    #####: 3054:			SSLerr(SSL_F_SSL3_SEND_CLIENT_VERIFY,
+        -: 3055:			ERR_R_INTERNAL_ERROR);
+    #####: 3056:			goto err;
+        -: 3057:		}
+    #####: 3058:		for (i=63,j=0; i>=0; j++, i--) {
+    #####: 3059:			p[2+j]=signbuf[i];
+        -: 3060:		}	
+    #####: 3061:		s2n(j,p);
+    #####: 3062:		n=j+2;
+        -: 3063:		}
+        -: 3064:		else
+        -: 3065:		{
+    #####: 3066:			SSLerr(SSL_F_SSL3_SEND_CLIENT_VERIFY,ERR_R_INTERNAL_ERROR);
+    #####: 3067:			goto err;
+        -: 3068:		}
+    #####: 3069:		*(d++)=SSL3_MT_CERTIFICATE_VERIFY;
+    #####: 3070:		l2n3(n,d);
+        -: 3071:
+    #####: 3072:		s->state=SSL3_ST_CW_CERT_VRFY_B;
+    #####: 3073:		s->init_num=(int)n+4;
+    #####: 3074:		s->init_off=0;
+        -: 3075:		}
+    #####: 3076:	EVP_MD_CTX_cleanup(&mctx);
+    #####: 3077:	EVP_PKEY_CTX_free(pctx);
+    #####: 3078:	return(ssl3_do_write(s,SSL3_RT_HANDSHAKE));
+        -: 3079:err:
+    #####: 3080:	EVP_MD_CTX_cleanup(&mctx);
+    #####: 3081:	EVP_PKEY_CTX_free(pctx);
+    #####: 3082:	return(-1);
+        -: 3083:	}
+        -: 3084:
+    #####: 3085:int ssl3_send_client_certificate(SSL *s)
+        -: 3086:	{
+    #####: 3087:	X509 *x509=NULL;
+    #####: 3088:	EVP_PKEY *pkey=NULL;
+        -: 3089:	int i;
+        -: 3090:	unsigned long l;
+        -: 3091:
+    #####: 3092:	if (s->state ==	SSL3_ST_CW_CERT_A)
+        -: 3093:		{
+    #####: 3094:		if ((s->cert == NULL) ||
+    #####: 3095:			(s->cert->key->x509 == NULL) ||
+    #####: 3096:			(s->cert->key->privatekey == NULL))
+    #####: 3097:			s->state=SSL3_ST_CW_CERT_B;
+        -: 3098:		else
+    #####: 3099:			s->state=SSL3_ST_CW_CERT_C;
+        -: 3100:		}
+        -: 3101:
+        -: 3102:	/* We need to get a client cert */
+    #####: 3103:	if (s->state == SSL3_ST_CW_CERT_B)
+        -: 3104:		{
+        -: 3105:		/* If we get an error, we need to
+        -: 3106:		 * ssl->rwstate=SSL_X509_LOOKUP; return(-1);
+        -: 3107:		 * We then get retied later */
+        -: 3108:		i=0;
+    #####: 3109:		i = ssl_do_client_cert_cb(s, &x509, &pkey);
+    #####: 3110:		if (i < 0)
+        -: 3111:			{
+    #####: 3112:			s->rwstate=SSL_X509_LOOKUP;
+    #####: 3113:			return(-1);
+        -: 3114:			}
+    #####: 3115:		s->rwstate=SSL_NOTHING;
+    #####: 3116:		if ((i == 1) && (pkey != NULL) && (x509 != NULL))
+        -: 3117:			{
+    #####: 3118:			s->state=SSL3_ST_CW_CERT_B;
+    #####: 3119:			if (	!SSL_use_certificate(s,x509) ||
+    #####: 3120:				!SSL_use_PrivateKey(s,pkey))
+        -: 3121:				i=0;
+        -: 3122:			}
+    #####: 3123:		else if (i == 1)
+        -: 3124:			{
+        -: 3125:			i=0;
+    #####: 3126:			SSLerr(SSL_F_SSL3_SEND_CLIENT_CERTIFICATE,SSL_R_BAD_DATA_RETURNED_BY_CALLBACK);
+        -: 3127:			}
+        -: 3128:
+    #####: 3129:		if (x509 != NULL) X509_free(x509);
+    #####: 3130:		if (pkey != NULL) EVP_PKEY_free(pkey);
+    #####: 3131:		if (i == 0)
+        -: 3132:			{
+    #####: 3133:			if (s->version == SSL3_VERSION)
+        -: 3134:				{
+    #####: 3135:				s->s3->tmp.cert_req=0;
+    #####: 3136:				ssl3_send_alert(s,SSL3_AL_WARNING,SSL_AD_NO_CERTIFICATE);
+    #####: 3137:				return(1);
+        -: 3138:				}
+        -: 3139:			else
+        -: 3140:				{
+    #####: 3141:				s->s3->tmp.cert_req=2;
+        -: 3142:				}
+        -: 3143:			}
+        -: 3144:
+        -: 3145:		/* Ok, we have a cert */
+    #####: 3146:		s->state=SSL3_ST_CW_CERT_C;
+        -: 3147:		}
+        -: 3148:
+    #####: 3149:	if (s->state == SSL3_ST_CW_CERT_C)
+        -: 3150:		{
+    #####: 3151:		s->state=SSL3_ST_CW_CERT_D;
+    #####: 3152:		l=ssl3_output_cert_chain(s,
+    #####: 3153:			(s->s3->tmp.cert_req == 2)?NULL:s->cert->key->x509);
+    #####: 3154:		s->init_num=(int)l;
+    #####: 3155:		s->init_off=0;
+        -: 3156:		}
+        -: 3157:	/* SSL3_ST_CW_CERT_D */
+    #####: 3158:	return(ssl3_do_write(s,SSL3_RT_HANDSHAKE));
+        -: 3159:	}
+        -: 3160:
+        -: 3161:#define has_bits(i,m)	(((i)&(m)) == (m))
+        -: 3162:
+    10000: 3163:int ssl3_check_cert_and_algorithm(SSL *s)
+        -: 3164:	{
+        -: 3165:	int i,idx;
+        -: 3166:	long alg_k,alg_a;
+        -: 3167:	EVP_PKEY *pkey=NULL;
+        -: 3168:	SESS_CERT *sc;
+        -: 3169:#ifndef OPENSSL_NO_RSA
+        -: 3170:	RSA *rsa;
+        -: 3171:#endif
+        -: 3172:#ifndef OPENSSL_NO_DH
+        -: 3173:	DH *dh;
+        -: 3174:#endif
+        -: 3175:
+    10000: 3176:	alg_k=s->s3->tmp.new_cipher->algorithm_mkey;
+    10000: 3177:	alg_a=s->s3->tmp.new_cipher->algorithm_auth;
+        -: 3178:
+        -: 3179:	/* we don't have a certificate */
+    10000: 3180:	if ((alg_a & (SSL_aDH|SSL_aNULL|SSL_aKRB5)) || (alg_k & SSL_kPSK))
+        -: 3181:		return(1);
+        -: 3182:
+    10000: 3183:	sc=s->session->sess_cert;
+    10000: 3184:	if (sc == NULL)
+        -: 3185:		{
+    #####: 3186:		SSLerr(SSL_F_SSL3_CHECK_CERT_AND_ALGORITHM,ERR_R_INTERNAL_ERROR);
+    #####: 3187:		goto err;
+        -: 3188:		}
+        -: 3189:
+        -: 3190:#ifndef OPENSSL_NO_RSA
+    10000: 3191:	rsa=s->session->sess_cert->peer_rsa_tmp;
+        -: 3192:#endif
+        -: 3193:#ifndef OPENSSL_NO_DH
+    10000: 3194:	dh=s->session->sess_cert->peer_dh_tmp;
+        -: 3195:#endif
+        -: 3196:
+        -: 3197:	/* This is the passed certificate */
+        -: 3198:
+    10000: 3199:	idx=sc->peer_cert_type;
+        -: 3200:#ifndef OPENSSL_NO_ECDH
+    10000: 3201:	if (idx == SSL_PKEY_ECC)
+        -: 3202:		{
+    #####: 3203:		if (ssl_check_srvr_ecc_cert_and_alg(sc->peer_pkeys[idx].x509,
+        -: 3204:		    						s) == 0) 
+        -: 3205:			{ /* check failed */
+    #####: 3206:			SSLerr(SSL_F_SSL3_CHECK_CERT_AND_ALGORITHM,SSL_R_BAD_ECC_CERT);
+    #####: 3207:			goto f_err;
+        -: 3208:			}
+        -: 3209:		else 
+        -: 3210:			{
+        -: 3211:			return 1;
+        -: 3212:			}
+        -: 3213:		}
+        -: 3214:#endif
+    10000: 3215:	pkey=X509_get_pubkey(sc->peer_pkeys[idx].x509);
+    10000: 3216:	i=X509_certificate_type(sc->peer_pkeys[idx].x509,pkey);
+    10000: 3217:	EVP_PKEY_free(pkey);
+        -: 3218:
+        -: 3219:	
+        -: 3220:	/* Check that we have a certificate if we require one */
+    10000: 3221:	if ((alg_a & SSL_aRSA) && !has_bits(i,EVP_PK_RSA|EVP_PKT_SIGN))
+        -: 3222:		{
+    #####: 3223:		SSLerr(SSL_F_SSL3_CHECK_CERT_AND_ALGORITHM,SSL_R_MISSING_RSA_SIGNING_CERT);
+    #####: 3224:		goto f_err;
+        -: 3225:		}
+        -: 3226:#ifndef OPENSSL_NO_DSA
+    10000: 3227:	else if ((alg_a & SSL_aDSS) && !has_bits(i,EVP_PK_DSA|EVP_PKT_SIGN))
+        -: 3228:		{
+    #####: 3229:		SSLerr(SSL_F_SSL3_CHECK_CERT_AND_ALGORITHM,SSL_R_MISSING_DSA_SIGNING_CERT);
+    #####: 3230:		goto f_err;
+        -: 3231:		}
+        -: 3232:#endif
+        -: 3233:#ifndef OPENSSL_NO_RSA
+    20000: 3234:	if ((alg_k & SSL_kRSA) &&
+    10000: 3235:		!(has_bits(i,EVP_PK_RSA|EVP_PKT_ENC) || (rsa != NULL)))
+        -: 3236:		{
+    #####: 3237:		SSLerr(SSL_F_SSL3_CHECK_CERT_AND_ALGORITHM,SSL_R_MISSING_RSA_ENCRYPTING_CERT);
+    #####: 3238:		goto f_err;
+        -: 3239:		}
+        -: 3240:#endif
+        -: 3241:#ifndef OPENSSL_NO_DH
+    10000: 3242:	if ((alg_k & SSL_kEDH) &&
+    #####: 3243:		!(has_bits(i,EVP_PK_DH|EVP_PKT_EXCH) || (dh != NULL)))
+        -: 3244:		{
+    #####: 3245:		SSLerr(SSL_F_SSL3_CHECK_CERT_AND_ALGORITHM,SSL_R_MISSING_DH_KEY);
+    #####: 3246:		goto f_err;
+        -: 3247:		}
+    10000: 3248:	else if ((alg_k & SSL_kDHr) && !has_bits(i,EVP_PK_DH|EVP_PKS_RSA))
+        -: 3249:		{
+    #####: 3250:		SSLerr(SSL_F_SSL3_CHECK_CERT_AND_ALGORITHM,SSL_R_MISSING_DH_RSA_CERT);
+    #####: 3251:		goto f_err;
+        -: 3252:		}
+        -: 3253:#ifndef OPENSSL_NO_DSA
+    10000: 3254:	else if ((alg_k & SSL_kDHd) && !has_bits(i,EVP_PK_DH|EVP_PKS_DSA))
+        -: 3255:		{
+    #####: 3256:		SSLerr(SSL_F_SSL3_CHECK_CERT_AND_ALGORITHM,SSL_R_MISSING_DH_DSA_CERT);
+    #####: 3257:		goto f_err;
+        -: 3258:		}
+        -: 3259:#endif
+        -: 3260:#endif
+        -: 3261:
+    10000: 3262:	if (SSL_C_IS_EXPORT(s->s3->tmp.new_cipher) && !has_bits(i,EVP_PKT_EXP))
+        -: 3263:		{
+        -: 3264:#ifndef OPENSSL_NO_RSA
+    #####: 3265:		if (alg_k & SSL_kRSA)
+        -: 3266:			{
+    #####: 3267:			if (rsa == NULL
+    #####: 3268:			    || RSA_size(rsa)*8 > SSL_C_EXPORT_PKEYLENGTH(s->s3->tmp.new_cipher))
+        -: 3269:				{
+    #####: 3270:				SSLerr(SSL_F_SSL3_CHECK_CERT_AND_ALGORITHM,SSL_R_MISSING_EXPORT_TMP_RSA_KEY);
+    #####: 3271:				goto f_err;
+        -: 3272:				}
+        -: 3273:			}
+        -: 3274:		else
+        -: 3275:#endif
+        -: 3276:#ifndef OPENSSL_NO_DH
+    #####: 3277:			if (alg_k & (SSL_kEDH|SSL_kDHr|SSL_kDHd))
+        -: 3278:			    {
+    #####: 3279:			    if (dh == NULL
+    #####: 3280:				|| DH_size(dh)*8 > SSL_C_EXPORT_PKEYLENGTH(s->s3->tmp.new_cipher))
+        -: 3281:				{
+    #####: 3282:				SSLerr(SSL_F_SSL3_CHECK_CERT_AND_ALGORITHM,SSL_R_MISSING_EXPORT_TMP_DH_KEY);
+    #####: 3283:				goto f_err;
+        -: 3284:				}
+        -: 3285:			}
+        -: 3286:		else
+        -: 3287:#endif
+        -: 3288:			{
+    #####: 3289:			SSLerr(SSL_F_SSL3_CHECK_CERT_AND_ALGORITHM,SSL_R_UNKNOWN_KEY_EXCHANGE_TYPE);
+    #####: 3290:			goto f_err;
+        -: 3291:			}
+        -: 3292:		}
+        -: 3293:	return(1);
+        -: 3294:f_err:
+    #####: 3295:	ssl3_send_alert(s,SSL3_AL_FATAL,SSL_AD_HANDSHAKE_FAILURE);
+        -: 3296:err:
+        -: 3297:	return(0);
+        -: 3298:	}
+        -: 3299:
+        -: 3300:#if !defined(OPENSSL_NO_TLSEXT) && !defined(OPENSSL_NO_NEXTPROTONEG)
+    #####: 3301:int ssl3_send_next_proto(SSL *s)
+        -: 3302:	{
+        -: 3303:	unsigned int len, padding_len;
+        -: 3304:	unsigned char *d;
+        -: 3305:
+    #####: 3306:	if (s->state == SSL3_ST_CW_NEXT_PROTO_A)
+        -: 3307:		{
+    #####: 3308:		len = s->next_proto_negotiated_len;
+    #####: 3309:		padding_len = 32 - ((len + 2) % 32);
+    #####: 3310:		d = (unsigned char *)s->init_buf->data;
+    #####: 3311:		d[4] = len;
+    #####: 3312:		memcpy(d + 5, s->next_proto_negotiated, len);
+    #####: 3313:		d[5 + len] = padding_len;
+    #####: 3314:		memset(d + 6 + len, 0, padding_len);
+    #####: 3315:		*(d++)=SSL3_MT_NEXT_PROTO;
+    #####: 3316:		l2n3(2 + len + padding_len, d);
+    #####: 3317:		s->state = SSL3_ST_CW_NEXT_PROTO_B;
+    #####: 3318:		s->init_num = 4 + 2 + len + padding_len;
+    #####: 3319:		s->init_off = 0;
+        -: 3320:		}
+        -: 3321:
+    #####: 3322:	return ssl3_do_write(s, SSL3_RT_HANDSHAKE);
+        -: 3323:}
+        -: 3324:#endif  /* !OPENSSL_NO_TLSEXT && !OPENSSL_NO_NEXTPROTONEG */
+        -: 3325:
+        -: 3326:/* Check to see if handshake is full or resumed. Usually this is just a
+        -: 3327: * case of checking to see if a cache hit has occurred. In the case of
+        -: 3328: * session tickets we have to check the next message to be sure.
+        -: 3329: */
+        -: 3330:
+        -: 3331:#ifndef OPENSSL_NO_TLSEXT
+    10000: 3332:int ssl3_check_finished(SSL *s)
+        -: 3333:	{
+        -: 3334:	int ok;
+        -: 3335:	long n;
+        -: 3336:	/* If we have no ticket it cannot be a resumed session. */
+    10000: 3337:	if (!s->session->tlsext_tick)
+        -: 3338:		return 1;
+        -: 3339:	/* this function is called when we really expect a Certificate
+        -: 3340:	 * message, so permit appropriate message length */
+    #####: 3341:	n=s->method->ssl_get_message(s,
+        -: 3342:		SSL3_ST_CR_CERT_A,
+        -: 3343:		SSL3_ST_CR_CERT_B,
+        -: 3344:		-1,
+        -: 3345:		s->max_cert_list,
+        -: 3346:		&ok);
+    #####: 3347:	if (!ok) return((int)n);
+    #####: 3348:	s->s3->tmp.reuse_message = 1;
+    #####: 3349:	if ((s->s3->tmp.message_type == SSL3_MT_FINISHED)
+    #####: 3350:		|| (s->s3->tmp.message_type == SSL3_MT_NEWSESSION_TICKET))
+        -: 3351:		return 2;
+        -: 3352:
+    #####: 3353:	return 1;
+        -: 3354:	}
+        -: 3355:#endif
+        -: 3356:
+    #####: 3357:int ssl_do_client_cert_cb(SSL *s, X509 **px509, EVP_PKEY **ppkey)
+        -: 3358:	{
+        -: 3359:	int i = 0;
+        -: 3360:#ifndef OPENSSL_NO_ENGINE
+    #####: 3361:	if (s->ctx->client_cert_engine)
+        -: 3362:		{
+    #####: 3363:		i = ENGINE_load_ssl_client_cert(s->ctx->client_cert_engine, s,
+        -: 3364:						SSL_get_client_CA_list(s),
+        -: 3365:						px509, ppkey, NULL, NULL, NULL);
+    #####: 3366:		if (i != 0)
+        -: 3367:			return i;
+        -: 3368:		}
+        -: 3369:#endif
+    #####: 3370:	if (s->ctx->client_cert_cb)
+    #####: 3371:		i = s->ctx->client_cert_cb(s,px509,ppkey);
+    #####: 3372:	return i;
+        -: 3373:	}

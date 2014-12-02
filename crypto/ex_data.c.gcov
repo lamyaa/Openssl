@@ -1,0 +1,641 @@
+        -:    0:Source:ex_data.c
+        -:    0:Graph:ex_data.gcno
+        -:    0:Data:ex_data.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* crypto/ex_data.c */
+        -:    2:
+        -:    3:/*
+        -:    4: * Overhaul notes;
+        -:    5: *
+        -:    6: * This code is now *mostly* thread-safe. It is now easier to understand in what
+        -:    7: * ways it is safe and in what ways it is not, which is an improvement. Firstly,
+        -:    8: * all per-class stacks and index-counters for ex_data are stored in the same
+        -:    9: * global LHASH table (keyed by class). This hash table uses locking for all
+        -:   10: * access with the exception of CRYPTO_cleanup_all_ex_data(), which must only be
+        -:   11: * called when no other threads can possibly race against it (even if it was
+        -:   12: * locked, the race would mean it's possible the hash table might have been
+        -:   13: * recreated after the cleanup). As classes can only be added to the hash table,
+        -:   14: * and within each class, the stack of methods can only be incremented, the
+        -:   15: * locking mechanics are simpler than they would otherwise be. For example, the
+        -:   16: * new/dup/free ex_data functions will lock the hash table, copy the method
+        -:   17: * pointers it needs from the relevant class, then unlock the hash table before
+        -:   18: * actually applying those method pointers to the task of the new/dup/free
+        -:   19: * operations. As they can't be removed from the method-stack, only
+        -:   20: * supplemented, there's no race conditions associated with using them outside
+        -:   21: * the lock. The get/set_ex_data functions are not locked because they do not
+        -:   22: * involve this global state at all - they operate directly with a previously
+        -:   23: * obtained per-class method index and a particular "ex_data" variable. These
+        -:   24: * variables are usually instantiated per-context (eg. each RSA structure has
+        -:   25: * one) so locking on read/write access to that variable can be locked locally
+        -:   26: * if required (eg. using the "RSA" lock to synchronise access to a
+        -:   27: * per-RSA-structure ex_data variable if required).
+        -:   28: * [Geoff]
+        -:   29: */
+        -:   30:
+        -:   31:/* Copyright (C) 1995-1998 Eric Young (eay@cryptsoft.com)
+        -:   32: * All rights reserved.
+        -:   33: *
+        -:   34: * This package is an SSL implementation written
+        -:   35: * by Eric Young (eay@cryptsoft.com).
+        -:   36: * The implementation was written so as to conform with Netscapes SSL.
+        -:   37: * 
+        -:   38: * This library is free for commercial and non-commercial use as long as
+        -:   39: * the following conditions are aheared to.  The following conditions
+        -:   40: * apply to all code found in this distribution, be it the RC4, RSA,
+        -:   41: * lhash, DES, etc., code; not just the SSL code.  The SSL documentation
+        -:   42: * included with this distribution is covered by the same copyright terms
+        -:   43: * except that the holder is Tim Hudson (tjh@cryptsoft.com).
+        -:   44: * 
+        -:   45: * Copyright remains Eric Young's, and as such any Copyright notices in
+        -:   46: * the code are not to be removed.
+        -:   47: * If this package is used in a product, Eric Young should be given attribution
+        -:   48: * as the author of the parts of the library used.
+        -:   49: * This can be in the form of a textual message at program startup or
+        -:   50: * in documentation (online or textual) provided with the package.
+        -:   51: * 
+        -:   52: * Redistribution and use in source and binary forms, with or without
+        -:   53: * modification, are permitted provided that the following conditions
+        -:   54: * are met:
+        -:   55: * 1. Redistributions of source code must retain the copyright
+        -:   56: *    notice, this list of conditions and the following disclaimer.
+        -:   57: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   58: *    notice, this list of conditions and the following disclaimer in the
+        -:   59: *    documentation and/or other materials provided with the distribution.
+        -:   60: * 3. All advertising materials mentioning features or use of this software
+        -:   61: *    must display the following acknowledgement:
+        -:   62: *    "This product includes cryptographic software written by
+        -:   63: *     Eric Young (eay@cryptsoft.com)"
+        -:   64: *    The word 'cryptographic' can be left out if the rouines from the library
+        -:   65: *    being used are not cryptographic related :-).
+        -:   66: * 4. If you include any Windows specific code (or a derivative thereof) from 
+        -:   67: *    the apps directory (application code) you must include an acknowledgement:
+        -:   68: *    "This product includes software written by Tim Hudson (tjh@cryptsoft.com)"
+        -:   69: * 
+        -:   70: * THIS SOFTWARE IS PROVIDED BY ERIC YOUNG ``AS IS'' AND
+        -:   71: * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   72: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+        -:   73: * ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+        -:   74: * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+        -:   75: * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+        -:   76: * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   77: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+        -:   78: * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+        -:   79: * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+        -:   80: * SUCH DAMAGE.
+        -:   81: * 
+        -:   82: * The licence and distribution terms for any publically available version or
+        -:   83: * derivative of this code cannot be changed.  i.e. this code cannot simply be
+        -:   84: * copied and put under another distribution licence
+        -:   85: * [including the GNU Public Licence.]
+        -:   86: */
+        -:   87:/* ====================================================================
+        -:   88: * Copyright (c) 1998-2001 The OpenSSL Project.  All rights reserved.
+        -:   89: *
+        -:   90: * Redistribution and use in source and binary forms, with or without
+        -:   91: * modification, are permitted provided that the following conditions
+        -:   92: * are met:
+        -:   93: *
+        -:   94: * 1. Redistributions of source code must retain the above copyright
+        -:   95: *    notice, this list of conditions and the following disclaimer. 
+        -:   96: *
+        -:   97: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   98: *    notice, this list of conditions and the following disclaimer in
+        -:   99: *    the documentation and/or other materials provided with the
+        -:  100: *    distribution.
+        -:  101: *
+        -:  102: * 3. All advertising materials mentioning features or use of this
+        -:  103: *    software must display the following acknowledgment:
+        -:  104: *    "This product includes software developed by the OpenSSL Project
+        -:  105: *    for use in the OpenSSL Toolkit. (http://www.openssl.org/)"
+        -:  106: *
+        -:  107: * 4. The names "OpenSSL Toolkit" and "OpenSSL Project" must not be used to
+        -:  108: *    endorse or promote products derived from this software without
+        -:  109: *    prior written permission. For written permission, please contact
+        -:  110: *    openssl-core@openssl.org.
+        -:  111: *
+        -:  112: * 5. Products derived from this software may not be called "OpenSSL"
+        -:  113: *    nor may "OpenSSL" appear in their names without prior written
+        -:  114: *    permission of the OpenSSL Project.
+        -:  115: *
+        -:  116: * 6. Redistributions of any form whatsoever must retain the following
+        -:  117: *    acknowledgment:
+        -:  118: *    "This product includes software developed by the OpenSSL Project
+        -:  119: *    for use in the OpenSSL Toolkit (http://www.openssl.org/)"
+        -:  120: *
+        -:  121: * THIS SOFTWARE IS PROVIDED BY THE OpenSSL PROJECT ``AS IS'' AND ANY
+        -:  122: * EXPRESSED OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:  123: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+        -:  124: * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE OpenSSL PROJECT OR
+        -:  125: * ITS CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+        -:  126: * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+        -:  127: * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+        -:  128: * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:  129: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+        -:  130: * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+        -:  131: * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+        -:  132: * OF THE POSSIBILITY OF SUCH DAMAGE.
+        -:  133: * ====================================================================
+        -:  134: *
+        -:  135: * This product includes cryptographic software written by Eric Young
+        -:  136: * (eay@cryptsoft.com).  This product includes software written by Tim
+        -:  137: * Hudson (tjh@cryptsoft.com).
+        -:  138: *
+        -:  139: */
+        -:  140:
+        -:  141:#include "cryptlib.h"
+        -:  142:#include <openssl/lhash.h>
+        -:  143:
+        -:  144:/* What an "implementation of ex_data functionality" looks like */
+        -:  145:struct st_CRYPTO_EX_DATA_IMPL
+        -:  146:	{
+        -:  147:	/*********************/
+        -:  148:	/* GLOBAL OPERATIONS */
+        -:  149:	/* Return a new class index */
+        -:  150:	int (*cb_new_class)(void);
+        -:  151:	/* Cleanup all state used by the implementation */
+        -:  152:	void (*cb_cleanup)(void);
+        -:  153:	/************************/
+        -:  154:	/* PER-CLASS OPERATIONS */
+        -:  155:	/* Get a new method index within a class */
+        -:  156:	int (*cb_get_new_index)(int class_index, long argl, void *argp,
+        -:  157:			CRYPTO_EX_new *new_func, CRYPTO_EX_dup *dup_func,
+        -:  158:			CRYPTO_EX_free *free_func);
+        -:  159:	/* Initialise a new CRYPTO_EX_DATA of a given class */
+        -:  160:	int (*cb_new_ex_data)(int class_index, void *obj,
+        -:  161:			CRYPTO_EX_DATA *ad);
+        -:  162:	/* Duplicate a CRYPTO_EX_DATA of a given class onto a copy */
+        -:  163:	int (*cb_dup_ex_data)(int class_index, CRYPTO_EX_DATA *to,
+        -:  164:			CRYPTO_EX_DATA *from);
+        -:  165:	/* Cleanup a CRYPTO_EX_DATA of a given class */
+        -:  166:	void (*cb_free_ex_data)(int class_index, void *obj,
+        -:  167:			CRYPTO_EX_DATA *ad);
+        -:  168:	};
+        -:  169:
+        -:  170:/* The implementation we use at run-time */
+        -:  171:static const CRYPTO_EX_DATA_IMPL *impl = NULL;
+        -:  172:
+        -:  173:/* To call "impl" functions, use this macro rather than referring to 'impl' directly, eg.
+        -:  174: * EX_IMPL(get_new_index)(...); */
+        -:  175:#define EX_IMPL(a) impl->cb_##a
+        -:  176:
+        -:  177:/* Predeclare the "default" ex_data implementation */
+        -:  178:static int int_new_class(void);
+        -:  179:static void int_cleanup(void);
+        -:  180:static int int_get_new_index(int class_index, long argl, void *argp,
+        -:  181:		CRYPTO_EX_new *new_func, CRYPTO_EX_dup *dup_func,
+        -:  182:		CRYPTO_EX_free *free_func);
+        -:  183:static int int_new_ex_data(int class_index, void *obj,
+        -:  184:		CRYPTO_EX_DATA *ad);
+        -:  185:static int int_dup_ex_data(int class_index, CRYPTO_EX_DATA *to,
+        -:  186:		CRYPTO_EX_DATA *from);
+        -:  187:static void int_free_ex_data(int class_index, void *obj,
+        -:  188:		CRYPTO_EX_DATA *ad);
+        -:  189:static CRYPTO_EX_DATA_IMPL impl_default =
+        -:  190:	{
+        -:  191:	int_new_class,
+        -:  192:	int_cleanup,
+        -:  193:	int_get_new_index,
+        -:  194:	int_new_ex_data,
+        -:  195:	int_dup_ex_data,
+        -:  196:	int_free_ex_data
+        -:  197:	};
+        -:  198:
+        -:  199:/* Internal function that checks whether "impl" is set and if not, sets it to
+        -:  200: * the default. */
+    20000:  201:static void impl_check(void)
+        -:  202:	{
+    20000:  203:	CRYPTO_w_lock(CRYPTO_LOCK_EX_DATA);
+    20000:  204:	if(!impl)
+    20000:  205:		impl = &impl_default;
+    20000:  206:	CRYPTO_w_unlock(CRYPTO_LOCK_EX_DATA);
+    20000:  207:	}
+        -:  208:/* A macro wrapper for impl_check that first uses a non-locked test before
+        -:  209: * invoking the function (which checks again inside a lock). */
+        -:  210:#define IMPL_CHECK if(!impl) impl_check();
+        -:  211:
+        -:  212:/* API functions to get/set the "ex_data" implementation */
+    #####:  213:const CRYPTO_EX_DATA_IMPL *CRYPTO_get_ex_data_implementation(void)
+        -:  214:	{
+    #####:  215:	IMPL_CHECK
+    #####:  216:	return impl;
+        -:  217:	}
+    #####:  218:int CRYPTO_set_ex_data_implementation(const CRYPTO_EX_DATA_IMPL *i)
+        -:  219:	{
+        -:  220:	int toret = 0;
+    #####:  221:	CRYPTO_w_lock(CRYPTO_LOCK_EX_DATA);
+    #####:  222:	if(!impl)
+        -:  223:		{
+    #####:  224:		impl = i;
+        -:  225:		toret = 1;
+        -:  226:		}
+    #####:  227:	CRYPTO_w_unlock(CRYPTO_LOCK_EX_DATA);
+    #####:  228:	return toret;
+        -:  229:	}
+        -:  230:
+        -:  231:/****************************************************************************/
+        -:  232:/* Interal (default) implementation of "ex_data" support. API functions are
+        -:  233: * further down. */
+        -:  234:
+        -:  235:/* The type that represents what each "class" used to implement locally. A STACK
+        -:  236: * of CRYPTO_EX_DATA_FUNCS plus a index-counter. The 'class_index' is the global
+        -:  237: * value representing the class that is used to distinguish these items. */
+        -:  238:typedef struct st_ex_class_item {
+        -:  239:	int class_index;
+        -:  240:	STACK_OF(CRYPTO_EX_DATA_FUNCS) *meth;
+        -:  241:	int meth_num;
+        -:  242:} EX_CLASS_ITEM;
+        -:  243:
+        -:  244:/* When assigning new class indexes, this is our counter */
+        -:  245:static int ex_class = CRYPTO_EX_INDEX_USER;
+        -:  246:
+        -:  247:/* The global hash table of EX_CLASS_ITEM items */
+        -:  248:DECLARE_LHASH_OF(EX_CLASS_ITEM);
+        -:  249:static LHASH_OF(EX_CLASS_ITEM) *ex_data = NULL;
+        -:  250:
+        -:  251:/* The callbacks required in the "ex_data" hash table */
+        -:  252:static unsigned long ex_class_item_hash(const EX_CLASS_ITEM *a)
+        -:  253:	{
+   683834:  254:	return a->class_index;
+        -:  255:	}
+  1367668:  256:static IMPLEMENT_LHASH_HASH_FN(ex_class_item, EX_CLASS_ITEM)
+        -:  257:
+        -:  258:static int ex_class_item_cmp(const EX_CLASS_ITEM *a, const EX_CLASS_ITEM *b)
+        -:  259:	{
+   483834:  260:	return a->class_index - b->class_index;
+        -:  261:	}
+   967668:  262:static IMPLEMENT_LHASH_COMP_FN(ex_class_item, EX_CLASS_ITEM)
+        -:  263:
+        -:  264:/* Internal functions used by the "impl_default" implementation to access the
+        -:  265: * state */
+        -:  266:
+    20000:  267:static int ex_data_check(void)
+        -:  268:	{
+        -:  269:	int toret = 1;
+    20000:  270:	CRYPTO_w_lock(CRYPTO_LOCK_EX_DATA);
+    20000:  271:	if(!ex_data
+    20000:  272:	   && (ex_data = lh_EX_CLASS_ITEM_new()) == NULL)
+        -:  273:		toret = 0;
+    20000:  274:	CRYPTO_w_unlock(CRYPTO_LOCK_EX_DATA);
+    20000:  275:	return toret;
+        -:  276:	}
+        -:  277:/* This macros helps reduce the locking from repeated checks because the
+        -:  278: * ex_data_check() function checks ex_data again inside a lock. */
+        -:  279:#define EX_DATA_CHECK(iffail) if(!ex_data && !ex_data_check()) {iffail}
+        -:  280:
+        -:  281:/* This "inner" callback is used by the callback function that follows it */
+    20000:  282:static void def_cleanup_util_cb(CRYPTO_EX_DATA_FUNCS *funcs)
+        -:  283:	{
+    20000:  284:	OPENSSL_free(funcs);
+    20000:  285:	}
+        -:  286:
+        -:  287:/* This callback is used in lh_doall to destroy all EX_CLASS_ITEM values from
+        -:  288: * "ex_data" prior to the ex_data hash table being itself destroyed. Doesn't do
+        -:  289: * any locking. */
+    90000:  290:static void def_cleanup_cb(void *a_void)
+        -:  291:	{
+        -:  292:	EX_CLASS_ITEM *item = (EX_CLASS_ITEM *)a_void;
+    90000:  293:	sk_CRYPTO_EX_DATA_FUNCS_pop_free(item->meth, def_cleanup_util_cb);
+    90000:  294:	OPENSSL_free(item);
+    90000:  295:	}
+        -:  296:
+        -:  297:/* Return the EX_CLASS_ITEM from the "ex_data" hash table that corresponds to a
+        -:  298: * given class. Handles locking. */
+   583834:  299:static EX_CLASS_ITEM *def_get_class(int class_index)
+        -:  300:	{
+        -:  301:	EX_CLASS_ITEM d, *p, *gen;
+   583834:  302:	EX_DATA_CHECK(return NULL;)
+   583834:  303:	d.class_index = class_index;
+   583834:  304:	CRYPTO_w_lock(CRYPTO_LOCK_EX_DATA);
+   583834:  305:	p = lh_EX_CLASS_ITEM_retrieve(ex_data, &d);
+   583834:  306:	if(!p)
+        -:  307:		{
+   100000:  308:		gen = OPENSSL_malloc(sizeof(EX_CLASS_ITEM));
+   100000:  309:		if(gen)
+        -:  310:			{
+   100000:  311:			gen->class_index = class_index;
+   100000:  312:			gen->meth_num = 0;
+   100000:  313:			gen->meth = sk_CRYPTO_EX_DATA_FUNCS_new_null();
+   100000:  314:			if(!gen->meth)
+    #####:  315:				OPENSSL_free(gen);
+        -:  316:			else
+        -:  317:				{
+        -:  318:				/* Because we're inside the ex_data lock, the
+        -:  319:				 * return value from the insert will be NULL */
+   100000:  320:				(void)lh_EX_CLASS_ITEM_insert(ex_data, gen);
+        -:  321:				p = gen;
+        -:  322:				}
+        -:  323:			}
+        -:  324:		}
+   583834:  325:	CRYPTO_w_unlock(CRYPTO_LOCK_EX_DATA);
+   583834:  326:	if(!p)
+    #####:  327:		CRYPTOerr(CRYPTO_F_DEF_GET_CLASS,ERR_R_MALLOC_FAILURE);
+   583834:  328:	return p;
+        -:  329:	}
+        -:  330:
+        -:  331:/* Add a new method to the given EX_CLASS_ITEM and return the corresponding
+        -:  332: * index (or -1 for error). Handles locking. */
+    20000:  333:static int def_add_index(EX_CLASS_ITEM *item, long argl, void *argp,
+        -:  334:		CRYPTO_EX_new *new_func, CRYPTO_EX_dup *dup_func,
+        -:  335:		CRYPTO_EX_free *free_func)
+        -:  336:	{
+        -:  337:	int toret = -1;
+    20000:  338:	CRYPTO_EX_DATA_FUNCS *a = (CRYPTO_EX_DATA_FUNCS *)OPENSSL_malloc(
+        -:  339:					sizeof(CRYPTO_EX_DATA_FUNCS));
+    20000:  340:	if(!a)
+        -:  341:		{
+    #####:  342:		CRYPTOerr(CRYPTO_F_DEF_ADD_INDEX,ERR_R_MALLOC_FAILURE);
+        -:  343:		return -1;
+        -:  344:		}
+    20000:  345:	a->argl=argl;
+    20000:  346:	a->argp=argp;
+    20000:  347:	a->new_func=new_func;
+    20000:  348:	a->dup_func=dup_func;
+    20000:  349:	a->free_func=free_func;
+    20000:  350:	CRYPTO_w_lock(CRYPTO_LOCK_EX_DATA);
+    40000:  351:	while (sk_CRYPTO_EX_DATA_FUNCS_num(item->meth) <= item->meth_num)
+        -:  352:		{
+    20000:  353:		if (!sk_CRYPTO_EX_DATA_FUNCS_push(item->meth, NULL))
+        -:  354:			{
+    #####:  355:			CRYPTOerr(CRYPTO_F_DEF_ADD_INDEX,ERR_R_MALLOC_FAILURE);
+    #####:  356:			OPENSSL_free(a);
+        -:  357:			goto err;
+        -:  358:			}
+        -:  359:		}
+    20000:  360:	toret = item->meth_num++;
+    20000:  361:	(void)sk_CRYPTO_EX_DATA_FUNCS_set(item->meth, toret, a);
+        -:  362:err:
+    20000:  363:	CRYPTO_w_unlock(CRYPTO_LOCK_EX_DATA);
+        -:  364:	return toret;
+        -:  365:	}
+        -:  366:
+        -:  367:/**************************************************************/
+        -:  368:/* The functions in the default CRYPTO_EX_DATA_IMPL structure */
+        -:  369:
+    #####:  370:static int int_new_class(void)
+        -:  371:	{
+        -:  372:	int toret;
+    #####:  373:	CRYPTO_w_lock(CRYPTO_LOCK_EX_DATA);
+    #####:  374:	toret = ex_class++;
+    #####:  375:	CRYPTO_w_unlock(CRYPTO_LOCK_EX_DATA);
+    #####:  376:	return toret;
+        -:  377:	}
+        -:  378:
+    10000:  379:static void int_cleanup(void)
+        -:  380:	{
+    20000:  381:	EX_DATA_CHECK(return;)
+    10000:  382:	lh_EX_CLASS_ITEM_doall(ex_data, def_cleanup_cb);
+    10000:  383:	lh_EX_CLASS_ITEM_free(ex_data);
+    10000:  384:	ex_data = NULL;
+    10000:  385:	impl = NULL;
+        -:  386:	}
+        -:  387:
+    20000:  388:static int int_get_new_index(int class_index, long argl, void *argp,
+        -:  389:		CRYPTO_EX_new *new_func, CRYPTO_EX_dup *dup_func,
+        -:  390:		CRYPTO_EX_free *free_func)
+        -:  391:	{
+    20000:  392:	EX_CLASS_ITEM *item = def_get_class(class_index);
+    20000:  393:	if(!item)
+        -:  394:		return -1;
+    20000:  395:	return def_add_index(item, argl, argp, new_func, dup_func, free_func);
+        -:  396:	}
+        -:  397:
+        -:  398:/* Thread-safe by copying a class's array of "CRYPTO_EX_DATA_FUNCS" entries in
+        -:  399: * the lock, then using them outside the lock. NB: Thread-safety only applies to
+        -:  400: * the global "ex_data" state (ie. class definitions), not thread-safe on 'ad'
+        -:  401: * itself. */
+   281917:  402:static int int_new_ex_data(int class_index, void *obj,
+        -:  403:		CRYPTO_EX_DATA *ad)
+        -:  404:	{
+        -:  405:	int mx,i;
+        -:  406:	void *ptr;
+        -:  407:	CRYPTO_EX_DATA_FUNCS **storage = NULL;
+   281917:  408:	EX_CLASS_ITEM *item = def_get_class(class_index);
+   281917:  409:	if(!item)
+        -:  410:		/* error is already set */
+        -:  411:		return 0;
+   281917:  412:	ad->sk = NULL;
+   281917:  413:	CRYPTO_r_lock(CRYPTO_LOCK_EX_DATA);
+   281917:  414:	mx = sk_CRYPTO_EX_DATA_FUNCS_num(item->meth);
+   281917:  415:	if(mx > 0)
+        -:  416:		{
+    21942:  417:		storage = OPENSSL_malloc(mx * sizeof(CRYPTO_EX_DATA_FUNCS*));
+    21942:  418:		if(!storage)
+        -:  419:			goto skip;
+    21942:  420:		for(i = 0; i < mx; i++)
+    21942:  421:			storage[i] = sk_CRYPTO_EX_DATA_FUNCS_value(item->meth,i);
+        -:  422:		}
+        -:  423:skip:
+   281917:  424:	CRYPTO_r_unlock(CRYPTO_LOCK_EX_DATA);
+   281917:  425:	if((mx > 0) && !storage)
+        -:  426:		{
+    #####:  427:		CRYPTOerr(CRYPTO_F_INT_NEW_EX_DATA,ERR_R_MALLOC_FAILURE);
+    #####:  428:		return 0;
+        -:  429:		}
+    21942:  430:	for(i = 0; i < mx; i++)
+        -:  431:		{
+    21942:  432:		if(storage[i] && storage[i]->new_func)
+        -:  433:			{
+    #####:  434:			ptr = CRYPTO_get_ex_data(ad, i);
+    #####:  435:			storage[i]->new_func(obj,ptr,ad,i,
+        -:  436:				storage[i]->argl,storage[i]->argp);
+        -:  437:			}
+        -:  438:		}
+   281917:  439:	if(storage)
+    21942:  440:		OPENSSL_free(storage);
+        -:  441:	return 1;
+        -:  442:	}
+        -:  443:
+        -:  444:/* Same thread-safety notes as for "int_new_ex_data" */
+    #####:  445:static int int_dup_ex_data(int class_index, CRYPTO_EX_DATA *to,
+        -:  446:		CRYPTO_EX_DATA *from)
+        -:  447:	{
+        -:  448:	int mx, j, i;
+        -:  449:	char *ptr;
+        -:  450:	CRYPTO_EX_DATA_FUNCS **storage = NULL;
+        -:  451:	EX_CLASS_ITEM *item;
+    #####:  452:	if(!from->sk)
+        -:  453:		/* 'to' should be "blank" which *is* just like 'from' */
+        -:  454:		return 1;
+    #####:  455:	if((item = def_get_class(class_index)) == NULL)
+        -:  456:		return 0;
+    #####:  457:	CRYPTO_r_lock(CRYPTO_LOCK_EX_DATA);
+    #####:  458:	mx = sk_CRYPTO_EX_DATA_FUNCS_num(item->meth);
+    #####:  459:	j = sk_void_num(from->sk);
+    #####:  460:	if(j < mx)
+        -:  461:		mx = j;
+    #####:  462:	if(mx > 0)
+        -:  463:		{
+    #####:  464:		storage = OPENSSL_malloc(mx * sizeof(CRYPTO_EX_DATA_FUNCS*));
+    #####:  465:		if(!storage)
+        -:  466:			goto skip;
+    #####:  467:		for(i = 0; i < mx; i++)
+    #####:  468:			storage[i] = sk_CRYPTO_EX_DATA_FUNCS_value(item->meth,i);
+        -:  469:		}
+        -:  470:skip:
+    #####:  471:	CRYPTO_r_unlock(CRYPTO_LOCK_EX_DATA);
+    #####:  472:	if((mx > 0) && !storage)
+        -:  473:		{
+    #####:  474:		CRYPTOerr(CRYPTO_F_INT_DUP_EX_DATA,ERR_R_MALLOC_FAILURE);
+    #####:  475:		return 0;
+        -:  476:		}
+    #####:  477:	for(i = 0; i < mx; i++)
+        -:  478:		{
+    #####:  479:		ptr = CRYPTO_get_ex_data(from, i);
+    #####:  480:		if(storage[i] && storage[i]->dup_func)
+    #####:  481:			storage[i]->dup_func(to,from,&ptr,i,
+        -:  482:				storage[i]->argl,storage[i]->argp);
+    #####:  483:		CRYPTO_set_ex_data(to,i,ptr);
+        -:  484:		}
+    #####:  485:	if(storage)
+    #####:  486:		OPENSSL_free(storage);
+        -:  487:	return 1;
+        -:  488:	}
+        -:  489:
+        -:  490:/* Same thread-safety notes as for "int_new_ex_data" */
+   281917:  491:static void int_free_ex_data(int class_index, void *obj,
+        -:  492:		CRYPTO_EX_DATA *ad)
+        -:  493:	{
+        -:  494:	int mx,i;
+        -:  495:	EX_CLASS_ITEM *item;
+        -:  496:	void *ptr;
+        -:  497:	CRYPTO_EX_DATA_FUNCS **storage = NULL;
+   281917:  498:	if((item = def_get_class(class_index)) == NULL)
+        -:  499:		return;
+   281917:  500:	CRYPTO_r_lock(CRYPTO_LOCK_EX_DATA);
+   281917:  501:	mx = sk_CRYPTO_EX_DATA_FUNCS_num(item->meth);
+   281917:  502:	if(mx > 0)
+        -:  503:		{
+    21942:  504:		storage = OPENSSL_malloc(mx * sizeof(CRYPTO_EX_DATA_FUNCS*));
+    21942:  505:		if(!storage)
+        -:  506:			goto skip;
+    21942:  507:		for(i = 0; i < mx; i++)
+    21942:  508:			storage[i] = sk_CRYPTO_EX_DATA_FUNCS_value(item->meth,i);
+        -:  509:		}
+        -:  510:skip:
+   281917:  511:	CRYPTO_r_unlock(CRYPTO_LOCK_EX_DATA);
+   281917:  512:	if((mx > 0) && !storage)
+        -:  513:		{
+    #####:  514:		CRYPTOerr(CRYPTO_F_INT_FREE_EX_DATA,ERR_R_MALLOC_FAILURE);
+    #####:  515:		return;
+        -:  516:		}
+    21942:  517:	for(i = 0; i < mx; i++)
+        -:  518:		{
+    21942:  519:		if(storage[i] && storage[i]->free_func)
+        -:  520:			{
+    #####:  521:			ptr = CRYPTO_get_ex_data(ad,i);
+    #####:  522:			storage[i]->free_func(obj,ptr,ad,i,
+        -:  523:				storage[i]->argl,storage[i]->argp);
+        -:  524:			}
+        -:  525:		}
+   281917:  526:	if(storage)
+    21942:  527:		OPENSSL_free(storage);
+   281917:  528:	if(ad->sk)
+        -:  529:		{
+    10000:  530:		sk_void_free(ad->sk);
+    10000:  531:		ad->sk=NULL;
+        -:  532:		}
+        -:  533:	}
+        -:  534:
+        -:  535:/********************************************************************/
+        -:  536:/* API functions that defer all "state" operations to the "ex_data"
+        -:  537: * implementation we have set. */
+        -:  538:
+        -:  539:/* Obtain an index for a new class (not the same as getting a new index within
+        -:  540: * an existing class - this is actually getting a new *class*) */
+    #####:  541:int CRYPTO_ex_data_new_class(void)
+        -:  542:	{
+    #####:  543:	IMPL_CHECK
+    #####:  544:	return EX_IMPL(new_class)();
+        -:  545:	}
+        -:  546:
+        -:  547:/* Release all "ex_data" state to prevent memory leaks. This can't be made
+        -:  548: * thread-safe without overhauling a lot of stuff, and shouldn't really be
+        -:  549: * called under potential race-conditions anyway (it's for program shutdown
+        -:  550: * after all). */
+    10000:  551:void CRYPTO_cleanup_all_ex_data(void)
+        -:  552:	{
+    10000:  553:	IMPL_CHECK
+    10000:  554:	EX_IMPL(cleanup)();
+    10000:  555:	}
+        -:  556:
+        -:  557:/* Inside an existing class, get/register a new index. */
+    20000:  558:int CRYPTO_get_ex_new_index(int class_index, long argl, void *argp,
+        -:  559:		CRYPTO_EX_new *new_func, CRYPTO_EX_dup *dup_func,
+        -:  560:		CRYPTO_EX_free *free_func)
+        -:  561:	{
+        -:  562:	int ret = -1;
+        -:  563:
+    20000:  564:	IMPL_CHECK
+    20000:  565:	ret = EX_IMPL(get_new_index)(class_index,
+        -:  566:			argl, argp, new_func, dup_func, free_func);
+    20000:  567:	return ret;
+        -:  568:	}
+        -:  569:
+        -:  570:/* Initialise a new CRYPTO_EX_DATA for use in a particular class - including
+        -:  571: * calling new() callbacks for each index in the class used by this variable */
+   281917:  572:int CRYPTO_new_ex_data(int class_index, void *obj, CRYPTO_EX_DATA *ad)
+        -:  573:	{
+   281917:  574:	IMPL_CHECK
+   281917:  575:	return EX_IMPL(new_ex_data)(class_index, obj, ad);
+        -:  576:	}
+        -:  577:
+        -:  578:/* Duplicate a CRYPTO_EX_DATA variable - including calling dup() callbacks for
+        -:  579: * each index in the class used by this variable */
+    #####:  580:int CRYPTO_dup_ex_data(int class_index, CRYPTO_EX_DATA *to,
+        -:  581:	     CRYPTO_EX_DATA *from)
+        -:  582:	{
+    #####:  583:	IMPL_CHECK
+    #####:  584:	return EX_IMPL(dup_ex_data)(class_index, to, from);
+        -:  585:	}
+        -:  586:
+        -:  587:/* Cleanup a CRYPTO_EX_DATA variable - including calling free() callbacks for
+        -:  588: * each index in the class used by this variable */
+   281917:  589:void CRYPTO_free_ex_data(int class_index, void *obj, CRYPTO_EX_DATA *ad)
+        -:  590:	{
+   281917:  591:	IMPL_CHECK
+   281917:  592:	EX_IMPL(free_ex_data)(class_index, obj, ad);
+   281917:  593:	}
+        -:  594:
+        -:  595:/* For a given CRYPTO_EX_DATA variable, set the value corresponding to a
+        -:  596: * particular index in the class used by this variable */
+    10000:  597:int CRYPTO_set_ex_data(CRYPTO_EX_DATA *ad, int idx, void *val)
+        -:  598:	{
+        -:  599:	int i;
+        -:  600:
+    10000:  601:	if (ad->sk == NULL)
+        -:  602:		{
+    10000:  603:		if ((ad->sk=sk_void_new_null()) == NULL)
+        -:  604:			{
+    #####:  605:			CRYPTOerr(CRYPTO_F_CRYPTO_SET_EX_DATA,ERR_R_MALLOC_FAILURE);
+    #####:  606:			return(0);
+        -:  607:			}
+        -:  608:		}
+    10000:  609:	i=sk_void_num(ad->sk);
+        -:  610:
+    30000:  611:	while (i <= idx)
+        -:  612:		{
+    10000:  613:		if (!sk_void_push(ad->sk,NULL))
+        -:  614:			{
+    #####:  615:			CRYPTOerr(CRYPTO_F_CRYPTO_SET_EX_DATA,ERR_R_MALLOC_FAILURE);
+    #####:  616:			return(0);
+        -:  617:			}
+    10000:  618:		i++;
+        -:  619:		}
+    10000:  620:	sk_void_set(ad->sk,idx,val);
+    10000:  621:	return(1);
+        -:  622:	}
+        -:  623:
+        -:  624:/* For a given CRYPTO_EX_DATA_ variable, get the value corresponding to a
+        -:  625: * particular index in the class used by this variable */
+    11942:  626:void *CRYPTO_get_ex_data(const CRYPTO_EX_DATA *ad, int idx)
+        -:  627:	{
+    11942:  628:	if (ad->sk == NULL)
+        -:  629:		return(0);
+    #####:  630:	else if (idx >= sk_void_num(ad->sk))
+        -:  631:		return(0);
+        -:  632:	else
+    #####:  633:		return(sk_void_value(ad->sk,idx));
+        -:  634:	}
+        -:  635:
+        -:  636:IMPLEMENT_STACK_OF(CRYPTO_EX_DATA_FUNCS)

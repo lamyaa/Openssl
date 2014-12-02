@@ -1,0 +1,308 @@
+        -:    0:Source:rand_egd.c
+        -:    0:Graph:rand_egd.gcno
+        -:    0:Data:rand_egd.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* crypto/rand/rand_egd.c */
+        -:    2:/* Written by Ulf Moeller and Lutz Jaenicke for the OpenSSL project. */
+        -:    3:/* ====================================================================
+        -:    4: * Copyright (c) 1998-2000 The OpenSSL Project.  All rights reserved.
+        -:    5: *
+        -:    6: * Redistribution and use in source and binary forms, with or without
+        -:    7: * modification, are permitted provided that the following conditions
+        -:    8: * are met:
+        -:    9: *
+        -:   10: * 1. Redistributions of source code must retain the above copyright
+        -:   11: *    notice, this list of conditions and the following disclaimer. 
+        -:   12: *
+        -:   13: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   14: *    notice, this list of conditions and the following disclaimer in
+        -:   15: *    the documentation and/or other materials provided with the
+        -:   16: *    distribution.
+        -:   17: *
+        -:   18: * 3. All advertising materials mentioning features or use of this
+        -:   19: *    software must display the following acknowledgment:
+        -:   20: *    "This product includes software developed by the OpenSSL Project
+        -:   21: *    for use in the OpenSSL Toolkit. (http://www.openssl.org/)"
+        -:   22: *
+        -:   23: * 4. The names "OpenSSL Toolkit" and "OpenSSL Project" must not be used to
+        -:   24: *    endorse or promote products derived from this software without
+        -:   25: *    prior written permission. For written permission, please contact
+        -:   26: *    openssl-core@openssl.org.
+        -:   27: *
+        -:   28: * 5. Products derived from this software may not be called "OpenSSL"
+        -:   29: *    nor may "OpenSSL" appear in their names without prior written
+        -:   30: *    permission of the OpenSSL Project.
+        -:   31: *
+        -:   32: * 6. Redistributions of any form whatsoever must retain the following
+        -:   33: *    acknowledgment:
+        -:   34: *    "This product includes software developed by the OpenSSL Project
+        -:   35: *    for use in the OpenSSL Toolkit (http://www.openssl.org/)"
+        -:   36: *
+        -:   37: * THIS SOFTWARE IS PROVIDED BY THE OpenSSL PROJECT ``AS IS'' AND ANY
+        -:   38: * EXPRESSED OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   39: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+        -:   40: * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE OpenSSL PROJECT OR
+        -:   41: * ITS CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+        -:   42: * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+        -:   43: * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+        -:   44: * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   45: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+        -:   46: * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+        -:   47: * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+        -:   48: * OF THE POSSIBILITY OF SUCH DAMAGE.
+        -:   49: * ====================================================================
+        -:   50: *
+        -:   51: * This product includes cryptographic software written by Eric Young
+        -:   52: * (eay@cryptsoft.com).  This product includes software written by Tim
+        -:   53: * Hudson (tjh@cryptsoft.com).
+        -:   54: *
+        -:   55: */
+        -:   56:
+        -:   57:#include <openssl/e_os2.h>
+        -:   58:#include <openssl/rand.h>
+        -:   59:#include <openssl/buffer.h>
+        -:   60:
+        -:   61:/*
+        -:   62: * Query the EGD <URL: http://www.lothar.com/tech/crypto/>.
+        -:   63: *
+        -:   64: * This module supplies three routines:
+        -:   65: *
+        -:   66: * RAND_query_egd_bytes(path, buf, bytes)
+        -:   67: *   will actually query "bytes" bytes of entropy form the egd-socket located
+        -:   68: *   at path and will write them to buf (if supplied) or will directly feed
+        -:   69: *   it to RAND_seed() if buf==NULL.
+        -:   70: *   The number of bytes is not limited by the maximum chunk size of EGD,
+        -:   71: *   which is 255 bytes. If more than 255 bytes are wanted, several chunks
+        -:   72: *   of entropy bytes are requested. The connection is left open until the
+        -:   73: *   query is competed.
+        -:   74: *   RAND_query_egd_bytes() returns with
+        -:   75: *     -1  if an error occured during connection or communication.
+        -:   76: *     num the number of bytes read from the EGD socket. This number is either
+        -:   77: *         the number of bytes requested or smaller, if the EGD pool is
+        -:   78: *         drained and the daemon signals that the pool is empty.
+        -:   79: *   This routine does not touch any RAND_status(). This is necessary, since
+        -:   80: *   PRNG functions may call it during initialization.
+        -:   81: *
+        -:   82: * RAND_egd_bytes(path, bytes) will query "bytes" bytes and have them
+        -:   83: *   used to seed the PRNG.
+        -:   84: *   RAND_egd_bytes() is a wrapper for RAND_query_egd_bytes() with buf=NULL.
+        -:   85: *   Unlike RAND_query_egd_bytes(), RAND_status() is used to test the
+        -:   86: *   seed status so that the return value can reflect the seed state:
+        -:   87: *     -1  if an error occured during connection or communication _or_
+        -:   88: *         if the PRNG has still not received the required seeding.
+        -:   89: *     num the number of bytes read from the EGD socket. This number is either
+        -:   90: *         the number of bytes requested or smaller, if the EGD pool is
+        -:   91: *         drained and the daemon signals that the pool is empty.
+        -:   92: *
+        -:   93: * RAND_egd(path) will query 255 bytes and use the bytes retreived to seed
+        -:   94: *   the PRNG.
+        -:   95: *   RAND_egd() is a wrapper for RAND_egd_bytes() with numbytes=255.
+        -:   96: */
+        -:   97:
+        -:   98:#if defined(OPENSSL_SYS_WIN32) || defined(OPENSSL_SYS_VMS) || defined(OPENSSL_SYS_MSDOS) || defined(OPENSSL_SYS_VXWORKS) || defined(OPENSSL_SYS_NETWARE) || defined(OPENSSL_SYS_VOS) || defined(OPENSSL_SYS_BEOS)
+        -:   99:int RAND_query_egd_bytes(const char *path, unsigned char *buf, int bytes)
+        -:  100:	{
+        -:  101:	return(-1);
+        -:  102:	}
+        -:  103:int RAND_egd(const char *path)
+        -:  104:	{
+        -:  105:	return(-1);
+        -:  106:	}
+        -:  107:
+        -:  108:int RAND_egd_bytes(const char *path,int bytes)
+        -:  109:	{
+        -:  110:	return(-1);
+        -:  111:	}
+        -:  112:#else
+        -:  113:#include <openssl/opensslconf.h>
+        -:  114:#include OPENSSL_UNISTD
+        -:  115:#include <sys/types.h>
+        -:  116:#include <sys/socket.h>
+        -:  117:#ifndef NO_SYS_UN_H
+        -:  118:# ifdef OPENSSL_SYS_VXWORKS
+        -:  119:#   include <streams/un.h>
+        -:  120:# else
+        -:  121:#   include <sys/un.h>
+        -:  122:# endif
+        -:  123:#else
+        -:  124:struct	sockaddr_un {
+        -:  125:	short	sun_family;		/* AF_UNIX */
+        -:  126:	char	sun_path[108];		/* path name (gag) */
+        -:  127:};
+        -:  128:#endif /* NO_SYS_UN_H */
+        -:  129:#include <string.h>
+        -:  130:#include <errno.h>
+        -:  131:
+        -:  132:#ifndef offsetof
+        -:  133:#  define offsetof(TYPE, MEMBER) ((size_t) &((TYPE *)0)->MEMBER)
+        -:  134:#endif
+        -:  135:
+    #####:  136:int RAND_query_egd_bytes(const char *path, unsigned char *buf, int bytes)
+        -:  137:	{
+        -:  138:	int ret = 0;
+        -:  139:	struct sockaddr_un addr;
+        -:  140:	int len, num, numbytes;
+        -:  141:	int fd = -1;
+        -:  142:	int success;
+        -:  143:	unsigned char egdbuf[2], tempbuf[255], *retrievebuf;
+        -:  144:
+        -:  145:	memset(&addr, 0, sizeof(addr));
+    #####:  146:	addr.sun_family = AF_UNIX;
+    #####:  147:	if (strlen(path) >= sizeof(addr.sun_path))
+        -:  148:		return (-1);
+    #####:  149:	BUF_strlcpy(addr.sun_path,path,sizeof addr.sun_path);
+    #####:  150:	len = offsetof(struct sockaddr_un, sun_path) + strlen(path);
+    #####:  151:	fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    #####:  152:	if (fd == -1) return (-1);
+        -:  153:	success = 0;
+    #####:  154:	while (!success)
+        -:  155:	    {
+    #####:  156:	    if (connect(fd, (struct sockaddr *)&addr, len) == 0)
+        -:  157:	       success = 1;
+        -:  158:	    else
+        -:  159:		{
+    #####:  160:		switch (errno)
+        -:  161:		    {
+        -:  162:#ifdef EINTR
+        -:  163:		    case EINTR:
+        -:  164:#endif
+        -:  165:#ifdef EAGAIN
+        -:  166:		    case EAGAIN:
+        -:  167:#endif
+        -:  168:#ifdef EINPROGRESS
+        -:  169:		    case EINPROGRESS:
+        -:  170:#endif
+        -:  171:#ifdef EALREADY
+        -:  172:		    case EALREADY:
+        -:  173:#endif
+        -:  174:			/* No error, try again */
+        -:  175:			break;
+        -:  176:#ifdef EISCONN
+        -:  177:		    case EISCONN:
+        -:  178:			success = 1;
+    #####:  179:			break;
+        -:  180:#endif
+        -:  181:		    default:
+        -:  182:			goto err;	/* failure */
+        -:  183:		    }
+        -:  184:		}
+        -:  185:	    }
+        -:  186:
+    #####:  187:	while(bytes > 0)
+        -:  188:	    {
+    #####:  189:	    egdbuf[0] = 1;
+    #####:  190:	    egdbuf[1] = bytes < 255 ? bytes : 255;
+        -:  191:	    numbytes = 0;
+    #####:  192:	    while (numbytes != 2)
+        -:  193:		{
+    #####:  194:	        num = write(fd, egdbuf + numbytes, 2 - numbytes);
+    #####:  195:	        if (num >= 0)
+    #####:  196:		    numbytes += num;
+        -:  197:	    	else
+        -:  198:		    {
+    #####:  199:		    switch (errno)
+        -:  200:		    	{
+        -:  201:#ifdef EINTR
+        -:  202:		    	case EINTR:
+        -:  203:#endif
+        -:  204:#ifdef EAGAIN
+        -:  205:		    	case EAGAIN:
+        -:  206:#endif
+        -:  207:			    /* No error, try again */
+        -:  208:			    break;
+        -:  209:		    	default:
+        -:  210:			    ret = -1;
+        -:  211:			    goto err;	/* failure */
+        -:  212:			}
+        -:  213:		    }
+        -:  214:		}
+        -:  215:	    numbytes = 0;
+    #####:  216:	    while (numbytes != 1)
+        -:  217:		{
+    #####:  218:	        num = read(fd, egdbuf, 1);
+    #####:  219:	        if (num == 0)
+        -:  220:			goto err;	/* descriptor closed */
+    #####:  221:		else if (num > 0)
+    #####:  222:		    numbytes += num;
+        -:  223:	    	else
+        -:  224:		    {
+    #####:  225:		    switch (errno)
+        -:  226:		    	{
+        -:  227:#ifdef EINTR
+        -:  228:		    	case EINTR:
+        -:  229:#endif
+        -:  230:#ifdef EAGAIN
+        -:  231:		    	case EAGAIN:
+        -:  232:#endif
+        -:  233:			    /* No error, try again */
+        -:  234:			    break;
+        -:  235:		    	default:
+        -:  236:			    ret = -1;
+        -:  237:			    goto err;	/* failure */
+        -:  238:			}
+        -:  239:		    }
+        -:  240:		}
+    #####:  241:	    if(egdbuf[0] == 0)
+        -:  242:		goto err;
+    #####:  243:	    if (buf)
+    #####:  244:		retrievebuf = buf + ret;
+        -:  245:	    else
+        -:  246:		retrievebuf = tempbuf;
+        -:  247:	    numbytes = 0;
+    #####:  248:	    while (numbytes != egdbuf[0])
+        -:  249:		{
+    #####:  250:	        num = read(fd, retrievebuf + numbytes, egdbuf[0] - numbytes);
+    #####:  251:		if (num == 0)
+        -:  252:			goto err;	/* descriptor closed */
+    #####:  253:	        else if (num > 0)
+    #####:  254:		    numbytes += num;
+        -:  255:	    	else
+        -:  256:		    {
+    #####:  257:		    switch (errno)
+        -:  258:		    	{
+        -:  259:#ifdef EINTR
+        -:  260:		    	case EINTR:
+        -:  261:#endif
+        -:  262:#ifdef EAGAIN
+        -:  263:		    	case EAGAIN:
+        -:  264:#endif
+        -:  265:			    /* No error, try again */
+        -:  266:			    break;
+        -:  267:		    	default:
+        -:  268:			    ret = -1;
+        -:  269:			    goto err;	/* failure */
+        -:  270:			}
+        -:  271:		    }
+        -:  272:		}
+    #####:  273:	    ret += egdbuf[0];
+    #####:  274:	    bytes -= egdbuf[0];
+    #####:  275:	    if (!buf)
+    #####:  276:		RAND_seed(tempbuf, egdbuf[0]);
+        -:  277:	    }
+        -:  278: err:
+    #####:  279:	if (fd != -1) close(fd);
+    #####:  280:	return(ret);
+        -:  281:	}
+        -:  282:
+        -:  283:
+    #####:  284:int RAND_egd_bytes(const char *path, int bytes)
+        -:  285:	{
+        -:  286:	int num, ret = 0;
+        -:  287:
+    #####:  288:	num = RAND_query_egd_bytes(path, NULL, bytes);
+    #####:  289:	if (num < 1) goto err;
+    #####:  290:	if (RAND_status() == 1)
+        -:  291:	    ret = num;
+        -:  292: err:
+    #####:  293:	return(ret);
+        -:  294:	}
+        -:  295:
+        -:  296:
+    #####:  297:int RAND_egd(const char *path)
+        -:  298:	{
+    #####:  299:	return (RAND_egd_bytes(path, 255));
+        -:  300:	}
+        -:  301:
+        -:  302:
+        -:  303:#endif

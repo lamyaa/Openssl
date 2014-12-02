@@ -1,0 +1,442 @@
+        -:    0:Source:asn1_par.c
+        -:    0:Graph:asn1_par.gcno
+        -:    0:Data:asn1_par.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* crypto/asn1/asn1_par.c */
+        -:    2:/* Copyright (C) 1995-1998 Eric Young (eay@cryptsoft.com)
+        -:    3: * All rights reserved.
+        -:    4: *
+        -:    5: * This package is an SSL implementation written
+        -:    6: * by Eric Young (eay@cryptsoft.com).
+        -:    7: * The implementation was written so as to conform with Netscapes SSL.
+        -:    8: * 
+        -:    9: * This library is free for commercial and non-commercial use as long as
+        -:   10: * the following conditions are aheared to.  The following conditions
+        -:   11: * apply to all code found in this distribution, be it the RC4, RSA,
+        -:   12: * lhash, DES, etc., code; not just the SSL code.  The SSL documentation
+        -:   13: * included with this distribution is covered by the same copyright terms
+        -:   14: * except that the holder is Tim Hudson (tjh@cryptsoft.com).
+        -:   15: * 
+        -:   16: * Copyright remains Eric Young's, and as such any Copyright notices in
+        -:   17: * the code are not to be removed.
+        -:   18: * If this package is used in a product, Eric Young should be given attribution
+        -:   19: * as the author of the parts of the library used.
+        -:   20: * This can be in the form of a textual message at program startup or
+        -:   21: * in documentation (online or textual) provided with the package.
+        -:   22: * 
+        -:   23: * Redistribution and use in source and binary forms, with or without
+        -:   24: * modification, are permitted provided that the following conditions
+        -:   25: * are met:
+        -:   26: * 1. Redistributions of source code must retain the copyright
+        -:   27: *    notice, this list of conditions and the following disclaimer.
+        -:   28: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   29: *    notice, this list of conditions and the following disclaimer in the
+        -:   30: *    documentation and/or other materials provided with the distribution.
+        -:   31: * 3. All advertising materials mentioning features or use of this software
+        -:   32: *    must display the following acknowledgement:
+        -:   33: *    "This product includes cryptographic software written by
+        -:   34: *     Eric Young (eay@cryptsoft.com)"
+        -:   35: *    The word 'cryptographic' can be left out if the rouines from the library
+        -:   36: *    being used are not cryptographic related :-).
+        -:   37: * 4. If you include any Windows specific code (or a derivative thereof) from 
+        -:   38: *    the apps directory (application code) you must include an acknowledgement:
+        -:   39: *    "This product includes software written by Tim Hudson (tjh@cryptsoft.com)"
+        -:   40: * 
+        -:   41: * THIS SOFTWARE IS PROVIDED BY ERIC YOUNG ``AS IS'' AND
+        -:   42: * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   43: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+        -:   44: * ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+        -:   45: * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+        -:   46: * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+        -:   47: * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   48: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+        -:   49: * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+        -:   50: * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+        -:   51: * SUCH DAMAGE.
+        -:   52: * 
+        -:   53: * The licence and distribution terms for any publically available version or
+        -:   54: * derivative of this code cannot be changed.  i.e. this code cannot simply be
+        -:   55: * copied and put under another distribution licence
+        -:   56: * [including the GNU Public Licence.]
+        -:   57: */
+        -:   58:
+        -:   59:#include <stdio.h>
+        -:   60:#include "cryptlib.h"
+        -:   61:#include <openssl/buffer.h>
+        -:   62:#include <openssl/objects.h>
+        -:   63:#include <openssl/asn1.h>
+        -:   64:
+        -:   65:static int asn1_print_info(BIO *bp, int tag, int xclass,int constructed,
+        -:   66:	int indent);
+        -:   67:static int asn1_parse2(BIO *bp, const unsigned char **pp, long length,
+        -:   68:	int offset, int depth, int indent, int dump);
+    #####:   69:static int asn1_print_info(BIO *bp, int tag, int xclass, int constructed,
+        -:   70:	     int indent)
+        -:   71:	{
+        -:   72:	static const char fmt[]="%-18s";
+        -:   73:	char str[128];
+        -:   74:	const char *p;
+        -:   75:
+    #####:   76:	if (constructed & V_ASN1_CONSTRUCTED)
+        -:   77:		p="cons: ";
+        -:   78:	else
+        -:   79:		p="prim: ";
+    #####:   80:	if (BIO_write(bp,p,6) < 6) goto err;
+    #####:   81:	BIO_indent(bp,indent,128);
+        -:   82:
+        -:   83:	p=str;
+    #####:   84:	if ((xclass & V_ASN1_PRIVATE) == V_ASN1_PRIVATE)
+    #####:   85:		BIO_snprintf(str,sizeof str,"priv [ %d ] ",tag);
+    #####:   86:	else if ((xclass & V_ASN1_CONTEXT_SPECIFIC) == V_ASN1_CONTEXT_SPECIFIC)
+    #####:   87:		BIO_snprintf(str,sizeof str,"cont [ %d ]",tag);
+    #####:   88:	else if ((xclass & V_ASN1_APPLICATION) == V_ASN1_APPLICATION)
+    #####:   89:		BIO_snprintf(str,sizeof str,"appl [ %d ]",tag);
+    #####:   90:	else if (tag > 30)
+    #####:   91:		BIO_snprintf(str,sizeof str,"<ASN1 %d>",tag);
+        -:   92:	else
+        -:   93:		p = ASN1_tag2str(tag);
+        -:   94:
+    #####:   95:	if (BIO_printf(bp,fmt,p) <= 0)
+        -:   96:		goto err;
+        -:   97:	return(1);
+        -:   98:err:
+        -:   99:	return(0);
+        -:  100:	}
+        -:  101:
+    #####:  102:int ASN1_parse(BIO *bp, const unsigned char *pp, long len, int indent)
+        -:  103:	{
+    #####:  104:	return(asn1_parse2(bp,&pp,len,0,0,indent,0));
+        -:  105:	}
+        -:  106:
+    #####:  107:int ASN1_parse_dump(BIO *bp, const unsigned char *pp, long len, int indent, int dump)
+        -:  108:	{
+    #####:  109:	return(asn1_parse2(bp,&pp,len,0,0,indent,dump));
+        -:  110:	}
+        -:  111:
+    #####:  112:static int asn1_parse2(BIO *bp, const unsigned char **pp, long length, int offset,
+        -:  113:	     int depth, int indent, int dump)
+        -:  114:	{
+        -:  115:	const unsigned char *p,*ep,*tot,*op,*opp;
+        -:  116:	long len;
+        -:  117:	int tag,xclass,ret=0;
+        -:  118:	int nl,hl,j,r;
+    #####:  119:	ASN1_OBJECT *o=NULL;
+        -:  120:	ASN1_OCTET_STRING *os=NULL;
+        -:  121:	/* ASN1_BMPSTRING *bmp=NULL;*/
+        -:  122:	int dump_indent;
+        -:  123:
+        -:  124:#if 0
+        -:  125:	dump_indent = indent;
+        -:  126:#else
+        -:  127:	dump_indent = 6;	/* Because we know BIO_dump_indent() */
+        -:  128:#endif
+    #####:  129:	p= *pp;
+    #####:  130:	tot=p+length;
+    #####:  131:	op=p-1;
+    #####:  132:	while ((p < tot) && (op < p))
+        -:  133:		{
+        -:  134:		op=p;
+    #####:  135:		j=ASN1_get_object(&p,&len,&tag,&xclass,length);
+        -:  136:#ifdef LINT
+        -:  137:		j=j;
+        -:  138:#endif
+    #####:  139:		if (j & 0x80)
+        -:  140:			{
+    #####:  141:			if (BIO_write(bp,"Error in encoding\n",18) <= 0)
+        -:  142:				goto end;
+        -:  143:			ret=0;
+        -:  144:			goto end;
+        -:  145:			}
+    #####:  146:		hl=(p-op);
+    #####:  147:		length-=hl;
+        -:  148:		/* if j == 0x21 it is a constructed indefinite length object */
+    #####:  149:		if (BIO_printf(bp,"%5ld:",(long)offset+(long)(op- *pp))
+        -:  150:			<= 0) goto end;
+        -:  151:
+    #####:  152:		if (j != (V_ASN1_CONSTRUCTED | 1))
+        -:  153:			{
+    #####:  154:			if (BIO_printf(bp,"d=%-2d hl=%ld l=%4ld ",
+        -:  155:				depth,(long)hl,len) <= 0)
+        -:  156:				goto end;
+        -:  157:			}
+        -:  158:		else
+        -:  159:			{
+    #####:  160:			if (BIO_printf(bp,"d=%-2d hl=%ld l=inf  ",
+        -:  161:				depth,(long)hl) <= 0)
+        -:  162:				goto end;
+        -:  163:			}
+    #####:  164:		if (!asn1_print_info(bp,tag,xclass,j,(indent)?depth:0))
+        -:  165:			goto end;
+    #####:  166:		if (j & V_ASN1_CONSTRUCTED)
+        -:  167:			{
+    #####:  168:			ep=p+len;
+    #####:  169:			if (BIO_write(bp,"\n",1) <= 0) goto end;
+    #####:  170:			if (len > length)
+        -:  171:				{
+    #####:  172:				BIO_printf(bp,
+        -:  173:					"length is greater than %ld\n",length);
+        -:  174:				ret=0;
+    #####:  175:				goto end;
+        -:  176:				}
+    #####:  177:			if ((j == 0x21) && (len == 0))
+        -:  178:				{
+        -:  179:				for (;;)
+        -:  180:					{
+    #####:  181:					r=asn1_parse2(bp,&p,(long)(tot-p),
+    #####:  182:						offset+(p - *pp),depth+1,
+        -:  183:						indent,dump);
+    #####:  184:					if (r == 0) { ret=0; goto end; }
+    #####:  185:					if ((r == 2) || (p >= tot)) break;
+        -:  186:					}
+        -:  187:				}
+        -:  188:			else
+    #####:  189:				while (p < ep)
+        -:  190:					{
+    #####:  191:					r=asn1_parse2(bp,&p,(long)len,
+    #####:  192:						offset+(p - *pp),depth+1,
+        -:  193:						indent,dump);
+    #####:  194:					if (r == 0) { ret=0; goto end; }
+        -:  195:					}
+        -:  196:			}
+    #####:  197:		else if (xclass != 0)
+        -:  198:			{
+    #####:  199:			p+=len;
+    #####:  200:			if (BIO_write(bp,"\n",1) <= 0) goto end;
+        -:  201:			}
+        -:  202:		else
+        -:  203:			{
+        -:  204:			nl=0;
+    #####:  205:			if (	(tag == V_ASN1_PRINTABLESTRING) ||
+    #####:  206:				(tag == V_ASN1_T61STRING) ||
+    #####:  207:				(tag == V_ASN1_IA5STRING) ||
+    #####:  208:				(tag == V_ASN1_VISIBLESTRING) ||
+    #####:  209:				(tag == V_ASN1_NUMERICSTRING) ||
+    #####:  210:				(tag == V_ASN1_UTF8STRING) ||
+    #####:  211:				(tag == V_ASN1_UTCTIME) ||
+        -:  212:				(tag == V_ASN1_GENERALIZEDTIME))
+        -:  213:				{
+    #####:  214:				if (BIO_write(bp,":",1) <= 0) goto end;
+    #####:  215:				if ((len > 0) &&
+    #####:  216:					BIO_write(bp,(const char *)p,(int)len)
+    #####:  217:					!= (int)len)
+        -:  218:					goto end;
+        -:  219:				}
+    #####:  220:			else if (tag == V_ASN1_OBJECT)
+        -:  221:				{
+    #####:  222:				opp=op;
+    #####:  223:				if (d2i_ASN1_OBJECT(&o,&opp,len+hl) != NULL)
+        -:  224:					{
+    #####:  225:					if (BIO_write(bp,":",1) <= 0) goto end;
+    #####:  226:					i2a_ASN1_OBJECT(bp,o);
+        -:  227:					}
+        -:  228:				else
+        -:  229:					{
+    #####:  230:					if (BIO_write(bp,":BAD OBJECT",11) <= 0)
+        -:  231:						goto end;
+        -:  232:					}
+        -:  233:				}
+    #####:  234:			else if (tag == V_ASN1_BOOLEAN)
+        -:  235:				{
+        -:  236:				int ii;
+        -:  237:
+    #####:  238:				opp=op;
+    #####:  239:				ii=d2i_ASN1_BOOLEAN(NULL,&opp,len+hl);
+    #####:  240:				if (ii < 0)
+        -:  241:					{
+    #####:  242:					if (BIO_write(bp,"Bad boolean\n",12) <= 0)
+        -:  243:						goto end;
+        -:  244:					}
+    #####:  245:				BIO_printf(bp,":%d",ii);
+        -:  246:				}
+    #####:  247:			else if (tag == V_ASN1_BMPSTRING)
+        -:  248:				{
+        -:  249:				/* do the BMP thang */
+        -:  250:				}
+    #####:  251:			else if (tag == V_ASN1_OCTET_STRING)
+        -:  252:				{
+        -:  253:				int i,printable=1;
+        -:  254:
+    #####:  255:				opp=op;
+    #####:  256:				os=d2i_ASN1_OCTET_STRING(NULL,&opp,len+hl);
+    #####:  257:				if (os != NULL && os->length > 0)
+        -:  258:					{
+    #####:  259:					opp = os->data;
+        -:  260:					/* testing whether the octet string is
+        -:  261:					 * printable */
+    #####:  262:					for (i=0; i<os->length; i++)
+        -:  263:						{
+    #####:  264:						if ((	(opp[i] < ' ') &&
+    #####:  265:							(opp[i] != '\n') &&
+    #####:  266:							(opp[i] != '\r') &&
+    #####:  267:							(opp[i] != '\t')) ||
+        -:  268:							(opp[i] > '~'))
+        -:  269:							{
+        -:  270:							printable=0;
+        -:  271:							break;
+        -:  272:							}
+        -:  273:						}
+    #####:  274:					if (printable)
+        -:  275:					/* printable string */
+        -:  276:						{
+    #####:  277:						if (BIO_write(bp,":",1) <= 0)
+        -:  278:							goto end;
+    #####:  279:						if (BIO_write(bp,(const char *)opp,
+        -:  280:							os->length) <= 0)
+        -:  281:							goto end;
+        -:  282:						}
+    #####:  283:					else if (!dump)
+        -:  284:					/* not printable => print octet string
+        -:  285:					 * as hex dump */
+        -:  286:						{
+    #####:  287:						if (BIO_write(bp,"[HEX DUMP]:",11) <= 0)
+        -:  288:							goto end;
+    #####:  289:						for (i=0; i<os->length; i++)
+        -:  290:							{
+    #####:  291:							if (BIO_printf(bp,"%02X"
+    #####:  292:								, opp[i]) <= 0)
+        -:  293:								goto end;
+        -:  294:							}
+        -:  295:						}
+        -:  296:					else
+        -:  297:					/* print the normal dump */
+        -:  298:						{
+        -:  299:						if (!nl) 
+        -:  300:							{
+    #####:  301:							if (BIO_write(bp,"\n",1) <= 0)
+        -:  302:								goto end;
+        -:  303:							}
+    #####:  304:						if (BIO_dump_indent(bp,
+        -:  305:							(const char *)opp,
+    #####:  306:							((dump == -1 || dump > 
+    #####:  307:							os->length)?os->length:dump),
+        -:  308:							dump_indent) <= 0)
+        -:  309:							goto end;
+        -:  310:						nl=1;
+        -:  311:						}
+        -:  312:					}
+    #####:  313:				if (os != NULL)
+        -:  314:					{
+    #####:  315:					M_ASN1_OCTET_STRING_free(os);
+        -:  316:					os=NULL;
+        -:  317:					}
+        -:  318:				}
+    #####:  319:			else if (tag == V_ASN1_INTEGER)
+        -:  320:				{
+        -:  321:				ASN1_INTEGER *bs;
+        -:  322:				int i;
+        -:  323:
+    #####:  324:				opp=op;
+    #####:  325:				bs=d2i_ASN1_INTEGER(NULL,&opp,len+hl);
+    #####:  326:				if (bs != NULL)
+        -:  327:					{
+    #####:  328:					if (BIO_write(bp,":",1) <= 0) goto end;
+    #####:  329:					if (bs->type == V_ASN1_NEG_INTEGER)
+    #####:  330:						if (BIO_write(bp,"-",1) <= 0)
+        -:  331:							goto end;
+    #####:  332:					for (i=0; i<bs->length; i++)
+        -:  333:						{
+    #####:  334:						if (BIO_printf(bp,"%02X",
+    #####:  335:							bs->data[i]) <= 0)
+        -:  336:							goto end;
+        -:  337:						}
+    #####:  338:					if (bs->length == 0)
+        -:  339:						{
+    #####:  340:						if (BIO_write(bp,"00",2) <= 0)
+        -:  341:							goto end;
+        -:  342:						}
+        -:  343:					}
+        -:  344:				else
+        -:  345:					{
+    #####:  346:					if (BIO_write(bp,"BAD INTEGER",11) <= 0)
+        -:  347:						goto end;
+        -:  348:					}
+    #####:  349:				M_ASN1_INTEGER_free(bs);
+        -:  350:				}
+    #####:  351:			else if (tag == V_ASN1_ENUMERATED)
+        -:  352:				{
+        -:  353:				ASN1_ENUMERATED *bs;
+        -:  354:				int i;
+        -:  355:
+    #####:  356:				opp=op;
+    #####:  357:				bs=d2i_ASN1_ENUMERATED(NULL,&opp,len+hl);
+    #####:  358:				if (bs != NULL)
+        -:  359:					{
+    #####:  360:					if (BIO_write(bp,":",1) <= 0) goto end;
+    #####:  361:					if (bs->type == V_ASN1_NEG_ENUMERATED)
+    #####:  362:						if (BIO_write(bp,"-",1) <= 0)
+        -:  363:							goto end;
+    #####:  364:					for (i=0; i<bs->length; i++)
+        -:  365:						{
+    #####:  366:						if (BIO_printf(bp,"%02X",
+    #####:  367:							bs->data[i]) <= 0)
+        -:  368:							goto end;
+        -:  369:						}
+    #####:  370:					if (bs->length == 0)
+        -:  371:						{
+    #####:  372:						if (BIO_write(bp,"00",2) <= 0)
+        -:  373:							goto end;
+        -:  374:						}
+        -:  375:					}
+        -:  376:				else
+        -:  377:					{
+    #####:  378:					if (BIO_write(bp,"BAD ENUMERATED",11) <= 0)
+        -:  379:						goto end;
+        -:  380:					}
+    #####:  381:				M_ASN1_ENUMERATED_free(bs);
+        -:  382:				}
+    #####:  383:			else if (len > 0 && dump)
+        -:  384:				{
+        -:  385:				if (!nl) 
+        -:  386:					{
+    #####:  387:					if (BIO_write(bp,"\n",1) <= 0)
+        -:  388:						goto end;
+        -:  389:					}
+    #####:  390:				if (BIO_dump_indent(bp,(const char *)p,
+    #####:  391:					((dump == -1 || dump > len)?len:dump),
+        -:  392:					dump_indent) <= 0)
+        -:  393:					goto end;
+        -:  394:				nl=1;
+        -:  395:				}
+        -:  396:
+    #####:  397:			if (!nl) 
+        -:  398:				{
+    #####:  399:				if (BIO_write(bp,"\n",1) <= 0) goto end;
+        -:  400:				}
+    #####:  401:			p+=len;
+    #####:  402:			if ((tag == V_ASN1_EOC) && (xclass == 0))
+        -:  403:				{
+        -:  404:				ret=2; /* End of sequence */
+        -:  405:				goto end;
+        -:  406:				}
+        -:  407:			}
+    #####:  408:		length-=len;
+        -:  409:		}
+        -:  410:	ret=1;
+        -:  411:end:
+    #####:  412:	if (o != NULL) ASN1_OBJECT_free(o);
+    #####:  413:	if (os != NULL) M_ASN1_OCTET_STRING_free(os);
+    #####:  414:	*pp=p;
+    #####:  415:	return(ret);
+        -:  416:	}
+        -:  417:
+    #####:  418:const char *ASN1_tag2str(int tag)
+        -:  419:{
+        -:  420:	static const char * const tag2str[] = {
+        -:  421:	 "EOC", "BOOLEAN", "INTEGER", "BIT STRING", "OCTET STRING", /* 0-4 */
+        -:  422:	 "NULL", "OBJECT", "OBJECT DESCRIPTOR", "EXTERNAL", "REAL", /* 5-9 */
+        -:  423:	 "ENUMERATED", "<ASN1 11>", "UTF8STRING", "<ASN1 13>", 	    /* 10-13 */
+        -:  424:	"<ASN1 14>", "<ASN1 15>", "SEQUENCE", "SET", 		    /* 15-17 */
+        -:  425:	"NUMERICSTRING", "PRINTABLESTRING", "T61STRING",	    /* 18-20 */
+        -:  426:	"VIDEOTEXSTRING", "IA5STRING", "UTCTIME","GENERALIZEDTIME", /* 21-24 */
+        -:  427:	"GRAPHICSTRING", "VISIBLESTRING", "GENERALSTRING",	    /* 25-27 */
+        -:  428:	"UNIVERSALSTRING", "<ASN1 29>", "BMPSTRING"		    /* 28-30 */
+        -:  429:	};
+        -:  430:
+    #####:  431:	if((tag == V_ASN1_NEG_INTEGER) || (tag == V_ASN1_NEG_ENUMERATED))
+    #####:  432:							tag &= ~0x100;
+        -:  433:
+    #####:  434:	if(tag < 0 || tag > 30) return "(unknown)";
+    #####:  435:	return tag2str[tag];
+        -:  436:}
+        -:  437:

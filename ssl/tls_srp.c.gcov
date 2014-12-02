@@ -1,0 +1,512 @@
+        -:    0:Source:tls_srp.c
+        -:    0:Graph:tls_srp.gcno
+        -:    0:Data:tls_srp.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* ssl/tls_srp.c */
+        -:    2:/* Written by Christophe Renou (christophe.renou@edelweb.fr) with 
+        -:    3: * the precious help of Peter Sylvester (peter.sylvester@edelweb.fr) 
+        -:    4: * for the EdelKey project and contributed to the OpenSSL project 2004.
+        -:    5: */
+        -:    6:/* ====================================================================
+        -:    7: * Copyright (c) 2004-2011 The OpenSSL Project.  All rights reserved.
+        -:    8: *
+        -:    9: * Redistribution and use in source and binary forms, with or without
+        -:   10: * modification, are permitted provided that the following conditions
+        -:   11: * are met:
+        -:   12: *
+        -:   13: * 1. Redistributions of source code must retain the above copyright
+        -:   14: *    notice, this list of conditions and the following disclaimer. 
+        -:   15: *
+        -:   16: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   17: *    notice, this list of conditions and the following disclaimer in
+        -:   18: *    the documentation and/or other materials provided with the
+        -:   19: *    distribution.
+        -:   20: *
+        -:   21: * 3. All advertising materials mentioning features or use of this
+        -:   22: *    software must display the following acknowledgment:
+        -:   23: *    "This product includes software developed by the OpenSSL Project
+        -:   24: *    for use in the OpenSSL Toolkit. (http://www.OpenSSL.org/)"
+        -:   25: *
+        -:   26: * 4. The names "OpenSSL Toolkit" and "OpenSSL Project" must not be used to
+        -:   27: *    endorse or promote products derived from this software without
+        -:   28: *    prior written permission. For written permission, please contact
+        -:   29: *    licensing@OpenSSL.org.
+        -:   30: *
+        -:   31: * 5. Products derived from this software may not be called "OpenSSL"
+        -:   32: *    nor may "OpenSSL" appear in their names without prior written
+        -:   33: *    permission of the OpenSSL Project.
+        -:   34: *
+        -:   35: * 6. Redistributions of any form whatsoever must retain the following
+        -:   36: *    acknowledgment:
+        -:   37: *    "This product includes software developed by the OpenSSL Project
+        -:   38: *    for use in the OpenSSL Toolkit (http://www.OpenSSL.org/)"
+        -:   39: *
+        -:   40: * THIS SOFTWARE IS PROVIDED BY THE OpenSSL PROJECT ``AS IS'' AND ANY
+        -:   41: * EXPRESSED OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   42: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+        -:   43: * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE OpenSSL PROJECT OR
+        -:   44: * ITS CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+        -:   45: * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+        -:   46: * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+        -:   47: * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   48: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+        -:   49: * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+        -:   50: * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+        -:   51: * OF THE POSSIBILITY OF SUCH DAMAGE.
+        -:   52: * ====================================================================
+        -:   53: *
+        -:   54: * This product includes cryptographic software written by Eric Young
+        -:   55: * (eay@cryptsoft.com).  This product includes software written by Tim
+        -:   56: * Hudson (tjh@cryptsoft.com).
+        -:   57: *
+        -:   58: */
+        -:   59:#include "ssl_locl.h"
+        -:   60:#ifndef OPENSSL_NO_SRP
+        -:   61:
+        -:   62:#include <openssl/rand.h>
+        -:   63:#include <openssl/srp.h>
+        -:   64:#include <openssl/err.h>
+        -:   65:
+    10000:   66:int SSL_CTX_SRP_CTX_free(struct ssl_ctx_st *ctx)
+        -:   67:	{
+    10000:   68:	if (ctx == NULL)
+        -:   69:		return 0;
+    10000:   70:	OPENSSL_free(ctx->srp_ctx.login);
+    10000:   71:	BN_free(ctx->srp_ctx.N);
+    10000:   72:	BN_free(ctx->srp_ctx.g);
+    10000:   73:	BN_free(ctx->srp_ctx.s);
+    10000:   74:	BN_free(ctx->srp_ctx.B);
+    10000:   75:	BN_free(ctx->srp_ctx.A);
+    10000:   76:	BN_free(ctx->srp_ctx.a);
+    10000:   77:	BN_free(ctx->srp_ctx.b);
+    10000:   78:	BN_free(ctx->srp_ctx.v);
+    10000:   79:	ctx->srp_ctx.TLS_ext_srp_username_callback = NULL;
+    10000:   80:	ctx->srp_ctx.SRP_cb_arg = NULL;
+    10000:   81:	ctx->srp_ctx.SRP_verify_param_callback = NULL;
+    10000:   82:	ctx->srp_ctx.SRP_give_srp_client_pwd_callback = NULL;
+    10000:   83:	ctx->srp_ctx.N = NULL;
+    10000:   84:	ctx->srp_ctx.g = NULL;
+    10000:   85:	ctx->srp_ctx.s = NULL;
+    10000:   86:	ctx->srp_ctx.B = NULL;
+    10000:   87:	ctx->srp_ctx.A = NULL;
+    10000:   88:	ctx->srp_ctx.a = NULL;
+    10000:   89:	ctx->srp_ctx.b = NULL;
+    10000:   90:	ctx->srp_ctx.v = NULL;
+    10000:   91:	ctx->srp_ctx.login = NULL;
+    10000:   92:	ctx->srp_ctx.info = NULL;
+    10000:   93:	ctx->srp_ctx.strength = SRP_MINIMAL_N;
+    10000:   94:	ctx->srp_ctx.srp_Mask = 0;
+    10000:   95:	return (1);
+        -:   96:	}
+        -:   97:
+    10000:   98:int SSL_SRP_CTX_free(struct ssl_st *s)
+        -:   99:	{
+    10000:  100:	if (s == NULL)
+        -:  101:		return 0;
+    10000:  102:	OPENSSL_free(s->srp_ctx.login);
+    10000:  103:	BN_free(s->srp_ctx.N);
+    10000:  104:	BN_free(s->srp_ctx.g);
+    10000:  105:	BN_free(s->srp_ctx.s);
+    10000:  106:	BN_free(s->srp_ctx.B);
+    10000:  107:	BN_free(s->srp_ctx.A);
+    10000:  108:	BN_free(s->srp_ctx.a);
+    10000:  109:	BN_free(s->srp_ctx.b);
+    10000:  110:	BN_free(s->srp_ctx.v);
+    10000:  111:	s->srp_ctx.TLS_ext_srp_username_callback = NULL;
+    10000:  112:	s->srp_ctx.SRP_cb_arg = NULL;
+    10000:  113:	s->srp_ctx.SRP_verify_param_callback = NULL;
+    10000:  114:	s->srp_ctx.SRP_give_srp_client_pwd_callback = NULL;
+    10000:  115:	s->srp_ctx.N = NULL;
+    10000:  116:	s->srp_ctx.g = NULL;
+    10000:  117:	s->srp_ctx.s = NULL;
+    10000:  118:	s->srp_ctx.B = NULL;
+    10000:  119:	s->srp_ctx.A = NULL;
+    10000:  120:	s->srp_ctx.a = NULL;
+    10000:  121:	s->srp_ctx.b = NULL;
+    10000:  122:	s->srp_ctx.v = NULL;
+    10000:  123:	s->srp_ctx.login = NULL;
+    10000:  124:	s->srp_ctx.info = NULL;
+    10000:  125:	s->srp_ctx.strength = SRP_MINIMAL_N;
+    10000:  126:	s->srp_ctx.srp_Mask = 0;
+    10000:  127:	return (1);
+        -:  128:	}
+        -:  129:
+    10000:  130:int SSL_SRP_CTX_init(struct ssl_st *s)
+        -:  131:	{
+        -:  132:	SSL_CTX *ctx;
+        -:  133:
+    10000:  134:	if ((s == NULL) || ((ctx = s->ctx) == NULL))
+        -:  135:		return 0;
+    10000:  136:	s->srp_ctx.SRP_cb_arg = ctx->srp_ctx.SRP_cb_arg;
+        -:  137:	/* set client Hello login callback */
+    10000:  138:	s->srp_ctx.TLS_ext_srp_username_callback = ctx->srp_ctx.TLS_ext_srp_username_callback;
+        -:  139:	/* set SRP N/g param callback for verification */
+    10000:  140:	s->srp_ctx.SRP_verify_param_callback = ctx->srp_ctx.SRP_verify_param_callback;
+        -:  141:	/* set SRP client passwd callback */
+    10000:  142:	s->srp_ctx.SRP_give_srp_client_pwd_callback = ctx->srp_ctx.SRP_give_srp_client_pwd_callback;
+        -:  143:
+    10000:  144:	s->srp_ctx.N = NULL;
+    10000:  145:	s->srp_ctx.g = NULL;
+    10000:  146:	s->srp_ctx.s = NULL;
+    10000:  147:	s->srp_ctx.B = NULL;
+    10000:  148:	s->srp_ctx.A = NULL;
+    10000:  149:	s->srp_ctx.a = NULL;
+    10000:  150:	s->srp_ctx.b = NULL;
+    10000:  151:	s->srp_ctx.v = NULL;
+    10000:  152:	s->srp_ctx.login = NULL;
+    10000:  153:	s->srp_ctx.info = ctx->srp_ctx.info;
+    10000:  154:	s->srp_ctx.strength = ctx->srp_ctx.strength;
+        -:  155:
+    10000:  156:	if (((ctx->srp_ctx.N != NULL) &&
+    10000:  157:		 ((s->srp_ctx.N = BN_dup(ctx->srp_ctx.N)) == NULL)) ||
+    10000:  158:		((ctx->srp_ctx.g != NULL) &&
+    10000:  159:		 ((s->srp_ctx.g = BN_dup(ctx->srp_ctx.g)) == NULL)) ||
+    10000:  160:		((ctx->srp_ctx.s != NULL) &&
+    10000:  161:		 ((s->srp_ctx.s = BN_dup(ctx->srp_ctx.s)) == NULL)) ||
+    10000:  162:		((ctx->srp_ctx.B != NULL) &&
+    10000:  163:		 ((s->srp_ctx.B = BN_dup(ctx->srp_ctx.B)) == NULL)) ||
+    10000:  164:		((ctx->srp_ctx.A != NULL) &&
+    10000:  165:		 ((s->srp_ctx.A = BN_dup(ctx->srp_ctx.A)) == NULL)) ||
+    10000:  166:		((ctx->srp_ctx.a != NULL) &&
+    10000:  167:		 ((s->srp_ctx.a = BN_dup(ctx->srp_ctx.a)) == NULL)) ||
+    10000:  168:		((ctx->srp_ctx.v != NULL) &&
+    10000:  169:		 ((s->srp_ctx.v = BN_dup(ctx->srp_ctx.v)) == NULL)) ||
+    10000:  170:		((ctx->srp_ctx.b != NULL) &&
+    #####:  171:		 ((s->srp_ctx.b = BN_dup(ctx->srp_ctx.b)) == NULL)))
+        -:  172:		{
+    #####:  173:		SSLerr(SSL_F_SSL_SRP_CTX_INIT,ERR_R_BN_LIB);
+    #####:  174:		goto err;
+        -:  175:		}
+    10000:  176:	if ((ctx->srp_ctx.login != NULL) && 
+    #####:  177:		((s->srp_ctx.login = BUF_strdup(ctx->srp_ctx.login)) == NULL))
+        -:  178:		{
+    #####:  179:		SSLerr(SSL_F_SSL_SRP_CTX_INIT,ERR_R_INTERNAL_ERROR);
+    #####:  180:		goto err;
+        -:  181:		}
+    10000:  182:	s->srp_ctx.srp_Mask = ctx->srp_ctx.srp_Mask;
+        -:  183:
+    10000:  184:	return (1);
+        -:  185:err:
+    #####:  186:	OPENSSL_free(s->srp_ctx.login);
+    #####:  187:	BN_free(s->srp_ctx.N);
+    #####:  188:	BN_free(s->srp_ctx.g);
+    #####:  189:	BN_free(s->srp_ctx.s);
+    #####:  190:	BN_free(s->srp_ctx.B);
+    #####:  191:	BN_free(s->srp_ctx.A);
+    #####:  192:	BN_free(s->srp_ctx.a);
+    #####:  193:	BN_free(s->srp_ctx.b);
+    #####:  194:	BN_free(s->srp_ctx.v);
+    #####:  195:	return (0);
+        -:  196:	}
+        -:  197:
+    10000:  198:int SSL_CTX_SRP_CTX_init(struct ssl_ctx_st *ctx)
+        -:  199:	{
+    10000:  200:	if (ctx == NULL)
+        -:  201:		return 0;
+        -:  202:
+    10000:  203:	ctx->srp_ctx.SRP_cb_arg = NULL;
+        -:  204:	/* set client Hello login callback */
+    10000:  205:	ctx->srp_ctx.TLS_ext_srp_username_callback = NULL;
+        -:  206:	/* set SRP N/g param callback for verification */
+    10000:  207:	ctx->srp_ctx.SRP_verify_param_callback = NULL;
+        -:  208:	/* set SRP client passwd callback */
+    10000:  209:	ctx->srp_ctx.SRP_give_srp_client_pwd_callback = NULL;
+        -:  210:
+    10000:  211:	ctx->srp_ctx.N = NULL;
+    10000:  212:	ctx->srp_ctx.g = NULL;
+    10000:  213:	ctx->srp_ctx.s = NULL;
+    10000:  214:	ctx->srp_ctx.B = NULL;
+    10000:  215:	ctx->srp_ctx.A = NULL;
+    10000:  216:	ctx->srp_ctx.a = NULL;
+    10000:  217:	ctx->srp_ctx.b = NULL;
+    10000:  218:	ctx->srp_ctx.v = NULL;
+    10000:  219:	ctx->srp_ctx.login = NULL;
+    10000:  220:	ctx->srp_ctx.srp_Mask = 0;
+    10000:  221:	ctx->srp_ctx.info = NULL;
+    10000:  222:	ctx->srp_ctx.strength = SRP_MINIMAL_N;
+        -:  223:
+    10000:  224:	return (1);
+        -:  225:	}
+        -:  226:
+        -:  227:/* server side */
+    #####:  228:int SSL_srp_server_param_with_username(SSL *s, int *ad)
+        -:  229:	{
+        -:  230:	unsigned char b[SSL_MAX_MASTER_KEY_LENGTH];
+        -:  231:	int al;
+        -:  232:
+    #####:  233:	*ad = SSL_AD_UNKNOWN_PSK_IDENTITY;
+    #####:  234:	if ((s->srp_ctx.TLS_ext_srp_username_callback !=NULL) &&
+    #####:  235:		((al = s->srp_ctx.TLS_ext_srp_username_callback(s, ad, s->srp_ctx.SRP_cb_arg))!=SSL_ERROR_NONE))
+        -:  236:			return al;
+        -:  237:
+    #####:  238:	*ad = SSL_AD_INTERNAL_ERROR;
+    #####:  239:	if ((s->srp_ctx.N == NULL) ||
+    #####:  240:		(s->srp_ctx.g == NULL) ||
+    #####:  241:		(s->srp_ctx.s == NULL) ||
+    #####:  242:		(s->srp_ctx.v == NULL))
+        -:  243:		return SSL3_AL_FATAL;
+        -:  244:
+    #####:  245:	if (RAND_bytes(b, sizeof(b)) <= 0)
+        -:  246:		return SSL3_AL_FATAL;
+    #####:  247:	s->srp_ctx.b = BN_bin2bn(b,sizeof(b),NULL);
+    #####:  248:	OPENSSL_cleanse(b,sizeof(b));
+        -:  249:
+        -:  250:	/* Calculate:  B = (kv + g^b) % N  */
+        -:  251:
+    #####:  252:	return ((s->srp_ctx.B = SRP_Calc_B(s->srp_ctx.b, s->srp_ctx.N, s->srp_ctx.g, s->srp_ctx.v)) != NULL)?
+    #####:  253:			SSL_ERROR_NONE:SSL3_AL_FATAL;
+        -:  254:	}
+        -:  255:
+        -:  256:/* If the server just has the raw password, make up a verifier entry on the fly */
+    #####:  257:int SSL_set_srp_server_param_pw(SSL *s, const char *user, const char *pass, const char *grp)
+        -:  258:	{
+    #####:  259:	SRP_gN *GN = SRP_get_default_gN(grp);
+    #####:  260:	if(GN == NULL) return -1;
+    #####:  261:	s->srp_ctx.N = BN_dup(GN->N);
+    #####:  262:	s->srp_ctx.g = BN_dup(GN->g);
+    #####:  263:	if(s->srp_ctx.v != NULL)
+        -:  264:		{
+    #####:  265:		BN_clear_free(s->srp_ctx.v);
+    #####:  266:		s->srp_ctx.v = NULL;
+        -:  267:		}
+    #####:  268:	if(s->srp_ctx.s != NULL)
+        -:  269:		{
+    #####:  270:		BN_clear_free(s->srp_ctx.s);
+    #####:  271:		s->srp_ctx.s = NULL;
+        -:  272:		}
+    #####:  273:	if(!SRP_create_verifier_BN(user, pass, &s->srp_ctx.s, &s->srp_ctx.v, GN->N, GN->g)) return -1;
+        -:  274:
+    #####:  275:	return 1;
+        -:  276:	}
+        -:  277:
+    #####:  278:int SSL_set_srp_server_param(SSL *s, const BIGNUM *N, const BIGNUM *g,
+        -:  279:			     BIGNUM *sa, BIGNUM *v, char *info)
+        -:  280:	{
+    #####:  281:	if (N!= NULL)
+        -:  282:		{
+    #####:  283:		if (s->srp_ctx.N != NULL)
+        -:  284:			{
+    #####:  285:			if (!BN_copy(s->srp_ctx.N,N))
+        -:  286:				{
+    #####:  287:				BN_free(s->srp_ctx.N);
+    #####:  288:				s->srp_ctx.N = NULL;
+        -:  289:				}
+        -:  290:			}
+        -:  291:		else
+    #####:  292:			s->srp_ctx.N = BN_dup(N);
+        -:  293:		}
+    #####:  294:	if (g!= NULL)
+        -:  295:		{
+    #####:  296:		if (s->srp_ctx.g != NULL)
+        -:  297:			{
+    #####:  298:			if (!BN_copy(s->srp_ctx.g,g))
+        -:  299:				{
+    #####:  300:				BN_free(s->srp_ctx.g);
+    #####:  301:				s->srp_ctx.g = NULL;
+        -:  302:				}
+        -:  303:			}
+        -:  304:		else
+    #####:  305:			s->srp_ctx.g = BN_dup(g);
+        -:  306:		}
+    #####:  307:	if (sa!= NULL)
+        -:  308:		{
+    #####:  309:		if (s->srp_ctx.s != NULL)
+        -:  310:			{
+    #####:  311:			if (!BN_copy(s->srp_ctx.s,sa))
+        -:  312:				{
+    #####:  313:				BN_free(s->srp_ctx.s);
+    #####:  314:				s->srp_ctx.s = NULL;
+        -:  315:				}
+        -:  316:			}
+        -:  317:		else
+    #####:  318:			s->srp_ctx.s = BN_dup(sa);
+        -:  319:		}
+    #####:  320:	if (v!= NULL)
+        -:  321:		{
+    #####:  322:		if (s->srp_ctx.v != NULL)
+        -:  323:			{
+    #####:  324:			if (!BN_copy(s->srp_ctx.v,v))
+        -:  325:				{
+    #####:  326:				BN_free(s->srp_ctx.v);
+    #####:  327:				s->srp_ctx.v = NULL;
+        -:  328:				}
+        -:  329:			}
+        -:  330:		else
+    #####:  331:			s->srp_ctx.v = BN_dup(v);
+        -:  332:		}
+    #####:  333:	s->srp_ctx.info = info;
+        -:  334:
+    #####:  335:	if (!(s->srp_ctx.N) ||
+    #####:  336:		!(s->srp_ctx.g) ||
+    #####:  337:		!(s->srp_ctx.s) ||
+    #####:  338:		!(s->srp_ctx.v))
+        -:  339:		return -1;
+        -:  340:
+    #####:  341:	return 1;
+        -:  342:	}
+        -:  343:
+    #####:  344:int SRP_generate_server_master_secret(SSL *s,unsigned char *master_key)
+        -:  345:	{
+        -:  346:	BIGNUM *K = NULL, *u = NULL;
+        -:  347:	int ret = -1, tmp_len;
+        -:  348:	unsigned char *tmp = NULL;
+        -:  349:
+    #####:  350:	if (!SRP_Verify_A_mod_N(s->srp_ctx.A,s->srp_ctx.N))
+        -:  351:		goto err;
+    #####:  352:	if (!(u = SRP_Calc_u(s->srp_ctx.A,s->srp_ctx.B,s->srp_ctx.N)))
+        -:  353:		goto err;
+    #####:  354:	if (!(K = SRP_Calc_server_key(s->srp_ctx.A, s->srp_ctx.v, u, s->srp_ctx.b, s->srp_ctx.N)))
+        -:  355:		goto err;
+        -:  356:
+    #####:  357:	tmp_len = BN_num_bytes(K);
+    #####:  358:	if ((tmp = OPENSSL_malloc(tmp_len)) == NULL)
+        -:  359:		goto err;
+    #####:  360:	BN_bn2bin(K, tmp);
+    #####:  361:	ret = s->method->ssl3_enc->generate_master_secret(s,master_key,tmp,tmp_len);
+        -:  362:err:
+    #####:  363:	if (tmp)
+        -:  364:		{
+    #####:  365:		OPENSSL_cleanse(tmp,tmp_len) ;
+    #####:  366:		OPENSSL_free(tmp);
+        -:  367:		}
+    #####:  368:	BN_clear_free(K);
+    #####:  369:	BN_clear_free(u);
+    #####:  370:	return ret;
+        -:  371:	}
+        -:  372:
+        -:  373:/* client side */
+    #####:  374:int SRP_generate_client_master_secret(SSL *s,unsigned char *master_key)
+        -:  375:	{
+        -:  376:	BIGNUM *x = NULL, *u = NULL, *K = NULL;
+        -:  377:	int ret = -1, tmp_len;
+        -:  378:	char *passwd = NULL;
+        -:  379:	unsigned char *tmp = NULL;
+        -:  380:
+        -:  381:	/* Checks if b % n == 0
+        -:  382:	 */
+    #####:  383:	if (SRP_Verify_B_mod_N(s->srp_ctx.B,s->srp_ctx.N)==0) goto err;
+    #####:  384:	if (!(u = SRP_Calc_u(s->srp_ctx.A,s->srp_ctx.B,s->srp_ctx.N))) goto err;
+    #####:  385:	if (s->srp_ctx.SRP_give_srp_client_pwd_callback == NULL) goto err;
+    #####:  386:	if (!(passwd = s->srp_ctx.SRP_give_srp_client_pwd_callback(s, s->srp_ctx.SRP_cb_arg))) goto err;
+    #####:  387:	if (!(x = SRP_Calc_x(s->srp_ctx.s,s->srp_ctx.login,passwd))) goto err;
+    #####:  388:	if (!(K = SRP_Calc_client_key(s->srp_ctx.N, s->srp_ctx.B, s->srp_ctx.g, x, s->srp_ctx.a, u))) goto err;
+        -:  389:
+    #####:  390:	tmp_len = BN_num_bytes(K);
+    #####:  391:	if ((tmp = OPENSSL_malloc(tmp_len)) == NULL) goto err;
+    #####:  392:	BN_bn2bin(K, tmp);
+    #####:  393:	ret = s->method->ssl3_enc->generate_master_secret(s,master_key,tmp,tmp_len);
+        -:  394:err:
+    #####:  395:	if (tmp)
+        -:  396:		{
+    #####:  397:		OPENSSL_cleanse(tmp,tmp_len) ;
+    #####:  398:		OPENSSL_free(tmp);
+        -:  399:		}
+    #####:  400:	BN_clear_free(K);
+    #####:  401:	BN_clear_free(x);
+    #####:  402:	if (passwd)
+        -:  403:		{
+    #####:  404:		OPENSSL_cleanse(passwd,strlen(passwd)) ;
+    #####:  405:		OPENSSL_free(passwd);
+        -:  406:		}
+    #####:  407:	BN_clear_free(u);
+    #####:  408:	return ret;
+        -:  409:	}
+        -:  410:
+    #####:  411:int SRP_Calc_A_param(SSL *s)
+        -:  412:	{
+        -:  413:	unsigned char rnd[SSL_MAX_MASTER_KEY_LENGTH];
+        -:  414:
+    #####:  415:	if (BN_num_bits(s->srp_ctx.N) < s->srp_ctx.strength)
+        -:  416:		return -1;
+        -:  417:
+    #####:  418:	if (s->srp_ctx.SRP_verify_param_callback ==NULL && 
+    #####:  419:		!SRP_check_known_gN_param(s->srp_ctx.g,s->srp_ctx.N))
+        -:  420:		return -1 ;
+        -:  421:
+    #####:  422:	RAND_bytes(rnd, sizeof(rnd));
+    #####:  423:	s->srp_ctx.a = BN_bin2bn(rnd, sizeof(rnd), s->srp_ctx.a);
+    #####:  424:	OPENSSL_cleanse(rnd, sizeof(rnd));
+        -:  425:
+    #####:  426:	if (!(s->srp_ctx.A = SRP_Calc_A(s->srp_ctx.a,s->srp_ctx.N,s->srp_ctx.g)))
+        -:  427:		return -1;
+        -:  428:
+        -:  429:	/* We can have a callback to verify SRP param!! */
+    #####:  430:	if (s->srp_ctx.SRP_verify_param_callback !=NULL) 
+    #####:  431:		return s->srp_ctx.SRP_verify_param_callback(s,s->srp_ctx.SRP_cb_arg);
+        -:  432:
+        -:  433:	return 1;
+        -:  434:	}
+        -:  435:
+    #####:  436:BIGNUM *SSL_get_srp_g(SSL *s)
+        -:  437:	{
+    #####:  438:	if (s->srp_ctx.g != NULL)
+        -:  439:		return s->srp_ctx.g;
+    #####:  440:	return s->ctx->srp_ctx.g;
+        -:  441:	}
+        -:  442:
+    #####:  443:BIGNUM *SSL_get_srp_N(SSL *s)
+        -:  444:	{
+    #####:  445:	if (s->srp_ctx.N != NULL)
+        -:  446:		return s->srp_ctx.N;
+    #####:  447:	return s->ctx->srp_ctx.N;
+        -:  448:	}
+        -:  449:
+    #####:  450:char *SSL_get_srp_username(SSL *s)
+        -:  451:	{
+    #####:  452:	if (s->srp_ctx.login != NULL)
+        -:  453:		return s->srp_ctx.login;
+    #####:  454:	return s->ctx->srp_ctx.login;
+        -:  455:	}
+        -:  456:
+    #####:  457:char *SSL_get_srp_userinfo(SSL *s)
+        -:  458:	{
+    #####:  459:	if (s->srp_ctx.info != NULL)
+        -:  460:		return s->srp_ctx.info;
+    #####:  461:	return s->ctx->srp_ctx.info;
+        -:  462:	}
+        -:  463:
+        -:  464:#define tls1_ctx_ctrl ssl3_ctx_ctrl
+        -:  465:#define tls1_ctx_callback_ctrl ssl3_ctx_callback_ctrl
+        -:  466:
+    #####:  467:int SSL_CTX_set_srp_username(SSL_CTX *ctx,char *name)
+        -:  468:	{
+    #####:  469:	return tls1_ctx_ctrl(ctx,SSL_CTRL_SET_TLS_EXT_SRP_USERNAME,0,name);
+        -:  470:	}
+        -:  471:
+    #####:  472:int SSL_CTX_set_srp_password(SSL_CTX *ctx,char *password)
+        -:  473:	{
+    #####:  474:	return tls1_ctx_ctrl(ctx,SSL_CTRL_SET_TLS_EXT_SRP_PASSWORD,0,password);
+        -:  475:	}
+        -:  476:
+    #####:  477:int SSL_CTX_set_srp_strength(SSL_CTX *ctx, int strength)
+        -:  478:	{
+    #####:  479:	return tls1_ctx_ctrl(ctx, SSL_CTRL_SET_TLS_EXT_SRP_STRENGTH, strength,
+        -:  480:			     NULL);
+        -:  481:	}
+        -:  482:
+    #####:  483:int SSL_CTX_set_srp_verify_param_callback(SSL_CTX *ctx, int (*cb)(SSL *,void *))
+        -:  484:	{
+    #####:  485:	return tls1_ctx_callback_ctrl(ctx,SSL_CTRL_SET_SRP_VERIFY_PARAM_CB,
+        -:  486:				      (void (*)(void))cb);
+        -:  487:	}
+        -:  488:
+    #####:  489:int SSL_CTX_set_srp_cb_arg(SSL_CTX *ctx, void *arg)
+        -:  490:	{
+    #####:  491:	return tls1_ctx_ctrl(ctx,SSL_CTRL_SET_SRP_ARG,0,arg);
+        -:  492:	}
+        -:  493:
+    #####:  494:int SSL_CTX_set_srp_username_callback(SSL_CTX *ctx,
+        -:  495:				      int (*cb)(SSL *,int *,void *))
+        -:  496:	{
+    #####:  497:	return tls1_ctx_callback_ctrl(ctx,SSL_CTRL_SET_TLS_EXT_SRP_USERNAME_CB,
+        -:  498:				      (void (*)(void))cb);
+        -:  499:	}
+        -:  500:
+    #####:  501:int SSL_CTX_set_srp_client_pwd_callback(SSL_CTX *ctx, char *(*cb)(SSL *,void *))
+        -:  502:	{
+    #####:  503:	return tls1_ctx_callback_ctrl(ctx,SSL_CTRL_SET_SRP_GIVE_CLIENT_PWD_CB,
+        -:  504:				      (void (*)(void))cb);
+        -:  505:	}
+        -:  506:
+        -:  507:#endif

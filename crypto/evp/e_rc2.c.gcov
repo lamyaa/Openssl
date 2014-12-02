@@ -1,0 +1,243 @@
+        -:    0:Source:e_rc2.c
+        -:    0:Graph:e_rc2.gcno
+        -:    0:Data:e_rc2.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* crypto/evp/e_rc2.c */
+        -:    2:/* Copyright (C) 1995-1998 Eric Young (eay@cryptsoft.com)
+        -:    3: * All rights reserved.
+        -:    4: *
+        -:    5: * This package is an SSL implementation written
+        -:    6: * by Eric Young (eay@cryptsoft.com).
+        -:    7: * The implementation was written so as to conform with Netscapes SSL.
+        -:    8: * 
+        -:    9: * This library is free for commercial and non-commercial use as long as
+        -:   10: * the following conditions are aheared to.  The following conditions
+        -:   11: * apply to all code found in this distribution, be it the RC4, RSA,
+        -:   12: * lhash, DES, etc., code; not just the SSL code.  The SSL documentation
+        -:   13: * included with this distribution is covered by the same copyright terms
+        -:   14: * except that the holder is Tim Hudson (tjh@cryptsoft.com).
+        -:   15: * 
+        -:   16: * Copyright remains Eric Young's, and as such any Copyright notices in
+        -:   17: * the code are not to be removed.
+        -:   18: * If this package is used in a product, Eric Young should be given attribution
+        -:   19: * as the author of the parts of the library used.
+        -:   20: * This can be in the form of a textual message at program startup or
+        -:   21: * in documentation (online or textual) provided with the package.
+        -:   22: * 
+        -:   23: * Redistribution and use in source and binary forms, with or without
+        -:   24: * modification, are permitted provided that the following conditions
+        -:   25: * are met:
+        -:   26: * 1. Redistributions of source code must retain the copyright
+        -:   27: *    notice, this list of conditions and the following disclaimer.
+        -:   28: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   29: *    notice, this list of conditions and the following disclaimer in the
+        -:   30: *    documentation and/or other materials provided with the distribution.
+        -:   31: * 3. All advertising materials mentioning features or use of this software
+        -:   32: *    must display the following acknowledgement:
+        -:   33: *    "This product includes cryptographic software written by
+        -:   34: *     Eric Young (eay@cryptsoft.com)"
+        -:   35: *    The word 'cryptographic' can be left out if the rouines from the library
+        -:   36: *    being used are not cryptographic related :-).
+        -:   37: * 4. If you include any Windows specific code (or a derivative thereof) from 
+        -:   38: *    the apps directory (application code) you must include an acknowledgement:
+        -:   39: *    "This product includes software written by Tim Hudson (tjh@cryptsoft.com)"
+        -:   40: * 
+        -:   41: * THIS SOFTWARE IS PROVIDED BY ERIC YOUNG ``AS IS'' AND
+        -:   42: * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   43: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+        -:   44: * ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+        -:   45: * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+        -:   46: * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+        -:   47: * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   48: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+        -:   49: * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+        -:   50: * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+        -:   51: * SUCH DAMAGE.
+        -:   52: * 
+        -:   53: * The licence and distribution terms for any publically available version or
+        -:   54: * derivative of this code cannot be changed.  i.e. this code cannot simply be
+        -:   55: * copied and put under another distribution licence
+        -:   56: * [including the GNU Public Licence.]
+        -:   57: */
+        -:   58:
+        -:   59:#include <stdio.h>
+        -:   60:#include "cryptlib.h"
+        -:   61:
+        -:   62:#ifndef OPENSSL_NO_RC2
+        -:   63:
+        -:   64:#include <openssl/evp.h>
+        -:   65:#include <openssl/objects.h>
+        -:   66:#include "evp_locl.h"
+        -:   67:#include <openssl/rc2.h>
+        -:   68:
+        -:   69:static int rc2_init_key(EVP_CIPHER_CTX *ctx, const unsigned char *key,
+        -:   70:			const unsigned char *iv,int enc);
+        -:   71:static int rc2_meth_to_magic(EVP_CIPHER_CTX *ctx);
+        -:   72:static int rc2_magic_to_meth(int i);
+        -:   73:static int rc2_set_asn1_type_and_iv(EVP_CIPHER_CTX *c, ASN1_TYPE *type);
+        -:   74:static int rc2_get_asn1_type_and_iv(EVP_CIPHER_CTX *c, ASN1_TYPE *type);
+        -:   75:static int rc2_ctrl(EVP_CIPHER_CTX *c, int type, int arg, void *ptr);
+        -:   76:
+        -:   77:typedef struct
+        -:   78:	{
+        -:   79:	int key_bits;	/* effective key bits */
+        -:   80:	RC2_KEY ks;	/* key schedule */
+        -:   81:	} EVP_RC2_KEY;
+        -:   82:
+        -:   83:#define data(ctx)	((EVP_RC2_KEY *)(ctx)->cipher_data)
+        -:   84:
+    50000:   85:IMPLEMENT_BLOCK_CIPHER(rc2, ks, RC2, EVP_RC2_KEY, NID_rc2,
+        -:   86:			8,
+        -:   87:			RC2_KEY_LENGTH, 8, 64,
+        -:   88:			EVP_CIPH_VARIABLE_LENGTH | EVP_CIPH_CTRL_INIT,
+        -:   89:			rc2_init_key, NULL,
+        -:   90:			rc2_set_asn1_type_and_iv, rc2_get_asn1_type_and_iv, 
+        -:   91:			rc2_ctrl)
+        -:   92:
+        -:   93:#define RC2_40_MAGIC	0xa0
+        -:   94:#define RC2_64_MAGIC	0x78
+        -:   95:#define RC2_128_MAGIC	0x3a
+        -:   96:
+        -:   97:static const EVP_CIPHER r2_64_cbc_cipher=
+        -:   98:	{
+        -:   99:	NID_rc2_64_cbc,
+        -:  100:	8,8 /* 64 bit */,8,
+        -:  101:	EVP_CIPH_CBC_MODE | EVP_CIPH_VARIABLE_LENGTH | EVP_CIPH_CTRL_INIT,
+        -:  102:	rc2_init_key,
+        -:  103:	rc2_cbc_cipher,
+        -:  104:	NULL,
+        -:  105:	sizeof(EVP_RC2_KEY),
+        -:  106:	rc2_set_asn1_type_and_iv,
+        -:  107:	rc2_get_asn1_type_and_iv,
+        -:  108:	rc2_ctrl,
+        -:  109:	NULL
+        -:  110:	};
+        -:  111:
+        -:  112:static const EVP_CIPHER r2_40_cbc_cipher=
+        -:  113:	{
+        -:  114:	NID_rc2_40_cbc,
+        -:  115:	8,5 /* 40 bit */,8,
+        -:  116:	EVP_CIPH_CBC_MODE | EVP_CIPH_VARIABLE_LENGTH | EVP_CIPH_CTRL_INIT,
+        -:  117:	rc2_init_key,
+        -:  118:	rc2_cbc_cipher,
+        -:  119:	NULL,
+        -:  120:	sizeof(EVP_RC2_KEY),
+        -:  121:	rc2_set_asn1_type_and_iv,
+        -:  122:	rc2_get_asn1_type_and_iv,
+        -:  123:	rc2_ctrl,
+        -:  124:	NULL
+        -:  125:	};
+        -:  126:
+    10000:  127:const EVP_CIPHER *EVP_rc2_64_cbc(void)
+        -:  128:	{
+    10000:  129:	return(&r2_64_cbc_cipher);
+        -:  130:	}
+        -:  131:
+    20000:  132:const EVP_CIPHER *EVP_rc2_40_cbc(void)
+        -:  133:	{
+    20000:  134:	return(&r2_40_cbc_cipher);
+        -:  135:	}
+        -:  136:	
+    #####:  137:static int rc2_init_key(EVP_CIPHER_CTX *ctx, const unsigned char *key,
+        -:  138:			const unsigned char *iv, int enc)
+        -:  139:	{
+    #####:  140:	RC2_set_key(&data(ctx)->ks,EVP_CIPHER_CTX_key_length(ctx),
+    #####:  141:		    key,data(ctx)->key_bits);
+    #####:  142:	return 1;
+        -:  143:	}
+        -:  144:
+    #####:  145:static int rc2_meth_to_magic(EVP_CIPHER_CTX *e)
+        -:  146:	{
+        -:  147:	int i;
+        -:  148:
+    #####:  149:	EVP_CIPHER_CTX_ctrl(e, EVP_CTRL_GET_RC2_KEY_BITS, 0, &i);
+    #####:  150:	if 	(i == 128) return(RC2_128_MAGIC);
+    #####:  151:	else if (i == 64)  return(RC2_64_MAGIC);
+    #####:  152:	else if (i == 40)  return(RC2_40_MAGIC);
+    #####:  153:	else return(0);
+        -:  154:	}
+        -:  155:
+    #####:  156:static int rc2_magic_to_meth(int i)
+        -:  157:	{
+    #####:  158:	if      (i == RC2_128_MAGIC) return 128;
+    #####:  159:	else if (i == RC2_64_MAGIC)  return 64;
+    #####:  160:	else if (i == RC2_40_MAGIC)  return 40;
+        -:  161:	else
+        -:  162:		{
+    #####:  163:		EVPerr(EVP_F_RC2_MAGIC_TO_METH,EVP_R_UNSUPPORTED_KEY_SIZE);
+    #####:  164:		return(0);
+        -:  165:		}
+        -:  166:	}
+        -:  167:
+    #####:  168:static int rc2_get_asn1_type_and_iv(EVP_CIPHER_CTX *c, ASN1_TYPE *type)
+        -:  169:	{
+    #####:  170:	long num=0;
+        -:  171:	int i=0;
+        -:  172:	int key_bits;
+        -:  173:	unsigned int l;
+        -:  174:	unsigned char iv[EVP_MAX_IV_LENGTH];
+        -:  175:
+    #####:  176:	if (type != NULL)
+        -:  177:		{
+    #####:  178:		l=EVP_CIPHER_CTX_iv_length(c);
+    #####:  179:		OPENSSL_assert(l <= sizeof(iv));
+    #####:  180:		i=ASN1_TYPE_get_int_octetstring(type,&num,iv,l);
+    #####:  181:		if (i != (int)l)
+        -:  182:			return(-1);
+    #####:  183:		key_bits =rc2_magic_to_meth((int)num);
+    #####:  184:		if (!key_bits)
+        -:  185:			return(-1);
+    #####:  186:		if(i > 0 && !EVP_CipherInit_ex(c, NULL, NULL, NULL, iv, -1))
+        -:  187:			return -1;
+    #####:  188:		EVP_CIPHER_CTX_ctrl(c, EVP_CTRL_SET_RC2_KEY_BITS, key_bits, NULL);
+    #####:  189:		EVP_CIPHER_CTX_set_key_length(c, key_bits / 8);
+        -:  190:		}
+    #####:  191:	return(i);
+        -:  192:	}
+        -:  193:
+    #####:  194:static int rc2_set_asn1_type_and_iv(EVP_CIPHER_CTX *c, ASN1_TYPE *type)
+        -:  195:	{
+        -:  196:	long num;
+        -:  197:	int i=0,j;
+        -:  198:
+    #####:  199:	if (type != NULL)
+        -:  200:		{
+    #####:  201:		num=rc2_meth_to_magic(c);
+    #####:  202:		j=EVP_CIPHER_CTX_iv_length(c);
+    #####:  203:		i=ASN1_TYPE_set_int_octetstring(type,num,c->oiv,j);
+        -:  204:		}
+    #####:  205:	return(i);
+        -:  206:	}
+        -:  207:
+    #####:  208:static int rc2_ctrl(EVP_CIPHER_CTX *c, int type, int arg, void *ptr)
+        -:  209:	{
+    #####:  210:	switch(type)
+        -:  211:		{
+        -:  212:	case EVP_CTRL_INIT:
+    #####:  213:		data(c)->key_bits = EVP_CIPHER_CTX_key_length(c) * 8;
+    #####:  214:		return 1;
+        -:  215:
+        -:  216:	case EVP_CTRL_GET_RC2_KEY_BITS:
+    #####:  217:		*(int *)ptr = data(c)->key_bits;
+    #####:  218:		return 1;
+        -:  219:			
+        -:  220:	case EVP_CTRL_SET_RC2_KEY_BITS:
+    #####:  221:		if(arg > 0)
+        -:  222:			{
+    #####:  223:			data(c)->key_bits = arg;
+    #####:  224:			return 1;
+        -:  225:			}
+        -:  226:		return 0;
+        -:  227:#ifdef PBE_PRF_TEST
+        -:  228:	case EVP_CTRL_PBE_PRF_NID:
+        -:  229:		*(int *)ptr = NID_hmacWithMD5;
+        -:  230:		return 1;
+        -:  231:#endif
+        -:  232:
+        -:  233:	default:
+        -:  234:		return -1;
+        -:  235:		}
+        -:  236:	}
+        -:  237:
+        -:  238:#endif

@@ -1,0 +1,647 @@
+        -:    0:Source:ssl_asn1.c
+        -:    0:Graph:ssl_asn1.gcno
+        -:    0:Data:ssl_asn1.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* ssl/ssl_asn1.c */
+        -:    2:/* Copyright (C) 1995-1998 Eric Young (eay@cryptsoft.com)
+        -:    3: * All rights reserved.
+        -:    4: *
+        -:    5: * This package is an SSL implementation written
+        -:    6: * by Eric Young (eay@cryptsoft.com).
+        -:    7: * The implementation was written so as to conform with Netscapes SSL.
+        -:    8: * 
+        -:    9: * This library is free for commercial and non-commercial use as long as
+        -:   10: * the following conditions are aheared to.  The following conditions
+        -:   11: * apply to all code found in this distribution, be it the RC4, RSA,
+        -:   12: * lhash, DES, etc., code; not just the SSL code.  The SSL documentation
+        -:   13: * included with this distribution is covered by the same copyright terms
+        -:   14: * except that the holder is Tim Hudson (tjh@cryptsoft.com).
+        -:   15: * 
+        -:   16: * Copyright remains Eric Young's, and as such any Copyright notices in
+        -:   17: * the code are not to be removed.
+        -:   18: * If this package is used in a product, Eric Young should be given attribution
+        -:   19: * as the author of the parts of the library used.
+        -:   20: * This can be in the form of a textual message at program startup or
+        -:   21: * in documentation (online or textual) provided with the package.
+        -:   22: * 
+        -:   23: * Redistribution and use in source and binary forms, with or without
+        -:   24: * modification, are permitted provided that the following conditions
+        -:   25: * are met:
+        -:   26: * 1. Redistributions of source code must retain the copyright
+        -:   27: *    notice, this list of conditions and the following disclaimer.
+        -:   28: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   29: *    notice, this list of conditions and the following disclaimer in the
+        -:   30: *    documentation and/or other materials provided with the distribution.
+        -:   31: * 3. All advertising materials mentioning features or use of this software
+        -:   32: *    must display the following acknowledgement:
+        -:   33: *    "This product includes cryptographic software written by
+        -:   34: *     Eric Young (eay@cryptsoft.com)"
+        -:   35: *    The word 'cryptographic' can be left out if the rouines from the library
+        -:   36: *    being used are not cryptographic related :-).
+        -:   37: * 4. If you include any Windows specific code (or a derivative thereof) from 
+        -:   38: *    the apps directory (application code) you must include an acknowledgement:
+        -:   39: *    "This product includes software written by Tim Hudson (tjh@cryptsoft.com)"
+        -:   40: * 
+        -:   41: * THIS SOFTWARE IS PROVIDED BY ERIC YOUNG ``AS IS'' AND
+        -:   42: * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   43: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+        -:   44: * ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+        -:   45: * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+        -:   46: * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+        -:   47: * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   48: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+        -:   49: * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+        -:   50: * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+        -:   51: * SUCH DAMAGE.
+        -:   52: * 
+        -:   53: * The licence and distribution terms for any publically available version or
+        -:   54: * derivative of this code cannot be changed.  i.e. this code cannot simply be
+        -:   55: * copied and put under another distribution licence
+        -:   56: * [including the GNU Public Licence.]
+        -:   57: */
+        -:   58:/* ====================================================================
+        -:   59: * Copyright 2005 Nokia. All rights reserved.
+        -:   60: *
+        -:   61: * The portions of the attached software ("Contribution") is developed by
+        -:   62: * Nokia Corporation and is licensed pursuant to the OpenSSL open source
+        -:   63: * license.
+        -:   64: *
+        -:   65: * The Contribution, originally written by Mika Kousa and Pasi Eronen of
+        -:   66: * Nokia Corporation, consists of the "PSK" (Pre-Shared Key) ciphersuites
+        -:   67: * support (see RFC 4279) to OpenSSL.
+        -:   68: *
+        -:   69: * No patent licenses or other rights except those expressly stated in
+        -:   70: * the OpenSSL open source license shall be deemed granted or received
+        -:   71: * expressly, by implication, estoppel, or otherwise.
+        -:   72: *
+        -:   73: * No assurances are provided by Nokia that the Contribution does not
+        -:   74: * infringe the patent or other intellectual property rights of any third
+        -:   75: * party or that the license provides you with all the necessary rights
+        -:   76: * to make use of the Contribution.
+        -:   77: *
+        -:   78: * THE SOFTWARE IS PROVIDED "AS IS" WITHOUT WARRANTY OF ANY KIND. IN
+        -:   79: * ADDITION TO THE DISCLAIMERS INCLUDED IN THE LICENSE, NOKIA
+        -:   80: * SPECIFICALLY DISCLAIMS ANY LIABILITY FOR CLAIMS BROUGHT BY YOU OR ANY
+        -:   81: * OTHER ENTITY BASED ON INFRINGEMENT OF INTELLECTUAL PROPERTY RIGHTS OR
+        -:   82: * OTHERWISE.
+        -:   83: */
+        -:   84:
+        -:   85:#include <stdio.h>
+        -:   86:#include <stdlib.h>
+        -:   87:#include "ssl_locl.h"
+        -:   88:#include <openssl/asn1_mac.h>
+        -:   89:#include <openssl/objects.h>
+        -:   90:#include <openssl/x509.h>
+        -:   91:
+        -:   92:typedef struct ssl_session_asn1_st
+        -:   93:	{
+        -:   94:	ASN1_INTEGER version;
+        -:   95:	ASN1_INTEGER ssl_version;
+        -:   96:	ASN1_OCTET_STRING cipher;
+        -:   97:	ASN1_OCTET_STRING comp_id;
+        -:   98:	ASN1_OCTET_STRING master_key;
+        -:   99:	ASN1_OCTET_STRING session_id;
+        -:  100:	ASN1_OCTET_STRING session_id_context;
+        -:  101:	ASN1_OCTET_STRING key_arg;
+        -:  102:#ifndef OPENSSL_NO_KRB5
+        -:  103:        ASN1_OCTET_STRING krb5_princ;
+        -:  104:#endif /* OPENSSL_NO_KRB5 */
+        -:  105:	ASN1_INTEGER time;
+        -:  106:	ASN1_INTEGER timeout;
+        -:  107:	ASN1_INTEGER verify_result;
+        -:  108:#ifndef OPENSSL_NO_TLSEXT
+        -:  109:	ASN1_OCTET_STRING tlsext_hostname;
+        -:  110:	ASN1_INTEGER tlsext_tick_lifetime;
+        -:  111:	ASN1_OCTET_STRING tlsext_tick;
+        -:  112:#endif /* OPENSSL_NO_TLSEXT */
+        -:  113:#ifndef OPENSSL_NO_PSK
+        -:  114:	ASN1_OCTET_STRING psk_identity_hint;
+        -:  115:	ASN1_OCTET_STRING psk_identity;
+        -:  116:#endif /* OPENSSL_NO_PSK */
+        -:  117:#ifndef OPENSSL_NO_SRP
+        -:  118:	ASN1_OCTET_STRING srp_username;
+        -:  119:#endif /* OPENSSL_NO_SRP */
+        -:  120:	} SSL_SESSION_ASN1;
+        -:  121:
+    #####:  122:int i2d_SSL_SESSION(SSL_SESSION *in, unsigned char **pp)
+        -:  123:	{
+        -:  124:#define LSIZE2 (sizeof(long)*2)
+        -:  125:	int v1=0,v2=0,v3=0,v4=0,v5=0,v7=0,v8=0;
+        -:  126:	unsigned char buf[4],ibuf1[LSIZE2],ibuf2[LSIZE2];
+        -:  127:	unsigned char ibuf3[LSIZE2],ibuf4[LSIZE2],ibuf5[LSIZE2];
+        -:  128:#ifndef OPENSSL_NO_TLSEXT
+        -:  129:	int v6=0,v9=0,v10=0;
+        -:  130:	unsigned char ibuf6[LSIZE2];
+        -:  131:#endif
+        -:  132:#ifndef OPENSSL_NO_COMP
+        -:  133:	unsigned char cbuf;
+        -:  134:	int v11=0;
+        -:  135:#endif
+        -:  136:#ifndef OPENSSL_NO_SRP
+        -:  137:	int v12=0;
+        -:  138:#endif
+        -:  139:	long l;
+        -:  140:	SSL_SESSION_ASN1 a;
+    #####:  141:	M_ASN1_I2D_vars(in);
+        -:  142:
+    #####:  143:	if ((in == NULL) || ((in->cipher == NULL) && (in->cipher_id == 0)))
+        -:  144:		return(0);
+        -:  145:
+        -:  146:	/* Note that I cheat in the following 2 assignments.  I know
+        -:  147:	 * that if the ASN1_INTEGER passed to ASN1_INTEGER_set
+        -:  148:	 * is > sizeof(long)+1, the buffer will not be re-OPENSSL_malloc()ed.
+        -:  149:	 * This is a bit evil but makes things simple, no dynamic allocation
+        -:  150:	 * to clean up :-) */
+    #####:  151:	a.version.length=LSIZE2;
+    #####:  152:	a.version.type=V_ASN1_INTEGER;
+    #####:  153:	a.version.data=ibuf1;
+    #####:  154:	ASN1_INTEGER_set(&(a.version),SSL_SESSION_ASN1_VERSION);
+        -:  155:
+    #####:  156:	a.ssl_version.length=LSIZE2;
+    #####:  157:	a.ssl_version.type=V_ASN1_INTEGER;
+    #####:  158:	a.ssl_version.data=ibuf2;
+    #####:  159:	ASN1_INTEGER_set(&(a.ssl_version),in->ssl_version);
+        -:  160:
+    #####:  161:	a.cipher.type=V_ASN1_OCTET_STRING;
+    #####:  162:	a.cipher.data=buf;
+        -:  163:
+    #####:  164:	if (in->cipher == NULL)
+    #####:  165:		l=in->cipher_id;
+        -:  166:	else
+    #####:  167:		l=in->cipher->id;
+    #####:  168:	if (in->ssl_version == SSL2_VERSION)
+        -:  169:		{
+    #####:  170:		a.cipher.length=3;
+    #####:  171:		buf[0]=((unsigned char)(l>>16L))&0xff;
+    #####:  172:		buf[1]=((unsigned char)(l>> 8L))&0xff;
+    #####:  173:		buf[2]=((unsigned char)(l     ))&0xff;
+        -:  174:		}
+        -:  175:	else
+        -:  176:		{
+    #####:  177:		a.cipher.length=2;
+    #####:  178:		buf[0]=((unsigned char)(l>>8L))&0xff;
+    #####:  179:		buf[1]=((unsigned char)(l    ))&0xff;
+        -:  180:		}
+        -:  181:
+        -:  182:#ifndef OPENSSL_NO_COMP
+    #####:  183:	if (in->compress_meth)
+        -:  184:		{
+    #####:  185:		cbuf = (unsigned char)in->compress_meth;
+    #####:  186:		a.comp_id.length = 1;
+    #####:  187:		a.comp_id.type = V_ASN1_OCTET_STRING;
+    #####:  188:		a.comp_id.data = &cbuf;
+        -:  189:		}
+        -:  190:#endif
+        -:  191:
+    #####:  192:	a.master_key.length=in->master_key_length;
+    #####:  193:	a.master_key.type=V_ASN1_OCTET_STRING;
+    #####:  194:	a.master_key.data=in->master_key;
+        -:  195:
+    #####:  196:	a.session_id.length=in->session_id_length;
+    #####:  197:	a.session_id.type=V_ASN1_OCTET_STRING;
+    #####:  198:	a.session_id.data=in->session_id;
+        -:  199:
+    #####:  200:	a.session_id_context.length=in->sid_ctx_length;
+    #####:  201:	a.session_id_context.type=V_ASN1_OCTET_STRING;
+    #####:  202:	a.session_id_context.data=in->sid_ctx;
+        -:  203:
+    #####:  204:	a.key_arg.length=in->key_arg_length;
+    #####:  205:	a.key_arg.type=V_ASN1_OCTET_STRING;
+    #####:  206:	a.key_arg.data=in->key_arg;
+        -:  207:
+        -:  208:#ifndef OPENSSL_NO_KRB5
+        -:  209:	if (in->krb5_client_princ_len)
+        -:  210:		{
+        -:  211:		a.krb5_princ.length=in->krb5_client_princ_len;
+        -:  212:		a.krb5_princ.type=V_ASN1_OCTET_STRING;
+        -:  213:		a.krb5_princ.data=in->krb5_client_princ;
+        -:  214:		}
+        -:  215:#endif /* OPENSSL_NO_KRB5 */
+        -:  216:
+    #####:  217:	if (in->time != 0L)
+        -:  218:		{
+    #####:  219:		a.time.length=LSIZE2;
+    #####:  220:		a.time.type=V_ASN1_INTEGER;
+    #####:  221:		a.time.data=ibuf3;
+    #####:  222:		ASN1_INTEGER_set(&(a.time),in->time);
+        -:  223:		}
+        -:  224:
+    #####:  225:	if (in->timeout != 0L)
+        -:  226:		{
+    #####:  227:		a.timeout.length=LSIZE2;
+    #####:  228:		a.timeout.type=V_ASN1_INTEGER;
+    #####:  229:		a.timeout.data=ibuf4;
+    #####:  230:		ASN1_INTEGER_set(&(a.timeout),in->timeout);
+        -:  231:		}
+        -:  232:
+    #####:  233:	if (in->verify_result != X509_V_OK)
+        -:  234:		{
+    #####:  235:		a.verify_result.length=LSIZE2;
+    #####:  236:		a.verify_result.type=V_ASN1_INTEGER;
+    #####:  237:		a.verify_result.data=ibuf5;
+    #####:  238:		ASN1_INTEGER_set(&a.verify_result,in->verify_result);
+        -:  239:		}
+        -:  240:
+        -:  241:#ifndef OPENSSL_NO_TLSEXT
+    #####:  242:	if (in->tlsext_hostname)
+        -:  243:                {
+    #####:  244:                a.tlsext_hostname.length=strlen(in->tlsext_hostname);
+    #####:  245:                a.tlsext_hostname.type=V_ASN1_OCTET_STRING;
+    #####:  246:                a.tlsext_hostname.data=(unsigned char *)in->tlsext_hostname;
+        -:  247:                }
+    #####:  248:	if (in->tlsext_tick)
+        -:  249:                {
+    #####:  250:                a.tlsext_tick.length= in->tlsext_ticklen;
+    #####:  251:                a.tlsext_tick.type=V_ASN1_OCTET_STRING;
+    #####:  252:                a.tlsext_tick.data=(unsigned char *)in->tlsext_tick;
+        -:  253:                }
+    #####:  254:	if (in->tlsext_tick_lifetime_hint > 0)
+        -:  255:		{
+    #####:  256:		a.tlsext_tick_lifetime.length=LSIZE2;
+    #####:  257:		a.tlsext_tick_lifetime.type=V_ASN1_INTEGER;
+    #####:  258:		a.tlsext_tick_lifetime.data=ibuf6;
+    #####:  259:		ASN1_INTEGER_set(&a.tlsext_tick_lifetime,in->tlsext_tick_lifetime_hint);
+        -:  260:		}
+        -:  261:#endif /* OPENSSL_NO_TLSEXT */
+        -:  262:#ifndef OPENSSL_NO_PSK
+    #####:  263:	if (in->psk_identity_hint)
+        -:  264:		{
+    #####:  265:		a.psk_identity_hint.length=strlen(in->psk_identity_hint);
+    #####:  266:		a.psk_identity_hint.type=V_ASN1_OCTET_STRING;
+    #####:  267:		a.psk_identity_hint.data=(unsigned char *)(in->psk_identity_hint);
+        -:  268:		}
+    #####:  269:	if (in->psk_identity)
+        -:  270:		{
+    #####:  271:		a.psk_identity.length=strlen(in->psk_identity);
+    #####:  272:		a.psk_identity.type=V_ASN1_OCTET_STRING;
+    #####:  273:		a.psk_identity.data=(unsigned char *)(in->psk_identity);
+        -:  274:		}
+        -:  275:#endif /* OPENSSL_NO_PSK */
+        -:  276:#ifndef OPENSSL_NO_SRP
+    #####:  277:	if (in->srp_username)
+        -:  278:		{
+    #####:  279:		a.srp_username.length=strlen(in->srp_username);
+    #####:  280:		a.srp_username.type=V_ASN1_OCTET_STRING;
+    #####:  281:		a.srp_username.data=(unsigned char *)(in->srp_username);
+        -:  282:		}
+        -:  283:#endif /* OPENSSL_NO_SRP */
+        -:  284:
+    #####:  285:	M_ASN1_I2D_len(&(a.version),		i2d_ASN1_INTEGER);
+    #####:  286:	M_ASN1_I2D_len(&(a.ssl_version),	i2d_ASN1_INTEGER);
+    #####:  287:	M_ASN1_I2D_len(&(a.cipher),		i2d_ASN1_OCTET_STRING);
+    #####:  288:	M_ASN1_I2D_len(&(a.session_id),		i2d_ASN1_OCTET_STRING);
+    #####:  289:	M_ASN1_I2D_len(&(a.master_key),		i2d_ASN1_OCTET_STRING);
+        -:  290:#ifndef OPENSSL_NO_KRB5
+        -:  291:	if (in->krb5_client_princ_len)
+        -:  292:        	M_ASN1_I2D_len(&(a.krb5_princ),	i2d_ASN1_OCTET_STRING);
+        -:  293:#endif /* OPENSSL_NO_KRB5 */
+    #####:  294:	if (in->key_arg_length > 0)
+    #####:  295:		M_ASN1_I2D_len_IMP_opt(&(a.key_arg),i2d_ASN1_OCTET_STRING);
+    #####:  296:	if (in->time != 0L)
+    #####:  297:		M_ASN1_I2D_len_EXP_opt(&(a.time),i2d_ASN1_INTEGER,1,v1);
+    #####:  298:	if (in->timeout != 0L)
+    #####:  299:		M_ASN1_I2D_len_EXP_opt(&(a.timeout),i2d_ASN1_INTEGER,2,v2);
+    #####:  300:	if (in->peer != NULL)
+    #####:  301:		M_ASN1_I2D_len_EXP_opt(in->peer,i2d_X509,3,v3);
+    #####:  302:	M_ASN1_I2D_len_EXP_opt(&a.session_id_context,i2d_ASN1_OCTET_STRING,4,v4);
+    #####:  303:	if (in->verify_result != X509_V_OK)
+    #####:  304:		M_ASN1_I2D_len_EXP_opt(&(a.verify_result),i2d_ASN1_INTEGER,5,v5);
+        -:  305:
+        -:  306:#ifndef OPENSSL_NO_TLSEXT
+    #####:  307:	if (in->tlsext_tick_lifetime_hint > 0)
+    #####:  308:      	 	M_ASN1_I2D_len_EXP_opt(&a.tlsext_tick_lifetime, i2d_ASN1_INTEGER,9,v9);
+    #####:  309:	if (in->tlsext_tick)
+    #####:  310:        	M_ASN1_I2D_len_EXP_opt(&(a.tlsext_tick), i2d_ASN1_OCTET_STRING,10,v10);
+    #####:  311:	if (in->tlsext_hostname)
+    #####:  312:        	M_ASN1_I2D_len_EXP_opt(&(a.tlsext_hostname), i2d_ASN1_OCTET_STRING,6,v6);
+        -:  313:#ifndef OPENSSL_NO_COMP
+    #####:  314:	if (in->compress_meth)
+    #####:  315:        	M_ASN1_I2D_len_EXP_opt(&(a.comp_id), i2d_ASN1_OCTET_STRING,11,v11);
+        -:  316:#endif
+        -:  317:#endif /* OPENSSL_NO_TLSEXT */
+        -:  318:#ifndef OPENSSL_NO_PSK
+    #####:  319:	if (in->psk_identity_hint)
+    #####:  320:        	M_ASN1_I2D_len_EXP_opt(&(a.psk_identity_hint), i2d_ASN1_OCTET_STRING,7,v7);
+    #####:  321:	if (in->psk_identity)
+    #####:  322:        	M_ASN1_I2D_len_EXP_opt(&(a.psk_identity), i2d_ASN1_OCTET_STRING,8,v8);
+        -:  323:#endif /* OPENSSL_NO_PSK */
+        -:  324:#ifndef OPENSSL_NO_SRP
+    #####:  325:	if (in->srp_username)
+    #####:  326:        	M_ASN1_I2D_len_EXP_opt(&(a.srp_username), i2d_ASN1_OCTET_STRING,12,v12);
+        -:  327:#endif /* OPENSSL_NO_SRP */
+        -:  328:
+    #####:  329:	M_ASN1_I2D_seq_total();
+        -:  330:
+    #####:  331:	M_ASN1_I2D_put(&(a.version),		i2d_ASN1_INTEGER);
+    #####:  332:	M_ASN1_I2D_put(&(a.ssl_version),	i2d_ASN1_INTEGER);
+    #####:  333:	M_ASN1_I2D_put(&(a.cipher),		i2d_ASN1_OCTET_STRING);
+    #####:  334:	M_ASN1_I2D_put(&(a.session_id),		i2d_ASN1_OCTET_STRING);
+    #####:  335:	M_ASN1_I2D_put(&(a.master_key),		i2d_ASN1_OCTET_STRING);
+        -:  336:#ifndef OPENSSL_NO_KRB5
+        -:  337:	if (in->krb5_client_princ_len)
+        -:  338:        	M_ASN1_I2D_put(&(a.krb5_princ),	i2d_ASN1_OCTET_STRING);
+        -:  339:#endif /* OPENSSL_NO_KRB5 */
+    #####:  340:	if (in->key_arg_length > 0)
+    #####:  341:		M_ASN1_I2D_put_IMP_opt(&(a.key_arg),i2d_ASN1_OCTET_STRING,0);
+    #####:  342:	if (in->time != 0L)
+    #####:  343:		M_ASN1_I2D_put_EXP_opt(&(a.time),i2d_ASN1_INTEGER,1,v1);
+    #####:  344:	if (in->timeout != 0L)
+    #####:  345:		M_ASN1_I2D_put_EXP_opt(&(a.timeout),i2d_ASN1_INTEGER,2,v2);
+    #####:  346:	if (in->peer != NULL)
+    #####:  347:		M_ASN1_I2D_put_EXP_opt(in->peer,i2d_X509,3,v3);
+    #####:  348:	M_ASN1_I2D_put_EXP_opt(&a.session_id_context,i2d_ASN1_OCTET_STRING,4,
+        -:  349:			       v4);
+    #####:  350:	if (in->verify_result != X509_V_OK)
+    #####:  351:		M_ASN1_I2D_put_EXP_opt(&a.verify_result,i2d_ASN1_INTEGER,5,v5);
+        -:  352:#ifndef OPENSSL_NO_TLSEXT
+    #####:  353:	if (in->tlsext_hostname)
+    #####:  354:        	M_ASN1_I2D_put_EXP_opt(&(a.tlsext_hostname), i2d_ASN1_OCTET_STRING,6,v6);
+        -:  355:#endif /* OPENSSL_NO_TLSEXT */
+        -:  356:#ifndef OPENSSL_NO_PSK
+    #####:  357:	if (in->psk_identity_hint)
+    #####:  358:		M_ASN1_I2D_put_EXP_opt(&(a.psk_identity_hint), i2d_ASN1_OCTET_STRING,7,v7);
+    #####:  359:	if (in->psk_identity)
+    #####:  360:		M_ASN1_I2D_put_EXP_opt(&(a.psk_identity), i2d_ASN1_OCTET_STRING,8,v8);
+        -:  361:#endif /* OPENSSL_NO_PSK */
+        -:  362:#ifndef OPENSSL_NO_TLSEXT
+    #####:  363:	if (in->tlsext_tick_lifetime_hint > 0)
+    #####:  364:      	 	M_ASN1_I2D_put_EXP_opt(&a.tlsext_tick_lifetime, i2d_ASN1_INTEGER,9,v9);
+    #####:  365:	if (in->tlsext_tick)
+    #####:  366:        	M_ASN1_I2D_put_EXP_opt(&(a.tlsext_tick), i2d_ASN1_OCTET_STRING,10,v10);
+        -:  367:#endif /* OPENSSL_NO_TLSEXT */
+        -:  368:#ifndef OPENSSL_NO_COMP
+    #####:  369:	if (in->compress_meth)
+    #####:  370:        	M_ASN1_I2D_put_EXP_opt(&(a.comp_id), i2d_ASN1_OCTET_STRING,11,v11);
+        -:  371:#endif
+        -:  372:#ifndef OPENSSL_NO_SRP
+    #####:  373:	if (in->srp_username)
+    #####:  374:		M_ASN1_I2D_put_EXP_opt(&(a.srp_username), i2d_ASN1_OCTET_STRING,12,v12);
+        -:  375:#endif /* OPENSSL_NO_SRP */
+    #####:  376:	M_ASN1_I2D_finish();
+        -:  377:	}
+        -:  378:
+    #####:  379:SSL_SESSION *d2i_SSL_SESSION(SSL_SESSION **a, const unsigned char **pp,
+        -:  380:			     long length)
+        -:  381:	{
+        -:  382:	int ssl_version=0,i;
+        -:  383:	long id;
+        -:  384:	ASN1_INTEGER ai,*aip;
+        -:  385:	ASN1_OCTET_STRING os,*osp;
+    #####:  386:	M_ASN1_D2I_vars(a,SSL_SESSION *,SSL_SESSION_new);
+        -:  387:
+    #####:  388:	aip= &ai;
+    #####:  389:	osp= &os;
+        -:  390:
+    #####:  391:	M_ASN1_D2I_Init();
+    #####:  392:	M_ASN1_D2I_start_sequence();
+        -:  393:
+    #####:  394:	ai.data=NULL; ai.length=0;
+    #####:  395:	M_ASN1_D2I_get_x(ASN1_INTEGER,aip,d2i_ASN1_INTEGER);
+    #####:  396:	if (ai.data != NULL) { OPENSSL_free(ai.data); ai.data=NULL; ai.length=0; }
+        -:  397:
+        -:  398:	/* we don't care about the version right now :-) */
+    #####:  399:	M_ASN1_D2I_get_x(ASN1_INTEGER,aip,d2i_ASN1_INTEGER);
+    #####:  400:	ssl_version=(int)ASN1_INTEGER_get(aip);
+    #####:  401:	ret->ssl_version=ssl_version;
+    #####:  402:	if (ai.data != NULL) { OPENSSL_free(ai.data); ai.data=NULL; ai.length=0; }
+        -:  403:
+    #####:  404:	os.data=NULL; os.length=0;
+    #####:  405:	M_ASN1_D2I_get_x(ASN1_OCTET_STRING,osp,d2i_ASN1_OCTET_STRING);
+    #####:  406:	if (ssl_version == SSL2_VERSION)
+        -:  407:		{
+    #####:  408:		if (os.length != 3)
+        -:  409:			{
+    #####:  410:			c.error=SSL_R_CIPHER_CODE_WRONG_LENGTH;
+    #####:  411:			goto err;
+        -:  412:			}
+    #####:  413:		id=0x02000000L|
+    #####:  414:			((unsigned long)os.data[0]<<16L)|
+    #####:  415:			((unsigned long)os.data[1]<< 8L)|
+    #####:  416:			 (unsigned long)os.data[2];
+        -:  417:		}
+    #####:  418:	else if ((ssl_version>>8) >= SSL3_VERSION_MAJOR)
+        -:  419:		{
+    #####:  420:		if (os.length != 2)
+        -:  421:			{
+    #####:  422:			c.error=SSL_R_CIPHER_CODE_WRONG_LENGTH;
+    #####:  423:			goto err;
+        -:  424:			}
+    #####:  425:		id=0x03000000L|
+    #####:  426:			((unsigned long)os.data[0]<<8L)|
+    #####:  427:			 (unsigned long)os.data[1];
+        -:  428:		}
+        -:  429:	else
+        -:  430:		{
+    #####:  431:		c.error=SSL_R_UNKNOWN_SSL_VERSION;
+    #####:  432:		goto err;
+        -:  433:		}
+        -:  434:	
+    #####:  435:	ret->cipher=NULL;
+    #####:  436:	ret->cipher_id=id;
+        -:  437:
+    #####:  438:	M_ASN1_D2I_get_x(ASN1_OCTET_STRING,osp,d2i_ASN1_OCTET_STRING);
+        -:  439:	if ((ssl_version>>8) >= SSL3_VERSION_MAJOR)
+        -:  440:		i=SSL3_MAX_SSL_SESSION_ID_LENGTH;
+        -:  441:	else /* if (ssl_version>>8 == SSL2_VERSION_MAJOR) */
+        -:  442:		i=SSL2_MAX_SSL_SESSION_ID_LENGTH;
+        -:  443:
+    #####:  444:	if (os.length > i)
+    #####:  445:		os.length = i;
+    #####:  446:	if (os.length > (int)sizeof(ret->session_id)) /* can't happen */
+    #####:  447:		os.length = sizeof(ret->session_id);
+        -:  448:
+    #####:  449:	ret->session_id_length=os.length;
+    #####:  450:	OPENSSL_assert(os.length <= (int)sizeof(ret->session_id));
+    #####:  451:	memcpy(ret->session_id,os.data,os.length);
+        -:  452:
+    #####:  453:	M_ASN1_D2I_get_x(ASN1_OCTET_STRING,osp,d2i_ASN1_OCTET_STRING);
+    #####:  454:	if (os.length > SSL_MAX_MASTER_KEY_LENGTH)
+    #####:  455:		ret->master_key_length=SSL_MAX_MASTER_KEY_LENGTH;
+        -:  456:	else
+    #####:  457:		ret->master_key_length=os.length;
+    #####:  458:	memcpy(ret->master_key,os.data,ret->master_key_length);
+        -:  459:
+    #####:  460:	os.length=0;
+        -:  461:
+        -:  462:#ifndef OPENSSL_NO_KRB5
+        -:  463:	os.length=0;
+        -:  464:	M_ASN1_D2I_get_opt(osp,d2i_ASN1_OCTET_STRING,V_ASN1_OCTET_STRING);
+        -:  465:	if (os.data)
+        -:  466:		{
+        -:  467:        	if (os.length > SSL_MAX_KRB5_PRINCIPAL_LENGTH)
+        -:  468:            		ret->krb5_client_princ_len=0;
+        -:  469:		else
+        -:  470:			ret->krb5_client_princ_len=os.length;
+        -:  471:		memcpy(ret->krb5_client_princ,os.data,ret->krb5_client_princ_len);
+        -:  472:		OPENSSL_free(os.data);
+        -:  473:		os.data = NULL;
+        -:  474:		os.length = 0;
+        -:  475:		}
+        -:  476:	else
+        -:  477:		ret->krb5_client_princ_len=0;
+        -:  478:#endif /* OPENSSL_NO_KRB5 */
+        -:  479:
+    #####:  480:	M_ASN1_D2I_get_IMP_opt(osp,d2i_ASN1_OCTET_STRING,0,V_ASN1_OCTET_STRING);
+    #####:  481:	if (os.length > SSL_MAX_KEY_ARG_LENGTH)
+    #####:  482:		ret->key_arg_length=SSL_MAX_KEY_ARG_LENGTH;
+        -:  483:	else
+    #####:  484:		ret->key_arg_length=os.length;
+    #####:  485:	memcpy(ret->key_arg,os.data,ret->key_arg_length);
+    #####:  486:	if (os.data != NULL) OPENSSL_free(os.data);
+        -:  487:
+    #####:  488:	ai.length=0;
+    #####:  489:	M_ASN1_D2I_get_EXP_opt(aip,d2i_ASN1_INTEGER,1);
+    #####:  490:	if (ai.data != NULL)
+        -:  491:		{
+    #####:  492:		ret->time=ASN1_INTEGER_get(aip);
+    #####:  493:		OPENSSL_free(ai.data); ai.data=NULL; ai.length=0;
+        -:  494:		}
+        -:  495:	else
+    #####:  496:		ret->time=(unsigned long)time(NULL);
+        -:  497:
+    #####:  498:	ai.length=0;
+    #####:  499:	M_ASN1_D2I_get_EXP_opt(aip,d2i_ASN1_INTEGER,2);
+    #####:  500:	if (ai.data != NULL)
+        -:  501:		{
+    #####:  502:		ret->timeout=ASN1_INTEGER_get(aip);
+    #####:  503:		OPENSSL_free(ai.data); ai.data=NULL; ai.length=0;
+        -:  504:		}
+        -:  505:	else
+    #####:  506:		ret->timeout=3;
+        -:  507:
+    #####:  508:	if (ret->peer != NULL)
+        -:  509:		{
+    #####:  510:		X509_free(ret->peer);
+    #####:  511:		ret->peer=NULL;
+        -:  512:		}
+    #####:  513:	M_ASN1_D2I_get_EXP_opt(ret->peer,d2i_X509,3);
+        -:  514:
+    #####:  515:	os.length=0;
+    #####:  516:	os.data=NULL;
+    #####:  517:	M_ASN1_D2I_get_EXP_opt(osp,d2i_ASN1_OCTET_STRING,4);
+        -:  518:
+    #####:  519:	if(os.data != NULL)
+        -:  520:	    {
+    #####:  521:	    if (os.length > SSL_MAX_SID_CTX_LENGTH)
+        -:  522:		{
+    #####:  523:		c.error=SSL_R_BAD_LENGTH;
+    #####:  524:		goto err;
+        -:  525:		}
+        -:  526:	    else
+        -:  527:		{
+    #####:  528:		ret->sid_ctx_length=os.length;
+    #####:  529:		memcpy(ret->sid_ctx,os.data,os.length);
+        -:  530:		}
+    #####:  531:	    OPENSSL_free(os.data); os.data=NULL; os.length=0;
+        -:  532:	    }
+        -:  533:	else
+    #####:  534:	    ret->sid_ctx_length=0;
+        -:  535:
+    #####:  536:	ai.length=0;
+    #####:  537:	M_ASN1_D2I_get_EXP_opt(aip,d2i_ASN1_INTEGER,5);
+    #####:  538:	if (ai.data != NULL)
+        -:  539:		{
+    #####:  540:		ret->verify_result=ASN1_INTEGER_get(aip);
+    #####:  541:		OPENSSL_free(ai.data); ai.data=NULL; ai.length=0;
+        -:  542:		}
+        -:  543:	else
+    #####:  544:		ret->verify_result=X509_V_OK;
+        -:  545:
+        -:  546:#ifndef OPENSSL_NO_TLSEXT
+    #####:  547:	os.length=0;
+    #####:  548:	os.data=NULL;
+    #####:  549:	M_ASN1_D2I_get_EXP_opt(osp,d2i_ASN1_OCTET_STRING,6);
+    #####:  550:	if (os.data)
+        -:  551:		{
+    #####:  552:		ret->tlsext_hostname = BUF_strndup((char *)os.data, os.length);
+    #####:  553:		OPENSSL_free(os.data);
+    #####:  554:		os.data = NULL;
+    #####:  555:		os.length = 0;
+        -:  556:		}
+        -:  557:	else
+    #####:  558:		ret->tlsext_hostname=NULL;
+        -:  559:#endif /* OPENSSL_NO_TLSEXT */
+        -:  560:
+        -:  561:#ifndef OPENSSL_NO_PSK
+    #####:  562:	os.length=0;
+    #####:  563:	os.data=NULL;
+    #####:  564:	M_ASN1_D2I_get_EXP_opt(osp,d2i_ASN1_OCTET_STRING,7);
+    #####:  565:	if (os.data)
+        -:  566:		{
+    #####:  567:		ret->psk_identity_hint = BUF_strndup((char *)os.data, os.length);
+    #####:  568:		OPENSSL_free(os.data);
+    #####:  569:		os.data = NULL;
+    #####:  570:		os.length = 0;
+        -:  571:		}
+        -:  572:	else
+    #####:  573:		ret->psk_identity_hint=NULL;
+        -:  574:
+    #####:  575:	os.length=0;
+    #####:  576:	os.data=NULL;
+    #####:  577:	M_ASN1_D2I_get_EXP_opt(osp,d2i_ASN1_OCTET_STRING,8);
+    #####:  578:	if (os.data)
+        -:  579:		{
+    #####:  580:		ret->psk_identity = BUF_strndup((char *)os.data, os.length);
+    #####:  581:		OPENSSL_free(os.data);
+    #####:  582:		os.data = NULL;
+    #####:  583:		os.length = 0;
+        -:  584:		}
+        -:  585:	else
+    #####:  586:		ret->psk_identity=NULL;
+        -:  587:#endif /* OPENSSL_NO_PSK */
+        -:  588:
+        -:  589:#ifndef OPENSSL_NO_TLSEXT
+    #####:  590:	ai.length=0;
+    #####:  591:	M_ASN1_D2I_get_EXP_opt(aip,d2i_ASN1_INTEGER,9);
+    #####:  592:	if (ai.data != NULL)
+        -:  593:		{
+    #####:  594:		ret->tlsext_tick_lifetime_hint=ASN1_INTEGER_get(aip);
+    #####:  595:		OPENSSL_free(ai.data); ai.data=NULL; ai.length=0;
+        -:  596:		}
+    #####:  597:	else if (ret->tlsext_ticklen && ret->session_id_length)
+    #####:  598:		ret->tlsext_tick_lifetime_hint = -1;
+        -:  599:	else
+    #####:  600:		ret->tlsext_tick_lifetime_hint=0;
+    #####:  601:	os.length=0;
+    #####:  602:	os.data=NULL;
+    #####:  603:	M_ASN1_D2I_get_EXP_opt(osp,d2i_ASN1_OCTET_STRING,10);
+    #####:  604:	if (os.data)
+        -:  605:		{
+    #####:  606:		ret->tlsext_tick = os.data;
+    #####:  607:		ret->tlsext_ticklen = os.length;
+    #####:  608:		os.data = NULL;
+    #####:  609:		os.length = 0;
+        -:  610:		}
+        -:  611:	else
+    #####:  612:		ret->tlsext_tick=NULL;
+        -:  613:#endif /* OPENSSL_NO_TLSEXT */
+        -:  614:#ifndef OPENSSL_NO_COMP
+    #####:  615:	os.length=0;
+    #####:  616:	os.data=NULL;
+    #####:  617:	M_ASN1_D2I_get_EXP_opt(osp,d2i_ASN1_OCTET_STRING,11);
+    #####:  618:	if (os.data)
+        -:  619:		{
+    #####:  620:		ret->compress_meth = os.data[0];
+    #####:  621:		OPENSSL_free(os.data);
+    #####:  622:		os.data = NULL;
+        -:  623:		}
+        -:  624:#endif
+        -:  625:
+        -:  626:#ifndef OPENSSL_NO_SRP
+    #####:  627:	os.length=0;
+    #####:  628:	os.data=NULL;
+    #####:  629:	M_ASN1_D2I_get_EXP_opt(osp,d2i_ASN1_OCTET_STRING,12);
+    #####:  630:	if (os.data)
+        -:  631:		{
+    #####:  632:		ret->srp_username = BUF_strndup((char *)os.data, os.length);
+    #####:  633:		OPENSSL_free(os.data);
+    #####:  634:		os.data = NULL;
+    #####:  635:		os.length = 0;
+        -:  636:		}
+        -:  637:	else
+    #####:  638:		ret->srp_username=NULL;
+        -:  639:#endif /* OPENSSL_NO_SRP */
+        -:  640:
+    #####:  641:	M_ASN1_D2I_Finish(a,SSL_SESSION_free,SSL_F_D2I_SSL_SESSION);
+        -:  642:	}

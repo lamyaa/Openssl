@@ -1,0 +1,1025 @@
+        -:    0:Source:ts_rsp_sign.c
+        -:    0:Graph:ts_rsp_sign.gcno
+        -:    0:Data:ts_rsp_sign.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* crypto/ts/ts_resp_sign.c */
+        -:    2:/* Written by Zoltan Glozik (zglozik@stones.com) for the OpenSSL
+        -:    3: * project 2002.
+        -:    4: */
+        -:    5:/* ====================================================================
+        -:    6: * Copyright (c) 2006 The OpenSSL Project.  All rights reserved.
+        -:    7: *
+        -:    8: * Redistribution and use in source and binary forms, with or without
+        -:    9: * modification, are permitted provided that the following conditions
+        -:   10: * are met:
+        -:   11: *
+        -:   12: * 1. Redistributions of source code must retain the above copyright
+        -:   13: *    notice, this list of conditions and the following disclaimer. 
+        -:   14: *
+        -:   15: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   16: *    notice, this list of conditions and the following disclaimer in
+        -:   17: *    the documentation and/or other materials provided with the
+        -:   18: *    distribution.
+        -:   19: *
+        -:   20: * 3. All advertising materials mentioning features or use of this
+        -:   21: *    software must display the following acknowledgment:
+        -:   22: *    "This product includes software developed by the OpenSSL Project
+        -:   23: *    for use in the OpenSSL Toolkit. (http://www.OpenSSL.org/)"
+        -:   24: *
+        -:   25: * 4. The names "OpenSSL Toolkit" and "OpenSSL Project" must not be used to
+        -:   26: *    endorse or promote products derived from this software without
+        -:   27: *    prior written permission. For written permission, please contact
+        -:   28: *    licensing@OpenSSL.org.
+        -:   29: *
+        -:   30: * 5. Products derived from this software may not be called "OpenSSL"
+        -:   31: *    nor may "OpenSSL" appear in their names without prior written
+        -:   32: *    permission of the OpenSSL Project.
+        -:   33: *
+        -:   34: * 6. Redistributions of any form whatsoever must retain the following
+        -:   35: *    acknowledgment:
+        -:   36: *    "This product includes software developed by the OpenSSL Project
+        -:   37: *    for use in the OpenSSL Toolkit (http://www.OpenSSL.org/)"
+        -:   38: *
+        -:   39: * THIS SOFTWARE IS PROVIDED BY THE OpenSSL PROJECT ``AS IS'' AND ANY
+        -:   40: * EXPRESSED OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   41: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+        -:   42: * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE OpenSSL PROJECT OR
+        -:   43: * ITS CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+        -:   44: * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+        -:   45: * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+        -:   46: * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   47: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+        -:   48: * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+        -:   49: * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+        -:   50: * OF THE POSSIBILITY OF SUCH DAMAGE.
+        -:   51: * ====================================================================
+        -:   52: *
+        -:   53: * This product includes cryptographic software written by Eric Young
+        -:   54: * (eay@cryptsoft.com).  This product includes software written by Tim
+        -:   55: * Hudson (tjh@cryptsoft.com).
+        -:   56: *
+        -:   57: */
+        -:   58:
+        -:   59:#include "cryptlib.h"
+        -:   60:
+        -:   61:#if defined(OPENSSL_SYS_UNIX)
+        -:   62:#include <sys/time.h>
+        -:   63:#endif
+        -:   64:
+        -:   65:#include <openssl/objects.h>
+        -:   66:#include <openssl/ts.h>
+        -:   67:#include <openssl/pkcs7.h>
+        -:   68:
+        -:   69:/* Private function declarations. */
+        -:   70:
+        -:   71:static ASN1_INTEGER *def_serial_cb(struct TS_resp_ctx *, void *);
+        -:   72:static int def_time_cb(struct TS_resp_ctx *, void *, long *sec, long *usec);
+        -:   73:static int def_extension_cb(struct TS_resp_ctx *, X509_EXTENSION *, void *);
+        -:   74:
+        -:   75:static void TS_RESP_CTX_init(TS_RESP_CTX *ctx);
+        -:   76:static void TS_RESP_CTX_cleanup(TS_RESP_CTX *ctx);
+        -:   77:static int TS_RESP_check_request(TS_RESP_CTX *ctx);
+        -:   78:static ASN1_OBJECT *TS_RESP_get_policy(TS_RESP_CTX *ctx);
+        -:   79:static TS_TST_INFO *TS_RESP_create_tst_info(TS_RESP_CTX *ctx, 
+        -:   80:					    ASN1_OBJECT *policy);
+        -:   81:static int TS_RESP_process_extensions(TS_RESP_CTX *ctx);
+        -:   82:static int TS_RESP_sign(TS_RESP_CTX *ctx);
+        -:   83:
+        -:   84:static ESS_SIGNING_CERT *ESS_SIGNING_CERT_new_init(X509 *signcert, 
+        -:   85:						   STACK_OF(X509) *certs);
+        -:   86:static ESS_CERT_ID *ESS_CERT_ID_new_init(X509 *cert, int issuer_needed);
+        -:   87:static int TS_TST_INFO_content_new(PKCS7 *p7);
+        -:   88:static int ESS_add_signing_cert(PKCS7_SIGNER_INFO *si, ESS_SIGNING_CERT *sc);
+        -:   89:
+        -:   90:static ASN1_GENERALIZEDTIME *TS_RESP_set_genTime_with_precision(
+        -:   91:	ASN1_GENERALIZEDTIME *, long, long, unsigned);
+        -:   92:
+        -:   93:/* Default callbacks for response generation. */
+        -:   94:
+    #####:   95:static ASN1_INTEGER *def_serial_cb(struct TS_resp_ctx *ctx, void *data)
+        -:   96:	{
+    #####:   97:	ASN1_INTEGER *serial = ASN1_INTEGER_new();
+    #####:   98:	if (!serial) goto err;
+    #####:   99:	if (!ASN1_INTEGER_set(serial, 1)) goto err;
+        -:  100:	return serial;
+        -:  101: err:
+    #####:  102:	TSerr(TS_F_DEF_SERIAL_CB, ERR_R_MALLOC_FAILURE);
+    #####:  103:	TS_RESP_CTX_set_status_info(ctx, TS_STATUS_REJECTION,
+        -:  104:				    "Error during serial number generation.");
+    #####:  105:	return NULL;
+        -:  106:	}
+        -:  107:
+        -:  108:#if defined(OPENSSL_SYS_UNIX)
+        -:  109:
+        -:  110:/* Use the gettimeofday function call. */
+    #####:  111:static int def_time_cb(struct TS_resp_ctx *ctx, void *data, 
+        -:  112:		       long *sec, long *usec)
+        -:  113:	{
+        -:  114:	struct timeval tv;
+    #####:  115:	if (gettimeofday(&tv, NULL) != 0) 
+        -:  116:		{
+    #####:  117:		TSerr(TS_F_DEF_TIME_CB, TS_R_TIME_SYSCALL_ERROR);
+    #####:  118:		TS_RESP_CTX_set_status_info(ctx, TS_STATUS_REJECTION,
+        -:  119:					    "Time is not available.");
+    #####:  120:		TS_RESP_CTX_add_failure_info(ctx, TS_INFO_TIME_NOT_AVAILABLE);
+    #####:  121:		return 0;
+        -:  122:		}
+        -:  123:	/* Return time to caller. */
+    #####:  124:	*sec = tv.tv_sec;
+    #####:  125:	*usec = tv.tv_usec;
+        -:  126:
+    #####:  127:	return 1;
+        -:  128:	}
+        -:  129:
+        -:  130:#else
+        -:  131:
+        -:  132:/* Use the time function call that provides only seconds precision. */
+        -:  133:static int def_time_cb(struct TS_resp_ctx *ctx, void *data, 
+        -:  134:		       long *sec, long *usec)
+        -:  135:	{
+        -:  136:	time_t t;
+        -:  137:	if (time(&t) == (time_t) -1)
+        -:  138:		{
+        -:  139:		TSerr(TS_F_DEF_TIME_CB, TS_R_TIME_SYSCALL_ERROR);
+        -:  140:		TS_RESP_CTX_set_status_info(ctx, TS_STATUS_REJECTION,
+        -:  141:					    "Time is not available.");
+        -:  142:		TS_RESP_CTX_add_failure_info(ctx, TS_INFO_TIME_NOT_AVAILABLE);
+        -:  143:		return 0;
+        -:  144:		}
+        -:  145:	/* Return time to caller, only second precision. */
+        -:  146:	*sec = (long) t;
+        -:  147:	*usec = 0;
+        -:  148:
+        -:  149:	return 1;
+        -:  150:	}
+        -:  151:
+        -:  152:#endif
+        -:  153:
+    #####:  154:static int def_extension_cb(struct TS_resp_ctx *ctx, X509_EXTENSION *ext,
+        -:  155:			    void *data)
+        -:  156:	{
+        -:  157:	/* No extensions are processed here. */
+    #####:  158:	TS_RESP_CTX_set_status_info(ctx, TS_STATUS_REJECTION,
+        -:  159:				    "Unsupported extension.");
+    #####:  160:	TS_RESP_CTX_add_failure_info(ctx, TS_INFO_UNACCEPTED_EXTENSION);
+    #####:  161:	return 0;
+        -:  162:	}
+        -:  163:
+        -:  164:/* TS_RESP_CTX management functions. */
+        -:  165:
+    #####:  166:TS_RESP_CTX *TS_RESP_CTX_new()
+        -:  167:	{
+        -:  168:	TS_RESP_CTX *ctx;
+        -:  169:
+    #####:  170:	if (!(ctx = (TS_RESP_CTX *) OPENSSL_malloc(sizeof(TS_RESP_CTX))))
+        -:  171:		{
+    #####:  172:		TSerr(TS_F_TS_RESP_CTX_NEW, ERR_R_MALLOC_FAILURE);
+    #####:  173:		return NULL;
+        -:  174:		}
+        -:  175:	memset(ctx, 0, sizeof(TS_RESP_CTX));
+        -:  176:
+        -:  177:	/* Setting default callbacks. */
+    #####:  178:	ctx->serial_cb = def_serial_cb;
+    #####:  179:	ctx->time_cb = def_time_cb;
+    #####:  180:	ctx->extension_cb = def_extension_cb;
+        -:  181:
+    #####:  182:	return ctx;
+        -:  183:	}
+        -:  184:
+    #####:  185:void TS_RESP_CTX_free(TS_RESP_CTX *ctx)
+        -:  186:	{
+    #####:  187:	if (!ctx) return;
+        -:  188:
+    #####:  189:	X509_free(ctx->signer_cert);
+    #####:  190:	EVP_PKEY_free(ctx->signer_key);
+    #####:  191:	sk_X509_pop_free(ctx->certs, X509_free);
+    #####:  192:	sk_ASN1_OBJECT_pop_free(ctx->policies, ASN1_OBJECT_free);
+    #####:  193:	ASN1_OBJECT_free(ctx->default_policy);
+    #####:  194:	sk_EVP_MD_free(ctx->mds);	/* No EVP_MD_free method exists. */
+    #####:  195:	ASN1_INTEGER_free(ctx->seconds);
+    #####:  196:	ASN1_INTEGER_free(ctx->millis);
+    #####:  197:	ASN1_INTEGER_free(ctx->micros);
+    #####:  198:	OPENSSL_free(ctx);
+        -:  199:	}
+        -:  200:
+    #####:  201:int TS_RESP_CTX_set_signer_cert(TS_RESP_CTX *ctx, X509 *signer)
+        -:  202:	{
+    #####:  203:	if (X509_check_purpose(signer, X509_PURPOSE_TIMESTAMP_SIGN, 0) != 1)
+        -:  204:		{
+    #####:  205:		TSerr(TS_F_TS_RESP_CTX_SET_SIGNER_CERT, 
+        -:  206:		      TS_R_INVALID_SIGNER_CERTIFICATE_PURPOSE);
+    #####:  207:		return 0;
+        -:  208:		}
+    #####:  209:	if (ctx->signer_cert) X509_free(ctx->signer_cert);
+    #####:  210:	ctx->signer_cert = signer;
+    #####:  211:	CRYPTO_add(&ctx->signer_cert->references, +1, CRYPTO_LOCK_X509);
+    #####:  212:	return 1;
+        -:  213:	}
+        -:  214:
+    #####:  215:int TS_RESP_CTX_set_signer_key(TS_RESP_CTX *ctx, EVP_PKEY *key)
+        -:  216:	{
+    #####:  217:	if (ctx->signer_key) EVP_PKEY_free(ctx->signer_key);
+    #####:  218:	ctx->signer_key = key;
+    #####:  219:	CRYPTO_add(&ctx->signer_key->references, +1, CRYPTO_LOCK_EVP_PKEY);
+        -:  220:
+    #####:  221:	return 1;
+        -:  222:	}
+        -:  223:
+    #####:  224:int TS_RESP_CTX_set_def_policy(TS_RESP_CTX *ctx, ASN1_OBJECT *def_policy)
+        -:  225:	{
+    #####:  226:	if (ctx->default_policy) ASN1_OBJECT_free(ctx->default_policy);
+    #####:  227:	if (!(ctx->default_policy = OBJ_dup(def_policy))) goto err;
+        -:  228:	return 1;
+        -:  229: err:
+    #####:  230:	TSerr(TS_F_TS_RESP_CTX_SET_DEF_POLICY, ERR_R_MALLOC_FAILURE);
+    #####:  231:	return 0;
+        -:  232:	}
+        -:  233:
+    #####:  234:int TS_RESP_CTX_set_certs(TS_RESP_CTX *ctx, STACK_OF(X509) *certs)
+        -:  235:	{
+        -:  236:	int i;
+        -:  237:
+    #####:  238:	if (ctx->certs)
+        -:  239:		{
+    #####:  240:		sk_X509_pop_free(ctx->certs, X509_free);
+    #####:  241:		ctx->certs = NULL;
+        -:  242:		}
+    #####:  243:	if (!certs) return 1;
+    #####:  244:	if (!(ctx->certs = sk_X509_dup(certs))) 
+        -:  245:		{
+    #####:  246:		TSerr(TS_F_TS_RESP_CTX_SET_CERTS, ERR_R_MALLOC_FAILURE);
+    #####:  247:		return 0;
+        -:  248:		}
+    #####:  249:	for (i = 0; i < sk_X509_num(ctx->certs); ++i)
+        -:  250:		{
+    #####:  251:		X509 *cert = sk_X509_value(ctx->certs, i);
+    #####:  252:		CRYPTO_add(&cert->references, +1, CRYPTO_LOCK_X509);
+        -:  253:		}
+        -:  254:
+        -:  255:	return 1;
+        -:  256:	}
+        -:  257:
+    #####:  258:int TS_RESP_CTX_add_policy(TS_RESP_CTX *ctx, ASN1_OBJECT *policy)
+        -:  259:	{
+        -:  260:	ASN1_OBJECT *copy = NULL;
+        -:  261:
+        -:  262:	/* Create new policy stack if necessary. */
+    #####:  263:	if (!ctx->policies && !(ctx->policies = sk_ASN1_OBJECT_new_null())) 
+        -:  264:		goto err;
+    #####:  265:	if (!(copy = OBJ_dup(policy))) goto err;
+    #####:  266:	if (!sk_ASN1_OBJECT_push(ctx->policies, copy)) goto err;
+        -:  267:
+        -:  268:	return 1;
+        -:  269: err:
+    #####:  270:	TSerr(TS_F_TS_RESP_CTX_ADD_POLICY, ERR_R_MALLOC_FAILURE);
+    #####:  271:	ASN1_OBJECT_free(copy);
+    #####:  272:	return 0;
+        -:  273:	}
+        -:  274:
+    #####:  275:int TS_RESP_CTX_add_md(TS_RESP_CTX *ctx, const EVP_MD *md)
+        -:  276:	{
+        -:  277:	/* Create new md stack if necessary. */
+    #####:  278:	if (!ctx->mds && !(ctx->mds = sk_EVP_MD_new_null())) 
+        -:  279:		goto err;
+        -:  280:	/* Add the shared md, no copy needed. */
+    #####:  281:	if (!sk_EVP_MD_push(ctx->mds, (EVP_MD *)md)) goto err;
+        -:  282:
+        -:  283:	return 1;
+        -:  284: err:
+    #####:  285:	TSerr(TS_F_TS_RESP_CTX_ADD_MD, ERR_R_MALLOC_FAILURE);
+    #####:  286:	return 0;
+        -:  287:	}
+        -:  288:
+        -:  289:#define TS_RESP_CTX_accuracy_free(ctx)		\
+        -:  290:	ASN1_INTEGER_free(ctx->seconds);	\
+        -:  291:	ctx->seconds = NULL;			\
+        -:  292:	ASN1_INTEGER_free(ctx->millis);		\
+        -:  293:	ctx->millis = NULL;			\
+        -:  294:	ASN1_INTEGER_free(ctx->micros);		\
+        -:  295:	ctx->micros = NULL;
+        -:  296:
+    #####:  297:int TS_RESP_CTX_set_accuracy(TS_RESP_CTX *ctx, 
+        -:  298:			     int secs, int millis, int micros)
+        -:  299:	{
+        -:  300:
+    #####:  301:	TS_RESP_CTX_accuracy_free(ctx);
+    #####:  302:	if (secs && (!(ctx->seconds = ASN1_INTEGER_new())
+    #####:  303:		     || !ASN1_INTEGER_set(ctx->seconds, secs)))
+        -:  304:		goto err;
+    #####:  305:	if (millis && (!(ctx->millis = ASN1_INTEGER_new())
+    #####:  306:		       || !ASN1_INTEGER_set(ctx->millis, millis)))
+        -:  307:		goto err;
+    #####:  308:	if (micros && (!(ctx->micros = ASN1_INTEGER_new())
+    #####:  309:		       || !ASN1_INTEGER_set(ctx->micros, micros)))
+        -:  310:		goto err;
+        -:  311:
+        -:  312:	return 1;
+        -:  313: err:
+    #####:  314:	TS_RESP_CTX_accuracy_free(ctx);
+    #####:  315:	TSerr(TS_F_TS_RESP_CTX_SET_ACCURACY, ERR_R_MALLOC_FAILURE);
+    #####:  316:	return 0;
+        -:  317:	}
+        -:  318:
+    #####:  319:void TS_RESP_CTX_add_flags(TS_RESP_CTX *ctx, int flags)
+        -:  320:	{
+    #####:  321:	ctx->flags |= flags;
+    #####:  322:	}
+        -:  323:
+    #####:  324:void TS_RESP_CTX_set_serial_cb(TS_RESP_CTX *ctx, TS_serial_cb cb, void *data)
+        -:  325:	{
+    #####:  326:	ctx->serial_cb = cb;
+    #####:  327:	ctx->serial_cb_data = data;
+    #####:  328:	}
+        -:  329:
+    #####:  330:void TS_RESP_CTX_set_time_cb(TS_RESP_CTX *ctx, TS_time_cb cb, void *data)
+        -:  331:	{
+    #####:  332:	ctx->time_cb = cb;
+    #####:  333:	ctx->time_cb_data = data;
+    #####:  334:	}
+        -:  335:
+    #####:  336:void TS_RESP_CTX_set_extension_cb(TS_RESP_CTX *ctx, 
+        -:  337:				  TS_extension_cb cb, void *data)
+        -:  338:	{
+    #####:  339:	ctx->extension_cb = cb;
+    #####:  340:	ctx->extension_cb_data = data;
+    #####:  341:	}
+        -:  342:
+    #####:  343:int TS_RESP_CTX_set_status_info(TS_RESP_CTX *ctx, 
+        -:  344:				int status, const char *text)
+        -:  345:	{
+        -:  346:	TS_STATUS_INFO *si = NULL;
+        -:  347:	ASN1_UTF8STRING *utf8_text = NULL;
+        -:  348:	int ret = 0;
+        -:  349:
+    #####:  350:	if (!(si = TS_STATUS_INFO_new())) goto err;
+    #####:  351:	if (!ASN1_INTEGER_set(si->status, status)) goto err;
+    #####:  352:	if (text)
+        -:  353:		{
+    #####:  354:		if (!(utf8_text = ASN1_UTF8STRING_new())
+    #####:  355:		    || !ASN1_STRING_set(utf8_text, text, strlen(text)))
+        -:  356:			goto err;
+    #####:  357:		if (!si->text && !(si->text = sk_ASN1_UTF8STRING_new_null()))
+        -:  358:			goto err;
+    #####:  359:		if (!sk_ASN1_UTF8STRING_push(si->text, utf8_text)) goto err;
+        -:  360:		utf8_text = NULL;	/* Ownership is lost. */
+        -:  361:		}
+    #####:  362:	if (!TS_RESP_set_status_info(ctx->response, si)) goto err;
+        -:  363:	ret = 1;
+        -:  364: err:
+    #####:  365:	if (!ret)
+    #####:  366:		TSerr(TS_F_TS_RESP_CTX_SET_STATUS_INFO, ERR_R_MALLOC_FAILURE);
+    #####:  367:	TS_STATUS_INFO_free(si);
+    #####:  368:	ASN1_UTF8STRING_free(utf8_text);
+    #####:  369:	return ret;
+        -:  370:	}
+        -:  371:
+    #####:  372:int TS_RESP_CTX_set_status_info_cond(TS_RESP_CTX *ctx, 
+        -:  373:				     int status, const char *text)
+        -:  374:	{
+        -:  375:	int ret = 1;
+    #####:  376:	TS_STATUS_INFO *si = TS_RESP_get_status_info(ctx->response);
+        -:  377:
+    #####:  378:	if (ASN1_INTEGER_get(si->status) == TS_STATUS_GRANTED)
+        -:  379:		{
+        -:  380:		/* Status has not been set, set it now. */
+    #####:  381:		ret = TS_RESP_CTX_set_status_info(ctx, status, text);
+        -:  382:		}
+    #####:  383:	return ret;
+        -:  384:	}
+        -:  385:
+    #####:  386:int TS_RESP_CTX_add_failure_info(TS_RESP_CTX *ctx, int failure)
+        -:  387:	{
+    #####:  388:	TS_STATUS_INFO *si = TS_RESP_get_status_info(ctx->response);
+    #####:  389:	if (!si->failure_info && !(si->failure_info = ASN1_BIT_STRING_new()))
+        -:  390:		goto err;
+    #####:  391:	if (!ASN1_BIT_STRING_set_bit(si->failure_info, failure, 1))
+        -:  392:		goto err;
+        -:  393:	return 1;
+        -:  394: err:
+    #####:  395:	TSerr(TS_F_TS_RESP_CTX_ADD_FAILURE_INFO, ERR_R_MALLOC_FAILURE);
+    #####:  396:	return 0;
+        -:  397:	}
+        -:  398:
+    #####:  399:TS_REQ *TS_RESP_CTX_get_request(TS_RESP_CTX *ctx)
+        -:  400:	{
+    #####:  401:	return ctx->request;
+        -:  402:	}
+        -:  403:
+    #####:  404:TS_TST_INFO *TS_RESP_CTX_get_tst_info(TS_RESP_CTX *ctx)
+        -:  405:	{
+    #####:  406:	return ctx->tst_info;
+        -:  407:	}
+        -:  408:
+    #####:  409:int TS_RESP_CTX_set_clock_precision_digits(TS_RESP_CTX *ctx, unsigned precision)
+        -:  410:       {
+    #####:  411:       if (precision > TS_MAX_CLOCK_PRECISION_DIGITS)
+        -:  412:	       return 0;
+    #####:  413:       ctx->clock_precision_digits = precision;
+    #####:  414:       return 1;
+        -:  415:       }
+        -:  416:
+        -:  417:/* Main entry method of the response generation. */
+    #####:  418:TS_RESP *TS_RESP_create_response(TS_RESP_CTX *ctx, BIO *req_bio)
+        -:  419:	{
+        -:  420:	ASN1_OBJECT *policy;
+        -:  421:	TS_RESP *response;
+        -:  422:	int result = 0;
+        -:  423:
+        -:  424:	TS_RESP_CTX_init(ctx);
+        -:  425:
+        -:  426:	/* Creating the response object. */
+    #####:  427:	if (!(ctx->response = TS_RESP_new())) 
+        -:  428:		{
+    #####:  429:		TSerr(TS_F_TS_RESP_CREATE_RESPONSE, ERR_R_MALLOC_FAILURE);
+    #####:  430:		goto end;
+        -:  431:		}
+        -:  432:
+        -:  433:	/* Parsing DER request. */
+    #####:  434:	if (!(ctx->request = d2i_TS_REQ_bio(req_bio, NULL)))
+        -:  435:		{
+    #####:  436:		TS_RESP_CTX_set_status_info(ctx, TS_STATUS_REJECTION,
+        -:  437:					    "Bad request format or "
+        -:  438:					    "system error.");
+    #####:  439:		TS_RESP_CTX_add_failure_info(ctx, TS_INFO_BAD_DATA_FORMAT);
+    #####:  440:		goto end;
+        -:  441:		}
+        -:  442:
+        -:  443:	/* Setting default status info. */
+    #####:  444:	if (!TS_RESP_CTX_set_status_info(ctx, TS_STATUS_GRANTED, NULL))
+        -:  445:		goto end;
+        -:  446:
+        -:  447:	/* Checking the request format. */
+    #####:  448:	if (!TS_RESP_check_request(ctx)) goto end;
+        -:  449:
+        -:  450:	/* Checking acceptable policies. */
+    #####:  451:	if (!(policy = TS_RESP_get_policy(ctx))) goto end;
+        -:  452:
+        -:  453:	/* Creating the TS_TST_INFO object. */
+    #####:  454:	if (!(ctx->tst_info = TS_RESP_create_tst_info(ctx, policy)))
+        -:  455:		goto end;
+        -:  456:
+        -:  457:	/* Processing extensions. */
+    #####:  458:	if (!TS_RESP_process_extensions(ctx)) goto end;
+        -:  459:
+        -:  460:	/* Generating the signature. */
+    #####:  461:	if (!TS_RESP_sign(ctx)) goto end;
+        -:  462:
+        -:  463:	/* Everything was successful. */
+        -:  464:	result = 1;
+        -:  465: end:
+    #####:  466:	if (!result)
+        -:  467:		{
+    #####:  468:		TSerr(TS_F_TS_RESP_CREATE_RESPONSE, TS_R_RESPONSE_SETUP_ERROR);
+    #####:  469:		if (ctx->response != NULL)
+        -:  470:			{
+    #####:  471:			if (TS_RESP_CTX_set_status_info_cond(ctx,
+        -:  472:				TS_STATUS_REJECTION, "Error during response "
+        -:  473:				"generation.") == 0)
+        -:  474:				{
+    #####:  475:				TS_RESP_free(ctx->response);
+    #####:  476:				ctx->response = NULL;
+        -:  477:				}
+        -:  478:			}
+        -:  479:		}
+    #####:  480:	response = ctx->response;
+    #####:  481:	ctx->response = NULL;	/* Ownership will be returned to caller. */
+    #####:  482:	TS_RESP_CTX_cleanup(ctx);
+    #####:  483:	return response;
+        -:  484:	}
+        -:  485:
+        -:  486:/* Initializes the variable part of the context. */
+        -:  487:static void TS_RESP_CTX_init(TS_RESP_CTX *ctx)
+        -:  488:	{
+    #####:  489:	ctx->request = NULL;
+    #####:  490:	ctx->response = NULL;
+    #####:  491:	ctx->tst_info = NULL;
+        -:  492:	}
+        -:  493:
+        -:  494:/* Cleans up the variable part of the context. */
+    #####:  495:static void TS_RESP_CTX_cleanup(TS_RESP_CTX *ctx)
+        -:  496:	{
+    #####:  497:	TS_REQ_free(ctx->request);
+    #####:  498:	ctx->request = NULL;
+    #####:  499:	TS_RESP_free(ctx->response);
+    #####:  500:	ctx->response = NULL;
+    #####:  501:	TS_TST_INFO_free(ctx->tst_info);
+    #####:  502:	ctx->tst_info = NULL;
+    #####:  503:	}
+        -:  504:
+        -:  505:/* Checks the format and content of the request. */
+    #####:  506:static int TS_RESP_check_request(TS_RESP_CTX *ctx)
+        -:  507:	{
+    #####:  508:	TS_REQ *request = ctx->request;
+        -:  509:	TS_MSG_IMPRINT *msg_imprint;
+        -:  510:	X509_ALGOR *md_alg;
+        -:  511:	int md_alg_id;
+        -:  512:	const ASN1_OCTET_STRING *digest;
+        -:  513:	EVP_MD *md = NULL;
+        -:  514:	int i;
+        -:  515:
+        -:  516:	/* Checking request version. */
+    #####:  517:	if (TS_REQ_get_version(request) != 1)
+        -:  518:		{
+    #####:  519:		TS_RESP_CTX_set_status_info(ctx, TS_STATUS_REJECTION,
+        -:  520:					    "Bad request version.");
+    #####:  521:		TS_RESP_CTX_add_failure_info(ctx, TS_INFO_BAD_REQUEST);
+    #####:  522:		return 0;
+        -:  523:		}
+        -:  524:
+        -:  525:	/* Checking message digest algorithm. */
+    #####:  526:	msg_imprint = TS_REQ_get_msg_imprint(request);
+    #####:  527:	md_alg = TS_MSG_IMPRINT_get_algo(msg_imprint);
+    #####:  528:	md_alg_id = OBJ_obj2nid(md_alg->algorithm);
+    #####:  529:	for (i = 0; !md && i < sk_EVP_MD_num(ctx->mds); ++i)
+        -:  530:		{
+    #####:  531:		EVP_MD *current_md = sk_EVP_MD_value(ctx->mds, i);
+    #####:  532:		if (md_alg_id == EVP_MD_type(current_md))
+        -:  533:			md = current_md;
+        -:  534:		}
+    #####:  535:	if (!md)
+        -:  536:		{
+    #####:  537:		TS_RESP_CTX_set_status_info(ctx, TS_STATUS_REJECTION,
+        -:  538:					    "Message digest algorithm is "
+        -:  539:					    "not supported.");
+    #####:  540:		TS_RESP_CTX_add_failure_info(ctx, TS_INFO_BAD_ALG);
+    #####:  541:		return 0;
+        -:  542:		}
+        -:  543:
+        -:  544:	/* No message digest takes parameter. */
+    #####:  545:	if (md_alg->parameter 
+    #####:  546:	    && ASN1_TYPE_get(md_alg->parameter) != V_ASN1_NULL)
+        -:  547:		{
+    #####:  548:		TS_RESP_CTX_set_status_info(ctx, TS_STATUS_REJECTION,
+        -:  549:					    "Superfluous message digest "
+        -:  550:					    "parameter.");
+    #####:  551:		TS_RESP_CTX_add_failure_info(ctx, TS_INFO_BAD_ALG);
+    #####:  552:		return 0;
+        -:  553:		}
+        -:  554:	/* Checking message digest size. */
+    #####:  555:	digest = TS_MSG_IMPRINT_get_msg(msg_imprint);
+    #####:  556:	if (digest->length != EVP_MD_size(md))
+        -:  557:		{
+    #####:  558:		TS_RESP_CTX_set_status_info(ctx, TS_STATUS_REJECTION,
+        -:  559:					    "Bad message digest.");
+    #####:  560:		TS_RESP_CTX_add_failure_info(ctx, TS_INFO_BAD_DATA_FORMAT);
+    #####:  561:		return 0;
+        -:  562:		}
+        -:  563:
+        -:  564:	return 1;
+        -:  565:	}
+        -:  566:
+        -:  567:/* Returns the TSA policy based on the requested and acceptable policies. */
+    #####:  568:static ASN1_OBJECT *TS_RESP_get_policy(TS_RESP_CTX *ctx)
+        -:  569:	{
+    #####:  570:	ASN1_OBJECT *requested = TS_REQ_get_policy_id(ctx->request);
+        -:  571:	ASN1_OBJECT *policy = NULL;
+        -:  572:	int i;
+        -:  573:
+    #####:  574:	if (ctx->default_policy == NULL)
+        -:  575:		{
+    #####:  576:		TSerr(TS_F_TS_RESP_GET_POLICY, TS_R_INVALID_NULL_POINTER);
+    #####:  577:		return NULL;
+        -:  578:		}
+        -:  579:	/* Return the default policy if none is requested or the default is
+        -:  580:	   requested. */
+    #####:  581:	if (!requested || !OBJ_cmp(requested, ctx->default_policy))
+    #####:  582:		policy = ctx->default_policy;
+        -:  583:
+        -:  584:	/* Check if the policy is acceptable. */
+    #####:  585:	for (i = 0; !policy && i < sk_ASN1_OBJECT_num(ctx->policies); ++i)
+        -:  586:		{
+    #####:  587:		ASN1_OBJECT *current = sk_ASN1_OBJECT_value(ctx->policies, i);
+    #####:  588:		if (!OBJ_cmp(requested, current))
+        -:  589:			policy = current;
+        -:  590:		}
+    #####:  591:	if (!policy)
+        -:  592:		{
+    #####:  593:		TSerr(TS_F_TS_RESP_GET_POLICY, TS_R_UNACCEPTABLE_POLICY);
+    #####:  594:		TS_RESP_CTX_set_status_info(ctx, TS_STATUS_REJECTION,
+        -:  595:					    "Requested policy is not "
+        -:  596:					    "supported.");
+    #####:  597:		TS_RESP_CTX_add_failure_info(ctx, TS_INFO_UNACCEPTED_POLICY);
+        -:  598:		}
+    #####:  599:	return policy;
+        -:  600:	}
+        -:  601:
+        -:  602:/* Creates the TS_TST_INFO object based on the settings of the context. */
+    #####:  603:static TS_TST_INFO *TS_RESP_create_tst_info(TS_RESP_CTX *ctx,
+        -:  604:					    ASN1_OBJECT *policy)
+        -:  605:	{
+        -:  606:	int result = 0;
+        -:  607:	TS_TST_INFO *tst_info = NULL;
+        -:  608:	ASN1_INTEGER *serial = NULL;
+        -:  609:	ASN1_GENERALIZEDTIME *asn1_time = NULL;
+        -:  610:	long sec, usec;
+        -:  611:	TS_ACCURACY *accuracy = NULL;
+        -:  612:	const ASN1_INTEGER *nonce;
+        -:  613:	GENERAL_NAME *tsa_name = NULL;
+        -:  614:
+    #####:  615:	if (!(tst_info = TS_TST_INFO_new())) goto end;
+    #####:  616:	if (!TS_TST_INFO_set_version(tst_info, 1)) goto end;
+    #####:  617:	if (!TS_TST_INFO_set_policy_id(tst_info, policy)) goto end;
+    #####:  618:	if (!TS_TST_INFO_set_msg_imprint(tst_info, ctx->request->msg_imprint))
+        -:  619:		goto end;
+    #####:  620:	if (!(serial = (*ctx->serial_cb)(ctx, ctx->serial_cb_data))
+    #####:  621:	    || !TS_TST_INFO_set_serial(tst_info, serial))
+        -:  622:		goto end;
+    #####:  623:	if (!(*ctx->time_cb)(ctx, ctx->time_cb_data, &sec, &usec)
+    #####:  624:            || !(asn1_time = TS_RESP_set_genTime_with_precision(NULL, 
+        -:  625:					sec, usec, 
+        -:  626:					ctx->clock_precision_digits))
+    #####:  627:	    || !TS_TST_INFO_set_time(tst_info, asn1_time))
+        -:  628:		goto end;
+        -:  629:
+        -:  630:	/* Setting accuracy if needed. */
+    #####:  631:	if ((ctx->seconds || ctx->millis || ctx->micros) 
+    #####:  632:	    && !(accuracy = TS_ACCURACY_new()))
+        -:  633:		goto end;
+        -:  634:
+    #####:  635:	if (ctx->seconds && !TS_ACCURACY_set_seconds(accuracy, ctx->seconds))
+        -:  636:		goto end;
+    #####:  637:	if (ctx->millis && !TS_ACCURACY_set_millis(accuracy, ctx->millis))
+        -:  638:		goto end;
+    #####:  639:	if (ctx->micros && !TS_ACCURACY_set_micros(accuracy, ctx->micros))
+        -:  640:		goto end;
+    #####:  641:	if (accuracy && !TS_TST_INFO_set_accuracy(tst_info, accuracy)) 
+        -:  642:		goto end;
+        -:  643:
+        -:  644:	/* Setting ordering. */
+    #####:  645:	if ((ctx->flags & TS_ORDERING) 
+    #####:  646:	    && !TS_TST_INFO_set_ordering(tst_info, 1))
+        -:  647:		goto end;
+        -:  648:	
+        -:  649:	/* Setting nonce if needed. */
+    #####:  650:	if ((nonce = TS_REQ_get_nonce(ctx->request)) != NULL
+    #####:  651:	    && !TS_TST_INFO_set_nonce(tst_info, nonce))
+        -:  652:		goto end;
+        -:  653:
+        -:  654:	/* Setting TSA name to subject of signer certificate. */
+    #####:  655:	if (ctx->flags & TS_TSA_NAME)
+        -:  656:		{
+    #####:  657:		if (!(tsa_name = GENERAL_NAME_new())) goto end;
+    #####:  658:		tsa_name->type = GEN_DIRNAME;
+    #####:  659:		tsa_name->d.dirn = 
+    #####:  660:			X509_NAME_dup(ctx->signer_cert->cert_info->subject);
+    #####:  661:		if (!tsa_name->d.dirn) goto end;
+    #####:  662:		if (!TS_TST_INFO_set_tsa(tst_info, tsa_name)) goto end;
+        -:  663:		}
+        -:  664:
+        -:  665:	result = 1;
+        -:  666: end:
+    #####:  667:	if (!result)
+        -:  668:		{
+    #####:  669:		TS_TST_INFO_free(tst_info);
+        -:  670:		tst_info = NULL;
+    #####:  671:		TSerr(TS_F_TS_RESP_CREATE_TST_INFO, TS_R_TST_INFO_SETUP_ERROR);
+    #####:  672:		TS_RESP_CTX_set_status_info_cond(ctx, TS_STATUS_REJECTION,
+        -:  673:						 "Error during TSTInfo "
+        -:  674:						 "generation.");
+        -:  675:		}
+    #####:  676:	GENERAL_NAME_free(tsa_name);
+    #####:  677:	TS_ACCURACY_free(accuracy);
+    #####:  678:	ASN1_GENERALIZEDTIME_free(asn1_time);
+    #####:  679:	ASN1_INTEGER_free(serial);
+        -:  680:	
+    #####:  681:	return tst_info;
+        -:  682:	}
+        -:  683:
+        -:  684:/* Processing the extensions of the request. */
+    #####:  685:static int TS_RESP_process_extensions(TS_RESP_CTX *ctx)
+        -:  686:	{
+    #####:  687:	STACK_OF(X509_EXTENSION) *exts = TS_REQ_get_exts(ctx->request);
+        -:  688:	int i;
+        -:  689:	int ok = 1;
+        -:  690:
+    #####:  691:	for (i = 0; ok && i < sk_X509_EXTENSION_num(exts); ++i)
+        -:  692:		{
+    #####:  693:		X509_EXTENSION *ext = sk_X509_EXTENSION_value(exts, i);
+        -:  694:		/* XXXXX The last argument was previously
+        -:  695:		   (void *)ctx->extension_cb, but ISO C doesn't permit
+        -:  696:		   converting a function pointer to void *.  For lack of
+        -:  697:		   better information, I'm placing a NULL there instead.
+        -:  698:		   The callback can pick its own address out from the ctx
+        -:  699:		   anyway...
+        -:  700:		*/
+    #####:  701:		ok = (*ctx->extension_cb)(ctx, ext, NULL);
+        -:  702:		}
+        -:  703:
+    #####:  704:	return ok;
+        -:  705:	}
+        -:  706:
+        -:  707:/* Functions for signing the TS_TST_INFO structure of the context. */
+    #####:  708:static int TS_RESP_sign(TS_RESP_CTX *ctx)
+        -:  709:	{
+        -:  710:	int ret = 0;
+        -:  711:	PKCS7 *p7 = NULL;
+        -:  712:	PKCS7_SIGNER_INFO *si;
+        -:  713:	STACK_OF(X509) *certs;	/* Certificates to include in sc. */
+        -:  714:	ESS_SIGNING_CERT *sc = NULL;
+        -:  715:	ASN1_OBJECT *oid;
+        -:  716:	BIO *p7bio = NULL;
+        -:  717:	int i;
+        -:  718:
+        -:  719:	/* Check if signcert and pkey match. */
+    #####:  720:	if (!X509_check_private_key(ctx->signer_cert, ctx->signer_key)) {
+    #####:  721:		TSerr(TS_F_TS_RESP_SIGN, 
+        -:  722:		      TS_R_PRIVATE_KEY_DOES_NOT_MATCH_CERTIFICATE);
+    #####:  723:                goto err;
+        -:  724:	}
+        -:  725:
+        -:  726:	/* Create a new PKCS7 signed object. */
+    #####:  727:	if (!(p7 = PKCS7_new())) {
+    #####:  728:		TSerr(TS_F_TS_RESP_SIGN, ERR_R_MALLOC_FAILURE);
+    #####:  729:		goto err;
+        -:  730:	}
+    #####:  731:	if (!PKCS7_set_type(p7, NID_pkcs7_signed)) goto err;
+        -:  732:
+        -:  733:	/* Force SignedData version to be 3 instead of the default 1. */
+    #####:  734:	if (!ASN1_INTEGER_set(p7->d.sign->version, 3)) goto err;
+        -:  735:
+        -:  736:	/* Add signer certificate and optional certificate chain. */
+    #####:  737:	if (TS_REQ_get_cert_req(ctx->request))
+        -:  738:		{
+    #####:  739:		PKCS7_add_certificate(p7, ctx->signer_cert);
+    #####:  740:		if (ctx->certs)
+        -:  741:			{
+    #####:  742:			for(i = 0; i < sk_X509_num(ctx->certs); ++i) 
+        -:  743:				{
+    #####:  744:				X509 *cert = sk_X509_value(ctx->certs, i);
+    #####:  745:				PKCS7_add_certificate(p7, cert);
+        -:  746:				}
+        -:  747:			}
+        -:  748:		}
+        -:  749:
+        -:  750:	/* Add a new signer info. */
+    #####:  751:    	if (!(si = PKCS7_add_signature(p7, ctx->signer_cert, 
+        -:  752:				       ctx->signer_key, EVP_sha1())))
+        -:  753:		{
+    #####:  754:		TSerr(TS_F_TS_RESP_SIGN, TS_R_PKCS7_ADD_SIGNATURE_ERROR);
+    #####:  755:		goto err;
+        -:  756:		}
+        -:  757:
+        -:  758:	/* Add content type signed attribute to the signer info. */
+    #####:  759:	oid = OBJ_nid2obj(NID_id_smime_ct_TSTInfo);
+    #####:  760:	if (!PKCS7_add_signed_attribute(si, NID_pkcs9_contentType,
+        -:  761:					V_ASN1_OBJECT, oid))
+        -:  762:		{
+    #####:  763:		TSerr(TS_F_TS_RESP_SIGN, TS_R_PKCS7_ADD_SIGNED_ATTR_ERROR);
+    #####:  764:		goto err;
+        -:  765:		}
+        -:  766:
+        -:  767:	/* Create the ESS SigningCertificate attribute which contains 
+        -:  768:	   the signer certificate id and optionally the certificate chain. */
+    #####:  769:	certs = ctx->flags & TS_ESS_CERT_ID_CHAIN ? ctx->certs : NULL;
+    #####:  770:	if (!(sc = ESS_SIGNING_CERT_new_init(ctx->signer_cert, certs)))
+        -:  771:		goto err;
+        -:  772:
+        -:  773:	/* Add SigningCertificate signed attribute to the signer info. */
+    #####:  774:	if (!ESS_add_signing_cert(si, sc))
+        -:  775:		{
+    #####:  776:		TSerr(TS_F_TS_RESP_SIGN, TS_R_ESS_ADD_SIGNING_CERT_ERROR);
+    #####:  777:		goto err;
+        -:  778:		}	
+        -:  779:
+        -:  780:	/* Add a new empty NID_id_smime_ct_TSTInfo encapsulated content. */
+    #####:  781:	if (!TS_TST_INFO_content_new(p7)) goto err;
+        -:  782:
+        -:  783:	/* Add the DER encoded tst_info to the PKCS7 structure. */
+    #####:  784:	if (!(p7bio = PKCS7_dataInit(p7, NULL))) {
+    #####:  785:		TSerr(TS_F_TS_RESP_SIGN, ERR_R_MALLOC_FAILURE);
+    #####:  786:		goto err;
+        -:  787:	}
+        -:  788:
+        -:  789:	/* Convert tst_info to DER. */
+    #####:  790:	if (!i2d_TS_TST_INFO_bio(p7bio, ctx->tst_info))
+        -:  791:		{
+    #####:  792:		TSerr(TS_F_TS_RESP_SIGN, TS_R_TS_DATASIGN);
+    #####:  793:		goto err;
+        -:  794:		}
+        -:  795:
+        -:  796:	/* Create the signature and add it to the signer info. */
+    #####:  797:        if (!PKCS7_dataFinal(p7, p7bio))
+        -:  798:		{
+    #####:  799:		TSerr(TS_F_TS_RESP_SIGN, TS_R_TS_DATASIGN);
+    #####:  800:		goto err;
+        -:  801:		}
+        -:  802:
+        -:  803:	/* Set new PKCS7 and TST_INFO objects. */
+    #####:  804:	TS_RESP_set_tst_info(ctx->response, p7, ctx->tst_info);
+        -:  805:	p7 = NULL;		/* Ownership is lost. */
+    #####:  806:	ctx->tst_info = NULL;	/* Ownership is lost. */
+        -:  807:
+        -:  808:	ret = 1;
+        -:  809: err:
+    #####:  810:	if (!ret)
+    #####:  811:		TS_RESP_CTX_set_status_info_cond(ctx, TS_STATUS_REJECTION,
+        -:  812:						 "Error during signature "
+        -:  813:						 "generation.");
+    #####:  814:	BIO_free_all(p7bio);
+    #####:  815:	ESS_SIGNING_CERT_free(sc);
+    #####:  816:	PKCS7_free(p7);
+    #####:  817:	return ret;
+        -:  818:	}
+        -:  819:
+    #####:  820:static ESS_SIGNING_CERT *ESS_SIGNING_CERT_new_init(X509 *signcert, 
+        -:  821:						   STACK_OF(X509) *certs)
+        -:  822:	{
+        -:  823:	ESS_CERT_ID *cid;
+        -:  824:	ESS_SIGNING_CERT *sc = NULL;
+        -:  825:	int i;
+        -:  826:
+        -:  827:	/* Creating the ESS_CERT_ID stack. */
+    #####:  828:	if (!(sc = ESS_SIGNING_CERT_new())) goto err;
+    #####:  829:	if (!sc->cert_ids && !(sc->cert_ids = sk_ESS_CERT_ID_new_null()))
+        -:  830:		goto err;
+        -:  831:
+        -:  832:	/* Adding the signing certificate id. */
+    #####:  833:	if (!(cid = ESS_CERT_ID_new_init(signcert, 0))
+    #####:  834:	    || !sk_ESS_CERT_ID_push(sc->cert_ids, cid))
+        -:  835:		goto err;
+        -:  836:	/* Adding the certificate chain ids. */
+    #####:  837:	for (i = 0; i < sk_X509_num(certs); ++i)
+        -:  838:		{
+    #####:  839:		X509 *cert = sk_X509_value(certs, i);
+    #####:  840:		if (!(cid = ESS_CERT_ID_new_init(cert, 1))
+    #####:  841:		    || !sk_ESS_CERT_ID_push(sc->cert_ids, cid))
+        -:  842:			goto err;
+        -:  843:		}
+        -:  844:
+        -:  845:	return sc;
+        -:  846:err:
+    #####:  847:	ESS_SIGNING_CERT_free(sc);
+    #####:  848:	TSerr(TS_F_ESS_SIGNING_CERT_NEW_INIT, ERR_R_MALLOC_FAILURE);
+    #####:  849:	return NULL;
+        -:  850:	}
+        -:  851:
+    #####:  852:static ESS_CERT_ID *ESS_CERT_ID_new_init(X509 *cert, int issuer_needed)
+        -:  853:	{
+        -:  854:	ESS_CERT_ID *cid = NULL;
+        -:  855:	GENERAL_NAME *name = NULL;
+        -:  856:	
+        -:  857:	/* Recompute SHA1 hash of certificate if necessary (side effect). */
+    #####:  858:	X509_check_purpose(cert, -1, 0);
+        -:  859:
+    #####:  860:	if (!(cid = ESS_CERT_ID_new())) goto err;
+    #####:  861:	if (!ASN1_OCTET_STRING_set(cid->hash, cert->sha1_hash,
+        -:  862:				   sizeof(cert->sha1_hash)))
+        -:  863:		goto err;
+        -:  864:
+        -:  865:	/* Setting the issuer/serial if requested. */
+    #####:  866:	if (issuer_needed)
+        -:  867:		{
+        -:  868:		/* Creating issuer/serial structure. */
+    #####:  869:		if (!cid->issuer_serial
+    #####:  870:		    && !(cid->issuer_serial = ESS_ISSUER_SERIAL_new()))
+        -:  871:			goto err;
+        -:  872:		/* Creating general name from the certificate issuer. */
+    #####:  873:		if (!(name = GENERAL_NAME_new())) goto err;
+    #####:  874:		name->type = GEN_DIRNAME;
+    #####:  875:		if (!(name->d.dirn = X509_NAME_dup(cert->cert_info->issuer))) 
+        -:  876:			goto err;
+    #####:  877:		if (!sk_GENERAL_NAME_push(cid->issuer_serial->issuer, name)) 
+        -:  878:			goto err;
+        -:  879:		name = NULL;	/* Ownership is lost. */
+        -:  880:		/* Setting the serial number. */
+    #####:  881:		ASN1_INTEGER_free(cid->issuer_serial->serial);
+    #####:  882:		if (!(cid->issuer_serial->serial = 
+    #####:  883:		      ASN1_INTEGER_dup(cert->cert_info->serialNumber)))
+        -:  884:			goto err;
+        -:  885:		}
+        -:  886:
+    #####:  887:	return cid;
+        -:  888:err:
+    #####:  889:	GENERAL_NAME_free(name);
+    #####:  890:	ESS_CERT_ID_free(cid);
+    #####:  891:	TSerr(TS_F_ESS_CERT_ID_NEW_INIT, ERR_R_MALLOC_FAILURE);
+    #####:  892:	return NULL;
+        -:  893:	}
+        -:  894:
+    #####:  895:static int TS_TST_INFO_content_new(PKCS7 *p7)
+        -:  896:	{
+        -:  897:	PKCS7 *ret = NULL;
+        -:  898:	ASN1_OCTET_STRING *octet_string = NULL;
+        -:  899:
+        -:  900:	/* Create new encapsulated NID_id_smime_ct_TSTInfo content. */
+    #####:  901:	if (!(ret = PKCS7_new())) goto err;
+    #####:  902:	if (!(ret->d.other = ASN1_TYPE_new())) goto err;
+    #####:  903:	ret->type = OBJ_nid2obj(NID_id_smime_ct_TSTInfo);
+    #####:  904:	if (!(octet_string = ASN1_OCTET_STRING_new())) goto err;
+    #####:  905:	ASN1_TYPE_set(ret->d.other, V_ASN1_OCTET_STRING, octet_string);
+        -:  906:	octet_string = NULL;
+        -:  907:
+        -:  908:	/* Add encapsulated content to signed PKCS7 structure. */
+    #####:  909:	if (!PKCS7_set_content(p7, ret)) goto err;
+        -:  910:
+        -:  911:	return 1;
+        -:  912: err:
+    #####:  913:	ASN1_OCTET_STRING_free(octet_string);
+    #####:  914:	PKCS7_free(ret);
+    #####:  915:	return 0;
+        -:  916:	}
+        -:  917:
+    #####:  918:static int ESS_add_signing_cert(PKCS7_SIGNER_INFO *si, ESS_SIGNING_CERT *sc)
+        -:  919:	{
+        -:  920:	ASN1_STRING *seq = NULL;
+        -:  921:	unsigned char *p, *pp = NULL;
+        -:  922:	int len;
+        -:  923:
+    #####:  924:	len = i2d_ESS_SIGNING_CERT(sc, NULL);
+    #####:  925:	if (!(pp = (unsigned char *) OPENSSL_malloc(len)))
+        -:  926:		{
+    #####:  927:		TSerr(TS_F_ESS_ADD_SIGNING_CERT, ERR_R_MALLOC_FAILURE);
+    #####:  928:		goto err;
+        -:  929:		}
+    #####:  930:	p = pp;
+    #####:  931:	i2d_ESS_SIGNING_CERT(sc, &p);
+    #####:  932:	if (!(seq = ASN1_STRING_new()) || !ASN1_STRING_set(seq, pp, len))
+        -:  933:		{
+    #####:  934:		TSerr(TS_F_ESS_ADD_SIGNING_CERT, ERR_R_MALLOC_FAILURE);
+    #####:  935:		goto err;
+        -:  936:		}
+    #####:  937:	OPENSSL_free(pp); pp = NULL;
+    #####:  938:	return PKCS7_add_signed_attribute(si, 
+        -:  939:					  NID_id_smime_aa_signingCertificate,
+        -:  940:					  V_ASN1_SEQUENCE, seq);
+        -:  941: err:
+    #####:  942:	ASN1_STRING_free(seq);
+    #####:  943:	OPENSSL_free(pp);
+        -:  944:
+    #####:  945:	return 0;
+        -:  946:	}
+        -:  947:
+        -:  948:
+        -:  949:static ASN1_GENERALIZEDTIME *
+    #####:  950:TS_RESP_set_genTime_with_precision(ASN1_GENERALIZEDTIME *asn1_time, 
+        -:  951:				   long sec, long usec, unsigned precision)
+        -:  952:	{
+    #####:  953:	time_t time_sec = (time_t) sec;
+        -:  954:	struct tm *tm = NULL;	
+        -:  955:	char genTime_str[17 + TS_MAX_CLOCK_PRECISION_DIGITS];
+        -:  956:	char *p = genTime_str;
+        -:  957:	char *p_end = genTime_str + sizeof(genTime_str);
+        -:  958:
+    #####:  959:	if (precision > TS_MAX_CLOCK_PRECISION_DIGITS)
+        -:  960:		goto err;
+        -:  961:
+        -:  962:	
+    #####:  963:	if (!(tm = gmtime(&time_sec)))
+        -:  964:		goto err;
+        -:  965:
+        -:  966:	/* 
+        -:  967:	 * Put "genTime_str" in GeneralizedTime format.  We work around the 
+        -:  968:	 * restrictions imposed by rfc3280 (i.e. "GeneralizedTime values MUST 
+        -:  969:	 * NOT include fractional seconds") and OpenSSL related functions to 
+        -:  970:	 * meet the rfc3161 requirement: "GeneralizedTime syntax can include 
+        -:  971:	 * fraction-of-second details". 
+        -:  972:	 */                   
+    #####:  973:	p += BIO_snprintf(p, p_end - p,
+        -:  974:			  "%04d%02d%02d%02d%02d%02d",
+    #####:  975:			  tm->tm_year + 1900, tm->tm_mon + 1, tm->tm_mday, 
+        -:  976:			  tm->tm_hour, tm->tm_min, tm->tm_sec);
+    #####:  977:	if (precision > 0)
+        -:  978:	{
+        -:  979:		/* Add fraction of seconds (leave space for dot and null). */
+    #####:  980:		BIO_snprintf(p, 2 + precision, ".%ld", usec);
+        -:  981:		/* We cannot use the snprintf return value, 
+        -:  982:		   because it might have been truncated. */
+    #####:  983:		p += strlen(p);
+        -:  984:
+        -:  985:		/* To make things a bit harder, X.690 | ISO/IEC 8825-1 provides
+        -:  986:		   the following restrictions for a DER-encoding, which OpenSSL
+        -:  987:		   (specifically ASN1_GENERALIZEDTIME_check() function) doesn't 
+        -:  988:		   support:
+        -:  989:		   "The encoding MUST terminate with a "Z" (which means "Zulu" 
+        -:  990:		   time). The decimal point element, if present, MUST be the 
+        -:  991:		   point option ".". The fractional-seconds elements, 
+        -:  992:		   if present, MUST omit all trailing 0's; 
+        -:  993:		   if the elements correspond to 0, they MUST be wholly
+        -:  994:		   omitted, and the decimal point element also MUST be
+        -:  995:		   omitted." */
+        -:  996:		/* Remove trailing zeros. The dot guarantees the exit
+        -:  997:		   condition of this loop even if all the digits are zero. */
+    #####:  998:		while (*--p == '0')
+        -:  999:			/* empty */;
+        -: 1000:		/* p points to either the dot or the last non-zero digit. */
+    #####: 1001:		if (*p != '.') ++p;
+        -: 1002:		}
+        -: 1003:	/* Add the trailing Z and the terminating null. */
+    #####: 1004:	*p++ = 'Z';
+    #####: 1005:	*p++ = '\0';
+        -: 1006:
+        -: 1007:	/* Now call OpenSSL to check and set our genTime value */
+    #####: 1008:	if (!asn1_time && !(asn1_time = M_ASN1_GENERALIZEDTIME_new()))
+        -: 1009:		goto err;
+    #####: 1010:	if (!ASN1_GENERALIZEDTIME_set_string(asn1_time, genTime_str))
+        -: 1011:		{
+    #####: 1012:		ASN1_GENERALIZEDTIME_free(asn1_time);
+    #####: 1013:		goto err;
+        -: 1014:		}
+        -: 1015:
+        -: 1016:	return asn1_time;
+        -: 1017: err:
+    #####: 1018:	TSerr(TS_F_TS_RESP_SET_GENTIME_WITH_PRECISION, TS_R_COULD_NOT_SET_TIME);
+    #####: 1019:	return NULL;
+        -: 1020:	}

@@ -1,0 +1,847 @@
+        -:    0:Source:b_print.c
+        -:    0:Graph:b_print.gcno
+        -:    0:Data:b_print.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* crypto/bio/b_print.c */
+        -:    2:/* Copyright (C) 1995-1998 Eric Young (eay@cryptsoft.com)
+        -:    3: * All rights reserved.
+        -:    4: *
+        -:    5: * This package is an SSL implementation written
+        -:    6: * by Eric Young (eay@cryptsoft.com).
+        -:    7: * The implementation was written so as to conform with Netscapes SSL.
+        -:    8: * 
+        -:    9: * This library is free for commercial and non-commercial use as long as
+        -:   10: * the following conditions are aheared to.  The following conditions
+        -:   11: * apply to all code found in this distribution, be it the RC4, RSA,
+        -:   12: * lhash, DES, etc., code; not just the SSL code.  The SSL documentation
+        -:   13: * included with this distribution is covered by the same copyright terms
+        -:   14: * except that the holder is Tim Hudson (tjh@cryptsoft.com).
+        -:   15: * 
+        -:   16: * Copyright remains Eric Young's, and as such any Copyright notices in
+        -:   17: * the code are not to be removed.
+        -:   18: * If this package is used in a product, Eric Young should be given attribution
+        -:   19: * as the author of the parts of the library used.
+        -:   20: * This can be in the form of a textual message at program startup or
+        -:   21: * in documentation (online or textual) provided with the package.
+        -:   22: * 
+        -:   23: * Redistribution and use in source and binary forms, with or without
+        -:   24: * modification, are permitted provided that the following conditions
+        -:   25: * are met:
+        -:   26: * 1. Redistributions of source code must retain the copyright
+        -:   27: *    notice, this list of conditions and the following disclaimer.
+        -:   28: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   29: *    notice, this list of conditions and the following disclaimer in the
+        -:   30: *    documentation and/or other materials provided with the distribution.
+        -:   31: * 3. All advertising materials mentioning features or use of this software
+        -:   32: *    must display the following acknowledgement:
+        -:   33: *    "This product includes cryptographic software written by
+        -:   34: *     Eric Young (eay@cryptsoft.com)"
+        -:   35: *    The word 'cryptographic' can be left out if the rouines from the library
+        -:   36: *    being used are not cryptographic related :-).
+        -:   37: * 4. If you include any Windows specific code (or a derivative thereof) from 
+        -:   38: *    the apps directory (application code) you must include an acknowledgement:
+        -:   39: *    "This product includes software written by Tim Hudson (tjh@cryptsoft.com)"
+        -:   40: * 
+        -:   41: * THIS SOFTWARE IS PROVIDED BY ERIC YOUNG ``AS IS'' AND
+        -:   42: * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   43: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+        -:   44: * ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+        -:   45: * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+        -:   46: * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+        -:   47: * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   48: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+        -:   49: * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+        -:   50: * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+        -:   51: * SUCH DAMAGE.
+        -:   52: * 
+        -:   53: * The licence and distribution terms for any publically available version or
+        -:   54: * derivative of this code cannot be changed.  i.e. this code cannot simply be
+        -:   55: * copied and put under another distribution licence
+        -:   56: * [including the GNU Public Licence.]
+        -:   57: */
+        -:   58:
+        -:   59:/* disable assert() unless BIO_DEBUG has been defined */
+        -:   60:#ifndef BIO_DEBUG
+        -:   61:# ifndef NDEBUG
+        -:   62:#  define NDEBUG
+        -:   63:# endif
+        -:   64:#endif
+        -:   65:
+        -:   66:/* 
+        -:   67: * Stolen from tjh's ssl/ssl_trc.c stuff.
+        -:   68: */
+        -:   69:
+        -:   70:#include <stdio.h>
+        -:   71:#include <string.h>
+        -:   72:#include <ctype.h>
+        -:   73:#include <assert.h>
+        -:   74:#include <limits.h>
+        -:   75:#include "cryptlib.h"
+        -:   76:#ifndef NO_SYS_TYPES_H
+        -:   77:#include <sys/types.h>
+        -:   78:#endif
+        -:   79:#include <openssl/bn.h>         /* To get BN_LLONG properly defined */
+        -:   80:#include <openssl/bio.h>
+        -:   81:
+        -:   82:#if defined(BN_LLONG) || defined(SIXTY_FOUR_BIT)
+        -:   83:# ifndef HAVE_LONG_LONG
+        -:   84:#  define HAVE_LONG_LONG 1
+        -:   85:# endif
+        -:   86:#endif
+        -:   87:
+        -:   88:/***************************************************************************/
+        -:   89:
+        -:   90:/*
+        -:   91: * Copyright Patrick Powell 1995
+        -:   92: * This code is based on code written by Patrick Powell <papowell@astart.com>
+        -:   93: * It may be used for any purpose as long as this notice remains intact
+        -:   94: * on all source code distributions.
+        -:   95: */
+        -:   96:
+        -:   97:/*
+        -:   98: * This code contains numerious changes and enhancements which were
+        -:   99: * made by lots of contributors over the last years to Patrick Powell's
+        -:  100: * original code:
+        -:  101: *
+        -:  102: * o Patrick Powell <papowell@astart.com>      (1995)
+        -:  103: * o Brandon Long <blong@fiction.net>          (1996, for Mutt)
+        -:  104: * o Thomas Roessler <roessler@guug.de>        (1998, for Mutt)
+        -:  105: * o Michael Elkins <me@cs.hmc.edu>            (1998, for Mutt)
+        -:  106: * o Andrew Tridgell <tridge@samba.org>        (1998, for Samba)
+        -:  107: * o Luke Mewburn <lukem@netbsd.org>           (1999, for LukemFTP)
+        -:  108: * o Ralf S. Engelschall <rse@engelschall.com> (1999, for Pth)
+        -:  109: * o ...                                       (for OpenSSL)
+        -:  110: */
+        -:  111:
+        -:  112:#ifdef HAVE_LONG_DOUBLE
+        -:  113:#define LDOUBLE long double
+        -:  114:#else
+        -:  115:#define LDOUBLE double
+        -:  116:#endif
+        -:  117:
+        -:  118:#ifdef HAVE_LONG_LONG
+        -:  119:# if defined(_WIN32) && !defined(__GNUC__)
+        -:  120:# define LLONG __int64
+        -:  121:# else
+        -:  122:# define LLONG long long
+        -:  123:# endif
+        -:  124:#else
+        -:  125:#define LLONG long
+        -:  126:#endif
+        -:  127:
+        -:  128:static void fmtstr     (char **, char **, size_t *, size_t *,
+        -:  129:			const char *, int, int, int);
+        -:  130:static void fmtint     (char **, char **, size_t *, size_t *,
+        -:  131:			LLONG, int, int, int, int);
+        -:  132:static void fmtfp      (char **, char **, size_t *, size_t *,
+        -:  133:			LDOUBLE, int, int, int);
+        -:  134:static void doapr_outch (char **, char **, size_t *, size_t *, int);
+        -:  135:static void _dopr(char **sbuffer, char **buffer,
+        -:  136:		  size_t *maxlen, size_t *retlen, int *truncated,
+        -:  137:		  const char *format, va_list args);
+        -:  138:
+        -:  139:/* format read states */
+        -:  140:#define DP_S_DEFAULT    0
+        -:  141:#define DP_S_FLAGS      1
+        -:  142:#define DP_S_MIN        2
+        -:  143:#define DP_S_DOT        3
+        -:  144:#define DP_S_MAX        4
+        -:  145:#define DP_S_MOD        5
+        -:  146:#define DP_S_CONV       6
+        -:  147:#define DP_S_DONE       7
+        -:  148:
+        -:  149:/* format flags - Bits */
+        -:  150:#define DP_F_MINUS      (1 << 0)
+        -:  151:#define DP_F_PLUS       (1 << 1)
+        -:  152:#define DP_F_SPACE      (1 << 2)
+        -:  153:#define DP_F_NUM        (1 << 3)
+        -:  154:#define DP_F_ZERO       (1 << 4)
+        -:  155:#define DP_F_UP         (1 << 5)
+        -:  156:#define DP_F_UNSIGNED   (1 << 6)
+        -:  157:
+        -:  158:/* conversion flags */
+        -:  159:#define DP_C_SHORT      1
+        -:  160:#define DP_C_LONG       2
+        -:  161:#define DP_C_LDOUBLE    3
+        -:  162:#define DP_C_LLONG      4
+        -:  163:
+        -:  164:/* some handy macros */
+        -:  165:#define char_to_int(p) (p - '0')
+        -:  166:#define OSSL_MAX(p,q) ((p >= q) ? p : q)
+        -:  167:
+        -:  168:static void
+  4644172:  169:_dopr(
+        -:  170:    char **sbuffer,
+        -:  171:    char **buffer,
+        -:  172:    size_t *maxlen,
+        -:  173:    size_t *retlen,
+        -:  174:    int *truncated,
+        -:  175:    const char *format,
+        -:  176:    va_list args)
+        -:  177:{
+        -:  178:    char ch;
+        -:  179:    LLONG value;
+        -:  180:    LDOUBLE fvalue;
+        -:  181:    char *strvalue;
+        -:  182:    int min;
+        -:  183:    int max;
+        -:  184:    int state;
+        -:  185:    int flags;
+        -:  186:    int cflags;
+        -:  187:    size_t currlen;
+        -:  188:
+        -:  189:    state = DP_S_DEFAULT;
+  4644172:  190:    flags = currlen = cflags = min = 0;
+        -:  191:    max = -1;
+  4644172:  192:    ch = *format++;
+        -:  193:
+ 62826701:  194:    while (state != DP_S_DONE) {
+ 53538357:  195:        if (ch == '\0' || (buffer == NULL && currlen >= *maxlen))
+        -:  196:            state = DP_S_DONE;
+        -:  197:
+ 53538357:  198:        switch (state) {
+        -:  199:        case DP_S_DEFAULT:
+ 12115922:  200:            if (ch == '%')
+        -:  201:                state = DP_S_FLAGS;
+        -:  202:            else
+  5799278:  203:                doapr_outch(sbuffer,buffer, &currlen, maxlen, ch);
+ 12115922:  204:            ch = *format++;
+ 12115922:  205:            break;
+        -:  206:        case DP_S_FLAGS:
+  8902499:  207:            switch (ch) {
+        -:  208:            case '-':
+    #####:  209:                flags |= DP_F_MINUS;
+    #####:  210:                ch = *format++;
+    #####:  211:                break;
+        -:  212:            case '+':
+    #####:  213:                flags |= DP_F_PLUS;
+    #####:  214:                ch = *format++;
+    #####:  215:                break;
+        -:  216:            case ' ':
+    #####:  217:                flags |= DP_F_SPACE;
+    #####:  218:                ch = *format++;
+    #####:  219:                break;
+        -:  220:            case '#':
+    #####:  221:                flags |= DP_F_NUM;
+    #####:  222:                ch = *format++;
+    #####:  223:                break;
+        -:  224:            case '0':
+  2585855:  225:                flags |= DP_F_ZERO;
+  2585855:  226:                ch = *format++;
+  2585855:  227:                break;
+        -:  228:            default:
+        -:  229:                state = DP_S_MIN;
+        -:  230:                break;
+        -:  231:            }
+        -:  232:            break;
+        -:  233:        case DP_S_MIN:
+  8924153:  234:            if (isdigit((unsigned char)ch)) {
+  2607509:  235:                min = 10 * min + char_to_int(ch);
+  2607509:  236:                ch = *format++;
+  6316644:  237:            } else if (ch == '*') {
+    #####:  238:                min = va_arg(args, int);
+    #####:  239:                ch = *format++;
+        -:  240:                state = DP_S_DOT;
+        -:  241:            } else
+        -:  242:                state = DP_S_DOT;
+        -:  243:            break;
+        -:  244:        case DP_S_DOT:
+  6316644:  245:            if (ch == '.') {
+        -:  246:                state = DP_S_MAX;
+     1679:  247:                ch = *format++;
+        -:  248:            } else
+        -:  249:                state = DP_S_MOD;
+        -:  250:            break;
+        -:  251:        case DP_S_MAX:
+     1679:  252:            if (isdigit((unsigned char)ch)) {
+    #####:  253:                if (max < 0)
+        -:  254:                    max = 0;
+    #####:  255:                max = 10 * max + char_to_int(ch);
+    #####:  256:                ch = *format++;
+     1679:  257:            } else if (ch == '*') {
+     1679:  258:                max = va_arg(args, int);
+     1679:  259:                ch = *format++;
+        -:  260:                state = DP_S_MOD;
+        -:  261:            } else
+        -:  262:                state = DP_S_MOD;
+        -:  263:            break;
+        -:  264:        case DP_S_MOD:
+  6316644:  265:            switch (ch) {
+        -:  266:            case 'h':
+        -:  267:                cflags = DP_C_SHORT;
+    #####:  268:                ch = *format++;
+    #####:  269:                break;
+        -:  270:            case 'l':
+   217291:  271:                if (*format == 'l') {
+        -:  272:                    cflags = DP_C_LLONG;
+    #####:  273:                    format++;
+        -:  274:                } else
+        -:  275:                    cflags = DP_C_LONG;
+   217291:  276:                ch = *format++;
+   217291:  277:                break;
+        -:  278:            case 'q':
+        -:  279:                cflags = DP_C_LLONG;
+    #####:  280:                ch = *format++;
+    #####:  281:                break;
+        -:  282:            case 'L':
+        -:  283:                cflags = DP_C_LDOUBLE;
+    #####:  284:                ch = *format++;
+    #####:  285:                break;
+        -:  286:            default:
+        -:  287:                break;
+        -:  288:            }
+        -:  289:            state = DP_S_CONV;
+        -:  290:            break;
+        -:  291:        case DP_S_CONV:
+  6316644:  292:            switch (ch) {
+        -:  293:            case 'd':
+        -:  294:            case 'i':
+   233312:  295:                switch (cflags) {
+        -:  296:                case DP_C_SHORT:
+    #####:  297:                    value = (short int)va_arg(args, int);
+    #####:  298:                    break;
+        -:  299:                case DP_C_LONG:
+    60000:  300:                    value = va_arg(args, long int);
+    60000:  301:                    break;
+        -:  302:                case DP_C_LLONG:
+    #####:  303:                    value = va_arg(args, LLONG);
+    #####:  304:                    break;
+        -:  305:                default:
+   173312:  306:                    value = va_arg(args, int);
+   173312:  307:                    break;
+        -:  308:                }
+   233312:  309:                fmtint(sbuffer, buffer, &currlen, maxlen,
+        -:  310:                       value, 10, min, max, flags);
+   233312:  311:                break;
+        -:  312:            case 'X':
+   824408:  313:                flags |= DP_F_UP;
+        -:  314:                /* FALLTHROUGH */
+        -:  315:            case 'x':
+        -:  316:            case 'o':
+        -:  317:            case 'u':
+  2681698:  318:                flags |= DP_F_UNSIGNED;
+  2681698:  319:                switch (cflags) {
+        -:  320:                case DP_C_SHORT:
+    #####:  321:                    value = (unsigned short int)va_arg(args, unsigned int);
+    #####:  322:                    break;
+        -:  323:                case DP_C_LONG:
+   157291:  324:                    value = (LLONG) va_arg(args,
+        -:  325:                        unsigned long int);
+   157291:  326:                    break;
+        -:  327:                case DP_C_LLONG:
+    #####:  328:                    value = va_arg(args, unsigned LLONG);
+    #####:  329:                    break;
+        -:  330:                default:
+  2524407:  331:                    value = (LLONG) va_arg(args,
+        -:  332:                        unsigned int);
+  2524407:  333:                    break;
+        -:  334:                }
+  5363396:  335:                fmtint(sbuffer, buffer, &currlen, maxlen, value,
+  2681698:  336:                       ch == 'o' ? 8 : (ch == 'u' ? 10 : 16),
+        -:  337:                       min, max, flags);
+  2681698:  338:                break;
+        -:  339:            case 'f':
+    #####:  340:                if (cflags == DP_C_LDOUBLE)
+    #####:  341:                    fvalue = va_arg(args, LDOUBLE);
+        -:  342:                else
+    #####:  343:                    fvalue = va_arg(args, double);
+    #####:  344:                fmtfp(sbuffer, buffer, &currlen, maxlen,
+        -:  345:                      fvalue, min, max, flags);
+    #####:  346:                break;
+        -:  347:            case 'E':
+        -:  348:                flags |= DP_F_UP;
+        -:  349:            case 'e':
+    #####:  350:                if (cflags == DP_C_LDOUBLE)
+    #####:  351:                    fvalue = va_arg(args, LDOUBLE);
+        -:  352:                else
+    #####:  353:                    fvalue = va_arg(args, double);
+        -:  354:                break;
+        -:  355:            case 'G':
+        -:  356:                flags |= DP_F_UP;
+        -:  357:            case 'g':
+    #####:  358:                if (cflags == DP_C_LDOUBLE)
+    #####:  359:                    fvalue = va_arg(args, LDOUBLE);
+        -:  360:                else
+    #####:  361:                    fvalue = va_arg(args, double);
+        -:  362:                break;
+        -:  363:            case 'c':
+  3202163:  364:                doapr_outch(sbuffer, buffer, &currlen, maxlen,
+        -:  365:                    va_arg(args, int));
+  3202163:  366:                break;
+        -:  367:            case 's':
+   199471:  368:                strvalue = va_arg(args, char *);
+   199471:  369:                if (max < 0) {
+   197792:  370:		    if (buffer)
+        -:  371:			max = INT_MAX;
+        -:  372:		    else
+     4645:  373:			max = *maxlen;
+        -:  374:		}
+   199471:  375:                fmtstr(sbuffer, buffer, &currlen, maxlen, strvalue,
+        -:  376:                       flags, min, max);
+   199471:  377:                break;
+        -:  378:            case 'p':
+    #####:  379:                value = (long)va_arg(args, void *);
+    #####:  380:                fmtint(sbuffer, buffer, &currlen, maxlen,
+        -:  381:                    value, 16, min, max, flags|DP_F_NUM);
+    #####:  382:                break;
+        -:  383:            case 'n': /* XXX */
+    #####:  384:                if (cflags == DP_C_SHORT) {
+        -:  385:                    short int *num;
+    #####:  386:                    num = va_arg(args, short int *);
+    #####:  387:                    *num = currlen;
+    #####:  388:                } else if (cflags == DP_C_LONG) { /* XXX */
+        -:  389:                    long int *num;
+    #####:  390:                    num = va_arg(args, long int *);
+    #####:  391:                    *num = (long int) currlen;
+    #####:  392:                } else if (cflags == DP_C_LLONG) { /* XXX */
+        -:  393:                    LLONG *num;
+    #####:  394:                    num = va_arg(args, LLONG *);
+    #####:  395:                    *num = (LLONG) currlen;
+        -:  396:                } else {
+        -:  397:                    int    *num;
+    #####:  398:                    num = va_arg(args, int *);
+    #####:  399:                    *num = currlen;
+        -:  400:                }
+        -:  401:                break;
+        -:  402:            case '%':
+    #####:  403:                doapr_outch(sbuffer, buffer, &currlen, maxlen, ch);
+    #####:  404:                break;
+        -:  405:            case 'w':
+        -:  406:                /* not supported yet, treat as next char */
+    #####:  407:                ch = *format++;
+    #####:  408:                break;
+        -:  409:            default:
+        -:  410:                /* unknown, skip */
+        -:  411:                break;
+        -:  412:            }
+  6316644:  413:            ch = *format++;
+        -:  414:            state = DP_S_DEFAULT;
+        -:  415:            flags = cflags = min = 0;
+        -:  416:            max = -1;
+  6316644:  417:            break;
+        -:  418:        case DP_S_DONE:
+        -:  419:            break;
+        -:  420:        default:
+        -:  421:            break;
+        -:  422:        }
+        -:  423:    }
+  4644172:  424:    *truncated = (currlen > *maxlen - 1);
+  4644172:  425:    if (*truncated)
+    #####:  426:        currlen = *maxlen - 1;
+  4644172:  427:    doapr_outch(sbuffer, buffer, &currlen, maxlen, '\0');
+  4644172:  428:    *retlen = currlen - 1;
+  4644172:  429:    return;
+        -:  430:}
+        -:  431:
+        -:  432:static void
+   199471:  433:fmtstr(
+        -:  434:    char **sbuffer,
+        -:  435:    char **buffer,
+        -:  436:    size_t *currlen,
+        -:  437:    size_t *maxlen,
+        -:  438:    const char *value,
+        -:  439:    int flags,
+        -:  440:    int min,
+        -:  441:    int max)
+        -:  442:{
+        -:  443:    int padlen, strln;
+        -:  444:    int cnt = 0;
+        -:  445:
+   199471:  446:    if (value == 0)
+        -:  447:        value = "<NULL>";
+   199471:  448:    for (strln = 0; value[strln]; ++strln)
+        -:  449:        ;
+   199471:  450:    padlen = min - strln;
+   199471:  451:    if (padlen < 0)
+        -:  452:        padlen = 0;
+   199471:  453:    if (flags & DP_F_MINUS)
+    #####:  454:        padlen = -padlen;
+        -:  455:
+   199471:  456:    while ((padlen > 0) && (cnt < max)) {
+    #####:  457:        doapr_outch(sbuffer, buffer, currlen, maxlen, ' ');
+    #####:  458:        --padlen;
+    #####:  459:        ++cnt;
+        -:  460:    }
+  7691600:  461:    while (*value && (cnt < max)) {
+  7492129:  462:        doapr_outch(sbuffer, buffer, currlen, maxlen, *value++);
+  7492129:  463:        ++cnt;
+        -:  464:    }
+   199471:  465:    while ((padlen < 0) && (cnt < max)) {
+    #####:  466:        doapr_outch(sbuffer, buffer, currlen, maxlen, ' ');
+    #####:  467:        ++padlen;
+    #####:  468:        ++cnt;
+        -:  469:    }
+   199471:  470:}
+        -:  471:
+        -:  472:static void
+  2915010:  473:fmtint(
+        -:  474:    char **sbuffer,
+        -:  475:    char **buffer,
+        -:  476:    size_t *currlen,
+        -:  477:    size_t *maxlen,
+        -:  478:    LLONG value,
+        -:  479:    int base,
+        -:  480:    int min,
+        -:  481:    int max,
+        -:  482:    int flags)
+        -:  483:{
+        -:  484:    int signvalue = 0;
+        -:  485:    const char *prefix = "";
+        -:  486:    unsigned LLONG uvalue;
+        -:  487:    char convert[DECIMAL_SIZE(value)+3];
+        -:  488:    int place = 0;
+        -:  489:    int spadlen = 0;
+        -:  490:    int zpadlen = 0;
+        -:  491:    int caps = 0;
+        -:  492:
+  2915010:  493:    if (max < 0)
+        -:  494:        max = 0;
+  2915010:  495:    uvalue = value;
+  2915010:  496:    if (!(flags & DP_F_UNSIGNED)) {
+   233312:  497:        if (value < 0) {
+        -:  498:            signvalue = '-';
+    #####:  499:            uvalue = -value;
+   233312:  500:        } else if (flags & DP_F_PLUS)
+        -:  501:            signvalue = '+';
+   233312:  502:        else if (flags & DP_F_SPACE)
+        -:  503:            signvalue = ' ';
+        -:  504:    }
+  2915010:  505:    if (flags & DP_F_NUM) {
+    #####:  506:	if (base == 8) prefix = "0";
+    #####:  507:	if (base == 16) prefix = "0x";
+        -:  508:    }
+  2915010:  509:    if (flags & DP_F_UP)
+        -:  510:        caps = 1;
+        -:  511:    do {
+ 11267584:  512:        convert[place++] =
+  5633792:  513:            (caps ? "0123456789ABCDEF" : "0123456789abcdef")
+  5633792:  514:            [uvalue % (unsigned) base];
+  5633792:  515:        uvalue = (uvalue / (unsigned) base);
+  5633792:  516:    } while (uvalue && (place < (int)sizeof(convert)));
+  2915010:  517:    if (place == sizeof(convert))
+        -:  518:        place--;
+  2915010:  519:    convert[place] = 0;
+        -:  520:
+  2915010:  521:    zpadlen = max - place;
+  2915010:  522:    spadlen = min - OSSL_MAX(max, place) - (signvalue ? 1 : 0) - strlen(prefix);
+  2915010:  523:    if (zpadlen < 0)
+        -:  524:        zpadlen = 0;
+  2915010:  525:    if (spadlen < 0)
+        -:  526:        spadlen = 0;
+  2915010:  527:    if (flags & DP_F_ZERO) {
+  2585855:  528:        zpadlen = OSSL_MAX(zpadlen, spadlen);
+        -:  529:        spadlen = 0;
+        -:  530:    }
+  2915010:  531:    if (flags & DP_F_MINUS)
+    #####:  532:        spadlen = -spadlen;
+        -:  533:
+        -:  534:    /* spaces */
+  2935458:  535:    while (spadlen > 0) {
+    20448:  536:        doapr_outch(sbuffer, buffer, currlen, maxlen, ' ');
+    20448:  537:        --spadlen;
+        -:  538:    }
+        -:  539:
+        -:  540:    /* sign */
+  2915010:  541:    if (signvalue)
+    #####:  542:        doapr_outch(sbuffer, buffer, currlen, maxlen, signvalue);
+        -:  543:
+        -:  544:    /* prefix */
+  2915010:  545:    while (*prefix) {
+    #####:  546:	doapr_outch(sbuffer, buffer, currlen, maxlen, *prefix);
+    #####:  547:	prefix++;
+        -:  548:    }
+        -:  549:
+        -:  550:    /* zeros */
+  2915010:  551:    if (zpadlen > 0) {
+   716510:  552:        while (zpadlen > 0) {
+   443290:  553:            doapr_outch(sbuffer, buffer, currlen, maxlen, '0');
+   443290:  554:            --zpadlen;
+        -:  555:        }
+        -:  556:    }
+        -:  557:    /* digits */
+  8548802:  558:    while (place > 0)
+  5633792:  559:        doapr_outch(sbuffer, buffer, currlen, maxlen, convert[--place]);
+        -:  560:
+        -:  561:    /* left justified spaces */
+  2915010:  562:    while (spadlen < 0) {
+    #####:  563:        doapr_outch(sbuffer, buffer, currlen, maxlen, ' ');
+    #####:  564:        ++spadlen;
+        -:  565:    }
+  2915010:  566:    return;
+        -:  567:}
+        -:  568:
+        -:  569:static LDOUBLE
+        -:  570:abs_val(LDOUBLE value)
+        -:  571:{
+        -:  572:    LDOUBLE result = value;
+    #####:  573:    if (value < 0)
+    #####:  574:        result = -value;
+        -:  575:    return result;
+        -:  576:}
+        -:  577:
+        -:  578:static LDOUBLE
+        -:  579:pow_10(int in_exp)
+        -:  580:{
+        -:  581:    LDOUBLE result = 1;
+    #####:  582:    while (in_exp) {
+    #####:  583:        result *= 10;
+    #####:  584:        in_exp--;
+        -:  585:    }
+        -:  586:    return result;
+        -:  587:}
+        -:  588:
+        -:  589:static long
+        -:  590:roundv(LDOUBLE value)
+        -:  591:{
+        -:  592:    long intpart;
+    #####:  593:    intpart = (long) value;
+    #####:  594:    value = value - intpart;
+    #####:  595:    if (value >= 0.5)
+    #####:  596:        intpart++;
+        -:  597:    return intpart;
+        -:  598:}
+        -:  599:
+        -:  600:static void
+    #####:  601:fmtfp(
+        -:  602:    char **sbuffer,
+        -:  603:    char **buffer,
+        -:  604:    size_t *currlen,
+        -:  605:    size_t *maxlen,
+        -:  606:    LDOUBLE fvalue,
+        -:  607:    int min,
+        -:  608:    int max,
+        -:  609:    int flags)
+        -:  610:{
+        -:  611:    int signvalue = 0;
+        -:  612:    LDOUBLE ufvalue;
+        -:  613:    char iconvert[20];
+        -:  614:    char fconvert[20];
+        -:  615:    int iplace = 0;
+        -:  616:    int fplace = 0;
+        -:  617:    int padlen = 0;
+        -:  618:    int zpadlen = 0;
+        -:  619:    int caps = 0;
+        -:  620:    long intpart;
+        -:  621:    long fracpart;
+        -:  622:    long max10;
+        -:  623:
+    #####:  624:    if (max < 0)
+        -:  625:        max = 6;
+        -:  626:    ufvalue = abs_val(fvalue);
+    #####:  627:    if (fvalue < 0)
+        -:  628:        signvalue = '-';
+    #####:  629:    else if (flags & DP_F_PLUS)
+        -:  630:        signvalue = '+';
+    #####:  631:    else if (flags & DP_F_SPACE)
+        -:  632:        signvalue = ' ';
+        -:  633:
+    #####:  634:    intpart = (long)ufvalue;
+        -:  635:
+        -:  636:    /* sorry, we only support 9 digits past the decimal because of our
+        -:  637:       conversion method */
+    #####:  638:    if (max > 9)
+        -:  639:        max = 9;
+        -:  640:
+        -:  641:    /* we "cheat" by converting the fractional part to integer by
+        -:  642:       multiplying by a factor of 10 */
+        -:  643:    max10 = roundv(pow_10(max));
+    #####:  644:    fracpart = roundv(pow_10(max) * (ufvalue - intpart));
+        -:  645:
+    #####:  646:    if (fracpart >= max10) {
+    #####:  647:        intpart++;
+    #####:  648:        fracpart -= max10;
+        -:  649:    }
+        -:  650:
+        -:  651:    /* convert integer part */
+        -:  652:    do {
+    #####:  653:        iconvert[iplace++] =
+        -:  654:            (caps ? "0123456789ABCDEF"
+    #####:  655:              : "0123456789abcdef")[intpart % 10];
+    #####:  656:        intpart = (intpart / 10);
+    #####:  657:    } while (intpart && (iplace < (int)sizeof(iconvert)));
+    #####:  658:    if (iplace == sizeof iconvert)
+        -:  659:        iplace--;
+    #####:  660:    iconvert[iplace] = 0;
+        -:  661:
+        -:  662:    /* convert fractional part */
+        -:  663:    do {
+    #####:  664:        fconvert[fplace++] =
+        -:  665:            (caps ? "0123456789ABCDEF"
+    #####:  666:              : "0123456789abcdef")[fracpart % 10];
+    #####:  667:        fracpart = (fracpart / 10);
+    #####:  668:    } while (fplace < max);
+    #####:  669:    if (fplace == sizeof fconvert)
+        -:  670:        fplace--;
+    #####:  671:    fconvert[fplace] = 0;
+        -:  672:
+        -:  673:    /* -1 for decimal point, another -1 if we are printing a sign */
+    #####:  674:    padlen = min - iplace - max - 1 - ((signvalue) ? 1 : 0);
+    #####:  675:    zpadlen = max - fplace;
+    #####:  676:    if (zpadlen < 0)
+        -:  677:        zpadlen = 0;
+    #####:  678:    if (padlen < 0)
+        -:  679:        padlen = 0;
+    #####:  680:    if (flags & DP_F_MINUS)
+    #####:  681:        padlen = -padlen;
+        -:  682:
+    #####:  683:    if ((flags & DP_F_ZERO) && (padlen > 0)) {
+    #####:  684:        if (signvalue) {
+    #####:  685:            doapr_outch(sbuffer, buffer, currlen, maxlen, signvalue);
+    #####:  686:            --padlen;
+        -:  687:            signvalue = 0;
+        -:  688:        }
+    #####:  689:        while (padlen > 0) {
+    #####:  690:            doapr_outch(sbuffer, buffer, currlen, maxlen, '0');
+    #####:  691:            --padlen;
+        -:  692:        }
+        -:  693:    }
+    #####:  694:    while (padlen > 0) {
+    #####:  695:        doapr_outch(sbuffer, buffer, currlen, maxlen, ' ');
+    #####:  696:        --padlen;
+        -:  697:    }
+    #####:  698:    if (signvalue)
+    #####:  699:        doapr_outch(sbuffer, buffer, currlen, maxlen, signvalue);
+        -:  700:
+    #####:  701:    while (iplace > 0)
+    #####:  702:        doapr_outch(sbuffer, buffer, currlen, maxlen, iconvert[--iplace]);
+        -:  703:
+        -:  704:    /*
+        -:  705:     * Decimal point. This should probably use locale to find the correct
+        -:  706:     * char to print out.
+        -:  707:     */
+    #####:  708:    if (max > 0 || (flags & DP_F_NUM)) {
+    #####:  709:        doapr_outch(sbuffer, buffer, currlen, maxlen, '.');
+        -:  710:
+    #####:  711:        while (fplace > 0)
+    #####:  712:            doapr_outch(sbuffer, buffer, currlen, maxlen, fconvert[--fplace]);
+        -:  713:    }
+    #####:  714:    while (zpadlen > 0) {
+    #####:  715:        doapr_outch(sbuffer, buffer, currlen, maxlen, '0');
+    #####:  716:        --zpadlen;
+        -:  717:    }
+        -:  718:
+    #####:  719:    while (padlen < 0) {
+    #####:  720:        doapr_outch(sbuffer, buffer, currlen, maxlen, ' ');
+    #####:  721:        ++padlen;
+        -:  722:    }
+    #####:  723:}
+        -:  724:
+        -:  725:static void
+ 27235272:  726:doapr_outch(
+        -:  727:    char **sbuffer,
+        -:  728:    char **buffer,
+        -:  729:    size_t *currlen,
+        -:  730:    size_t *maxlen,
+        -:  731:    int c)
+        -:  732:{
+        -:  733:    /* If we haven't at least one buffer, someone has doe a big booboo */
+        -:  734:    assert(*sbuffer != NULL || buffer != NULL);
+        -:  735:
+ 27235272:  736:    if (buffer) {
+ 16054954:  737:	while (*currlen >= *maxlen) {
+    #####:  738:	    if (*buffer == NULL) {
+    #####:  739:		if (*maxlen == 0)
+    #####:  740:		    *maxlen = 1024;
+    #####:  741:		*buffer = OPENSSL_malloc(*maxlen);
+    #####:  742:		if (*currlen > 0) {
+        -:  743:		    assert(*sbuffer != NULL);
+    #####:  744:		    memcpy(*buffer, *sbuffer, *currlen);
+        -:  745:		}
+    #####:  746:		*sbuffer = NULL;
+        -:  747:	    } else {
+    #####:  748:		*maxlen += 1024;
+    #####:  749:		*buffer = OPENSSL_realloc(*buffer, *maxlen);
+        -:  750:	    }
+        -:  751:	}
+        -:  752:	/* What to do if *buffer is NULL? */
+        -:  753:	assert(*sbuffer != NULL || *buffer != NULL);
+        -:  754:    }
+        -:  755:
+ 27235272:  756:    if (*currlen < *maxlen) {
+ 27235272:  757:	if (*sbuffer)
+ 27235272:  758:	    (*sbuffer)[(*currlen)++] = (char)c;
+        -:  759:	else
+    #####:  760:	    (*buffer)[(*currlen)++] = (char)c;
+        -:  761:    }
+        -:  762:
+ 27235272:  763:    return;
+        -:  764:}
+        -:  765:
+        -:  766:/***************************************************************************/
+        -:  767:
+  1163518:  768:int BIO_printf (BIO *bio, const char *format, ...)
+        -:  769:	{
+        -:  770:	va_list args;
+        -:  771:	int ret;
+        -:  772:
+  1163518:  773:	va_start(args, format);
+        -:  774:
+  1163518:  775:	ret = BIO_vprintf(bio, format, args);
+        -:  776:
+  1163518:  777:	va_end(args);
+  1163518:  778:	return(ret);
+        -:  779:	}
+        -:  780:
+  1163518:  781:int BIO_vprintf (BIO *bio, const char *format, va_list args)
+        -:  782:	{
+        -:  783:	int ret;
+        -:  784:	size_t retlen;
+        -:  785:	char hugebuf[1024*2];	/* Was previously 10k, which is unreasonable
+        -:  786:				   in small-stack environments, like threads
+        -:  787:				   or DOS programs. */
+  1163518:  788:	char *hugebufp = hugebuf;
+  1163518:  789:	size_t hugebufsize = sizeof(hugebuf);
+  1163518:  790:	char *dynbuf = NULL;
+        -:  791:	int ignored;
+        -:  792:
+        -:  793:	dynbuf = NULL;
+  1163518:  794:	CRYPTO_push_info("doapr()");
+  1163518:  795:	_dopr(&hugebufp, &dynbuf, &hugebufsize,
+        -:  796:		&retlen, &ignored, format, args);
+  1163518:  797:	if (dynbuf)
+        -:  798:		{
+    #####:  799:		ret=BIO_write(bio, dynbuf, (int)retlen);
+    #####:  800:		OPENSSL_free(dynbuf);
+        -:  801:		}
+        -:  802:	else
+        -:  803:		{
+  1163518:  804:		ret=BIO_write(bio, hugebuf, (int)retlen);
+        -:  805:		}
+  1163518:  806:	CRYPTO_pop_info();
+  1163518:  807:	return(ret);
+        -:  808:	}
+        -:  809:
+        -:  810:/* As snprintf is not available everywhere, we provide our own implementation.
+        -:  811: * This function has nothing to do with BIOs, but it's closely related
+        -:  812: * to BIO_printf, and we need *some* name prefix ...
+        -:  813: * (XXX  the function should be renamed, but to what?) */
+  3480654:  814:int BIO_snprintf(char *buf, size_t n, const char *format, ...)
+        -:  815:	{
+        -:  816:	va_list args;
+        -:  817:	int ret;
+        -:  818:
+  3480654:  819:	va_start(args, format);
+        -:  820:
+  3480654:  821:	ret = BIO_vsnprintf(buf, n, format, args);
+        -:  822:
+  3480654:  823:	va_end(args);
+  3480654:  824:	return(ret);
+        -:  825:	}
+        -:  826:
+  3480654:  827:int BIO_vsnprintf(char *buf, size_t n, const char *format, va_list args)
+        -:  828:	{
+        -:  829:	size_t retlen;
+        -:  830:	int truncated;
+        -:  831:
+  3480654:  832:	_dopr(&buf, NULL, &n, &retlen, &truncated, format, args);
+        -:  833:
+  3480654:  834:	if (truncated)
+        -:  835:		/* In case of truncation, return -1 like traditional snprintf.
+        -:  836:		 * (Current drafts for ISO/IEC 9899 say snprintf should return
+        -:  837:		 * the number of characters that would have been written,
+        -:  838:		 * had the buffer been large enough.) */
+        -:  839:		return -1;
+        -:  840:	else
+  3480654:  841:		return (retlen <= INT_MAX) ? (int)retlen : -1;
+        -:  842:	}

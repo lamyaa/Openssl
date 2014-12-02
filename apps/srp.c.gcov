@@ -1,0 +1,761 @@
+        -:    0:Source:srp.c
+        -:    0:Graph:srp.gcno
+        -:    0:Data:srp.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* apps/srp.c */
+        -:    2:/* Written by Peter Sylvester (peter.sylvester@edelweb.fr)  
+        -:    3: * for the EdelKey project and contributed to the OpenSSL project 2004.
+        -:    4: */
+        -:    5:/* ====================================================================
+        -:    6: * Copyright (c) 2004 The OpenSSL Project.  All rights reserved.
+        -:    7: *
+        -:    8: * Redistribution and use in source and binary forms, with or without
+        -:    9: * modification, are permitted provided that the following conditions
+        -:   10: * are met:
+        -:   11: *
+        -:   12: * 1. Redistributions of source code must retain the above copyright
+        -:   13: *    notice, this list of conditions and the following disclaimer. 
+        -:   14: *
+        -:   15: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   16: *    notice, this list of conditions and the following disclaimer in
+        -:   17: *    the documentation and/or other materials provided with the
+        -:   18: *    distribution.
+        -:   19: *
+        -:   20: * 3. All advertising materials mentioning features or use of this
+        -:   21: *    software must display the following acknowledgment:
+        -:   22: *    "This product includes software developed by the OpenSSL Project
+        -:   23: *    for use in the OpenSSL Toolkit. (http://www.OpenSSL.org/)"
+        -:   24: *
+        -:   25: * 4. The names "OpenSSL Toolkit" and "OpenSSL Project" must not be used to
+        -:   26: *    endorse or promote products derived from this software without
+        -:   27: *    prior written permission. For written permission, please contact
+        -:   28: *    licensing@OpenSSL.org.
+        -:   29: *
+        -:   30: * 5. Products derived from this software may not be called "OpenSSL"
+        -:   31: *    nor may "OpenSSL" appear in their names without prior written
+        -:   32: *    permission of the OpenSSL Project.
+        -:   33: *
+        -:   34: * 6. Redistributions of any form whatsoever must retain the following
+        -:   35: *    acknowledgment:
+        -:   36: *    "This product includes software developed by the OpenSSL Project
+        -:   37: *    for use in the OpenSSL Toolkit (http://www.OpenSSL.org/)"
+        -:   38: *
+        -:   39: * THIS SOFTWARE IS PROVIDED BY THE OpenSSL PROJECT ``AS IS'' AND ANY
+        -:   40: * EXPRESSED OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   41: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+        -:   42: * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE OpenSSL PROJECT OR
+        -:   43: * ITS CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+        -:   44: * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+        -:   45: * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+        -:   46: * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   47: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+        -:   48: * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+        -:   49: * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+        -:   50: * OF THE POSSIBILITY OF SUCH DAMAGE.
+        -:   51: * ====================================================================
+        -:   52: *
+        -:   53: * This product includes cryptographic software written by Eric Young
+        -:   54: * (eay@cryptsoft.com).  This product includes software written by Tim
+        -:   55: * Hudson (tjh@cryptsoft.com).
+        -:   56: *
+        -:   57: */
+        -:   58:#include <openssl/opensslconf.h>
+        -:   59:
+        -:   60:#ifndef OPENSSL_NO_SRP
+        -:   61:#include <stdio.h>
+        -:   62:#include <stdlib.h>
+        -:   63:#include <string.h>
+        -:   64:#include <openssl/conf.h>
+        -:   65:#include <openssl/bio.h>
+        -:   66:#include <openssl/err.h>
+        -:   67:#include <openssl/txt_db.h>
+        -:   68:#include <openssl/buffer.h>
+        -:   69:#include <openssl/srp.h>
+        -:   70:
+        -:   71:#include "apps.h"
+        -:   72:
+        -:   73:#undef PROG
+        -:   74:#define PROG srp_main
+        -:   75:
+        -:   76:#define BASE_SECTION	"srp"
+        -:   77:#define CONFIG_FILE "openssl.cnf"
+        -:   78:
+        -:   79:#define ENV_RANDFILE		"RANDFILE"
+        -:   80:
+        -:   81:#define ENV_DATABASE		"srpvfile"
+        -:   82:#define ENV_DEFAULT_SRP		"default_srp"
+        -:   83:
+        -:   84:static char *srp_usage[]={
+        -:   85:"usage: srp [args] [user] \n",
+        -:   86:"\n",
+        -:   87:" -verbose        Talk alot while doing things\n",
+        -:   88:" -config file    A config file\n",
+        -:   89:" -name arg       The particular srp definition to use\n",
+        -:   90:" -srpvfile arg   The srp verifier file name\n",
+        -:   91:" -add            add an user and srp verifier\n",
+        -:   92:" -modify         modify the srp verifier of an existing user\n",
+        -:   93:" -delete         delete user from verifier file\n",
+        -:   94:" -list           list user\n",
+        -:   95:" -gn arg         g and N values to be used for new verifier\n",
+        -:   96:" -userinfo arg   additional info to be set for user\n",
+        -:   97:" -passin arg     input file pass phrase source\n",
+        -:   98:" -passout arg    output file pass phrase source\n",
+        -:   99:#ifndef OPENSSL_NO_ENGINE
+        -:  100:" -engine e         - use engine e, possibly a hardware device.\n",
+        -:  101:#endif
+        -:  102:NULL
+        -:  103:};
+        -:  104:
+        -:  105:#ifdef EFENCE
+        -:  106:extern int EF_PROTECT_FREE;
+        -:  107:extern int EF_PROTECT_BELOW;
+        -:  108:extern int EF_ALIGNMENT;
+        -:  109:#endif
+        -:  110:
+        -:  111:static CONF *conf=NULL;
+        -:  112:static char *section=NULL;
+        -:  113:
+        -:  114:#define VERBOSE if (verbose) 
+        -:  115:#define VVERBOSE if (verbose>1) 
+        -:  116:
+        -:  117:
+        -:  118:int MAIN(int, char **);
+        -:  119:
+    #####:  120:static int get_index(CA_DB *db, char* id, char type)
+        -:  121:	{
+        -:  122:	char ** pp;
+        -:  123:	int i;
+    #####:  124:	if (id == NULL) return -1;
+    #####:  125:	if (type == DB_SRP_INDEX) 
+    #####:  126:	for (i = 0; i < sk_OPENSSL_PSTRING_num(db->db->data); i++)
+        -:  127:		{
+    #####:  128:		pp = sk_OPENSSL_PSTRING_value(db->db->data,i);
+    #####:  129:		if (pp[DB_srptype][0] == DB_SRP_INDEX  && !strcmp(id,pp[DB_srpid])) 
+        -:  130:			return i;
+        -:  131:		}
+    #####:  132:	else for (i = 0; i < sk_OPENSSL_PSTRING_num(db->db->data); i++)
+        -:  133:		{
+    #####:  134:		pp = sk_OPENSSL_PSTRING_value(db->db->data,i);
+        -:  135:
+    #####:  136:		if (pp[DB_srptype][0] != DB_SRP_INDEX && !strcmp(id,pp[DB_srpid])) 
+        -:  137:			return i;
+        -:  138:		}
+        -:  139:
+        -:  140:	return -1 ; 
+        -:  141:	}
+        -:  142:
+    #####:  143:static void print_entry(CA_DB *db, BIO *bio, int indx, int verbose, char *s)
+        -:  144:	{
+    #####:  145:	if (indx >= 0 && verbose)
+        -:  146:		{
+        -:  147:		int j;
+    #####:  148:		char **pp = sk_OPENSSL_PSTRING_value(db->db->data, indx);
+    #####:  149:		BIO_printf(bio, "%s \"%s\"\n", s, pp[DB_srpid]);
+    #####:  150:		for (j = 0; j < DB_NUMBER; j++)
+        -:  151:			{
+    #####:  152:			BIO_printf(bio_err,"  %d = \"%s\"\n", j, pp[j]);
+        -:  153:			}
+        -:  154:		}
+    #####:  155:	}
+        -:  156:
+        -:  157:static void print_index(CA_DB *db, BIO *bio, int indexindex, int verbose)
+        -:  158:	{
+    #####:  159:	print_entry(db, bio, indexindex, verbose, "g N entry") ;
+        -:  160:	}
+        -:  161:
+    #####:  162:static void print_user(CA_DB *db, BIO *bio, int userindex, int verbose)
+        -:  163:	{
+    #####:  164:	if (verbose > 0)
+        -:  165:		{
+    #####:  166:		char **pp = sk_OPENSSL_PSTRING_value(db->db->data,userindex);
+        -:  167:
+    #####:  168:		if (pp[DB_srptype][0] != 'I')
+        -:  169:			{
+    #####:  170:			print_entry(db, bio, userindex, verbose, "User entry");
+    #####:  171:			print_entry(db, bio, get_index(db, pp[DB_srpgN], 'I'), verbose, "g N entry");
+        -:  172:			}
+        -:  173:
+        -:  174:		}
+    #####:  175:	}
+        -:  176:
+    #####:  177:static int update_index(CA_DB *db, BIO *bio, char **row)
+        -:  178:	{
+        -:  179:	char ** irow;
+        -:  180:	int i;
+        -:  181:
+    #####:  182:	if ((irow=(char **)OPENSSL_malloc(sizeof(char *)*(DB_NUMBER+1))) == NULL)
+        -:  183:		{
+    #####:  184:		BIO_printf(bio_err,"Memory allocation failure\n");
+        -:  185:		return 0;
+        -:  186:		}
+        -:  187:
+    #####:  188:	for (i=0; i<DB_NUMBER; i++)
+        -:  189:		{
+    #####:  190:		irow[i]=row[i];
+    #####:  191:		row[i]=NULL;
+        -:  192:		}
+    #####:  193:	irow[DB_NUMBER]=NULL;
+        -:  194:
+    #####:  195:	if (!TXT_DB_insert(db->db,irow))
+        -:  196:		{
+    #####:  197:		BIO_printf(bio,"failed to update srpvfile\n");
+    #####:  198:		BIO_printf(bio,"TXT_DB error number %ld\n",db->db->error);
+    #####:  199:		OPENSSL_free(irow);
+        -:  200:		return 0;
+        -:  201:		}
+        -:  202:	return 1;
+        -:  203:	}
+        -:  204:
+        -:  205:static void lookup_fail(const char *name, char *tag)
+        -:  206:	{
+    #####:  207:	BIO_printf(bio_err,"variable lookup failed for %s::%s\n",name,tag);
+        -:  208:	}
+        -:  209:
+        -:  210:
+    #####:  211:static char *srp_verify_user(const char *user, const char *srp_verifier,
+        -:  212:			     char *srp_usersalt, const char *g, const char *N,
+        -:  213:			     const char *passin, BIO *bio, int verbose)
+        -:  214:	{
+        -:  215:	char password[1024];
+        -:  216:	PW_CB_DATA cb_tmp;
+    #####:  217:	char *verifier = NULL;
+        -:  218:	char *gNid = NULL;
+        -:  219:
+    #####:  220:	cb_tmp.prompt_info = user;
+    #####:  221:	cb_tmp.password = passin;
+        -:  222:
+    #####:  223: 	if (password_callback(password, 1024, 0, &cb_tmp) >0)
+        -:  224:		{
+    #####:  225:		VERBOSE BIO_printf(bio,"Validating\n   user=\"%s\"\n srp_verifier=\"%s\"\n srp_usersalt=\"%s\"\n g=\"%s\"\n N=\"%s\"\n",user,srp_verifier,srp_usersalt, g, N);
+    #####:  226:		BIO_printf(bio, "Pass %s\n", password);
+        -:  227:
+    #####:  228:		if (!(gNid=SRP_create_verifier(user, password, &srp_usersalt, &verifier, N, g)))
+        -:  229:			{
+    #####:  230:			BIO_printf(bio, "Internal error validating SRP verifier\n");
+        -:  231:			}
+        -:  232:		else
+        -:  233:			{
+    #####:  234:			if (strcmp(verifier, srp_verifier))
+        -:  235:				gNid = NULL;
+    #####:  236:			OPENSSL_free(verifier);
+        -:  237:			}
+        -:  238:		}
+    #####:  239:	return gNid;
+        -:  240:	}
+        -:  241:
+    #####:  242:static char *srp_create_user(char *user, char **srp_verifier,
+        -:  243:			     char **srp_usersalt, char *g, char *N,
+        -:  244:			     char *passout, BIO *bio, int verbose)
+        -:  245:	{
+        -:  246: 	char password[1024];
+        -:  247:        PW_CB_DATA cb_tmp;
+        -:  248:	char *gNid = NULL;
+    #####:  249:	char *salt = NULL;
+    #####:  250:        cb_tmp.prompt_info = user;
+    #####:  251:        cb_tmp.password = passout;
+        -:  252:
+    #####:  253:	if (password_callback(password,1024,1,&cb_tmp) >0)
+        -:  254:		{
+    #####:  255:		VERBOSE BIO_printf(bio,"Creating\n user=\"%s\"\n g=\"%s\"\n N=\"%s\"\n",user,g,N);
+    #####:  256:		if (!(gNid =SRP_create_verifier(user, password, &salt, srp_verifier, N, g)))
+        -:  257:			{
+    #####:  258:			BIO_printf(bio,"Internal error creating SRP verifier\n");
+        -:  259:			}
+        -:  260:		else 
+    #####:  261:			*srp_usersalt = salt;
+    #####:  262:		VVERBOSE BIO_printf(bio,"gNid=%s salt =\"%s\"\n verifier =\"%s\"\n", gNid,salt, *srp_verifier);
+        -:  263:
+        -:  264:		}
+    #####:  265:	return gNid;
+        -:  266:	}
+        -:  267:
+    #####:  268:int MAIN(int argc, char **argv)
+        -:  269:	{
+        -:  270:	int add_user = 0;
+        -:  271:	int list_user= 0;
+        -:  272:	int delete_user= 0;
+        -:  273:	int modify_user= 0;
+        -:  274:	char * user = NULL;
+        -:  275:
+        -:  276:	char *passargin = NULL, *passargout = NULL;
+    #####:  277:	char *passin = NULL, *passout = NULL;
+        -:  278:        char * gN = NULL;
+        -:  279:	int gNindex = -1;
+        -:  280:	char ** gNrow = NULL;
+        -:  281:	int maxgN = -1;
+        -:  282:
+        -:  283:	char * userinfo = NULL;
+        -:  284:
+        -:  285:	int badops=0;
+        -:  286:	int ret=1;
+        -:  287:	int errors=0;
+        -:  288:	int verbose=0;
+        -:  289:	int doupdatedb=0;
+        -:  290:	char *configfile=NULL;
+        -:  291:	char *dbfile=NULL;
+        -:  292:	CA_DB *db=NULL;
+        -:  293:	char **pp ;
+        -:  294:	int i;
+    #####:  295:	long errorline = -1;
+        -:  296:	char *randfile=NULL;
+        -:  297:#ifndef OPENSSL_NO_ENGINE
+        -:  298:	char *engine = NULL;
+        -:  299:#endif
+        -:  300:	char *tofree=NULL;
+        -:  301:	DB_ATTR db_attr;
+        -:  302:
+        -:  303:#ifdef EFENCE
+        -:  304:EF_PROTECT_FREE=1;
+        -:  305:EF_PROTECT_BELOW=1;
+        -:  306:EF_ALIGNMENT=0;
+        -:  307:#endif
+        -:  308:
+    #####:  309:	apps_startup();
+        -:  310:
+    #####:  311:	conf = NULL;
+    #####:  312:	section = NULL;
+        -:  313:
+    #####:  314:	if (bio_err == NULL)
+    #####:  315:		if ((bio_err=BIO_new(BIO_s_file())) != NULL)
+    #####:  316:			BIO_set_fp(bio_err,stderr,BIO_NOCLOSE|BIO_FP_TEXT);
+        -:  317:
+    #####:  318:	argc--;
+    #####:  319:	argv++;
+    #####:  320:	while (argc >= 1 && badops == 0)
+        -:  321:		{
+    #####:  322:		if	(strcmp(*argv,"-verbose") == 0)
+    #####:  323:			verbose++;
+    #####:  324:		else if	(strcmp(*argv,"-config") == 0)
+        -:  325:			{
+    #####:  326:			if (--argc < 1) goto bad;
+    #####:  327:			configfile= *(++argv);
+        -:  328:			}
+    #####:  329:		else if (strcmp(*argv,"-name") == 0)
+        -:  330:			{
+    #####:  331:			if (--argc < 1) goto bad;
+    #####:  332:			section= *(++argv);
+        -:  333:			}
+    #####:  334:		else if	(strcmp(*argv,"-srpvfile") == 0)
+        -:  335:			{
+    #####:  336:			if (--argc < 1) goto bad;
+    #####:  337:			dbfile= *(++argv);
+        -:  338:			}
+    #####:  339:		else if (strcmp(*argv,"-add") == 0)
+        -:  340:			add_user=1;
+    #####:  341:		else if (strcmp(*argv,"-delete") == 0)
+        -:  342:			delete_user=1;
+    #####:  343:		else if (strcmp(*argv,"-modify") == 0)
+        -:  344:			modify_user=1;
+    #####:  345:		else if (strcmp(*argv,"-list") == 0)
+        -:  346:			list_user=1;
+    #####:  347:		else if (strcmp(*argv,"-gn") == 0)
+        -:  348:			{
+    #####:  349:			if (--argc < 1) goto bad;
+    #####:  350:			gN= *(++argv);
+        -:  351:			}
+    #####:  352:		else if (strcmp(*argv,"-userinfo") == 0)
+        -:  353:			{
+    #####:  354:			if (--argc < 1) goto bad;
+    #####:  355:			userinfo= *(++argv);
+        -:  356:			}
+    #####:  357:		else if (strcmp(*argv,"-passin") == 0)
+        -:  358:			{
+    #####:  359:			if (--argc < 1) goto bad;
+    #####:  360:			passargin= *(++argv);
+        -:  361:			}
+    #####:  362:		else if (strcmp(*argv,"-passout") == 0)
+        -:  363:			{
+    #####:  364:			if (--argc < 1) goto bad;
+    #####:  365:			passargout= *(++argv);
+        -:  366:			}
+        -:  367:#ifndef OPENSSL_NO_ENGINE
+    #####:  368:		else if (strcmp(*argv,"-engine") == 0)
+        -:  369:			{
+    #####:  370:			if (--argc < 1) goto bad;
+    #####:  371:			engine= *(++argv);
+        -:  372:			}
+        -:  373:#endif
+        -:  374:
+    #####:  375:		else if (**argv == '-')
+        -:  376:			{
+        -:  377:bad:
+    #####:  378:			BIO_printf(bio_err,"unknown option %s\n",*argv);
+        -:  379:			badops=1;
+    #####:  380:			break;
+        -:  381:			}
+        -:  382:		else 
+        -:  383:			break;
+        -:  384:	
+    #####:  385:		argc--;
+    #####:  386:		argv++;
+        -:  387:		}
+        -:  388:
+    #####:  389:	if (dbfile && configfile)
+        -:  390:		{
+    #####:  391:		BIO_printf(bio_err,"-dbfile and -configfile cannot be specified together.\n");
+        -:  392:		badops = 1;
+        -:  393:		}
+    #####:  394:	if (add_user+delete_user+modify_user+list_user != 1)
+        -:  395:		{
+    #####:  396:		BIO_printf(bio_err,"Exactly one of the options -add, -delete, -modify -list must be specified.\n");
+        -:  397:		badops = 1;
+        -:  398:		}
+    #####:  399:	if (delete_user+modify_user+delete_user== 1 && argc <= 0)
+        -:  400:		{
+    #####:  401:		BIO_printf(bio_err,"Need at least one user for options -add, -delete, -modify. \n");
+        -:  402:		badops = 1;
+        -:  403:		}
+    #####:  404:	if ((passin || passout) && argc != 1 )
+        -:  405:		{
+    #####:  406:		BIO_printf(bio_err,"-passin, -passout arguments only valid with one user.\n");
+        -:  407:		badops = 1;
+        -:  408:		}
+        -:  409:
+    #####:  410:	if (badops)
+        -:  411:		{
+    #####:  412:		for (pp=srp_usage; (*pp != NULL); pp++)
+    #####:  413:			BIO_printf(bio_err,"%s",*pp);
+        -:  414:
+    #####:  415:		BIO_printf(bio_err," -rand file%cfile%c...\n", LIST_SEPARATOR_CHAR, LIST_SEPARATOR_CHAR);
+    #####:  416:		BIO_printf(bio_err,"                 load the file (or the files in the directory) into\n");
+    #####:  417:		BIO_printf(bio_err,"                 the random number generator\n");
+    #####:  418:		goto err;
+        -:  419:		}
+        -:  420:
+    #####:  421:	ERR_load_crypto_strings();
+        -:  422:
+        -:  423:#ifndef OPENSSL_NO_ENGINE
+    #####:  424:	setup_engine(bio_err, engine, 0);
+        -:  425:#endif
+        -:  426:
+    #####:  427:	if(!app_passwd(bio_err, passargin, passargout, &passin, &passout))
+        -:  428:		{
+    #####:  429:		BIO_printf(bio_err, "Error getting passwords\n");
+    #####:  430:		goto err;
+        -:  431:		}
+        -:  432:
+    #####:  433:        if (!dbfile)
+        -:  434:		{
+        -:  435:
+        -:  436:
+        -:  437:	/*****************************************************************/
+        -:  438:		tofree=NULL;
+    #####:  439:		if (configfile == NULL) configfile = getenv("OPENSSL_CONF");
+    #####:  440:		if (configfile == NULL) configfile = getenv("SSLEAY_CONF");
+    #####:  441:		if (configfile == NULL)
+        -:  442:			{
+    #####:  443:			const char *s=X509_get_default_cert_area();
+        -:  444:			size_t len;
+        -:  445:
+        -:  446:#ifdef OPENSSL_SYS_VMS
+        -:  447:			len = strlen(s)+sizeof(CONFIG_FILE);
+        -:  448:			tofree=OPENSSL_malloc(len);
+        -:  449:			strcpy(tofree,s);
+        -:  450:#else
+    #####:  451:			len = strlen(s)+sizeof(CONFIG_FILE)+1;
+    #####:  452:			tofree=OPENSSL_malloc(len);
+    #####:  453:			BUF_strlcpy(tofree,s,len);
+    #####:  454:			BUF_strlcat(tofree,"/",len);
+        -:  455:#endif
+    #####:  456:			BUF_strlcat(tofree,CONFIG_FILE,len);
+        -:  457:			configfile=tofree;
+        -:  458:			}
+        -:  459:
+    #####:  460:		VERBOSE BIO_printf(bio_err,"Using configuration from %s\n",configfile);
+    #####:  461:		conf = NCONF_new(NULL);
+    #####:  462:		if (NCONF_load(conf,configfile,&errorline) <= 0)
+        -:  463:			{
+    #####:  464:			if (errorline <= 0)
+    #####:  465:				BIO_printf(bio_err,"error loading the config file '%s'\n",
+        -:  466:					configfile);
+        -:  467:			else
+    #####:  468:				BIO_printf(bio_err,"error on line %ld of config file '%s'\n"
+        -:  469:					,errorline,configfile);
+        -:  470:			goto err;
+        -:  471:			}
+    #####:  472:		if(tofree)
+        -:  473:			{
+    #####:  474:			OPENSSL_free(tofree);
+        -:  475:			tofree = NULL;
+        -:  476:			}
+        -:  477:
+    #####:  478:		if (!load_config(bio_err, conf))
+        -:  479:			goto err;
+        -:  480:
+        -:  481:	/* Lets get the config section we are using */
+    #####:  482:		if (section == NULL)
+        -:  483:			{
+    #####:  484:			VERBOSE BIO_printf(bio_err,"trying to read " ENV_DEFAULT_SRP " in \" BASE_SECTION \"\n");
+        -:  485:
+    #####:  486:			section=NCONF_get_string(conf,BASE_SECTION,ENV_DEFAULT_SRP);
+    #####:  487:			if (section == NULL)
+        -:  488:				{
+        -:  489:				lookup_fail(BASE_SECTION,ENV_DEFAULT_SRP);
+        -:  490:				goto err;
+        -:  491:				}
+        -:  492:			}
+        -:  493:         
+    #####:  494:		if (randfile == NULL && conf)
+    #####:  495:	        	randfile = NCONF_get_string(conf, BASE_SECTION, "RANDFILE");
+        -:  496:
+        -:  497:	
+    #####:  498:		VERBOSE BIO_printf(bio_err,"trying to read " ENV_DATABASE " in section \"%s\"\n",section);
+        -:  499:
+    #####:  500:		if ((dbfile=NCONF_get_string(conf,section,ENV_DATABASE)) == NULL)
+        -:  501:			{
+    #####:  502:			lookup_fail(section,ENV_DATABASE);
+        -:  503:			goto err;
+        -:  504:			}
+        -:  505:
+        -:  506:        	}
+    #####:  507:	if (randfile == NULL)
+    #####:  508:		ERR_clear_error();
+        -:  509:       	else 
+    #####:  510:		app_RAND_load_file(randfile, bio_err, 0);
+        -:  511:
+    #####:  512:	VERBOSE BIO_printf(bio_err,"Trying to read SRP verifier file \"%s\"\n",dbfile);
+        -:  513:
+    #####:  514:	db = load_index(dbfile, &db_attr);
+    #####:  515:	if (db == NULL) goto err;
+        -:  516:
+        -:  517:	/* Lets check some fields */
+    #####:  518:	for (i = 0; i < sk_OPENSSL_PSTRING_num(db->db->data); i++)
+        -:  519:		{
+    #####:  520:		pp = sk_OPENSSL_PSTRING_value(db->db->data, i);
+        -:  521:	
+    #####:  522:		if (pp[DB_srptype][0] == DB_SRP_INDEX)
+        -:  523:			{
+        -:  524:			maxgN = i;
+    #####:  525:			if (gNindex < 0 && gN != NULL && !strcmp(gN, pp[DB_srpid]))
+        -:  526:				gNindex = i;
+        -:  527:
+    #####:  528:			print_index(db, bio_err, i, verbose > 1);
+        -:  529:			}
+        -:  530:		}
+        -:  531:	
+    #####:  532:	VERBOSE BIO_printf(bio_err, "Database initialised\n");
+        -:  533:
+    #####:  534:	if (gNindex >= 0)
+        -:  535:		{
+    #####:  536:		gNrow = sk_OPENSSL_PSTRING_value(db->db->data,gNindex);
+    #####:  537:		print_entry(db, bio_err, gNindex, verbose > 1, "Default g and N");
+        -:  538:		}
+    #####:  539:	else if (maxgN > 0 && !SRP_get_default_gN(gN))
+        -:  540:		{
+    #####:  541:		BIO_printf(bio_err, "No g and N value for index \"%s\"\n", gN);
+    #####:  542:		goto err;
+        -:  543:		}
+        -:  544:	else
+        -:  545:		{
+    #####:  546:		VERBOSE BIO_printf(bio_err, "Database has no g N information.\n");
+        -:  547:		gNrow = NULL;
+        -:  548:		}
+        -:  549:	
+        -:  550:
+    #####:  551:	VVERBOSE BIO_printf(bio_err,"Starting user processing\n");
+        -:  552:
+    #####:  553:	if (argc > 0)
+    #####:  554:		user = *(argv++) ;
+        -:  555:
+    #####:  556:	while (list_user || user)
+        -:  557:		{
+        -:  558:		int userindex = -1;
+    #####:  559:		if (user) 
+    #####:  560:			VVERBOSE BIO_printf(bio_err, "Processing user \"%s\"\n", user);
+    #####:  561:		if ((userindex = get_index(db, user, 'U')) >= 0)
+        -:  562:			{
+    #####:  563:			print_user(db, bio_err, userindex, (verbose > 0) || list_user);
+        -:  564:			}
+        -:  565:		
+    #####:  566:		if (list_user)
+        -:  567:			{
+    #####:  568:			if (user == NULL)
+        -:  569:				{
+    #####:  570:				BIO_printf(bio_err,"List all users\n");
+        -:  571:
+    #####:  572:				for (i = 0; i < sk_OPENSSL_PSTRING_num(db->db->data); i++)
+        -:  573:					{
+    #####:  574:					print_user(db,bio_err, i, 1);
+        -:  575:					}
+        -:  576:				list_user = 0;
+        -:  577:				}
+    #####:  578:			else if (userindex < 0)
+        -:  579:				{
+    #####:  580:				BIO_printf(bio_err, "user \"%s\" does not exist, ignored. t\n",
+        -:  581:					   user);
+    #####:  582:				errors++;
+        -:  583:				}
+        -:  584:			}
+    #####:  585:		else if (add_user)
+        -:  586:			{
+    #####:  587:			if (userindex >= 0)
+        -:  588:				{
+        -:  589:				/* reactivation of a new user */
+    #####:  590:				char **row = sk_OPENSSL_PSTRING_value(db->db->data, userindex);
+    #####:  591:				BIO_printf(bio_err, "user \"%s\" reactivated.\n", user);
+    #####:  592:				row[DB_srptype][0] = 'V';
+        -:  593:
+        -:  594:				doupdatedb = 1;
+        -:  595:				}
+        -:  596:			else
+        -:  597:				{
+        -:  598:				char *row[DB_NUMBER] ; char *gNid;
+    #####:  599:				row[DB_srpverifier] = NULL;
+    #####:  600:				row[DB_srpsalt] = NULL;
+    #####:  601:				row[DB_srpinfo] = NULL;
+    #####:  602:				if (!(gNid = srp_create_user(user,&(row[DB_srpverifier]), &(row[DB_srpsalt]),gNrow?gNrow[DB_srpsalt]:gN,gNrow?gNrow[DB_srpverifier]:NULL, passout, bio_err,verbose)))
+        -:  603:					{
+    #####:  604:						BIO_printf(bio_err, "Cannot create srp verifier for user \"%s\", operation abandoned .\n", user);
+    #####:  605:						errors++;
+    #####:  606:						goto err;
+        -:  607:					}
+    #####:  608:				row[DB_srpid] = BUF_strdup(user);
+    #####:  609:				row[DB_srptype] = BUF_strdup("v");
+    #####:  610:				row[DB_srpgN] = BUF_strdup(gNid);
+        -:  611:
+    #####:  612:				if (!row[DB_srpid] || !row[DB_srpgN] || !row[DB_srptype] || !row[DB_srpverifier] || !row[DB_srpsalt] ||
+    #####:  613:					(userinfo && (!(row[DB_srpinfo] = BUF_strdup(userinfo)))) || 
+    #####:  614:					!update_index(db, bio_err, row))
+        -:  615:					{
+    #####:  616:					if (row[DB_srpid]) OPENSSL_free(row[DB_srpid]);
+    #####:  617:					if (row[DB_srpgN]) OPENSSL_free(row[DB_srpgN]);
+    #####:  618:					if (row[DB_srpinfo]) OPENSSL_free(row[DB_srpinfo]);
+    #####:  619:					if (row[DB_srptype]) OPENSSL_free(row[DB_srptype]);
+    #####:  620:					if (row[DB_srpverifier]) OPENSSL_free(row[DB_srpverifier]);
+    #####:  621:					if (row[DB_srpsalt]) OPENSSL_free(row[DB_srpsalt]);
+        -:  622:					goto err;
+        -:  623:					}
+        -:  624:				doupdatedb = 1;
+        -:  625:				}
+        -:  626:			}
+    #####:  627:		else if (modify_user)
+        -:  628:			{
+    #####:  629:			if (userindex < 0)
+        -:  630:				{
+    #####:  631:				BIO_printf(bio_err,"user \"%s\" does not exist, operation ignored.\n",user);
+    #####:  632:				errors++;
+        -:  633:				}
+        -:  634:			else
+        -:  635:				{
+        -:  636:
+    #####:  637:				char **row = sk_OPENSSL_PSTRING_value(db->db->data, userindex);
+    #####:  638:				char type = row[DB_srptype][0];
+    #####:  639:				if (type == 'v')
+        -:  640:					{
+    #####:  641:					BIO_printf(bio_err,"user \"%s\" already updated, operation ignored.\n",user);
+    #####:  642:					errors++;
+        -:  643:					}
+        -:  644:				else
+        -:  645:					{
+        -:  646:					char *gNid;
+        -:  647:
+    #####:  648:					if (row[DB_srptype][0] == 'V')
+        -:  649:						{
+        -:  650:						int user_gN;
+        -:  651:						char **irow = NULL;
+    #####:  652:						VERBOSE BIO_printf(bio_err,"Verifying password for user \"%s\"\n",user);
+    #####:  653:						if ( (user_gN = get_index(db, row[DB_srpgN], DB_SRP_INDEX)) >= 0)
+    #####:  654:							irow = (char **)sk_OPENSSL_PSTRING_value(db->db->data, userindex);
+        -:  655:
+    #####:  656: 						if (!srp_verify_user(user, row[DB_srpverifier], row[DB_srpsalt], irow ? irow[DB_srpsalt] : row[DB_srpgN], irow ? irow[DB_srpverifier] : NULL, passin, bio_err, verbose))
+        -:  657:							{
+    #####:  658:							BIO_printf(bio_err, "Invalid password for user \"%s\", operation abandoned.\n", user);
+    #####:  659:							errors++;
+    #####:  660:							goto err;
+        -:  661:							}
+        -:  662:						} 
+    #####:  663:					VERBOSE BIO_printf(bio_err,"Password for user \"%s\" ok.\n",user);
+        -:  664:
+    #####:  665:					if (!(gNid=srp_create_user(user,&(row[DB_srpverifier]), &(row[DB_srpsalt]),gNrow?gNrow[DB_srpsalt]:NULL, gNrow?gNrow[DB_srpverifier]:NULL, passout, bio_err,verbose)))
+        -:  666:						{
+    #####:  667:						BIO_printf(bio_err, "Cannot create srp verifier for user \"%s\", operation abandoned.\n", user);
+    #####:  668:						errors++;
+    #####:  669:						goto err;
+        -:  670:						}
+        -:  671:
+    #####:  672:					row[DB_srptype][0] = 'v';
+    #####:  673:					row[DB_srpgN] = BUF_strdup(gNid);
+        -:  674: 
+    #####:  675:					if (!row[DB_srpid] || !row[DB_srpgN] || !row[DB_srptype] || !row[DB_srpverifier] || !row[DB_srpsalt] ||
+    #####:  676:						(userinfo && (!(row[DB_srpinfo] = BUF_strdup(userinfo)))))  
+        -:  677:						goto err;
+        -:  678:
+        -:  679:					doupdatedb = 1;
+        -:  680:					}
+        -:  681:				}
+        -:  682:			}
+    #####:  683:		else if (delete_user)
+        -:  684:			{
+    #####:  685:			if (userindex < 0)
+        -:  686:				{
+    #####:  687:				BIO_printf(bio_err, "user \"%s\" does not exist, operation ignored. t\n", user);
+    #####:  688:				errors++;
+        -:  689:				}
+        -:  690:			else
+        -:  691:				{
+    #####:  692:				char **xpp = sk_OPENSSL_PSTRING_value(db->db->data,userindex);
+    #####:  693:				BIO_printf(bio_err, "user \"%s\" revoked. t\n", user);
+        -:  694:
+    #####:  695:				xpp[DB_srptype][0] = 'R';
+        -:  696:				
+        -:  697:				doupdatedb = 1;
+        -:  698:				}
+        -:  699:			}
+    #####:  700:		if (--argc > 0)
+    #####:  701:			user = *(argv++) ;
+        -:  702:		else
+        -:  703:			{
+        -:  704:			user = NULL;
+        -:  705:			list_user = 0;
+        -:  706:			}
+        -:  707:		}
+        -:  708:
+    #####:  709:	VERBOSE BIO_printf(bio_err,"User procession done.\n");
+        -:  710:
+        -:  711:
+    #####:  712:	if (doupdatedb)
+        -:  713:		{
+        -:  714:		/* Lets check some fields */
+    #####:  715:		for (i = 0; i < sk_OPENSSL_PSTRING_num(db->db->data); i++)
+        -:  716:			{
+    #####:  717:			pp = sk_OPENSSL_PSTRING_value(db->db->data,i);
+        -:  718:	
+    #####:  719:			if (pp[DB_srptype][0] == 'v')
+        -:  720:				{
+    #####:  721:				pp[DB_srptype][0] = 'V';
+    #####:  722:				print_user(db, bio_err, i, verbose);
+        -:  723:				}
+        -:  724:			}
+        -:  725:
+    #####:  726:		VERBOSE BIO_printf(bio_err, "Trying to update srpvfile.\n");
+    #####:  727:		if (!save_index(dbfile, "new", db)) goto err;
+        -:  728:				
+    #####:  729:		VERBOSE BIO_printf(bio_err, "Temporary srpvfile created.\n");
+    #####:  730:		if (!rotate_index(dbfile, "new", "old")) goto err;
+        -:  731:
+    #####:  732:		VERBOSE BIO_printf(bio_err, "srpvfile updated.\n");
+        -:  733:		}
+        -:  734:
+    #####:  735:	ret = (errors != 0);
+        -:  736:err:
+    #####:  737:	if (errors != 0)
+    #####:  738:	VERBOSE BIO_printf(bio_err,"User errors %d.\n",errors);
+        -:  739:
+    #####:  740:	VERBOSE BIO_printf(bio_err,"SRP terminating with code %d.\n",ret);
+    #####:  741:	if(tofree)
+    #####:  742:		OPENSSL_free(tofree);
+    #####:  743:	if (ret) ERR_print_errors(bio_err);
+    #####:  744:	if (randfile) app_RAND_write_file(randfile, bio_err);
+    #####:  745:	if (conf) NCONF_free(conf);
+    #####:  746:	if (db) free_index(db);
+        -:  747:
+    #####:  748:	OBJ_cleanup();
+        -:  749:	apps_shutdown();
+    #####:  750:	OPENSSL_EXIT(ret);
+        -:  751:	}
+        -:  752:
+        -:  753:
+        -:  754:
+        -:  755:#endif
+        -:  756:

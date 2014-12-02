@@ -1,0 +1,313 @@
+        -:    0:Source:spkac.c
+        -:    0:Graph:spkac.gcno
+        -:    0:Data:spkac.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* apps/spkac.c */
+        -:    2:
+        -:    3:/* Written by Dr Stephen N Henson (steve@openssl.org) for the OpenSSL
+        -:    4: * project 1999. Based on an original idea by Massimiliano Pala
+        -:    5: * (madwolf@openca.org).
+        -:    6: */
+        -:    7:/* ====================================================================
+        -:    8: * Copyright (c) 1999 The OpenSSL Project.  All rights reserved.
+        -:    9: *
+        -:   10: * Redistribution and use in source and binary forms, with or without
+        -:   11: * modification, are permitted provided that the following conditions
+        -:   12: * are met:
+        -:   13: *
+        -:   14: * 1. Redistributions of source code must retain the above copyright
+        -:   15: *    notice, this list of conditions and the following disclaimer. 
+        -:   16: *
+        -:   17: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   18: *    notice, this list of conditions and the following disclaimer in
+        -:   19: *    the documentation and/or other materials provided with the
+        -:   20: *    distribution.
+        -:   21: *
+        -:   22: * 3. All advertising materials mentioning features or use of this
+        -:   23: *    software must display the following acknowledgment:
+        -:   24: *    "This product includes software developed by the OpenSSL Project
+        -:   25: *    for use in the OpenSSL Toolkit. (http://www.OpenSSL.org/)"
+        -:   26: *
+        -:   27: * 4. The names "OpenSSL Toolkit" and "OpenSSL Project" must not be used to
+        -:   28: *    endorse or promote products derived from this software without
+        -:   29: *    prior written permission. For written permission, please contact
+        -:   30: *    licensing@OpenSSL.org.
+        -:   31: *
+        -:   32: * 5. Products derived from this software may not be called "OpenSSL"
+        -:   33: *    nor may "OpenSSL" appear in their names without prior written
+        -:   34: *    permission of the OpenSSL Project.
+        -:   35: *
+        -:   36: * 6. Redistributions of any form whatsoever must retain the following
+        -:   37: *    acknowledgment:
+        -:   38: *    "This product includes software developed by the OpenSSL Project
+        -:   39: *    for use in the OpenSSL Toolkit (http://www.OpenSSL.org/)"
+        -:   40: *
+        -:   41: * THIS SOFTWARE IS PROVIDED BY THE OpenSSL PROJECT ``AS IS'' AND ANY
+        -:   42: * EXPRESSED OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   43: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+        -:   44: * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE OpenSSL PROJECT OR
+        -:   45: * ITS CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+        -:   46: * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+        -:   47: * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+        -:   48: * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   49: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+        -:   50: * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+        -:   51: * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+        -:   52: * OF THE POSSIBILITY OF SUCH DAMAGE.
+        -:   53: * ====================================================================
+        -:   54: *
+        -:   55: * This product includes cryptographic software written by Eric Young
+        -:   56: * (eay@cryptsoft.com).  This product includes software written by Tim
+        -:   57: * Hudson (tjh@cryptsoft.com).
+        -:   58: *
+        -:   59: */
+        -:   60:#include <stdio.h>
+        -:   61:#include <stdlib.h>
+        -:   62:#include <string.h>
+        -:   63:#include <time.h>
+        -:   64:#include "apps.h"
+        -:   65:#include <openssl/bio.h>
+        -:   66:#include <openssl/conf.h>
+        -:   67:#include <openssl/err.h>
+        -:   68:#include <openssl/evp.h>
+        -:   69:#include <openssl/lhash.h>
+        -:   70:#include <openssl/x509.h>
+        -:   71:#include <openssl/pem.h>
+        -:   72:
+        -:   73:#undef PROG
+        -:   74:#define PROG	spkac_main
+        -:   75:
+        -:   76:/* -in arg	- input file - default stdin
+        -:   77: * -out arg	- output file - default stdout
+        -:   78: */
+        -:   79:
+        -:   80:int MAIN(int, char **);
+        -:   81:
+    #####:   82:int MAIN(int argc, char **argv)
+        -:   83:	{
+        -:   84:	ENGINE *e = NULL;
+        -:   85:	int i,badops=0, ret = 1;
+        -:   86:	BIO *in = NULL,*out = NULL;
+        -:   87:	int verify=0,noout=0,pubkey=0;
+        -:   88:	char *infile = NULL,*outfile = NULL,*prog;
+    #####:   89:	char *passargin = NULL, *passin = NULL;
+        -:   90:	const char *spkac = "SPKAC", *spksect = "default";
+        -:   91:	char *spkstr = NULL;
+        -:   92:	char *challenge = NULL, *keyfile = NULL;
+        -:   93:	CONF *conf = NULL;
+        -:   94:	NETSCAPE_SPKI *spki = NULL;
+        -:   95:	EVP_PKEY *pkey = NULL;
+        -:   96:#ifndef OPENSSL_NO_ENGINE
+        -:   97:	char *engine=NULL;
+        -:   98:#endif
+        -:   99:
+    #####:  100:	apps_startup();
+        -:  101:
+    #####:  102:	if (!bio_err) bio_err = BIO_new_fp(stderr, BIO_NOCLOSE);
+        -:  103:
+    #####:  104:	if (!load_config(bio_err, NULL))
+        -:  105:		goto end;
+        -:  106:
+    #####:  107:	prog=argv[0];
+    #####:  108:	argc--;
+    #####:  109:	argv++;
+    #####:  110:	while (argc >= 1)
+        -:  111:		{
+    #####:  112:		if (strcmp(*argv,"-in") == 0)
+        -:  113:			{
+    #####:  114:			if (--argc < 1) goto bad;
+    #####:  115:			infile= *(++argv);
+        -:  116:			}
+    #####:  117:		else if (strcmp(*argv,"-out") == 0)
+        -:  118:			{
+    #####:  119:			if (--argc < 1) goto bad;
+    #####:  120:			outfile= *(++argv);
+        -:  121:			}
+    #####:  122:		else if (strcmp(*argv,"-passin") == 0)
+        -:  123:			{
+    #####:  124:			if (--argc < 1) goto bad;
+    #####:  125:			passargin= *(++argv);
+        -:  126:			}
+    #####:  127:		else if (strcmp(*argv,"-key") == 0)
+        -:  128:			{
+    #####:  129:			if (--argc < 1) goto bad;
+    #####:  130:			keyfile= *(++argv);
+        -:  131:			}
+    #####:  132:		else if (strcmp(*argv,"-challenge") == 0)
+        -:  133:			{
+    #####:  134:			if (--argc < 1) goto bad;
+    #####:  135:			challenge= *(++argv);
+        -:  136:			}
+    #####:  137:		else if (strcmp(*argv,"-spkac") == 0)
+        -:  138:			{
+    #####:  139:			if (--argc < 1) goto bad;
+    #####:  140:			spkac= *(++argv);
+        -:  141:			}
+    #####:  142:		else if (strcmp(*argv,"-spksect") == 0)
+        -:  143:			{
+    #####:  144:			if (--argc < 1) goto bad;
+    #####:  145:			spksect= *(++argv);
+        -:  146:			}
+        -:  147:#ifndef OPENSSL_NO_ENGINE
+    #####:  148:		else if (strcmp(*argv,"-engine") == 0)
+        -:  149:			{
+    #####:  150:			if (--argc < 1) goto bad;
+    #####:  151:			engine= *(++argv);
+        -:  152:			}
+        -:  153:#endif
+    #####:  154:		else if (strcmp(*argv,"-noout") == 0)
+        -:  155:			noout=1;
+    #####:  156:		else if (strcmp(*argv,"-pubkey") == 0)
+        -:  157:			pubkey=1;
+    #####:  158:		else if (strcmp(*argv,"-verify") == 0)
+        -:  159:			verify=1;
+        -:  160:		else badops = 1;
+    #####:  161:		argc--;
+    #####:  162:		argv++;
+        -:  163:		}
+        -:  164:
+    #####:  165:	if (badops)
+        -:  166:		{
+        -:  167:bad:
+    #####:  168:		BIO_printf(bio_err,"%s [options]\n",prog);
+    #####:  169:		BIO_printf(bio_err,"where options are\n");
+    #####:  170:		BIO_printf(bio_err," -in arg        input file\n");
+    #####:  171:		BIO_printf(bio_err," -out arg       output file\n");
+    #####:  172:		BIO_printf(bio_err," -key arg       create SPKAC using private key\n");
+    #####:  173:		BIO_printf(bio_err," -passin arg    input file pass phrase source\n");
+    #####:  174:		BIO_printf(bio_err," -challenge arg challenge string\n");
+    #####:  175:		BIO_printf(bio_err," -spkac arg     alternative SPKAC name\n");
+    #####:  176:		BIO_printf(bio_err," -noout         don't print SPKAC\n");
+    #####:  177:		BIO_printf(bio_err," -pubkey        output public key\n");
+    #####:  178:		BIO_printf(bio_err," -verify        verify SPKAC signature\n");
+        -:  179:#ifndef OPENSSL_NO_ENGINE
+    #####:  180:		BIO_printf(bio_err," -engine e      use engine e, possibly a hardware device.\n");
+        -:  181:#endif
+    #####:  182:		goto end;
+        -:  183:		}
+        -:  184:
+    #####:  185:	ERR_load_crypto_strings();
+    #####:  186:	if(!app_passwd(bio_err, passargin, NULL, &passin, NULL)) {
+    #####:  187:		BIO_printf(bio_err, "Error getting password\n");
+    #####:  188:		goto end;
+        -:  189:	}
+        -:  190:
+        -:  191:#ifndef OPENSSL_NO_ENGINE
+    #####:  192:        e = setup_engine(bio_err, engine, 0);
+        -:  193:#endif
+        -:  194:
+    #####:  195:	if(keyfile) {
+    #####:  196:		pkey = load_key(bio_err,
+    #####:  197:				strcmp(keyfile, "-") ? keyfile : NULL,
+        -:  198:				FORMAT_PEM, 1, passin, e, "private key");
+    #####:  199:		if(!pkey) {
+        -:  200:			goto end;
+        -:  201:		}
+    #####:  202:		spki = NETSCAPE_SPKI_new();
+    #####:  203:		if(challenge) ASN1_STRING_set(spki->spkac->challenge,
+    #####:  204:						 challenge, (int)strlen(challenge));
+    #####:  205:		NETSCAPE_SPKI_set_pubkey(spki, pkey);
+    #####:  206:		NETSCAPE_SPKI_sign(spki, pkey, EVP_md5());
+    #####:  207:		spkstr = NETSCAPE_SPKI_b64_encode(spki);
+        -:  208:
+    #####:  209:		if (outfile) out = BIO_new_file(outfile, "w");
+        -:  210:		else {
+    #####:  211:			out = BIO_new_fp(stdout, BIO_NOCLOSE);
+        -:  212:#ifdef OPENSSL_SYS_VMS
+        -:  213:			{
+        -:  214:			    BIO *tmpbio = BIO_new(BIO_f_linebuffer());
+        -:  215:			    out = BIO_push(tmpbio, out);
+        -:  216:			}
+        -:  217:#endif
+        -:  218:		}
+        -:  219:
+    #####:  220:		if(!out) {
+    #####:  221:			BIO_printf(bio_err, "Error opening output file\n");
+    #####:  222:			ERR_print_errors(bio_err);
+    #####:  223:			goto end;
+        -:  224:		}
+    #####:  225:		BIO_printf(out, "SPKAC=%s\n", spkstr);
+    #####:  226:		OPENSSL_free(spkstr);
+        -:  227:		ret = 0;
+    #####:  228:		goto end;
+        -:  229:	}
+        -:  230:
+        -:  231:	
+        -:  232:
+    #####:  233:	if (infile) in = BIO_new_file(infile, "r");
+    #####:  234:	else in = BIO_new_fp(stdin, BIO_NOCLOSE);
+        -:  235:
+    #####:  236:	if(!in) {
+    #####:  237:		BIO_printf(bio_err, "Error opening input file\n");
+    #####:  238:		ERR_print_errors(bio_err);
+    #####:  239:		goto end;
+        -:  240:	}
+        -:  241:
+    #####:  242:	conf = NCONF_new(NULL);
+    #####:  243:	i = NCONF_load_bio(conf, in, NULL);
+        -:  244:
+    #####:  245:	if(!i) {
+    #####:  246:		BIO_printf(bio_err, "Error parsing config file\n");
+    #####:  247:		ERR_print_errors(bio_err);
+    #####:  248:		goto end;
+        -:  249:	}
+        -:  250:
+    #####:  251:	spkstr = NCONF_get_string(conf, spksect, spkac);
+        -:  252:		
+    #####:  253:	if(!spkstr) {
+    #####:  254:		BIO_printf(bio_err, "Can't find SPKAC called \"%s\"\n", spkac);
+    #####:  255:		ERR_print_errors(bio_err);
+    #####:  256:		goto end;
+        -:  257:	}
+        -:  258:
+    #####:  259:	spki = NETSCAPE_SPKI_b64_decode(spkstr, -1);
+        -:  260:	
+    #####:  261:	if(!spki) {
+    #####:  262:		BIO_printf(bio_err, "Error loading SPKAC\n");
+    #####:  263:		ERR_print_errors(bio_err);
+    #####:  264:		goto end;
+        -:  265:	}
+        -:  266:
+    #####:  267:	if (outfile) out = BIO_new_file(outfile, "w");
+        -:  268:	else {
+    #####:  269:		out = BIO_new_fp(stdout, BIO_NOCLOSE);
+        -:  270:#ifdef OPENSSL_SYS_VMS
+        -:  271:		{
+        -:  272:		    BIO *tmpbio = BIO_new(BIO_f_linebuffer());
+        -:  273:		    out = BIO_push(tmpbio, out);
+        -:  274:		}
+        -:  275:#endif
+        -:  276:	}
+        -:  277:
+    #####:  278:	if(!out) {
+    #####:  279:		BIO_printf(bio_err, "Error opening output file\n");
+    #####:  280:		ERR_print_errors(bio_err);
+    #####:  281:		goto end;
+        -:  282:	}
+        -:  283:
+    #####:  284:	if(!noout) NETSCAPE_SPKI_print(out, spki);
+    #####:  285:	pkey = NETSCAPE_SPKI_get_pubkey(spki);
+    #####:  286:	if(verify) {
+    #####:  287:		i = NETSCAPE_SPKI_verify(spki, pkey);
+    #####:  288:		if (i > 0) BIO_printf(bio_err, "Signature OK\n");
+        -:  289:		else {
+    #####:  290:			BIO_printf(bio_err, "Signature Failure\n");
+    #####:  291:			ERR_print_errors(bio_err);
+    #####:  292:			goto end;
+        -:  293:		}
+        -:  294:	}
+    #####:  295:	if(pubkey) PEM_write_bio_PUBKEY(out, pkey);
+        -:  296:
+        -:  297:	ret = 0;
+        -:  298:
+        -:  299:end:
+    #####:  300:	NCONF_free(conf);
+    #####:  301:	NETSCAPE_SPKI_free(spki);
+    #####:  302:	BIO_free(in);
+    #####:  303:	BIO_free_all(out);
+    #####:  304:	EVP_PKEY_free(pkey);
+    #####:  305:	if(passin) OPENSSL_free(passin);
+        -:  306:	apps_shutdown();
+    #####:  307:	OPENSSL_EXIT(ret);
+        -:  308:	}

@@ -1,0 +1,295 @@
+        -:    0:Source:ocsp_prn.c
+        -:    0:Graph:ocsp_prn.gcno
+        -:    0:Data:ocsp_prn.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* ocsp_prn.c */
+        -:    2:/* Written by Tom Titchener <Tom_Titchener@groove.net> for the OpenSSL
+        -:    3: * project. */
+        -:    4:
+        -:    5:/* History:
+        -:    6:   This file was originally part of ocsp.c and was transfered to Richard
+        -:    7:   Levitte from CertCo by Kathy Weinhold in mid-spring 2000 to be included
+        -:    8:   in OpenSSL or released as a patch kit. */
+        -:    9:
+        -:   10:/* ====================================================================
+        -:   11: * Copyright (c) 1998-2000 The OpenSSL Project.  All rights reserved.
+        -:   12: *
+        -:   13: * Redistribution and use in source and binary forms, with or without
+        -:   14: * modification, are permitted provided that the following conditions
+        -:   15: * are met:
+        -:   16: *
+        -:   17: * 1. Redistributions of source code must retain the above copyright
+        -:   18: *    notice, this list of conditions and the following disclaimer. 
+        -:   19: *
+        -:   20: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   21: *    notice, this list of conditions and the following disclaimer in
+        -:   22: *    the documentation and/or other materials provided with the
+        -:   23: *    distribution.
+        -:   24: *
+        -:   25: * 3. All advertising materials mentioning features or use of this
+        -:   26: *    software must display the following acknowledgment:
+        -:   27: *    "This product includes software developed by the OpenSSL Project
+        -:   28: *    for use in the OpenSSL Toolkit. (http://www.openssl.org/)"
+        -:   29: *
+        -:   30: * 4. The names "OpenSSL Toolkit" and "OpenSSL Project" must not be used to
+        -:   31: *    endorse or promote products derived from this software without
+        -:   32: *    prior written permission. For written permission, please contact
+        -:   33: *    openssl-core@openssl.org.
+        -:   34: *
+        -:   35: * 5. Products derived from this software may not be called "OpenSSL"
+        -:   36: *    nor may "OpenSSL" appear in their names without prior written
+        -:   37: *    permission of the OpenSSL Project.
+        -:   38: *
+        -:   39: * 6. Redistributions of any form whatsoever must retain the following
+        -:   40: *    acknowledgment:
+        -:   41: *    "This product includes software developed by the OpenSSL Project
+        -:   42: *    for use in the OpenSSL Toolkit (http://www.openssl.org/)"
+        -:   43: *
+        -:   44: * THIS SOFTWARE IS PROVIDED BY THE OpenSSL PROJECT ``AS IS'' AND ANY
+        -:   45: * EXPRESSED OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   46: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+        -:   47: * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE OpenSSL PROJECT OR
+        -:   48: * ITS CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+        -:   49: * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+        -:   50: * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+        -:   51: * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   52: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+        -:   53: * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+        -:   54: * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+        -:   55: * OF THE POSSIBILITY OF SUCH DAMAGE.
+        -:   56: * ====================================================================
+        -:   57: *
+        -:   58: * This product includes cryptographic software written by Eric Young
+        -:   59: * (eay@cryptsoft.com).  This product includes software written by Tim
+        -:   60: * Hudson (tjh@cryptsoft.com).
+        -:   61: *
+        -:   62: */
+        -:   63:
+        -:   64:#include <openssl/bio.h>
+        -:   65:#include <openssl/err.h>
+        -:   66:#include <openssl/ocsp.h>
+        -:   67:#include <openssl/pem.h>
+        -:   68:
+    #####:   69:static int ocsp_certid_print(BIO *bp, OCSP_CERTID* a, int indent)
+        -:   70:        {
+    #####:   71:	BIO_printf(bp, "%*sCertificate ID:\n", indent, "");
+    #####:   72:	indent += 2;
+    #####:   73:	BIO_printf(bp, "%*sHash Algorithm: ", indent, "");
+    #####:   74:	i2a_ASN1_OBJECT(bp, a->hashAlgorithm->algorithm);
+    #####:   75:	BIO_printf(bp, "\n%*sIssuer Name Hash: ", indent, "");
+    #####:   76:	i2a_ASN1_STRING(bp, a->issuerNameHash, V_ASN1_OCTET_STRING);
+    #####:   77:	BIO_printf(bp, "\n%*sIssuer Key Hash: ", indent, "");
+    #####:   78:	i2a_ASN1_STRING(bp, a->issuerKeyHash, V_ASN1_OCTET_STRING);
+    #####:   79:	BIO_printf(bp, "\n%*sSerial Number: ", indent, "");
+    #####:   80:	i2a_ASN1_INTEGER(bp, a->serialNumber);
+    #####:   81:	BIO_printf(bp, "\n");
+    #####:   82:	return 1;
+        -:   83:	}
+        -:   84:
+        -:   85:typedef struct
+        -:   86:	{
+        -:   87:	long t;
+        -:   88:	const char *m;
+        -:   89:	} OCSP_TBLSTR;
+        -:   90:
+        -:   91:static const char *table2string(long s, const OCSP_TBLSTR *ts, int len)
+        -:   92:{
+        -:   93:	const OCSP_TBLSTR *p;
+    #####:   94:	for (p=ts; p < ts + len; p++)
+    #####:   95:	        if (p->t == s)
+    #####:   96:		         return p->m;
+        -:   97:	return "(UNKNOWN)";
+        -:   98:}
+        -:   99:
+    #####:  100:const char *OCSP_response_status_str(long s)
+        -:  101:        {
+        -:  102:	static const OCSP_TBLSTR rstat_tbl[] = {
+        -:  103:	        { OCSP_RESPONSE_STATUS_SUCCESSFUL, "successful" },
+        -:  104:	        { OCSP_RESPONSE_STATUS_MALFORMEDREQUEST, "malformedrequest" },
+        -:  105:	        { OCSP_RESPONSE_STATUS_INTERNALERROR, "internalerror" },
+        -:  106:	        { OCSP_RESPONSE_STATUS_TRYLATER, "trylater" },
+        -:  107:	        { OCSP_RESPONSE_STATUS_SIGREQUIRED, "sigrequired" },
+        -:  108:	        { OCSP_RESPONSE_STATUS_UNAUTHORIZED, "unauthorized" } };
+    #####:  109:	return table2string(s, rstat_tbl, 6);
+        -:  110:	} 
+        -:  111:
+    #####:  112:const char *OCSP_cert_status_str(long s)
+        -:  113:        {
+        -:  114:	static const OCSP_TBLSTR cstat_tbl[] = {
+        -:  115:	        { V_OCSP_CERTSTATUS_GOOD, "good" },
+        -:  116:	        { V_OCSP_CERTSTATUS_REVOKED, "revoked" },
+        -:  117:	        { V_OCSP_CERTSTATUS_UNKNOWN, "unknown" } };
+    #####:  118:	return table2string(s, cstat_tbl, 3);
+        -:  119:	} 
+        -:  120:
+    #####:  121:const char *OCSP_crl_reason_str(long s)
+        -:  122:        {
+        -:  123:	static const OCSP_TBLSTR reason_tbl[] = {
+        -:  124:	  { OCSP_REVOKED_STATUS_UNSPECIFIED, "unspecified" },
+        -:  125:          { OCSP_REVOKED_STATUS_KEYCOMPROMISE, "keyCompromise" },
+        -:  126:          { OCSP_REVOKED_STATUS_CACOMPROMISE, "cACompromise" },
+        -:  127:          { OCSP_REVOKED_STATUS_AFFILIATIONCHANGED, "affiliationChanged" },
+        -:  128:          { OCSP_REVOKED_STATUS_SUPERSEDED, "superseded" },
+        -:  129:          { OCSP_REVOKED_STATUS_CESSATIONOFOPERATION, "cessationOfOperation" },
+        -:  130:          { OCSP_REVOKED_STATUS_CERTIFICATEHOLD, "certificateHold" },
+        -:  131:          { OCSP_REVOKED_STATUS_REMOVEFROMCRL, "removeFromCRL" } };
+    #####:  132:	return table2string(s, reason_tbl, 8);
+        -:  133:	} 
+        -:  134:
+    #####:  135:int OCSP_REQUEST_print(BIO *bp, OCSP_REQUEST* o, unsigned long flags)
+        -:  136:        {
+        -:  137:	int i;
+        -:  138:	long l;
+        -:  139:	OCSP_CERTID* cid = NULL;
+        -:  140:	OCSP_ONEREQ *one = NULL;
+    #####:  141:	OCSP_REQINFO *inf = o->tbsRequest;
+    #####:  142:	OCSP_SIGNATURE *sig = o->optionalSignature;
+        -:  143:
+    #####:  144:	if (BIO_write(bp,"OCSP Request Data:\n",19) <= 0) goto err;
+    #####:  145:	l=ASN1_INTEGER_get(inf->version);
+    #####:  146:	if (BIO_printf(bp,"    Version: %lu (0x%lx)",l+1,l) <= 0) goto err;
+    #####:  147:	if (inf->requestorName != NULL)
+        -:  148:	        {
+    #####:  149:		if (BIO_write(bp,"\n    Requestor Name: ",21) <= 0) 
+        -:  150:		        goto err;
+    #####:  151:		GENERAL_NAME_print(bp, inf->requestorName);
+        -:  152:		}
+    #####:  153:	if (BIO_write(bp,"\n    Requestor List:\n",21) <= 0) goto err;
+    #####:  154:	for (i = 0; i < sk_OCSP_ONEREQ_num(inf->requestList); i++)
+        -:  155:	        {
+    #####:  156:		one = sk_OCSP_ONEREQ_value(inf->requestList, i);
+    #####:  157:		cid = one->reqCert;
+    #####:  158:		ocsp_certid_print(bp, cid, 8);
+    #####:  159:		if (!X509V3_extensions_print(bp,
+        -:  160:					"Request Single Extensions",
+        -:  161:					one->singleRequestExtensions, flags, 8))
+        -:  162:							goto err;
+        -:  163:		}
+    #####:  164:	if (!X509V3_extensions_print(bp, "Request Extensions",
+        -:  165:			inf->requestExtensions, flags, 4))
+        -:  166:							goto err;
+    #####:  167:	if (sig)
+        -:  168:	        {
+    #####:  169:		X509_signature_print(bp, sig->signatureAlgorithm, sig->signature);
+    #####:  170:		for (i=0; i<sk_X509_num(sig->certs); i++)
+        -:  171:			{
+    #####:  172:			X509_print(bp, sk_X509_value(sig->certs,i));
+    #####:  173:			PEM_write_bio_X509(bp,sk_X509_value(sig->certs,i));
+        -:  174:			}
+        -:  175:		}
+        -:  176:	return 1;
+        -:  177:err:
+        -:  178:	return 0;
+        -:  179:	}
+        -:  180:
+    #####:  181:int OCSP_RESPONSE_print(BIO *bp, OCSP_RESPONSE* o, unsigned long flags)
+        -:  182:        {
+        -:  183:	int i, ret = 0;
+        -:  184:	long l;
+        -:  185:	OCSP_CERTID *cid = NULL;
+        -:  186:	OCSP_BASICRESP *br = NULL;
+        -:  187:	OCSP_RESPID *rid = NULL;
+        -:  188:	OCSP_RESPDATA  *rd = NULL;
+        -:  189:	OCSP_CERTSTATUS *cst = NULL;
+        -:  190:	OCSP_REVOKEDINFO *rev = NULL;
+        -:  191:	OCSP_SINGLERESP *single = NULL;
+    #####:  192:	OCSP_RESPBYTES *rb = o->responseBytes;
+        -:  193:
+    #####:  194:	if (BIO_puts(bp,"OCSP Response Data:\n") <= 0) goto err;
+    #####:  195:	l=ASN1_ENUMERATED_get(o->responseStatus);
+    #####:  196:	if (BIO_printf(bp,"    OCSP Response Status: %s (0x%lx)\n",
+        -:  197:		       OCSP_response_status_str(l), l) <= 0) goto err;
+    #####:  198:	if (rb == NULL) return 1;
+    #####:  199:        if (BIO_puts(bp,"    Response Type: ") <= 0)
+        -:  200:	        goto err;
+    #####:  201:	if(i2a_ASN1_OBJECT(bp, rb->responseType) <= 0)
+        -:  202:	        goto err;
+    #####:  203:	if (OBJ_obj2nid(rb->responseType) != NID_id_pkix_OCSP_basic) 
+        -:  204:	        {
+    #####:  205:		BIO_puts(bp," (unknown response type)\n");
+    #####:  206:		return 1;
+        -:  207:		}
+        -:  208:
+    #####:  209:	i = ASN1_STRING_length(rb->response);
+    #####:  210:	if (!(br = OCSP_response_get1_basic(o))) goto err;
+    #####:  211:	rd = br->tbsResponseData;
+    #####:  212:	l=ASN1_INTEGER_get(rd->version);
+    #####:  213:	if (BIO_printf(bp,"\n    Version: %lu (0x%lx)\n",
+        -:  214:		       l+1,l) <= 0) goto err;
+    #####:  215:	if (BIO_puts(bp,"    Responder Id: ") <= 0) goto err;
+        -:  216:
+    #####:  217:	rid =  rd->responderId;
+    #####:  218:	switch (rid->type)
+        -:  219:		{
+        -:  220:		case V_OCSP_RESPID_NAME:
+    #####:  221:		        X509_NAME_print_ex(bp, rid->value.byName, 0, XN_FLAG_ONELINE);
+    #####:  222:		        break;
+        -:  223:		case V_OCSP_RESPID_KEY:
+    #####:  224:		        i2a_ASN1_STRING(bp, rid->value.byKey, V_ASN1_OCTET_STRING);
+    #####:  225:		        break;
+        -:  226:		}
+        -:  227:
+    #####:  228:	if (BIO_printf(bp,"\n    Produced At: ")<=0) goto err;
+    #####:  229:	if (!ASN1_GENERALIZEDTIME_print(bp, rd->producedAt)) goto err;
+    #####:  230:	if (BIO_printf(bp,"\n    Responses:\n") <= 0) goto err;
+    #####:  231:	for (i = 0; i < sk_OCSP_SINGLERESP_num(rd->responses); i++)
+        -:  232:	        {
+    #####:  233:		if (! sk_OCSP_SINGLERESP_value(rd->responses, i)) continue;
+    #####:  234:		single = sk_OCSP_SINGLERESP_value(rd->responses, i);
+    #####:  235:		cid = single->certId;
+    #####:  236:		if(ocsp_certid_print(bp, cid, 4) <= 0) goto err;
+    #####:  237:		cst = single->certStatus;
+    #####:  238:		if (BIO_printf(bp,"    Cert Status: %s",
+    #####:  239:			       OCSP_cert_status_str(cst->type)) <= 0)
+        -:  240:		        goto err;
+    #####:  241:		if (cst->type == V_OCSP_CERTSTATUS_REVOKED)
+        -:  242:		        {
+    #####:  243:		        rev = cst->value.revoked;
+    #####:  244:			if (BIO_printf(bp, "\n    Revocation Time: ") <= 0) 
+        -:  245:			        goto err;
+    #####:  246:			if (!ASN1_GENERALIZEDTIME_print(bp, 
+    #####:  247:							rev->revocationTime)) 
+        -:  248:				goto err;
+    #####:  249:			if (rev->revocationReason) 
+        -:  250:			        {
+    #####:  251:				l=ASN1_ENUMERATED_get(rev->revocationReason);
+    #####:  252:				if (BIO_printf(bp, 
+        -:  253:					 "\n    Revocation Reason: %s (0x%lx)",
+        -:  254:					       OCSP_crl_reason_str(l), l) <= 0)
+        -:  255:				        goto err;
+        -:  256:				}
+        -:  257:			}
+    #####:  258:		if (BIO_printf(bp,"\n    This Update: ") <= 0) goto err;
+    #####:  259:		if (!ASN1_GENERALIZEDTIME_print(bp, single->thisUpdate)) 
+        -:  260:			goto err;
+    #####:  261:		if (single->nextUpdate)
+        -:  262:		        {
+    #####:  263:			if (BIO_printf(bp,"\n    Next Update: ") <= 0)goto err;
+    #####:  264:			if (!ASN1_GENERALIZEDTIME_print(bp,single->nextUpdate))
+        -:  265:				goto err;
+        -:  266:			}
+    #####:  267:		if (BIO_write(bp,"\n",1) <= 0) goto err;
+    #####:  268:		if (!X509V3_extensions_print(bp,
+        -:  269:					"Response Single Extensions",
+        -:  270:					single->singleExtensions, flags, 8))
+        -:  271:							goto err;
+    #####:  272:		if (BIO_write(bp,"\n",1) <= 0) goto err;
+        -:  273:		}
+    #####:  274:	if (!X509V3_extensions_print(bp, "Response Extensions",
+        -:  275:					rd->responseExtensions, flags, 4))
+        -:  276:							goto err;
+    #####:  277:	if(X509_signature_print(bp, br->signatureAlgorithm, br->signature) <= 0)
+        -:  278:							goto err;
+        -:  279:
+    #####:  280:	for (i=0; i<sk_X509_num(br->certs); i++)
+        -:  281:		{
+    #####:  282:		X509_print(bp, sk_X509_value(br->certs,i));
+    #####:  283:		PEM_write_bio_X509(bp,sk_X509_value(br->certs,i));
+        -:  284:		}
+        -:  285:
+        -:  286:	ret = 1;
+        -:  287:err:
+    #####:  288:	OCSP_BASICRESP_free(br);
+    #####:  289:	return ret;
+        -:  290:	}

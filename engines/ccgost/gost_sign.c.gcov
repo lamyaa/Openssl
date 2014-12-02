@@ -1,0 +1,326 @@
+        -:    0:Source:gost_sign.c
+        -:    0:Graph:gost_sign.gcno
+        -:    0:Data:gost_sign.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/**********************************************************************
+        -:    2: *                          gost_sign.c                               *
+        -:    3: *             Copyright (c) 2005-2006 Cryptocom LTD                  *
+        -:    4: *         This file is distributed under the same license as OpenSSL *
+        -:    5: *                                                                    *
+        -:    6: *       Implementation of GOST R 34.10-94 signature algorithm        *
+        -:    7: *       for OpenSSL                                                  *
+        -:    8: *          Requires OpenSSL 0.9.9 for compilation                    *
+        -:    9: **********************************************************************/
+        -:   10:#include <string.h>
+        -:   11:#include <openssl/rand.h>
+        -:   12:#include <openssl/bn.h>
+        -:   13:#include <openssl/dsa.h>
+        -:   14:#include <openssl/evp.h>
+        -:   15:
+        -:   16:#include "gost_params.h"
+        -:   17:#include "gost_lcl.h"
+        -:   18:#include "e_gost_err.h"
+        -:   19:
+        -:   20:#ifdef DEBUG_SIGN
+        -:   21:void dump_signature(const char *message,const unsigned char *buffer,size_t len)
+        -:   22:	{
+        -:   23:	size_t i;
+        -:   24:	fprintf(stderr,"signature %s Length=%d",message,len);
+        -:   25:	for (i=0; i<len; i++)
+        -:   26:		{
+        -:   27:		if (i% 16 ==0) fputc('\n',stderr);
+        -:   28:		fprintf (stderr," %02x",buffer[i]);
+        -:   29:		}
+        -:   30:	fprintf(stderr,"\nEnd of signature\n");
+        -:   31:	}
+        -:   32:
+        -:   33:void dump_dsa_sig(const char *message, DSA_SIG *sig)
+        -:   34:	{
+        -:   35:	fprintf(stderr,"%s\nR=",message);
+        -:   36:	BN_print_fp(stderr,sig->r);
+        -:   37:	fprintf(stderr,"\nS=");
+        -:   38:	BN_print_fp(stderr,sig->s);
+        -:   39:	fprintf(stderr,"\n");
+        -:   40:	}
+        -:   41:
+        -:   42:#else
+        -:   43:
+        -:   44:#define dump_signature(a,b,c)
+        -:   45:#define dump_dsa_sig(a,b)
+        -:   46:#endif
+        -:   47:
+        -:   48:/*
+        -:   49: * Computes signature and returns it as DSA_SIG structure
+        -:   50: */
+    #####:   51:DSA_SIG *gost_do_sign(const unsigned char *dgst,int dlen, DSA *dsa)
+        -:   52:	{
+        -:   53:	BIGNUM *k=NULL,*tmp=NULL,*tmp2=NULL;
+    #####:   54:	DSA_SIG *newsig = DSA_SIG_new();
+    #####:   55:	BIGNUM *md = hashsum2bn(dgst);
+        -:   56:	/* check if H(M) mod q is zero */
+    #####:   57:	BN_CTX *ctx=BN_CTX_new();
+    #####:   58:	BN_CTX_start(ctx);
+    #####:   59:	if (!newsig)
+        -:   60:		{
+    #####:   61:		GOSTerr(GOST_F_GOST_DO_SIGN,GOST_R_NO_MEMORY);
+    #####:   62:		goto err;
+        -:   63:		}	
+    #####:   64:	tmp=BN_CTX_get(ctx);
+    #####:   65:	k = BN_CTX_get(ctx);
+    #####:   66:	tmp2 = BN_CTX_get(ctx);
+    #####:   67:	BN_mod(tmp,md,dsa->q,ctx);
+    #####:   68:	if (BN_is_zero(tmp))
+        -:   69:		{
+    #####:   70:		BN_one(md);
+        -:   71:		}	
+        -:   72:	do
+        -:   73:		{
+        -:   74:		do
+        -:   75:			{
+        -:   76:			/*Generate random number k less than q*/
+    #####:   77:			BN_rand_range(k,dsa->q);
+        -:   78:			/* generate r = (a^x mod p) mod q */
+    #####:   79:			BN_mod_exp(tmp,dsa->g, k, dsa->p,ctx);
+    #####:   80:			if (!(newsig->r)) newsig->r=BN_new();
+    #####:   81:			BN_mod(newsig->r,tmp,dsa->q,ctx);
+        -:   82:			}
+    #####:   83:		while (BN_is_zero(newsig->r));
+        -:   84:		/* generate s = (xr + k(Hm)) mod q */
+    #####:   85:		BN_mod_mul(tmp,dsa->priv_key,newsig->r,dsa->q,ctx);
+    #####:   86:		BN_mod_mul(tmp2,k,md,dsa->q,ctx);
+    #####:   87:		if (!newsig->s) newsig->s=BN_new();
+    #####:   88:		BN_mod_add(newsig->s,tmp,tmp2,dsa->q,ctx);
+        -:   89:		}
+    #####:   90:	while (BN_is_zero(newsig->s));		
+        -:   91:	err:
+    #####:   92:	BN_free(md);
+    #####:   93:	BN_CTX_end(ctx);
+    #####:   94:	BN_CTX_free(ctx);
+    #####:   95:	return newsig;
+        -:   96:	}	
+        -:   97:
+        -:   98:
+        -:   99:/*
+        -:  100: * Packs signature according to Cryptocom rules
+        -:  101: * and frees up DSA_SIG structure
+        -:  102: */
+        -:  103:/*
+        -:  104:int pack_sign_cc(DSA_SIG *s,int order,unsigned char *sig, size_t *siglen)
+        -:  105:	{
+        -:  106:	*siglen = 2*order;
+        -:  107:	memset(sig,0,*siglen);
+        -:  108:	store_bignum(s->r, sig,order);
+        -:  109:	store_bignum(s->s, sig + order,order);
+        -:  110:	dump_signature("serialized",sig,*siglen);
+        -:  111:	DSA_SIG_free(s);
+        -:  112:	return 1;
+        -:  113:	}
+        -:  114:*/
+        -:  115:/*
+        -:  116: * Packs signature according to Cryptopro rules
+        -:  117: * and frees up DSA_SIG structure
+        -:  118: */
+    #####:  119:int pack_sign_cp(DSA_SIG *s,int order,unsigned char *sig, size_t *siglen)
+        -:  120:	{
+    #####:  121:	*siglen = 2*order;
+        -:  122:	memset(sig,0,*siglen);
+    #####:  123:	store_bignum(s->s, sig, order);
+    #####:  124:	store_bignum(s->r, sig+order,order);
+        -:  125:	dump_signature("serialized",sig,*siglen);
+    #####:  126:	DSA_SIG_free(s);
+    #####:  127:	return 1;
+        -:  128:	}
+        -:  129:
+        -:  130:/*
+        -:  131: * Verifies signature passed as DSA_SIG structure
+        -:  132: *
+        -:  133: */
+        -:  134:
+    #####:  135:int gost_do_verify(const unsigned char *dgst, int dgst_len,
+        -:  136:	DSA_SIG *sig, DSA *dsa)
+        -:  137:	{
+        -:  138:	BIGNUM *md, *tmp=NULL;
+        -:  139:	BIGNUM *q2=NULL;
+        -:  140:	BIGNUM *u=NULL,*v=NULL,*z1=NULL,*z2=NULL;
+        -:  141:	BIGNUM *tmp2=NULL,*tmp3=NULL;
+        -:  142:	int ok;
+    #####:  143:	BN_CTX *ctx = BN_CTX_new();
+        -:  144:
+    #####:  145:	BN_CTX_start(ctx);
+    #####:  146:	if (BN_cmp(sig->s,dsa->q)>=1||
+    #####:  147:		BN_cmp(sig->r,dsa->q)>=1)
+        -:  148:		{
+    #####:  149:		GOSTerr(GOST_F_GOST_DO_VERIFY,GOST_R_SIGNATURE_PARTS_GREATER_THAN_Q);
+    #####:  150:		return 0;
+        -:  151:		}
+    #####:  152:	md=hashsum2bn(dgst);
+        -:  153:	
+    #####:  154:	tmp=BN_CTX_get(ctx);
+    #####:  155:	v=BN_CTX_get(ctx);
+    #####:  156:	q2=BN_CTX_get(ctx);
+    #####:  157:	z1=BN_CTX_get(ctx);
+    #####:  158:	z2=BN_CTX_get(ctx);
+    #####:  159:	tmp2=BN_CTX_get(ctx);
+    #####:  160:	tmp3=BN_CTX_get(ctx);
+    #####:  161:	u = BN_CTX_get(ctx);
+        -:  162:	
+    #####:  163:	BN_mod(tmp,md,dsa->q,ctx);
+    #####:  164:	if (BN_is_zero(tmp))
+        -:  165:		{
+    #####:  166:		BN_one(md);
+        -:  167:		}
+    #####:  168:	BN_copy(q2,dsa->q);
+    #####:  169:	BN_sub_word(q2,2);
+    #####:  170:	BN_mod_exp(v,md,q2,dsa->q,ctx);
+    #####:  171:	BN_mod_mul(z1,sig->s,v,dsa->q,ctx);
+    #####:  172:	BN_sub(tmp,dsa->q,sig->r);
+    #####:  173:	BN_mod_mul(z2,tmp,v,dsa->p,ctx);
+    #####:  174:	BN_mod_exp(tmp,dsa->g,z1,dsa->p,ctx);
+    #####:  175:	BN_mod_exp(tmp2,dsa->pub_key,z2,dsa->p,ctx);
+    #####:  176:	BN_mod_mul(tmp3,tmp,tmp2,dsa->p,ctx);
+    #####:  177:	BN_mod(u,tmp3,dsa->q,ctx);
+    #####:  178:	ok= BN_cmp(u,sig->r);
+        -:  179:	
+    #####:  180:	BN_free(md);
+    #####:  181:	BN_CTX_end(ctx);
+    #####:  182:	BN_CTX_free(ctx);
+    #####:  183:	if (ok!=0)
+        -:  184:		{
+    #####:  185:		GOSTerr(GOST_F_GOST_DO_VERIFY,GOST_R_SIGNATURE_MISMATCH);
+        -:  186:		}	
+    #####:  187:	return (ok==0);
+        -:  188:	}
+        -:  189:
+        -:  190:/*
+        -:  191: * Computes public keys for GOST R 34.10-94 algorithm
+        -:  192: *
+        -:  193: */
+    #####:  194:int gost94_compute_public(DSA *dsa)
+        -:  195:	{
+        -:  196:	/* Now fill algorithm parameters with correct values */
+    #####:  197:	BN_CTX *ctx = BN_CTX_new();
+    #####:  198:	if (!dsa->g)
+        -:  199:		{
+    #####:  200:		GOSTerr(GOST_F_GOST94_COMPUTE_PUBLIC,GOST_R_KEY_IS_NOT_INITALIZED);
+    #####:  201:		return 0;
+        -:  202:		}	
+        -:  203:	/* Compute public key  y = a^x mod p */
+    #####:  204:	dsa->pub_key=BN_new();
+    #####:  205:	BN_mod_exp(dsa->pub_key, dsa->g,dsa->priv_key,dsa->p,ctx);
+    #####:  206:	BN_CTX_free(ctx);
+    #####:  207:	return 1;
+        -:  208:	}
+        -:  209:
+        -:  210:/*
+        -:  211: * Fill GOST 94 params, searching them in R3410_paramset array
+        -:  212: * by nid of paramset
+        -:  213: *
+        -:  214: */
+    #####:  215:int fill_GOST94_params(DSA *dsa,int nid)
+        -:  216:	{
+        -:  217:	R3410_params *params=R3410_paramset;
+    #####:  218:	while (params->nid!=NID_undef && params->nid !=nid) params++;
+    #####:  219:	if (params->nid == NID_undef)
+        -:  220:		{
+    #####:  221:		GOSTerr(GOST_F_FILL_GOST94_PARAMS,GOST_R_UNSUPPORTED_PARAMETER_SET);
+    #####:  222:		return 0;
+        -:  223:		}	
+        -:  224:#define dump_signature(a,b,c)
+    #####:  225:	if (dsa->p) { BN_free(dsa->p); }
+    #####:  226:	dsa->p=NULL;
+    #####:  227:	BN_dec2bn(&(dsa->p),params->p);
+    #####:  228:	if (dsa->q) { BN_free(dsa->q); }
+    #####:  229:	dsa->q=NULL;
+    #####:  230:	BN_dec2bn(&(dsa->q),params->q);
+    #####:  231:	if (dsa->g) { BN_free(dsa->g); }
+    #####:  232:	dsa->g=NULL;
+    #####:  233:	BN_dec2bn(&(dsa->g),params->a);
+    #####:  234:	return 1;
+        -:  235:	}	
+        -:  236:
+        -:  237:/*
+        -:  238: *  Generate GOST R 34.10-94 keypair
+        -:  239: *
+        -:  240: *
+        -:  241: */
+    #####:  242:int gost_sign_keygen(DSA *dsa)
+        -:  243:	{
+    #####:  244:	dsa->priv_key = BN_new();
+    #####:  245:	BN_rand_range(dsa->priv_key,dsa->q);
+    #####:  246:	return gost94_compute_public( dsa);
+        -:  247:	}
+        -:  248:
+        -:  249:/* Unpack signature according to cryptocom rules  */
+        -:  250:/*
+        -:  251:DSA_SIG *unpack_cc_signature(const unsigned char *sig,size_t siglen)
+        -:  252:	{
+        -:  253:	DSA_SIG *s;
+        -:  254:	s = DSA_SIG_new();
+        -:  255:	if (s == NULL)
+        -:  256:		{
+        -:  257:		GOSTerr(GOST_F_UNPACK_CC_SIGNATURE,GOST_R_NO_MEMORY);
+        -:  258:		return(NULL);
+        -:  259:		}
+        -:  260:	s->r = getbnfrombuf(sig, siglen/2);
+        -:  261:	s->s = getbnfrombuf(sig + siglen/2, siglen/2);
+        -:  262:	return s;
+        -:  263:	}
+        -:  264:*/
+        -:  265:/* Unpack signature according to cryptopro rules  */
+    #####:  266:DSA_SIG *unpack_cp_signature(const unsigned char *sig,size_t siglen)
+        -:  267:	{
+        -:  268:	DSA_SIG *s;
+        -:  269:
+    #####:  270:	s = DSA_SIG_new();
+    #####:  271:	if (s == NULL)
+        -:  272:		{
+    #####:  273:		GOSTerr(GOST_F_UNPACK_CP_SIGNATURE,GOST_R_NO_MEMORY);
+    #####:  274:		return NULL;
+        -:  275:		}
+    #####:  276:	s->s = getbnfrombuf(sig , siglen/2);
+    #####:  277:	s->r = getbnfrombuf(sig + siglen/2, siglen/2);
+    #####:  278:	return s;
+        -:  279:	}
+        -:  280:
+        -:  281:/* Convert little-endian byte array into bignum */
+    #####:  282:BIGNUM *hashsum2bn(const unsigned char *dgst)
+        -:  283:	{
+        -:  284:	unsigned char buf[32];
+        -:  285:	int i;
+    #####:  286:	for (i=0;i<32;i++)
+        -:  287:		{
+    #####:  288:		buf[31-i]=dgst[i];
+        -:  289:		}
+    #####:  290:	return getbnfrombuf(buf,32);
+        -:  291:	}
+        -:  292:
+        -:  293:/* Convert byte buffer to bignum, skipping leading zeros*/
+    #####:  294:BIGNUM *getbnfrombuf(const unsigned char *buf,size_t len)
+        -:  295:	{
+    #####:  296:	while (*buf==0&&len>0)
+        -:  297:		{
+    #####:  298:		buf++; len--;
+        -:  299:		}
+    #####:  300:	if (len)
+        -:  301:		{
+    #####:  302:		return BN_bin2bn(buf,len,NULL);
+        -:  303:		}
+        -:  304:	else
+        -:  305:		{
+    #####:  306:		BIGNUM *b=BN_new();
+    #####:  307:		BN_zero(b);
+    #####:  308:		return b;
+        -:  309:		}
+        -:  310:	}
+        -:  311:
+        -:  312:/* Pack bignum into byte buffer of given size, filling all leading bytes
+        -:  313: * by zeros */
+    #####:  314:int store_bignum(BIGNUM *bn, unsigned char *buf,int len)
+        -:  315:	{
+    #####:  316:	int bytes = BN_num_bytes(bn);
+    #####:  317:	if (bytes>len) return 0;
+    #####:  318:	memset(buf,0,len);
+    #####:  319:	BN_bn2bin(bn,buf+len-bytes);
+    #####:  320:	return 1;
+        -:  321:	}	

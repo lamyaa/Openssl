@@ -1,0 +1,602 @@
+        -:    0:Source:sha512.c
+        -:    0:Graph:sha512.gcno
+        -:    0:Data:sha512.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* crypto/sha/sha512.c */
+        -:    2:/* ====================================================================
+        -:    3: * Copyright (c) 2004 The OpenSSL Project.  All rights reserved
+        -:    4: * according to the OpenSSL license [found in ../../LICENSE].
+        -:    5: * ====================================================================
+        -:    6: */
+        -:    7:#include <openssl/opensslconf.h>
+        -:    8:#if !defined(OPENSSL_NO_SHA) && !defined(OPENSSL_NO_SHA512)
+        -:    9:/*
+        -:   10: * IMPLEMENTATION NOTES.
+        -:   11: *
+        -:   12: * As you might have noticed 32-bit hash algorithms:
+        -:   13: *
+        -:   14: * - permit SHA_LONG to be wider than 32-bit (case on CRAY);
+        -:   15: * - optimized versions implement two transform functions: one operating
+        -:   16: *   on [aligned] data in host byte order and one - on data in input
+        -:   17: *   stream byte order;
+        -:   18: * - share common byte-order neutral collector and padding function
+        -:   19: *   implementations, ../md32_common.h;
+        -:   20: *
+        -:   21: * Neither of the above applies to this SHA-512 implementations. Reasons
+        -:   22: * [in reverse order] are:
+        -:   23: *
+        -:   24: * - it's the only 64-bit hash algorithm for the moment of this writing,
+        -:   25: *   there is no need for common collector/padding implementation [yet];
+        -:   26: * - by supporting only one transform function [which operates on
+        -:   27: *   *aligned* data in input stream byte order, big-endian in this case]
+        -:   28: *   we minimize burden of maintenance in two ways: a) collector/padding
+        -:   29: *   function is simpler; b) only one transform function to stare at;
+        -:   30: * - SHA_LONG64 is required to be exactly 64-bit in order to be able to
+        -:   31: *   apply a number of optimizations to mitigate potential performance
+        -:   32: *   penalties caused by previous design decision;
+        -:   33: *
+        -:   34: * Caveat lector.
+        -:   35: *
+        -:   36: * Implementation relies on the fact that "long long" is 64-bit on
+        -:   37: * both 32- and 64-bit platforms. If some compiler vendor comes up
+        -:   38: * with 128-bit long long, adjustment to sha.h would be required.
+        -:   39: * As this implementation relies on 64-bit integer type, it's totally
+        -:   40: * inappropriate for platforms which don't support it, most notably
+        -:   41: * 16-bit platforms.
+        -:   42: *					<appro@fy.chalmers.se>
+        -:   43: */
+        -:   44:#include <stdlib.h>
+        -:   45:#include <string.h>
+        -:   46:
+        -:   47:#include <openssl/crypto.h>
+        -:   48:#include <openssl/sha.h>
+        -:   49:#include <openssl/opensslv.h>
+        -:   50:
+        -:   51:#include "cryptlib.h"
+        -:   52:
+        -:   53:const char SHA512_version[]="SHA-512" OPENSSL_VERSION_PTEXT;
+        -:   54:
+        -:   55:#if defined(__i386) || defined(__i386__) || defined(_M_IX86) || \
+        -:   56:    defined(__x86_64) || defined(_M_AMD64) || defined(_M_X64) || \
+        -:   57:    defined(__s390__) || defined(__s390x__) || \
+        -:   58:    defined(SHA512_ASM)
+        -:   59:#define SHA512_BLOCK_CAN_MANAGE_UNALIGNED_DATA
+        -:   60:#endif
+        -:   61:
+   450000:   62:fips_md_init_ctx(SHA384, SHA512)
+        -:   63:	{
+   450000:   64:	c->h[0]=U64(0xcbbb9d5dc1059ed8);
+   450000:   65:	c->h[1]=U64(0x629a292a367cd507);
+   450000:   66:	c->h[2]=U64(0x9159015a3070dd17);
+   450000:   67:	c->h[3]=U64(0x152fecd8f70e5939);
+   450000:   68:	c->h[4]=U64(0x67332667ffc00b31);
+   450000:   69:	c->h[5]=U64(0x8eb44a8768581511);
+   450000:   70:	c->h[6]=U64(0xdb0c2e0d64f98fa7);
+   450000:   71:	c->h[7]=U64(0x47b5481dbefa4fa4);
+        -:   72:
+   450000:   73:        c->Nl=0;        c->Nh=0;
+   450000:   74:        c->num=0;       c->md_len=SHA384_DIGEST_LENGTH;
+   450000:   75:        return 1;
+        -:   76:	}
+        -:   77:
+    #####:   78:fips_md_init(SHA512)
+        -:   79:	{
+    #####:   80:	c->h[0]=U64(0x6a09e667f3bcc908);
+    #####:   81:	c->h[1]=U64(0xbb67ae8584caa73b);
+    #####:   82:	c->h[2]=U64(0x3c6ef372fe94f82b);
+    #####:   83:	c->h[3]=U64(0xa54ff53a5f1d36f1);
+    #####:   84:	c->h[4]=U64(0x510e527fade682d1);
+    #####:   85:	c->h[5]=U64(0x9b05688c2b3e6c1f);
+    #####:   86:	c->h[6]=U64(0x1f83d9abfb41bd6b);
+    #####:   87:	c->h[7]=U64(0x5be0cd19137e2179);
+        -:   88:
+    #####:   89:        c->Nl=0;        c->Nh=0;
+    #####:   90:        c->num=0;       c->md_len=SHA512_DIGEST_LENGTH;
+    #####:   91:        return 1;
+        -:   92:	}
+        -:   93:
+        -:   94:#ifndef SHA512_ASM
+        -:   95:static
+        -:   96:#endif
+        -:   97:void sha512_block_data_order (SHA512_CTX *ctx, const void *in, size_t num);
+        -:   98:
+   270000:   99:int SHA512_Final (unsigned char *md, SHA512_CTX *c)
+        -:  100:	{
+   270000:  101:	unsigned char *p=(unsigned char *)c->u.p;
+   270000:  102:	size_t n=c->num;
+        -:  103:
+   270000:  104:	p[n]=0x80;	/* There always is a room for one */
+   270000:  105:	n++;
+   270000:  106:	if (n > (sizeof(c->u)-16))
+    33801:  107:		memset (p+n,0,sizeof(c->u)-n), n=0,
+    33801:  108:		sha512_block_data_order (c,p,1);
+        -:  109:
+   270000:  110:	memset (p+n,0,sizeof(c->u)-16-n);
+        -:  111:#ifdef	B_ENDIAN
+        -:  112:	c->u.d[SHA_LBLOCK-2] = c->Nh;
+        -:  113:	c->u.d[SHA_LBLOCK-1] = c->Nl;
+        -:  114:#else
+   270000:  115:	p[sizeof(c->u)-1]  = (unsigned char)(c->Nl);
+   270000:  116:	p[sizeof(c->u)-2]  = (unsigned char)(c->Nl>>8);
+   270000:  117:	p[sizeof(c->u)-3]  = (unsigned char)(c->Nl>>16);
+   270000:  118:	p[sizeof(c->u)-4]  = (unsigned char)(c->Nl>>24);
+   270000:  119:	p[sizeof(c->u)-5]  = (unsigned char)(c->Nl>>32);
+   270000:  120:	p[sizeof(c->u)-6]  = (unsigned char)(c->Nl>>40);
+   270000:  121:	p[sizeof(c->u)-7]  = (unsigned char)(c->Nl>>48);
+   270000:  122:	p[sizeof(c->u)-8]  = (unsigned char)(c->Nl>>56);
+   270000:  123:	p[sizeof(c->u)-9]  = (unsigned char)(c->Nh);
+   270000:  124:	p[sizeof(c->u)-10] = (unsigned char)(c->Nh>>8);
+   270000:  125:	p[sizeof(c->u)-11] = (unsigned char)(c->Nh>>16);
+   270000:  126:	p[sizeof(c->u)-12] = (unsigned char)(c->Nh>>24);
+   270000:  127:	p[sizeof(c->u)-13] = (unsigned char)(c->Nh>>32);
+   270000:  128:	p[sizeof(c->u)-14] = (unsigned char)(c->Nh>>40);
+   270000:  129:	p[sizeof(c->u)-15] = (unsigned char)(c->Nh>>48);
+   270000:  130:	p[sizeof(c->u)-16] = (unsigned char)(c->Nh>>56);
+        -:  131:#endif
+        -:  132:
+   270000:  133:	sha512_block_data_order (c,p,1);
+        -:  134:
+   270000:  135:	if (md==0) return 0;
+        -:  136:
+   270000:  137:	switch (c->md_len)
+        -:  138:		{
+        -:  139:		/* Let compiler decide if it's appropriate to unroll... */
+        -:  140:		case SHA384_DIGEST_LENGTH:
+  1620000:  141:			for (n=0;n<SHA384_DIGEST_LENGTH/8;n++)
+        -:  142:				{
+  1620000:  143:				SHA_LONG64 t = c->h[n];
+        -:  144:
+  1620000:  145:				*(md++)	= (unsigned char)(t>>56);
+  1620000:  146:				*(md++)	= (unsigned char)(t>>48);
+  1620000:  147:				*(md++)	= (unsigned char)(t>>40);
+  1620000:  148:				*(md++)	= (unsigned char)(t>>32);
+  1620000:  149:				*(md++)	= (unsigned char)(t>>24);
+  1620000:  150:				*(md++)	= (unsigned char)(t>>16);
+  1620000:  151:				*(md++)	= (unsigned char)(t>>8);
+  1620000:  152:				*(md++)	= (unsigned char)(t);
+        -:  153:				}
+        -:  154:			break;
+        -:  155:		case SHA512_DIGEST_LENGTH:
+    #####:  156:			for (n=0;n<SHA512_DIGEST_LENGTH/8;n++)
+        -:  157:				{
+    #####:  158:				SHA_LONG64 t = c->h[n];
+        -:  159:
+    #####:  160:				*(md++)	= (unsigned char)(t>>56);
+    #####:  161:				*(md++)	= (unsigned char)(t>>48);
+    #####:  162:				*(md++)	= (unsigned char)(t>>40);
+    #####:  163:				*(md++)	= (unsigned char)(t>>32);
+    #####:  164:				*(md++)	= (unsigned char)(t>>24);
+    #####:  165:				*(md++)	= (unsigned char)(t>>16);
+    #####:  166:				*(md++)	= (unsigned char)(t>>8);
+    #####:  167:				*(md++)	= (unsigned char)(t);
+        -:  168:				}
+        -:  169:			break;
+        -:  170:		/* ... as well as make sure md_len is not abused. */
+        -:  171:		default:	return 0;
+        -:  172:		}
+        -:  173:
+        -:  174:	return 1;
+        -:  175:	}
+        -:  176:
+    #####:  177:int SHA384_Final (unsigned char *md,SHA512_CTX *c)
+    #####:  178:{   return SHA512_Final (md,c);   }
+        -:  179:
+  1000000:  180:int SHA512_Update (SHA512_CTX *c, const void *_data, size_t len)
+        -:  181:	{
+        -:  182:	SHA_LONG64	l;
+  1000000:  183:	unsigned char  *p=c->u.p;
+        -:  184:	const unsigned char *data=(const unsigned char *)_data;
+        -:  185:
+  1000000:  186:	if (len==0) return  1;
+        -:  187:
+  1000000:  188:	l = (c->Nl+(((SHA_LONG64)len)<<3))&U64(0xffffffffffffffff);
+  1000000:  189:	if (l < c->Nl)		c->Nh++;
+  1000000:  190:	if (sizeof(len)>=8)	c->Nh+=(((SHA_LONG64)len)>>61);
+  1000000:  191:	c->Nl=l;
+        -:  192:
+  1000000:  193:	if (c->num != 0)
+        -:  194:		{
+   259679:  195:		size_t n = sizeof(c->u) - c->num;
+        -:  196:
+   259679:  197:		if (len < n)
+        -:  198:			{
+   474606:  199:			memcpy (p+c->num,data,len), c->num += (unsigned int)len;
+   237303:  200:			return 1;
+        -:  201:			}
+        -:  202:		else	{
+    44752:  203:			memcpy (p+c->num,data,n), c->num = 0;
+    22376:  204:			len-=n, data+=n;
+    22376:  205:			sha512_block_data_order (c,p,1);
+        -:  206:			}
+        -:  207:		}
+        -:  208:
+   762697:  209:	if (len >= sizeof(c->u))
+        -:  210:		{
+        -:  211:#ifndef SHA512_BLOCK_CAN_MANAGE_UNALIGNED_DATA
+        -:  212:		if ((size_t)data%sizeof(c->u.d[0]) != 0)
+        -:  213:			while (len >= sizeof(c->u))
+        -:  214:				memcpy (p,data,sizeof(c->u)),
+        -:  215:				sha512_block_data_order (c,p,1),
+        -:  216:				len  -= sizeof(c->u),
+        -:  217:				data += sizeof(c->u);
+        -:  218:		else
+        -:  219:#endif
+   453903:  220:			sha512_block_data_order (c,data,len/sizeof(c->u)),
+   453903:  221:			data += len,
+   453903:  222:			len  %= sizeof(c->u),
+   453903:  223:			data -= len;
+        -:  224:		}
+        -:  225:
+  1084995:  226:	if (len != 0)	memcpy (p,data,len), c->num = (int)len;
+        -:  227:
+        -:  228:	return 1;
+        -:  229:	}
+        -:  230:
+    #####:  231:int SHA384_Update (SHA512_CTX *c, const void *data, size_t len)
+    #####:  232:{   return SHA512_Update (c,data,len);   }
+        -:  233:
+    #####:  234:void SHA512_Transform (SHA512_CTX *c, const unsigned char *data)
+    #####:  235:{   sha512_block_data_order (c,data,1);  }
+        -:  236:
+    #####:  237:unsigned char *SHA384(const unsigned char *d, size_t n, unsigned char *md)
+        -:  238:	{
+        -:  239:	SHA512_CTX c;
+        -:  240:	static unsigned char m[SHA384_DIGEST_LENGTH];
+        -:  241:
+    #####:  242:	if (md == NULL) md=m;
+        -:  243:	SHA384_Init(&c);
+    #####:  244:	SHA512_Update(&c,d,n);
+    #####:  245:	SHA512_Final(md,&c);
+    #####:  246:	OPENSSL_cleanse(&c,sizeof(c));
+    #####:  247:	return(md);
+        -:  248:	}
+        -:  249:
+    #####:  250:unsigned char *SHA512(const unsigned char *d, size_t n, unsigned char *md)
+        -:  251:	{
+        -:  252:	SHA512_CTX c;
+        -:  253:	static unsigned char m[SHA512_DIGEST_LENGTH];
+        -:  254:
+    #####:  255:	if (md == NULL) md=m;
+        -:  256:	SHA512_Init(&c);
+    #####:  257:	SHA512_Update(&c,d,n);
+    #####:  258:	SHA512_Final(md,&c);
+    #####:  259:	OPENSSL_cleanse(&c,sizeof(c));
+    #####:  260:	return(md);
+        -:  261:	}
+        -:  262:
+        -:  263:#ifndef SHA512_ASM
+        -:  264:static const SHA_LONG64 K512[80] = {
+        -:  265:        U64(0x428a2f98d728ae22),U64(0x7137449123ef65cd),
+        -:  266:        U64(0xb5c0fbcfec4d3b2f),U64(0xe9b5dba58189dbbc),
+        -:  267:        U64(0x3956c25bf348b538),U64(0x59f111f1b605d019),
+        -:  268:        U64(0x923f82a4af194f9b),U64(0xab1c5ed5da6d8118),
+        -:  269:        U64(0xd807aa98a3030242),U64(0x12835b0145706fbe),
+        -:  270:        U64(0x243185be4ee4b28c),U64(0x550c7dc3d5ffb4e2),
+        -:  271:        U64(0x72be5d74f27b896f),U64(0x80deb1fe3b1696b1),
+        -:  272:        U64(0x9bdc06a725c71235),U64(0xc19bf174cf692694),
+        -:  273:        U64(0xe49b69c19ef14ad2),U64(0xefbe4786384f25e3),
+        -:  274:        U64(0x0fc19dc68b8cd5b5),U64(0x240ca1cc77ac9c65),
+        -:  275:        U64(0x2de92c6f592b0275),U64(0x4a7484aa6ea6e483),
+        -:  276:        U64(0x5cb0a9dcbd41fbd4),U64(0x76f988da831153b5),
+        -:  277:        U64(0x983e5152ee66dfab),U64(0xa831c66d2db43210),
+        -:  278:        U64(0xb00327c898fb213f),U64(0xbf597fc7beef0ee4),
+        -:  279:        U64(0xc6e00bf33da88fc2),U64(0xd5a79147930aa725),
+        -:  280:        U64(0x06ca6351e003826f),U64(0x142929670a0e6e70),
+        -:  281:        U64(0x27b70a8546d22ffc),U64(0x2e1b21385c26c926),
+        -:  282:        U64(0x4d2c6dfc5ac42aed),U64(0x53380d139d95b3df),
+        -:  283:        U64(0x650a73548baf63de),U64(0x766a0abb3c77b2a8),
+        -:  284:        U64(0x81c2c92e47edaee6),U64(0x92722c851482353b),
+        -:  285:        U64(0xa2bfe8a14cf10364),U64(0xa81a664bbc423001),
+        -:  286:        U64(0xc24b8b70d0f89791),U64(0xc76c51a30654be30),
+        -:  287:        U64(0xd192e819d6ef5218),U64(0xd69906245565a910),
+        -:  288:        U64(0xf40e35855771202a),U64(0x106aa07032bbd1b8),
+        -:  289:        U64(0x19a4c116b8d2d0c8),U64(0x1e376c085141ab53),
+        -:  290:        U64(0x2748774cdf8eeb99),U64(0x34b0bcb5e19b48a8),
+        -:  291:        U64(0x391c0cb3c5c95a63),U64(0x4ed8aa4ae3418acb),
+        -:  292:        U64(0x5b9cca4f7763e373),U64(0x682e6ff3d6b2b8a3),
+        -:  293:        U64(0x748f82ee5defb2fc),U64(0x78a5636f43172f60),
+        -:  294:        U64(0x84c87814a1f0ab72),U64(0x8cc702081a6439ec),
+        -:  295:        U64(0x90befffa23631e28),U64(0xa4506cebde82bde9),
+        -:  296:        U64(0xbef9a3f7b2c67915),U64(0xc67178f2e372532b),
+        -:  297:        U64(0xca273eceea26619c),U64(0xd186b8c721c0c207),
+        -:  298:        U64(0xeada7dd6cde0eb1e),U64(0xf57d4f7fee6ed178),
+        -:  299:        U64(0x06f067aa72176fba),U64(0x0a637dc5a2c898a6),
+        -:  300:        U64(0x113f9804bef90dae),U64(0x1b710b35131c471b),
+        -:  301:        U64(0x28db77f523047d84),U64(0x32caab7b40c72493),
+        -:  302:        U64(0x3c9ebe0a15c9bebc),U64(0x431d67c49c100d4c),
+        -:  303:        U64(0x4cc5d4becb3e42b6),U64(0x597f299cfc657e2a),
+        -:  304:        U64(0x5fcb6fab3ad6faec),U64(0x6c44198c4a475817) };
+        -:  305:
+        -:  306:#ifndef PEDANTIC
+        -:  307:# if defined(__GNUC__) && __GNUC__>=2 && !defined(OPENSSL_NO_ASM) && !defined(OPENSSL_NO_INLINE_ASM)
+        -:  308:#  if defined(__x86_64) || defined(__x86_64__)
+        -:  309:#   define ROTR(a,n)	({ SHA_LONG64 ret;		\
+        -:  310:				asm ("rorq %1,%0"	\
+        -:  311:				: "=r"(ret)		\
+        -:  312:				: "J"(n),"0"(a)		\
+        -:  313:				: "cc"); ret;		})
+        -:  314:#   if !defined(B_ENDIAN)
+        -:  315:#    define PULL64(x) ({ SHA_LONG64 ret=*((const SHA_LONG64 *)(&(x)));	\
+        -:  316:				asm ("bswapq	%0"		\
+        -:  317:				: "=r"(ret)			\
+        -:  318:				: "0"(ret)); ret;		})
+        -:  319:#   endif
+        -:  320:#  elif (defined(__i386) || defined(__i386__)) && !defined(B_ENDIAN)
+        -:  321:#   if defined(I386_ONLY)
+        -:  322:#    define PULL64(x) ({ const unsigned int *p=(const unsigned int *)(&(x));\
+        -:  323:			 unsigned int hi=p[0],lo=p[1];		\
+        -:  324:				asm("xchgb %%ah,%%al;xchgb %%dh,%%dl;"\
+        -:  325:				    "roll $16,%%eax; roll $16,%%edx; "\
+        -:  326:				    "xchgb %%ah,%%al;xchgb %%dh,%%dl;" \
+        -:  327:				: "=a"(lo),"=d"(hi)		\
+        -:  328:				: "0"(lo),"1"(hi) : "cc");	\
+        -:  329:				((SHA_LONG64)hi)<<32|lo;	})
+        -:  330:#   else
+        -:  331:#    define PULL64(x) ({ const unsigned int *p=(const unsigned int *)(&(x));\
+        -:  332:			 unsigned int hi=p[0],lo=p[1];		\
+        -:  333:				asm ("bswapl %0; bswapl %1;"	\
+        -:  334:				: "=r"(lo),"=r"(hi)		\
+        -:  335:				: "0"(lo),"1"(hi));		\
+        -:  336:				((SHA_LONG64)hi)<<32|lo;	})
+        -:  337:#   endif
+        -:  338:#  elif (defined(_ARCH_PPC) && defined(__64BIT__)) || defined(_ARCH_PPC64)
+        -:  339:#   define ROTR(a,n)	({ SHA_LONG64 ret;		\
+        -:  340:				asm ("rotrdi %0,%1,%2"	\
+        -:  341:				: "=r"(ret)		\
+        -:  342:				: "r"(a),"K"(n)); ret;	})
+        -:  343:#  endif
+        -:  344:# elif defined(_MSC_VER)
+        -:  345:#  if defined(_WIN64)	/* applies to both IA-64 and AMD64 */
+        -:  346:#   pragma intrinsic(_rotr64)
+        -:  347:#   define ROTR(a,n)	_rotr64((a),n)
+        -:  348:#  endif
+        -:  349:#  if defined(_M_IX86) && !defined(OPENSSL_NO_ASM) && !defined(OPENSSL_NO_INLINE_ASM)
+        -:  350:#   if defined(I386_ONLY)
+        -:  351:    static SHA_LONG64 __fastcall __pull64be(const void *x)
+        -:  352:    {	_asm	mov	edx, [ecx + 0]
+        -:  353:	_asm	mov	eax, [ecx + 4]
+        -:  354:	_asm	xchg	dh,dl
+        -:  355:	_asm	xchg	ah,al
+        -:  356:	_asm	rol	edx,16
+        -:  357:	_asm	rol	eax,16
+        -:  358:	_asm	xchg	dh,dl
+        -:  359:	_asm	xchg	ah,al
+        -:  360:    }
+        -:  361:#   else
+        -:  362:    static SHA_LONG64 __fastcall __pull64be(const void *x)
+        -:  363:    {	_asm	mov	edx, [ecx + 0]
+        -:  364:	_asm	mov	eax, [ecx + 4]
+        -:  365:	_asm	bswap	edx
+        -:  366:	_asm	bswap	eax
+        -:  367:    }
+        -:  368:#   endif
+        -:  369:#   define PULL64(x) __pull64be(&(x))
+        -:  370:#   if _MSC_VER<=1200
+        -:  371:#    pragma inline_depth(0)
+        -:  372:#   endif
+        -:  373:#  endif
+        -:  374:# endif
+        -:  375:#endif
+        -:  376:
+        -:  377:#ifndef PULL64
+        -:  378:#define B(x,j)    (((SHA_LONG64)(*(((const unsigned char *)(&x))+j)))<<((7-j)*8))
+        -:  379:#define PULL64(x) (B(x,0)|B(x,1)|B(x,2)|B(x,3)|B(x,4)|B(x,5)|B(x,6)|B(x,7))
+        -:  380:#endif
+        -:  381:
+        -:  382:#ifndef ROTR
+        -:  383:#define ROTR(x,s)	(((x)>>s) | (x)<<(64-s))
+        -:  384:#endif
+        -:  385:
+        -:  386:#define Sigma0(x)	(ROTR((x),28) ^ ROTR((x),34) ^ ROTR((x),39))
+        -:  387:#define Sigma1(x)	(ROTR((x),14) ^ ROTR((x),18) ^ ROTR((x),41))
+        -:  388:#define sigma0(x)	(ROTR((x),1)  ^ ROTR((x),8)  ^ ((x)>>7))
+        -:  389:#define sigma1(x)	(ROTR((x),19) ^ ROTR((x),61) ^ ((x)>>6))
+        -:  390:
+        -:  391:#define Ch(x,y,z)	(((x) & (y)) ^ ((~(x)) & (z)))
+        -:  392:#define Maj(x,y,z)	(((x) & (y)) ^ ((x) & (z)) ^ ((y) & (z)))
+        -:  393:
+        -:  394:
+        -:  395:#if defined(__i386) || defined(__i386__) || defined(_M_IX86)
+        -:  396:/*
+        -:  397: * This code should give better results on 32-bit CPU with less than
+        -:  398: * ~24 registers, both size and performance wise...
+        -:  399: */
+        -:  400:static void sha512_block_data_order (SHA512_CTX *ctx, const void *in, size_t num)
+        -:  401:	{
+        -:  402:	const SHA_LONG64 *W=in;
+        -:  403:	SHA_LONG64	A,E,T;
+        -:  404:	SHA_LONG64	X[9+80],*F;
+        -:  405:	int i;
+        -:  406:
+        -:  407:			while (num--) {
+        -:  408:
+        -:  409:	F    = X+80;
+        -:  410:	A    = ctx->h[0];	F[1] = ctx->h[1];
+        -:  411:	F[2] = ctx->h[2];	F[3] = ctx->h[3];
+        -:  412:	E    = ctx->h[4];	F[5] = ctx->h[5];
+        -:  413:	F[6] = ctx->h[6];	F[7] = ctx->h[7];
+        -:  414:
+        -:  415:	for (i=0;i<16;i++,F--)
+        -:  416:		{
+        -:  417:#ifdef B_ENDIAN
+        -:  418:		T = W[i];
+        -:  419:#else
+        -:  420:		T = PULL64(W[i]);
+        -:  421:#endif
+        -:  422:		F[0] = A;
+        -:  423:		F[4] = E;
+        -:  424:		F[8] = T;
+        -:  425:		T   += F[7] + Sigma1(E) + Ch(E,F[5],F[6]) + K512[i];
+        -:  426:		E    = F[3] + T;
+        -:  427:		A    = T + Sigma0(A) + Maj(A,F[1],F[2]);
+        -:  428:		}
+        -:  429:
+        -:  430:	for (;i<80;i++,F--)
+        -:  431:		{
+        -:  432:		T    = sigma0(F[8+16-1]);
+        -:  433:		T   += sigma1(F[8+16-14]);
+        -:  434:		T   += F[8+16] + F[8+16-9];
+        -:  435:
+        -:  436:		F[0] = A;
+        -:  437:		F[4] = E;
+        -:  438:		F[8] = T;
+        -:  439:		T   += F[7] + Sigma1(E) + Ch(E,F[5],F[6]) + K512[i];
+        -:  440:		E    = F[3] + T;
+        -:  441:		A    = T + Sigma0(A) + Maj(A,F[1],F[2]);
+        -:  442:		}
+        -:  443:
+        -:  444:	ctx->h[0] += A;		ctx->h[1] += F[1];
+        -:  445:	ctx->h[2] += F[2];	ctx->h[3] += F[3];
+        -:  446:	ctx->h[4] += E;		ctx->h[5] += F[5];
+        -:  447:	ctx->h[6] += F[6];	ctx->h[7] += F[7];
+        -:  448:
+        -:  449:			W+=SHA_LBLOCK;
+        -:  450:			}
+        -:  451:	}
+        -:  452:
+        -:  453:#elif defined(OPENSSL_SMALL_FOOTPRINT)
+        -:  454:
+        -:  455:static void sha512_block_data_order (SHA512_CTX *ctx, const void *in, size_t num)
+        -:  456:	{
+        -:  457:	const SHA_LONG64 *W=in;
+        -:  458:	SHA_LONG64	a,b,c,d,e,f,g,h,s0,s1,T1,T2;
+        -:  459:	SHA_LONG64	X[16];
+        -:  460:	int i;
+        -:  461:
+        -:  462:			while (num--) {
+        -:  463:
+        -:  464:	a = ctx->h[0];	b = ctx->h[1];	c = ctx->h[2];	d = ctx->h[3];
+        -:  465:	e = ctx->h[4];	f = ctx->h[5];	g = ctx->h[6];	h = ctx->h[7];
+        -:  466:
+        -:  467:	for (i=0;i<16;i++)
+        -:  468:		{
+        -:  469:#ifdef B_ENDIAN
+        -:  470:		T1 = X[i] = W[i];
+        -:  471:#else
+        -:  472:		T1 = X[i] = PULL64(W[i]);
+        -:  473:#endif
+        -:  474:		T1 += h + Sigma1(e) + Ch(e,f,g) + K512[i];
+        -:  475:		T2 = Sigma0(a) + Maj(a,b,c);
+        -:  476:		h = g;	g = f;	f = e;	e = d + T1;
+        -:  477:		d = c;	c = b;	b = a;	a = T1 + T2;
+        -:  478:		}
+        -:  479:
+        -:  480:	for (;i<80;i++)
+        -:  481:		{
+        -:  482:		s0 = X[(i+1)&0x0f];	s0 = sigma0(s0);
+        -:  483:		s1 = X[(i+14)&0x0f];	s1 = sigma1(s1);
+        -:  484:
+        -:  485:		T1 = X[i&0xf] += s0 + s1 + X[(i+9)&0xf];
+        -:  486:		T1 += h + Sigma1(e) + Ch(e,f,g) + K512[i];
+        -:  487:		T2 = Sigma0(a) + Maj(a,b,c);
+        -:  488:		h = g;	g = f;	f = e;	e = d + T1;
+        -:  489:		d = c;	c = b;	b = a;	a = T1 + T2;
+        -:  490:		}
+        -:  491:
+        -:  492:	ctx->h[0] += a;	ctx->h[1] += b;	ctx->h[2] += c;	ctx->h[3] += d;
+        -:  493:	ctx->h[4] += e;	ctx->h[5] += f;	ctx->h[6] += g;	ctx->h[7] += h;
+        -:  494:
+        -:  495:			W+=SHA_LBLOCK;
+        -:  496:			}
+        -:  497:	}
+        -:  498:
+        -:  499:#else
+        -:  500:
+        -:  501:#define	ROUND_00_15(i,a,b,c,d,e,f,g,h)		do {	\
+        -:  502:	T1 += h + Sigma1(e) + Ch(e,f,g) + K512[i];	\
+        -:  503:	h = Sigma0(a) + Maj(a,b,c);			\
+        -:  504:	d += T1;	h += T1;		} while (0)
+        -:  505:
+        -:  506:#define	ROUND_16_80(i,j,a,b,c,d,e,f,g,h,X)	do {	\
+        -:  507:	s0 = X[(j+1)&0x0f];	s0 = sigma0(s0);	\
+        -:  508:	s1 = X[(j+14)&0x0f];	s1 = sigma1(s1);	\
+        -:  509:	T1 = X[(j)&0x0f] += s0 + s1 + X[(j+9)&0x0f];	\
+        -:  510:	ROUND_00_15(i+j,a,b,c,d,e,f,g,h);		} while (0)
+        -:  511:
+        -:  512:static void sha512_block_data_order (SHA512_CTX *ctx, const void *in, size_t num)
+        -:  513:	{
+        -:  514:	const SHA_LONG64 *W=in;
+        -:  515:	SHA_LONG64	a,b,c,d,e,f,g,h,s0,s1,T1;
+        -:  516:	SHA_LONG64	X[16];
+        -:  517:	int i;
+        -:  518:
+        -:  519:			while (num--) {
+        -:  520:
+        -:  521:	a = ctx->h[0];	b = ctx->h[1];	c = ctx->h[2];	d = ctx->h[3];
+        -:  522:	e = ctx->h[4];	f = ctx->h[5];	g = ctx->h[6];	h = ctx->h[7];
+        -:  523:
+        -:  524:#ifdef B_ENDIAN
+        -:  525:	T1 = X[0] = W[0];	ROUND_00_15(0,a,b,c,d,e,f,g,h);
+        -:  526:	T1 = X[1] = W[1];	ROUND_00_15(1,h,a,b,c,d,e,f,g);
+        -:  527:	T1 = X[2] = W[2];	ROUND_00_15(2,g,h,a,b,c,d,e,f);
+        -:  528:	T1 = X[3] = W[3];	ROUND_00_15(3,f,g,h,a,b,c,d,e);
+        -:  529:	T1 = X[4] = W[4];	ROUND_00_15(4,e,f,g,h,a,b,c,d);
+        -:  530:	T1 = X[5] = W[5];	ROUND_00_15(5,d,e,f,g,h,a,b,c);
+        -:  531:	T1 = X[6] = W[6];	ROUND_00_15(6,c,d,e,f,g,h,a,b);
+        -:  532:	T1 = X[7] = W[7];	ROUND_00_15(7,b,c,d,e,f,g,h,a);
+        -:  533:	T1 = X[8] = W[8];	ROUND_00_15(8,a,b,c,d,e,f,g,h);
+        -:  534:	T1 = X[9] = W[9];	ROUND_00_15(9,h,a,b,c,d,e,f,g);
+        -:  535:	T1 = X[10] = W[10];	ROUND_00_15(10,g,h,a,b,c,d,e,f);
+        -:  536:	T1 = X[11] = W[11];	ROUND_00_15(11,f,g,h,a,b,c,d,e);
+        -:  537:	T1 = X[12] = W[12];	ROUND_00_15(12,e,f,g,h,a,b,c,d);
+        -:  538:	T1 = X[13] = W[13];	ROUND_00_15(13,d,e,f,g,h,a,b,c);
+        -:  539:	T1 = X[14] = W[14];	ROUND_00_15(14,c,d,e,f,g,h,a,b);
+        -:  540:	T1 = X[15] = W[15];	ROUND_00_15(15,b,c,d,e,f,g,h,a);
+        -:  541:#else
+        -:  542:	T1 = X[0]  = PULL64(W[0]);	ROUND_00_15(0,a,b,c,d,e,f,g,h);
+        -:  543:	T1 = X[1]  = PULL64(W[1]);	ROUND_00_15(1,h,a,b,c,d,e,f,g);
+        -:  544:	T1 = X[2]  = PULL64(W[2]);	ROUND_00_15(2,g,h,a,b,c,d,e,f);
+        -:  545:	T1 = X[3]  = PULL64(W[3]);	ROUND_00_15(3,f,g,h,a,b,c,d,e);
+        -:  546:	T1 = X[4]  = PULL64(W[4]);	ROUND_00_15(4,e,f,g,h,a,b,c,d);
+        -:  547:	T1 = X[5]  = PULL64(W[5]);	ROUND_00_15(5,d,e,f,g,h,a,b,c);
+        -:  548:	T1 = X[6]  = PULL64(W[6]);	ROUND_00_15(6,c,d,e,f,g,h,a,b);
+        -:  549:	T1 = X[7]  = PULL64(W[7]);	ROUND_00_15(7,b,c,d,e,f,g,h,a);
+        -:  550:	T1 = X[8]  = PULL64(W[8]);	ROUND_00_15(8,a,b,c,d,e,f,g,h);
+        -:  551:	T1 = X[9]  = PULL64(W[9]);	ROUND_00_15(9,h,a,b,c,d,e,f,g);
+        -:  552:	T1 = X[10] = PULL64(W[10]);	ROUND_00_15(10,g,h,a,b,c,d,e,f);
+        -:  553:	T1 = X[11] = PULL64(W[11]);	ROUND_00_15(11,f,g,h,a,b,c,d,e);
+        -:  554:	T1 = X[12] = PULL64(W[12]);	ROUND_00_15(12,e,f,g,h,a,b,c,d);
+        -:  555:	T1 = X[13] = PULL64(W[13]);	ROUND_00_15(13,d,e,f,g,h,a,b,c);
+        -:  556:	T1 = X[14] = PULL64(W[14]);	ROUND_00_15(14,c,d,e,f,g,h,a,b);
+        -:  557:	T1 = X[15] = PULL64(W[15]);	ROUND_00_15(15,b,c,d,e,f,g,h,a);
+        -:  558:#endif
+        -:  559:
+        -:  560:	for (i=16;i<80;i+=16)
+        -:  561:		{
+        -:  562:		ROUND_16_80(i, 0,a,b,c,d,e,f,g,h,X);
+        -:  563:		ROUND_16_80(i, 1,h,a,b,c,d,e,f,g,X);
+        -:  564:		ROUND_16_80(i, 2,g,h,a,b,c,d,e,f,X);
+        -:  565:		ROUND_16_80(i, 3,f,g,h,a,b,c,d,e,X);
+        -:  566:		ROUND_16_80(i, 4,e,f,g,h,a,b,c,d,X);
+        -:  567:		ROUND_16_80(i, 5,d,e,f,g,h,a,b,c,X);
+        -:  568:		ROUND_16_80(i, 6,c,d,e,f,g,h,a,b,X);
+        -:  569:		ROUND_16_80(i, 7,b,c,d,e,f,g,h,a,X);
+        -:  570:		ROUND_16_80(i, 8,a,b,c,d,e,f,g,h,X);
+        -:  571:		ROUND_16_80(i, 9,h,a,b,c,d,e,f,g,X);
+        -:  572:		ROUND_16_80(i,10,g,h,a,b,c,d,e,f,X);
+        -:  573:		ROUND_16_80(i,11,f,g,h,a,b,c,d,e,X);
+        -:  574:		ROUND_16_80(i,12,e,f,g,h,a,b,c,d,X);
+        -:  575:		ROUND_16_80(i,13,d,e,f,g,h,a,b,c,X);
+        -:  576:		ROUND_16_80(i,14,c,d,e,f,g,h,a,b,X);
+        -:  577:		ROUND_16_80(i,15,b,c,d,e,f,g,h,a,X);
+        -:  578:		}
+        -:  579:
+        -:  580:	ctx->h[0] += a;	ctx->h[1] += b;	ctx->h[2] += c;	ctx->h[3] += d;
+        -:  581:	ctx->h[4] += e;	ctx->h[5] += f;	ctx->h[6] += g;	ctx->h[7] += h;
+        -:  582:
+        -:  583:			W+=SHA_LBLOCK;
+        -:  584:			}
+        -:  585:	}
+        -:  586:
+        -:  587:#endif
+        -:  588:
+        -:  589:#endif /* SHA512_ASM */
+        -:  590:
+        -:  591:#else /* !OPENSSL_NO_SHA512 */
+        -:  592:
+        -:  593:#if defined(PEDANTIC) || defined(__DECC) || defined(OPENSSL_SYS_MACOSX)
+        -:  594:static void *dummy=&dummy;
+        -:  595:#endif
+        -:  596:
+        -:  597:#endif /* !OPENSSL_NO_SHA512 */

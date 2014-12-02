@@ -1,0 +1,256 @@
+        -:    0:Source:hmac.c
+        -:    0:Graph:hmac.gcno
+        -:    0:Data:hmac.gcda
+        -:    0:Runs:10000
+        -:    0:Programs:1
+        -:    1:/* crypto/hmac/hmac.c */
+        -:    2:/* Copyright (C) 1995-1998 Eric Young (eay@cryptsoft.com)
+        -:    3: * All rights reserved.
+        -:    4: *
+        -:    5: * This package is an SSL implementation written
+        -:    6: * by Eric Young (eay@cryptsoft.com).
+        -:    7: * The implementation was written so as to conform with Netscapes SSL.
+        -:    8: * 
+        -:    9: * This library is free for commercial and non-commercial use as long as
+        -:   10: * the following conditions are aheared to.  The following conditions
+        -:   11: * apply to all code found in this distribution, be it the RC4, RSA,
+        -:   12: * lhash, DES, etc., code; not just the SSL code.  The SSL documentation
+        -:   13: * included with this distribution is covered by the same copyright terms
+        -:   14: * except that the holder is Tim Hudson (tjh@cryptsoft.com).
+        -:   15: * 
+        -:   16: * Copyright remains Eric Young's, and as such any Copyright notices in
+        -:   17: * the code are not to be removed.
+        -:   18: * If this package is used in a product, Eric Young should be given attribution
+        -:   19: * as the author of the parts of the library used.
+        -:   20: * This can be in the form of a textual message at program startup or
+        -:   21: * in documentation (online or textual) provided with the package.
+        -:   22: * 
+        -:   23: * Redistribution and use in source and binary forms, with or without
+        -:   24: * modification, are permitted provided that the following conditions
+        -:   25: * are met:
+        -:   26: * 1. Redistributions of source code must retain the copyright
+        -:   27: *    notice, this list of conditions and the following disclaimer.
+        -:   28: * 2. Redistributions in binary form must reproduce the above copyright
+        -:   29: *    notice, this list of conditions and the following disclaimer in the
+        -:   30: *    documentation and/or other materials provided with the distribution.
+        -:   31: * 3. All advertising materials mentioning features or use of this software
+        -:   32: *    must display the following acknowledgement:
+        -:   33: *    "This product includes cryptographic software written by
+        -:   34: *     Eric Young (eay@cryptsoft.com)"
+        -:   35: *    The word 'cryptographic' can be left out if the rouines from the library
+        -:   36: *    being used are not cryptographic related :-).
+        -:   37: * 4. If you include any Windows specific code (or a derivative thereof) from 
+        -:   38: *    the apps directory (application code) you must include an acknowledgement:
+        -:   39: *    "This product includes software written by Tim Hudson (tjh@cryptsoft.com)"
+        -:   40: * 
+        -:   41: * THIS SOFTWARE IS PROVIDED BY ERIC YOUNG ``AS IS'' AND
+        -:   42: * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        -:   43: * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+        -:   44: * ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+        -:   45: * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+        -:   46: * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+        -:   47: * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        -:   48: * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+        -:   49: * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+        -:   50: * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+        -:   51: * SUCH DAMAGE.
+        -:   52: * 
+        -:   53: * The licence and distribution terms for any publically available version or
+        -:   54: * derivative of this code cannot be changed.  i.e. this code cannot simply be
+        -:   55: * copied and put under another distribution licence
+        -:   56: * [including the GNU Public Licence.]
+        -:   57: */
+        -:   58:#include <stdio.h>
+        -:   59:#include <stdlib.h>
+        -:   60:#include <string.h>
+        -:   61:#include "cryptlib.h"
+        -:   62:#include <openssl/hmac.h>
+        -:   63:
+        -:   64:#ifdef OPENSSL_FIPS
+        -:   65:#include <openssl/fips.h>
+        -:   66:#endif
+        -:   67:
+   220000:   68:int HMAC_Init_ex(HMAC_CTX *ctx, const void *key, int len,
+        -:   69:		  const EVP_MD *md, ENGINE *impl)
+        -:   70:	{
+        -:   71:	int i,j,reset=0;
+        -:   72:	unsigned char pad[HMAC_MAX_MD_CBLOCK];
+        -:   73:
+        -:   74:#ifdef OPENSSL_FIPS
+        -:   75:	if (FIPS_mode())
+        -:   76:		{
+        -:   77:		/* If we have an ENGINE need to allow non FIPS */
+        -:   78:		if ((impl || ctx->i_ctx.engine)
+        -:   79:			&&  !(ctx->i_ctx.flags & EVP_CIPH_FLAG_NON_FIPS_ALLOW))
+        -:   80:			{
+        -:   81:			EVPerr(EVP_F_HMAC_INIT_EX, EVP_R_DISABLED_FOR_FIPS);
+        -:   82:			return 0;
+        -:   83:			}
+        -:   84:		/* Other algorithm blocking will be done in FIPS_cmac_init,
+        -:   85:		 * via FIPS_hmac_init_ex().
+        -:   86:		 */
+        -:   87:		if (!impl && !ctx->i_ctx.engine)
+        -:   88:			return FIPS_hmac_init_ex(ctx, key, len, md, NULL);
+        -:   89:		}
+        -:   90:#endif
+        -:   91:
+   220000:   92:	if (md != NULL)
+        -:   93:		{
+        -:   94:		reset=1;
+   220000:   95:		ctx->md=md;
+        -:   96:		}
+        -:   97:	else
+    #####:   98:		md=ctx->md;
+        -:   99:
+   220000:  100:	if (key != NULL)
+        -:  101:		{
+        -:  102:		reset=1;
+   220000:  103:		j=EVP_MD_block_size(md);
+   220000:  104:		OPENSSL_assert(j <= (int)sizeof(ctx->key));
+   220000:  105:		if (j < len)
+        -:  106:			{
+    #####:  107:			if (!EVP_DigestInit_ex(&ctx->md_ctx,md, impl))
+        -:  108:				goto err;
+    #####:  109:			if (!EVP_DigestUpdate(&ctx->md_ctx,key,len))
+        -:  110:				goto err;
+    #####:  111:			if (!EVP_DigestFinal_ex(&(ctx->md_ctx),ctx->key,
+        -:  112:				&ctx->key_length))
+        -:  113:				goto err;
+        -:  114:			}
+        -:  115:		else
+        -:  116:			{
+   220000:  117:			OPENSSL_assert(len>=0 && len<=(int)sizeof(ctx->key));
+   220000:  118:			memcpy(ctx->key,key,len);
+   220000:  119:			ctx->key_length=len;
+        -:  120:			}
+   220000:  121:		if(ctx->key_length != HMAC_MAX_MD_CBLOCK)
+   220000:  122:			memset(&ctx->key[ctx->key_length], 0,
+   220000:  123:				HMAC_MAX_MD_CBLOCK - ctx->key_length);
+        -:  124:		}
+        -:  125:
+   220000:  126:	if (reset)	
+        -:  127:		{
+ 28160000:  128:		for (i=0; i<HMAC_MAX_MD_CBLOCK; i++)
+ 28160000:  129:			pad[i]=0x36^ctx->key[i];
+   220000:  130:		if (!EVP_DigestInit_ex(&ctx->i_ctx,md, impl))
+        -:  131:			goto err;
+   220000:  132:		if (!EVP_DigestUpdate(&ctx->i_ctx,pad,EVP_MD_block_size(md)))
+        -:  133:			goto err;
+        -:  134:
+ 28160000:  135:		for (i=0; i<HMAC_MAX_MD_CBLOCK; i++)
+ 28160000:  136:			pad[i]=0x5c^ctx->key[i];
+   220000:  137:		if (!EVP_DigestInit_ex(&ctx->o_ctx,md, impl))
+        -:  138:			goto err;
+   220000:  139:		if (!EVP_DigestUpdate(&ctx->o_ctx,pad,EVP_MD_block_size(md)))
+        -:  140:			goto err;
+        -:  141:		}
+   220000:  142:	if (!EVP_MD_CTX_copy_ex(&ctx->md_ctx,&ctx->i_ctx))
+        -:  143:			goto err;
+        -:  144:	return 1;
+        -:  145:	err:
+        -:  146:	return 0;
+        -:  147:	}
+        -:  148:
+    #####:  149:int HMAC_Init(HMAC_CTX *ctx, const void *key, int len, const EVP_MD *md)
+        -:  150:	{
+    #####:  151:	if(key && md)
+    #####:  152:	    HMAC_CTX_init(ctx);
+    #####:  153:	return HMAC_Init_ex(ctx,key,len,md, NULL);
+        -:  154:	}
+        -:  155:
+   390000:  156:int HMAC_Update(HMAC_CTX *ctx, const unsigned char *data, size_t len)
+        -:  157:	{
+        -:  158:#ifdef OPENSSL_FIPS
+        -:  159:	if (FIPS_mode() && !ctx->i_ctx.engine)
+        -:  160:		return FIPS_hmac_update(ctx, data, len);
+        -:  161:#endif
+   390000:  162:	return EVP_DigestUpdate(&ctx->md_ctx,data,len);
+        -:  163:	}
+        -:  164:
+   120000:  165:int HMAC_Final(HMAC_CTX *ctx, unsigned char *md, unsigned int *len)
+        -:  166:	{
+        -:  167:	unsigned int i;
+        -:  168:	unsigned char buf[EVP_MAX_MD_SIZE];
+        -:  169:#ifdef OPENSSL_FIPS
+        -:  170:	if (FIPS_mode() && !ctx->i_ctx.engine)
+        -:  171:		return FIPS_hmac_final(ctx, md, len);
+        -:  172:#endif
+        -:  173:
+   120000:  174:	if (!EVP_DigestFinal_ex(&ctx->md_ctx,buf,&i))
+        -:  175:		goto err;
+   120000:  176:	if (!EVP_MD_CTX_copy_ex(&ctx->md_ctx,&ctx->o_ctx))
+        -:  177:		goto err;
+   120000:  178:	if (!EVP_DigestUpdate(&ctx->md_ctx,buf,i))
+        -:  179:		goto err;
+   120000:  180:	if (!EVP_DigestFinal_ex(&ctx->md_ctx,md,len))
+        -:  181:		goto err;
+        -:  182:	return 1;
+        -:  183:	err:
+        -:  184:	return 0;
+        -:  185:	}
+        -:  186:
+   390000:  187:void HMAC_CTX_init(HMAC_CTX *ctx)
+        -:  188:	{
+   390000:  189:	EVP_MD_CTX_init(&ctx->i_ctx);
+   390000:  190:	EVP_MD_CTX_init(&ctx->o_ctx);
+   390000:  191:	EVP_MD_CTX_init(&ctx->md_ctx);
+   390000:  192:	}
+        -:  193:
+   120000:  194:int HMAC_CTX_copy(HMAC_CTX *dctx, HMAC_CTX *sctx)
+        -:  195:	{
+   120000:  196:	if (!EVP_MD_CTX_copy(&dctx->i_ctx, &sctx->i_ctx))
+        -:  197:		goto err;
+   120000:  198:	if (!EVP_MD_CTX_copy(&dctx->o_ctx, &sctx->o_ctx))
+        -:  199:		goto err;
+   120000:  200:	if (!EVP_MD_CTX_copy(&dctx->md_ctx, &sctx->md_ctx))
+        -:  201:		goto err;
+   120000:  202:	memcpy(dctx->key, sctx->key, HMAC_MAX_MD_CBLOCK);
+   120000:  203:	dctx->key_length = sctx->key_length;
+   120000:  204:	dctx->md = sctx->md;
+   120000:  205:	return 1;
+        -:  206:	err:
+        -:  207:	return 0;
+        -:  208:	}
+        -:  209:
+   270000:  210:void HMAC_CTX_cleanup(HMAC_CTX *ctx)
+        -:  211:	{
+        -:  212:#ifdef OPENSSL_FIPS
+        -:  213:	if (FIPS_mode() && !ctx->i_ctx.engine)
+        -:  214:		{
+        -:  215:		FIPS_hmac_ctx_cleanup(ctx);
+        -:  216:		return;
+        -:  217:		}
+        -:  218:#endif
+   270000:  219:	EVP_MD_CTX_cleanup(&ctx->i_ctx);
+   270000:  220:	EVP_MD_CTX_cleanup(&ctx->o_ctx);
+   270000:  221:	EVP_MD_CTX_cleanup(&ctx->md_ctx);
+        -:  222:	memset(ctx,0,sizeof *ctx);
+   270000:  223:	}
+        -:  224:
+    #####:  225:unsigned char *HMAC(const EVP_MD *evp_md, const void *key, int key_len,
+        -:  226:		    const unsigned char *d, size_t n, unsigned char *md,
+        -:  227:		    unsigned int *md_len)
+        -:  228:	{
+        -:  229:	HMAC_CTX c;
+        -:  230:	static unsigned char m[EVP_MAX_MD_SIZE];
+        -:  231:
+    #####:  232:	if (md == NULL) md=m;
+    #####:  233:	HMAC_CTX_init(&c);
+    #####:  234:	if (!HMAC_Init(&c,key,key_len,evp_md))
+        -:  235:		goto err;
+    #####:  236:	if (!HMAC_Update(&c,d,n))
+        -:  237:		goto err;
+    #####:  238:	if (!HMAC_Final(&c,md,md_len))
+        -:  239:		goto err;
+    #####:  240:	HMAC_CTX_cleanup(&c);
+    #####:  241:	return md;
+        -:  242:	err:
+        -:  243:	return NULL;
+        -:  244:	}
+        -:  245:
+   220000:  246:void HMAC_CTX_set_flags(HMAC_CTX *ctx, unsigned long flags)
+        -:  247:	{
+   220000:  248:	EVP_MD_CTX_set_flags(&ctx->i_ctx, flags);
+   220000:  249:	EVP_MD_CTX_set_flags(&ctx->o_ctx, flags);
+   220000:  250:	EVP_MD_CTX_set_flags(&ctx->md_ctx, flags);
+   220000:  251:	}
